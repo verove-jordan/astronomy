@@ -54,6 +54,8 @@ func RunText(r *pipeline.Result) string {
 	}
 	b.WriteString("\n")
 
+	writeRejected(&b, r)
+
 	if len(r.Warnings) > 0 {
 		b.WriteString("Warnings:\n")
 		for _, w := range r.Warnings {
@@ -61,6 +63,29 @@ func RunText(r *pipeline.Result) string {
 		}
 	}
 	return b.String()
+}
+
+func writeRejected(b *strings.Builder, r *pipeline.Result) {
+	var rejected int
+	for _, c := range r.Channels {
+		for _, m := range c.Metrics {
+			if m.Rejected {
+				rejected++
+			}
+		}
+	}
+	if rejected == 0 {
+		return
+	}
+	fmt.Fprintf(b, "Rejected sub-frames: %d\n", rejected)
+	for _, c := range r.Channels {
+		for _, m := range c.Metrics {
+			if m.Rejected {
+				fmt.Fprintf(b, "  ✗ [%s] %s — %s\n", dash(c.Filter), filepath.Base(m.Path), m.RejectReason)
+			}
+		}
+	}
+	b.WriteString("\n")
 }
 
 func yesno(b bool) string {

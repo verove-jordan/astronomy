@@ -10,10 +10,15 @@ import (
 	"time"
 
 	"github.com/verove-jordan/astronomy/internal/calib"
+	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/fsutil"
+	"github.com/verove-jordan/astronomy/internal/grade"
 	"github.com/verove-jordan/astronomy/internal/inspect"
 	"github.com/verove-jordan/astronomy/internal/siril"
 )
+
+// trailDownsample is the working size (larger axis) for the trail detector.
+const trailDownsample = 512
 
 // Options configures a pipeline run.
 type Options struct {
@@ -21,6 +26,7 @@ type Options struct {
 	OutputDir  string
 	WorkDir    string
 	Runner     *siril.Runner
+	Grade      *grade.Options // nil → grade.DefaultOptions()
 	OnProgress func(Progress)
 }
 
@@ -34,14 +40,15 @@ type Progress struct {
 
 // ChannelResult is the stacked output for one light channel (filter).
 type ChannelResult struct {
-	Object        string           `json:"object"`
-	Filter        string           `json:"filter"`
-	ExposureMs    int64            `json:"exposure_ms"`
-	InputFrames   int              `json:"input_frames"`
-	StackedFrames int              `json:"stacked_frames"`
-	OutputPath    string           `json:"output_path,omitempty"`
-	Selection     calib.Selection  `json:"selection"`
-	Err           string           `json:"error,omitempty"`
+	Object        string          `json:"object"`
+	Filter        string          `json:"filter"`
+	ExposureMs    int64           `json:"exposure_ms"`
+	InputFrames   int             `json:"input_frames"`
+	StackedFrames int             `json:"stacked_frames"`
+	OutputPath    string          `json:"output_path,omitempty"`
+	Selection     calib.Selection `json:"selection"`
+	Metrics       []grade.Metric  `json:"metrics,omitempty"`
+	Err           string          `json:"error,omitempty"`
 }
 
 // Result summarizes a completed run.
@@ -105,9 +112,14 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 	res.Masters = masters
 	res.Warnings = append(res.Warnings, mWarn...)
 
+	gradeOpts := grade.DefaultOptions()
+	if opts.Grade != nil {
+		gradeOpts = *opts.Grade
+	}
+
 	for _, set := range lights {
-		ch := processChannel(ctx, opts, set, masters, workRun, outDir,
-			progress(fmt.Sprintf("stacking %s %s", set.Key.Object, set.Key.Filter)))
+		ch := processChannel(ctx, opts, set, masters, workRun, outDir, gradeOpts,
+			progress(fmt.Sprintf("grading + stacking %s %s", set.Key.Object, set.Key.Filter)))
 		res.Channels = append(res.Channels, ch)
 		if ch.Err != "" {
 			res.Warnings = append(res.Warnings, fmt.Sprintf("channel %s: %s", set.Key.Filter, ch.Err))
@@ -117,7 +129,7 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 }
 
 func processChannel(ctx context.Context, opts Options, set inspect.Set, masters []calib.Master,
-	workRun, outDir string, onProgress func(siril.Progress)) ChannelResult {
+	workRun, outDir string, gradeOpts grade.Options, onProgress func(siril.Progress)) ChannelResult {
 	sel := calib.MatchForLight(set.Key, masters)
 	ch := ChannelResult{
 		Object:      set.Key.Object,
@@ -132,17 +144,80 @@ func processChannel(ctx context.Context, opts Options, set inspect.Set, masters 
 		ch.Err = err.Error()
 		return ch
 	}
-
-	outBase := filepath.Join(outDir, "master_"+filterTag(set.Key.Filter))
 	dark, flat, bias := sel.Masters()
-	script := siril.LightStackScript("light", siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias}, outBase)
-	if _, err := opts.Runner.Run(ctx, seqDir, script, onProgress); err != nil {
+	cm := siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias}
+
+	// 1. Calibrate + register (writes per-frame metrics to the calibrated sequence's .seq).
+	if _, err := opts.Runner.Run(ctx, seqDir, siril.CalibrateRegisterScript("light", cm), onProgress); err != nil {
+		ch.Err = err.Error()
+		return ch
+	}
+	baseSeq := siril.CalibratedSeq("light", cm) // stable, 1:1 with input frames
+	regSeq := siril.RegisteredSeq("light", cm)
+
+	// 2. Grade in the calibrated index space, then map rejects to registered indices.
+	metrics, rejectedReg, regCount, err := gradeChannel(seqDir, baseSeq, set.Frames, gradeOpts)
+	if err != nil {
+		ch.Err = fmt.Sprintf("grading: %v", err)
+		return ch
+	}
+	ch.Metrics = metrics
+	ch.StackedFrames = regCount - len(rejectedReg)
+	if regCount == 0 {
+		ch.Err = "no frames could be registered"
+		return ch
+	}
+
+	// 3. Stack only the survivors.
+	outBase := filepath.Join(outDir, "master_"+filterTag(set.Key.Filter))
+	if _, err := opts.Runner.Run(ctx, seqDir, siril.StackSelectedScript(regSeq, regCount, rejectedReg, outBase), onProgress); err != nil {
 		ch.Err = err.Error()
 		return ch
 	}
 	ch.OutputPath = outBase + ".fits"
-	ch.StackedFrames = set.Count // grading (M3) will reduce this
 	return ch
+}
+
+// gradeChannel builds per-frame metrics from the calibrated sequence's .seq (1:1 with input
+// frames) and the calibrated pixels (trail detection), applies the rejection rules, and maps the
+// rejected frames to 1-based indices in the registered sequence used for stacking. Frames Siril
+// could not register (zero metrics) are rejected up front and excluded from the registered space.
+func gradeChannel(seqDir, baseSeq string, frames []*inspect.Frame, opts grade.Options) (
+	metrics []grade.Metric, rejectedReg []int, regCount int, err error) {
+	seq, err := grade.ParseSeq(filepath.Join(seqDir, baseSeq+"_.seq"))
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	metrics = make([]grade.Metric, len(seq.Metrics))
+	for i, sm := range seq.Metrics {
+		m := grade.Metric{
+			Index: i + 1, FWHM: sm.FWHM, WFWHM: sm.WFWHM, Roundness: sm.Roundness,
+			Quality: sm.Quality, Background: sm.Background, StarCount: sm.StarCount,
+		}
+		if i < len(frames) {
+			m.Path = frames[i].Path
+		}
+		if sm.FWHM <= 0 { // Siril could not register this frame
+			m.Rejected = true
+			m.RejectReason = "could not register (too few/elongated stars)"
+		} else if f, ferr := fits.Open(filepath.Join(seqDir, fmt.Sprintf("%s_%05d.fits", baseSeq, i+1))); ferr == nil {
+			if grid, w, h, derr := f.ReadDownsampled(trailDownsample, fits.Max); derr == nil {
+				m.TrailDetected, m.TrailScore = grade.DetectTrail(grid, w, h)
+			}
+		}
+		metrics[i] = m
+	}
+	grade.Grade(metrics, opts)
+
+	for i := range metrics {
+		if metrics[i].FWHM > 0 { // present in the registered sequence
+			regCount++
+			if metrics[i].Rejected {
+				rejectedReg = append(rejectedReg, regCount)
+			}
+		}
+	}
+	return metrics, rejectedReg, regCount, nil
 }
 
 func (o Options) report(p Progress) {

@@ -59,6 +59,51 @@ func LightStackScript(seq string, m CalibMasters, outName string) string {
 	return b.String()
 }
 
+// CalibrateRegisterScript calibrates (if masters are given) and registers a light sequence
+// WITHOUT stacking, so the per-frame registration metrics are written to the .seq for grading.
+func CalibrateRegisterScript(seq string, m CalibMasters) string {
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	fmt.Fprintf(&b, "link %s -out=.\n", seq)
+	target := seq
+	if args := calibrateArgs(m); len(args) > 0 {
+		fmt.Fprintf(&b, "calibrate %s %s -prefix=pp_\n", seq, strings.Join(args, " "))
+		target = "pp_" + seq
+	}
+	fmt.Fprintf(&b, "register %s\n", target)
+	return b.String()
+}
+
+// CalibratedSeq is the sequence name after calibration — the input to registration and the
+// stable, 1:1-with-inputs index space used for grading. Its .seq file is this name + "_.seq".
+func CalibratedSeq(seq string, m CalibMasters) string {
+	if len(calibrateArgs(m)) > 0 {
+		return "pp_" + seq
+	}
+	return seq
+}
+
+// RegisteredSeq is the registered sequence produced by CalibrateRegisterScript.
+func RegisteredSeq(seq string, m CalibMasters) string {
+	return "r_" + CalibratedSeq(seq, m)
+}
+
+// StackSelectedScript resets the registered sequence to all-included, unselects our graded-out
+// frames (1-based registered indices), then stacks only the survivors. Winsorized sigma rejection
+// additionally clips residual satellite/plane trail pixels.
+func StackSelectedScript(regSeq string, regCount int, rejected []int, outName string) string {
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	if regCount > 0 {
+		fmt.Fprintf(&b, "select %s 1 %d\n", regSeq, regCount)
+	}
+	for _, idx := range rejected {
+		fmt.Fprintf(&b, "unselect %s %d %d\n", regSeq, idx, idx)
+	}
+	fmt.Fprintf(&b, "stack %s rej winsorized 3 3 -norm=addscale -output_norm -filter-incl -out=%s\n", regSeq, outName)
+	return b.String()
+}
+
 func calibrateArgs(m CalibMasters) []string {
 	var args []string
 	if m.Dark != "" {
