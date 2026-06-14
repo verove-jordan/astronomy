@@ -18,6 +18,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/inspect"
 	"github.com/verove-jordan/astronomy/internal/mcpserver"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
+	"github.com/verove-jordan/astronomy/internal/planetary"
 	"github.com/verove-jordan/astronomy/internal/report"
 	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/store"
@@ -97,6 +98,16 @@ func (a *app) register(s *mcpserver.Server) {
 			"work": str("scratch directory (optional; defaults to ASTRO_WORK_DIR)"),
 		}, "path"),
 		Handler: a.runPipeline,
+	})
+	s.AddTool(mcpserver.Tool{
+		Name: "process_video",
+		Description: "Process a lunar/planetary VIDEO (SER/AVI/MP4/MOV) with lucky imaging: extract " +
+			"frames, rank by sharpness, keep the best, stack and sharpen. Returns the output paths.",
+		InputSchema: obj(map[string]any{
+			"path": str("absolute path to the video file"),
+			"best": map[string]any{"type": "integer", "description": "keep this percent of the sharpest frames (default 50)"},
+		}, "path"),
+		Handler: a.processVideo,
 	})
 	s.AddTool(mcpserver.Tool{
 		Name: "eval_ssf",
@@ -192,6 +203,37 @@ func (a *app) runPipeline(ctx context.Context, args json.RawMessage) (string, er
 		return "", err
 	}
 	return report.RunText(res), nil
+}
+
+func (a *app) processVideo(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		Path string `json:"path"`
+		Best int    `json:"best"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	if p.Path == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	opts := planetary.DefaultOptions()
+	if p.Best > 0 {
+		opts.BestPercent = p.Best
+	}
+	res, err := planetary.Process(ctx, a.runner, a.cfg.FfmpegBin, p.Path, a.cfg.WorkDir, a.cfg.OutputDir, opts,
+		func(pr siril.Progress) {
+			if pr.Line != "" {
+				fmt.Fprintf(os.Stderr, "[siril-mcp] %s\n", pr.Line)
+			}
+		})
+	if err != nil {
+		return "", err
+	}
+	out := fmt.Sprintf("Planetary stack of %s\nFrames: %d total, %d stacked\nOutputs:\n", res.Source, res.FrameCount, res.StackedFrames)
+	for _, o := range res.Outputs {
+		out += "  " + o + "\n"
+	}
+	return out, nil
 }
 
 func (a *app) evalSSF(ctx context.Context, args json.RawMessage) (string, error) {

@@ -104,6 +104,48 @@ func StackSelectedScript(regSeq string, regCount int, rejected []int, outName st
 	return b.String()
 }
 
+// ConvertScript converts the files in the work dir into a FITS sequence named `seq`.
+func ConvertScript(seq string) string {
+	return scriptHeader + fmt.Sprintf("convert %s -out=.\n", seq)
+}
+
+// PlanetaryStackScript stacks the best (selected) frames of a converted video sequence — no
+// registration (planetary/lunar surfaces have no stars) — then optionally sharpens, stretches
+// and saves to the given formats.
+func PlanetaryStackScript(seq string, count int, rejected []int, outName string, sharpen bool, formats []string) string {
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	if count > 0 {
+		fmt.Fprintf(&b, "select %s 1 %d\n", seq, count)
+	}
+	for _, idx := range rejected {
+		fmt.Fprintf(&b, "unselect %s %d %d\n", seq, idx, idx)
+	}
+	fmt.Fprintf(&b, "stack %s rej winsorized 3 3 -nonorm -filter-incl -out=%s\n", seq, outName)
+	fmt.Fprintf(&b, "load %s\n", outName)
+	if sharpen {
+		b.WriteString("unsharp 3 0.8\n")
+	}
+	b.WriteString("autostretch\n")
+	for _, f := range formats {
+		b.WriteString(saveCmd(f, outName) + "\n")
+	}
+	return b.String()
+}
+
+func saveCmd(format, base string) string {
+	switch format {
+	case "png":
+		return "savepng " + base
+	case "tif", "tiff":
+		return "savetif " + base
+	case "jpg", "jpeg":
+		return "savejpg " + base + " 95"
+	default:
+		return "save " + base
+	}
+}
+
 func calibrateArgs(m CalibMasters) []string {
 	var args []string
 	if m.Dark != "" {

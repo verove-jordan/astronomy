@@ -11,16 +11,12 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
 var version = "dev"
-
-// errNotImplemented marks subcommands that land in a later milestone.
-var errNotImplemented = errors.New("not yet implemented")
 
 func main() {
 	if len(os.Args) < 2 {
@@ -69,4 +65,3 @@ Usage:
 `)
 }
 
-func runVideo(_ []string) error { return errNotImplemented }

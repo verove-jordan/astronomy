@@ -11,6 +11,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/config"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
+	"github.com/verove-jordan/astronomy/internal/planetary"
 	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/store"
 )
@@ -170,6 +171,13 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p params) 
 			LibraryDir: m.cfg.LibraryDir,
 			OnProgress: onProgress,
 		})
+	case "video":
+		return planetary.Process(ctx, m.runner, m.cfg.FfmpegBin, p.Path, m.cfg.WorkDir, m.cfg.OutputDir,
+			planetary.DefaultOptions(), func(pr siril.Progress) {
+				if pr.Line != "" {
+					m.publish(Event{JobID: id, Status: store.JobRunning, Step: pr.Line})
+				}
+			})
 	default:
 		return nil, fmt.Errorf("unknown job kind %q", kind)
 	}
