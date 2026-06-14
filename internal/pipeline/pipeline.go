@@ -23,9 +23,9 @@ const trailDownsample = 512
 
 // Options configures a pipeline run.
 type Options struct {
-	InputDir   string
-	OutputDir  string
-	WorkDir    string
+	InputDir    string
+	OutputDir   string
+	WorkDir     string
 	Runner      *siril.Runner
 	Grade       *grade.Options       // nil → grade.DefaultOptions()
 	Postprocess *postprocess.Options // nil → postprocess.DefaultOptions()
@@ -57,13 +57,13 @@ type ChannelResult struct {
 
 // Result summarizes a completed run.
 type Result struct {
-	InputDir  string               `json:"input_dir"`
-	OutputDir string               `json:"output_dir"`
-	Inventory *inspect.Inventory   `json:"-"`
-	Masters   []calib.Master       `json:"masters"`
-	Channels  []ChannelResult      `json:"channels"`
-	Final     *postprocess.Result  `json:"final,omitempty"`
-	Warnings  []string             `json:"warnings"`
+	InputDir  string              `json:"input_dir"`
+	OutputDir string              `json:"output_dir"`
+	Inventory *inspect.Inventory  `json:"-"`
+	Masters   []calib.Master      `json:"masters"`
+	Channels  []ChannelResult     `json:"channels"`
+	Final     *postprocess.Result `json:"final,omitempty"`
+	Warnings  []string            `json:"warnings"`
 }
 
 // Process runs the full pipeline and returns its result. Per-channel failures are recorded as

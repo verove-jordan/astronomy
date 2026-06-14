@@ -64,4 +64,3 @@ Usage:
   astrostack version                 print the version
 `)
 }
-

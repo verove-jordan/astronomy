@@ -119,4 +119,3 @@ func parsePercent(line string) int {
 	}
 	return -1
 }
-

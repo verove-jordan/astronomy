@@ -39,6 +39,20 @@ services:
     networks:
       - astrostack
 
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    restart: unless-stopped
+    profiles: ["web"]
+    ports:
+      - "${WEB_PORT_PROD:-8082}:80"
+    extra_hosts:
+      # let nginx proxy /api to the host-run Go engine
+      - "host.docker.internal:host-gateway"
+    networks:
+      - astrostack
+
 volumes:
   pgdata:
 

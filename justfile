@@ -1,14 +1,12 @@
 # AstroStack task runner. Thin wrappers only.
 # NOTE (host-engine exception, see CLAUDE.md): the Go engine, the Siril MCP and the Go tests
-# run on the HOST (they drive host Siril/GIMP). Docker Compose runs Postgres (+ tools) only.
+# run on the HOST (they drive host Siril/GIMP). Docker Compose runs Postgres (+ tools/web) only.
 
 set dotenv-load := true
 set shell := ["bash", "-uc"]
 set positional-arguments := true
 
 bin := "./bin"
-siril_bin := env_var_or_default("SIRIL_BIN", "/Applications/Siril.app/Contents/MacOS/siril-cli")
-db_url := env_var_or_default("DATABASE_URL", "postgres://astro:astro@localhost:5432/astrostack?sslmode=disable")
 
 # List available recipes.
 default:
@@ -19,12 +17,10 @@ setup:
     @test -f .env || cp .env.example .env
     go mod download
     @command -v golangci-lint >/dev/null || brew install golangci-lint
-    go install github.com/air-verse/air@latest
-    go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
-    go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+    @command -v air >/dev/null || go install github.com/air-verse/air@latest
     just build-mcp
-    @test -d frontend/node_modules || (cd frontend && pnpm install) 2>/dev/null || true
-    @echo "Setup done. Next: just up && just migrate"
+    @test -d frontend/node_modules || (cd frontend && pnpm install)
+    @echo "Setup done. Next: just up && just migrate, then just dev + just web"
 
 # Start Postgres (compose).
 up:
@@ -34,25 +30,21 @@ up:
 tools:
     docker compose --profile tools up -d
 
+# Build + start the production frontend image (http://localhost:${WEB_PORT_PROD:-8082}).
+web-prod:
+    docker compose --profile web up -d --build frontend
+
 # Stop the compose stack.
 down:
     docker compose down
 
-# Apply database migrations (against the compose Postgres).
+# Apply database migrations (host engine -> compose Postgres).
 migrate:
-    migrate -path migrations -database "{{db_url}}" up
+    go run ./cmd/astrostack migrate up
 
 # Roll back the last migration.
 migrate-down:
-    migrate -path migrations -database "{{db_url}}" down 1
-
-# Create a new migration pair: just migrate-create add_foo
-migrate-create name:
-    migrate create -ext sql -dir migrations -seq {{name}}
-
-# Regenerate type-safe DB code from SQL (sqlc).
-sqlc:
-    sqlc generate
+    go run ./cmd/astrostack migrate down
 
 # Run the API server on the host with hot reload (drives host Siril/GIMP).
 dev:
@@ -66,8 +58,7 @@ web:
 inspect DIR:
     go run ./cmd/astrostack inspect "{{DIR}}"
 
-# Run the full auto pipeline on a capture directory (host). Flags go after DIR, e.g.
-# just process ~/Astro/M31 --out ~/done -v
+# Run the full auto pipeline on a capture directory (host). Flags after DIR, e.g. -v --out ~/done
 process DIR *args:
     go run ./cmd/astrostack process {{args}} "{{DIR}}"
 
@@ -89,14 +80,13 @@ build:
     @mkdir -p {{bin}}
     go build -o {{bin}}/astrostack ./cmd/astrostack
     go build -o {{bin}}/siril-mcp ./cmd/siril-mcp
-    @test -d frontend && (cd frontend && pnpm build) || true
+    @test -d frontend/node_modules && (cd frontend && pnpm build) || true
 
-# Run tests (Go on host; frontend unit tests). Accepts pass-through args: just test ./internal/grade
+# Run the Go tests (on host; they exercise host Siril). Pass-through args: just test ./internal/grade
 test *args:
     go test {{ if args == "" { "./..." } else { args } }}
-    @test -d frontend/node_modules && (cd frontend && pnpm test --run) || true
 
-# Lint + format-check + type-check (read-only; the pre-push gate's first half).
+# Lint + format-check + type-check (read-only; fails on issues).
 lint:
     go vet ./...
     golangci-lint run

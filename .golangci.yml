@@ -1,0 +1,17 @@
+version: "2"
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  settings:
+    errcheck:
+      # These never return a meaningful error in this codebase (writes to in-memory builders,
+      # stdout/stderr, or closing read-only files), so checking them only adds noise.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*os.File).Close
+        - (*bufio.Writer).Flush
+        - (*bufio.Writer).Write
+        - (*bufio.Writer).WriteByte
+        - (*text/tabwriter.Writer).Flush
