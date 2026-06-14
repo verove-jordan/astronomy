@@ -80,12 +80,12 @@ func (s *Store) SaveInventory(ctx context.Context, inv *inspect.Inventory) (int6
 
 // Session is a stored capture session.
 type Session struct {
-	ID        int64  `json:"id"`
-	RootPath  string `json:"root_path"`
-	Object    string `json:"object"`
-	Note      string `json:"note"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
+	ID        int64  `json:"id" db:"id"`
+	RootPath  string `json:"root_path" db:"root_path"`
+	Object    string `json:"object" db:"object"`
+	Note      string `json:"note" db:"note"`
+	CreatedAt int64  `json:"created_at" db:"created_at"`
+	UpdatedAt int64  `json:"updated_at" db:"updated_at"`
 }
 
 // ListSessions returns sessions most-recent first.

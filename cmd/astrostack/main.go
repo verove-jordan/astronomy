@@ -70,4 +70,3 @@ Usage:
 }
 
 func runVideo(_ []string) error { return errNotImplemented }
-func runServe(_ []string) error { return errNotImplemented }
