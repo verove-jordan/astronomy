@@ -69,6 +69,5 @@ Usage:
 `)
 }
 
-func runProcess(_ []string) error { return errNotImplemented }
-func runVideo(_ []string) error   { return errNotImplemented }
-func runServe(_ []string) error   { return errNotImplemented }
+func runVideo(_ []string) error { return errNotImplemented }
+func runServe(_ []string) error { return errNotImplemented }

@@ -66,13 +66,14 @@ web:
 inspect DIR:
     go run ./cmd/astrostack inspect "{{DIR}}"
 
-# Run the full auto pipeline on a capture directory (host).
+# Run the full auto pipeline on a capture directory (host). Flags go after DIR, e.g.
+# just process ~/Astro/M31 --out ~/done -v
 process DIR *args:
-    go run ./cmd/astrostack process "{{DIR}}" {{args}}
+    go run ./cmd/astrostack process {{args}} "{{DIR}}"
 
 # Process a lunar/planetary video (host).
 video FILE *args:
-    go run ./cmd/astrostack video "{{FILE}}" {{args}}
+    go run ./cmd/astrostack video {{args}} "{{FILE}}"
 
 # Run the Siril MCP server in the foreground (manual testing).
 mcp-siril:
