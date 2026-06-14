@@ -1,0 +1,72 @@
+{
+  "app": { "title": "AstroStack", "subtitle": "Automated astrophotography sorting & stacking" },
+  "nav": { "import": "Import", "jobs": "Jobs", "library": "Calibration library" },
+  "common": {
+    "inspect": "Inspect",
+    "run": "Run pipeline",
+    "loading": "Loading…",
+    "search": "Search",
+    "browse": "Browse",
+    "back": "Back",
+    "path": "Directory path",
+    "none": "—",
+    "refresh": "Refresh",
+    "open": "Open",
+    "up": "Up"
+  },
+  "import": {
+    "title": "Import & inspect",
+    "hint": "Pick a capture directory to analyze, then run the automatic pipeline.",
+    "frames": "Frames",
+    "lightSets": "Light sets",
+    "calibSets": "Calibration frames",
+    "videos": "Videos",
+    "warnings": "Warnings",
+    "noData": "Nothing inspected yet — enter a directory and press Inspect."
+  },
+  "fields": {
+    "object": "Object",
+    "filter": "Filter",
+    "exposure": "Exposure",
+    "count": "Count",
+    "integration": "Integration",
+    "gain": "Gain",
+    "offset": "Offset",
+    "temp": "Temp",
+    "type": "Type",
+    "frames": "Frames",
+    "file": "File",
+    "index": "#",
+    "fwhm": "FWHM",
+    "roundness": "Roundness",
+    "stars": "Stars",
+    "status": "Status",
+    "reason": "Reason",
+    "mode": "Mode",
+    "channels": "Channels",
+    "stacked": "Stacked",
+    "input": "Input",
+    "id": "ID",
+    "kind": "Kind",
+    "progress": "Progress"
+  },
+  "job": {
+    "title": "Job",
+    "progress": "Progress",
+    "result": "Result",
+    "finalImage": "Final image",
+    "channelsTitle": "Channels",
+    "frameReview": "Frame review",
+    "mastersUsed": "Master calibration",
+    "metricsChart": "Quality per sub-frame",
+    "noResult": "No result yet.",
+    "rejected": "Rejected",
+    "kept": "Kept",
+    "download": "Download"
+  },
+  "library": {
+    "title": "Calibration library",
+    "empty": "The library is empty. Run a pipeline with calibration frames to populate it."
+  },
+  "status": { "queued": "Queued", "running": "Running", "succeeded": "Succeeded", "failed": "Failed" }
+}

@@ -1,0 +1,72 @@
+{
+  "app": { "title": "AstroStack", "subtitle": "Tri et empilement astrophoto automatiques" },
+  "nav": { "import": "Importer", "jobs": "Tâches", "library": "Bibliothèque de calibration" },
+  "common": {
+    "inspect": "Inspecter",
+    "run": "Lancer le traitement",
+    "loading": "Chargement…",
+    "search": "Rechercher",
+    "browse": "Parcourir",
+    "back": "Retour",
+    "path": "Chemin du dossier",
+    "none": "—",
+    "refresh": "Rafraîchir",
+    "open": "Ouvrir",
+    "up": "Parent"
+  },
+  "import": {
+    "title": "Importer & inspecter",
+    "hint": "Choisissez un dossier de captures à analyser, puis lancez le traitement automatique.",
+    "frames": "Images",
+    "lightSets": "Séries de poses",
+    "calibSets": "Images de calibration",
+    "videos": "Vidéos",
+    "warnings": "Avertissements",
+    "noData": "Rien d’inspecté — saisissez un dossier puis cliquez sur Inspecter."
+  },
+  "fields": {
+    "object": "Objet",
+    "filter": "Filtre",
+    "exposure": "Exposition",
+    "count": "Nombre",
+    "integration": "Intégration",
+    "gain": "Gain",
+    "offset": "Offset",
+    "temp": "Temp",
+    "type": "Type",
+    "frames": "Images",
+    "file": "Fichier",
+    "index": "#",
+    "fwhm": "FWHM",
+    "roundness": "Rondeur",
+    "stars": "Étoiles",
+    "status": "Statut",
+    "reason": "Raison",
+    "mode": "Mode",
+    "channels": "Couches",
+    "stacked": "Empilées",
+    "input": "Entrée",
+    "id": "ID",
+    "kind": "Type",
+    "progress": "Progression"
+  },
+  "job": {
+    "title": "Tâche",
+    "progress": "Progression",
+    "result": "Résultat",
+    "finalImage": "Image finale",
+    "channelsTitle": "Couches",
+    "frameReview": "Revue des images",
+    "mastersUsed": "Calibration maître",
+    "metricsChart": "Qualité par image",
+    "noResult": "Pas encore de résultat.",
+    "rejected": "Rejetées",
+    "kept": "Conservées",
+    "download": "Télécharger"
+  },
+  "library": {
+    "title": "Bibliothèque de calibration",
+    "empty": "La bibliothèque est vide. Lancez un traitement avec des images de calibration pour la remplir."
+  },
+  "status": { "queued": "En attente", "running": "En cours", "succeeded": "Réussi", "failed": "Échoué" }
+}
