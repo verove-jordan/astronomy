@@ -1,0 +1,32 @@
+{
+  "mcpServers": {
+    "siril": {
+      "command": "go",
+      "args": [
+        "run",
+        "${CLAUDE_PROJECT_DIR:-.}/cmd/siril-mcp"
+      ],
+      "env": {
+        "SIRIL_BIN": "/Applications/Siril.app/Contents/MacOS/siril-cli",
+        "DATABASE_URL": "postgres://astro:astro@localhost:5432/astrostack?sslmode=disable",
+        "ASTRO_WORK_DIR": "${CLAUDE_PROJECT_DIR:-.}/work",
+        "ASTRO_OUTPUT_DIR": "${CLAUDE_PROJECT_DIR:-.}/output"
+      }
+    },
+    "gimp": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--no-project",
+        "--quiet",
+        "${CLAUDE_PROJECT_DIR:-.}/mcp-servers/gimp/server.py"
+      ],
+      "env": {
+        "GIMP_BIN": "/Applications/GIMP.app/Contents/MacOS/gimp-console-2.10",
+        "GIMP_HOST": "127.0.0.1",
+        "GIMP_PORT": "10008",
+        "GIMP_OUTPUT_DIR": "~/gimp-mcp-output"
+      }
+    }
+  }
+}

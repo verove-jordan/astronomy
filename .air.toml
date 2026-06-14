@@ -1,0 +1,15 @@
+# Hot reload for the host-run API server: `air` -> rebuilds and runs `astrostack serve`.
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -o ./tmp/astrostack ./cmd/astrostack"
+  bin = "./tmp/astrostack"
+  full_bin = "./tmp/astrostack serve"
+  include_ext = ["go"]
+  exclude_dir = ["tmp", "frontend", "data", "work", "output", "conventions", "docs"]
+  delay = 500
+  stop_on_error = true
+
+[misc]
+  clean_on_exit = true

@@ -1,0 +1,42 @@
+# --- Go ---
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+tmp/
+.air/
+
+# --- Node / frontend ---
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.local
+
+# --- env & secrets ---
+.env
+.env.*
+!.env.example
+
+# --- runtime data (astro captures, scratch, outputs) ---
+/data/
+/work/
+/output/
+*.fit
+*.fits
+*.fts
+*.ser
+*.CR2
+*.cr2
+# but keep small test fixtures
+!**/testdata/**
+
+# --- editor / OS ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# --- Claude Code ---
+.claude/settings.local.json

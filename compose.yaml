@@ -1,0 +1,46 @@
+# Compose runs only the stateful / support services. The Go engine and (in dev) the Vite
+# frontend run on the HOST via `just`, because they drive host-installed Siril/GIMP — see
+# CLAUDE.md "Host-engine exception". The frontend production image is added under the `web`
+# profile (M10); `adminer` is under `tools`.
+
+name: astrostack
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-astro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-astro}
+      POSTGRES_DB: ${POSTGRES_DB:-astrostack}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-astro} -d ${POSTGRES_DB:-astrostack}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - astrostack
+
+  adminer:
+    image: adminer:4
+    restart: unless-stopped
+    profiles: ["tools"]
+    ports:
+      - "${ADMINER_PORT:-8081}:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: db
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - astrostack
+
+volumes:
+  pgdata:
+
+networks:
+  astrostack:
