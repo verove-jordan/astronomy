@@ -14,6 +14,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/grade"
 	"github.com/verove-jordan/astronomy/internal/inspect"
+	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/siril"
 )
 
@@ -25,9 +26,10 @@ type Options struct {
 	InputDir   string
 	OutputDir  string
 	WorkDir    string
-	Runner     *siril.Runner
-	Grade      *grade.Options // nil → grade.DefaultOptions()
-	OnProgress func(Progress)
+	Runner      *siril.Runner
+	Grade       *grade.Options       // nil → grade.DefaultOptions()
+	Postprocess *postprocess.Options // nil → postprocess.DefaultOptions()
+	OnProgress  func(Progress)
 }
 
 // Progress is a pipeline-level progress event (and forwarded Siril log lines).
@@ -58,6 +60,7 @@ type Result struct {
 	Inventory *inspect.Inventory   `json:"-"`
 	Masters   []calib.Master       `json:"masters"`
 	Channels  []ChannelResult      `json:"channels"`
+	Final     *postprocess.Result  `json:"final,omitempty"`
 	Warnings  []string             `json:"warnings"`
 }
 
@@ -94,7 +97,7 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 	res.Warnings = append(res.Warnings, inv.Warnings...)
 
 	lights := inv.SetsOfType(inspect.Light)
-	total := len(lights) + 1 // +1 for the masters step
+	total := len(lights) + 2 // masters + per-channel + final combine
 	step := 0
 	progress := func(stepName string) func(siril.Progress) {
 		step++
@@ -125,7 +128,33 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 			res.Warnings = append(res.Warnings, fmt.Sprintf("channel %s: %s", set.Key.Filter, ch.Err))
 		}
 	}
+
+	combine(ctx, opts, res, outDir, progress("combining channels into final image"))
 	return res, nil
+}
+
+// combine assembles the successful per-channel masters into the final image.
+func combine(ctx context.Context, opts Options, res *Result, outDir string, onProgress func(siril.Progress)) {
+	channels := map[string]string{}
+	for _, ch := range res.Channels {
+		if ch.Err == "" && ch.OutputPath != "" && ch.Filter != "" {
+			channels[ch.Filter] = "master_" + filterTag(ch.Filter)
+		}
+	}
+	if len(channels) == 0 {
+		res.Warnings = append(res.Warnings, "no channels available to combine")
+		return
+	}
+	ppOpts := postprocess.DefaultOptions()
+	if opts.Postprocess != nil {
+		ppOpts = *opts.Postprocess
+	}
+	final, err := postprocess.Combine(ctx, opts.Runner, outDir, channels, "final", ppOpts, onProgress)
+	if err != nil {
+		res.Warnings = append(res.Warnings, "channel combination failed: "+err.Error())
+		return
+	}
+	res.Final = final
 }
 
 func processChannel(ctx context.Context, opts Options, set inspect.Set, masters []calib.Master,

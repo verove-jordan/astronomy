@@ -56,6 +56,17 @@ func RunText(r *pipeline.Result) string {
 
 	writeRejected(&b, r)
 
+	if r.Final != nil {
+		fmt.Fprintf(&b, "Final image (%s, channels %s):\n", r.Final.Mode, strings.Join(r.Final.Channels, "+"))
+		for _, o := range r.Final.Outputs {
+			fmt.Fprintf(&b, "  → %s\n", o)
+		}
+		for _, n := range r.Final.Notes {
+			fmt.Fprintf(&b, "  · %s\n", n)
+		}
+		b.WriteString("\n")
+	}
+
 	if len(r.Warnings) > 0 {
 		b.WriteString("Warnings:\n")
 		for _, w := range r.Warnings {
