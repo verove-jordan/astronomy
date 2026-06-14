@@ -69,8 +69,6 @@ Usage:
 `)
 }
 
-func runInspect(_ []string) error { return errNotImplemented }
 func runProcess(_ []string) error { return errNotImplemented }
 func runVideo(_ []string) error   { return errNotImplemented }
 func runServe(_ []string) error   { return errNotImplemented }
-func runMigrate(_ []string) error { return errNotImplemented }
