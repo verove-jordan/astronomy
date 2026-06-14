@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/config"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
 	"github.com/verove-jordan/astronomy/internal/report"
 	"github.com/verove-jordan/astronomy/internal/siril"
+	"github.com/verove-jordan/astronomy/internal/store"
 )
 
 func runProcess(args []string) error {
@@ -18,11 +20,12 @@ func runProcess(args []string) error {
 	work := fs.String("work", "", "scratch directory (default $ASTRO_WORK_DIR)")
 	asJSON := fs.Bool("json", false, "emit the run result as JSON")
 	verbose := fs.Bool("v", false, "stream Siril log lines")
+	noDB := fs.Bool("no-db", false, "disable the calibration library (no database)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: astrostack process [--out dir] [--work dir] [-v] <dir>")
+		return fmt.Errorf("usage: astrostack process [--out dir] [--work dir] [--no-db] [-v] <dir>")
 	}
 	dir := fs.Arg(0)
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
@@ -32,6 +35,17 @@ func runProcess(args []string) error {
 	cfg := config.Load()
 	outDir := pick(*out, cfg.OutputDir)
 	workDir := pick(*work, cfg.WorkDir)
+
+	ctx := context.Background()
+	var library calib.MasterStore
+	if !*noDB {
+		if st, err := store.New(ctx, cfg.DatabaseURL); err != nil {
+			fmt.Fprintf(os.Stderr, "note: calibration library disabled (%v)\n", err)
+		} else {
+			defer st.Close()
+			library = st
+		}
+	}
 
 	lastStep := ""
 	onProgress := func(p pipeline.Progress) {
@@ -47,11 +61,13 @@ func runProcess(args []string) error {
 		}
 	}
 
-	res, err := pipeline.Process(context.Background(), pipeline.Options{
+	res, err := pipeline.Process(ctx, pipeline.Options{
 		InputDir:   dir,
 		OutputDir:  outDir,
 		WorkDir:    workDir,
 		Runner:     siril.New(cfg.SirilBin),
+		Library:    library,
+		LibraryDir: cfg.LibraryDir,
 		OnProgress: onProgress,
 	})
 	if err != nil {

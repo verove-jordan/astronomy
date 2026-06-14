@@ -9,9 +9,10 @@ type Config struct {
 	APIAddr     string
 	LogLevel    string
 
-	DataDir   string // root the UI may browse for capture folders
-	WorkDir   string // scratch space for intermediate FITS / sequences
-	OutputDir string // where final stacks and reports are written
+	DataDir    string // root the UI may browse for capture folders
+	WorkDir    string // scratch space for intermediate FITS / sequences
+	OutputDir  string // where final stacks and reports are written
+	LibraryDir string // persistent master-calibration library
 
 	SirilBin  string
 	GimpBin   string
@@ -27,6 +28,7 @@ func Load() *Config {
 		DataDir:     env("ASTRO_DATA_DIR", "./data"),
 		WorkDir:     env("ASTRO_WORK_DIR", "./work"),
 		OutputDir:   env("ASTRO_OUTPUT_DIR", "./output"),
+		LibraryDir:  env("ASTRO_LIBRARY_DIR", "./library"),
 		SirilBin:    env("SIRIL_BIN", "/Applications/Siril.app/Contents/MacOS/siril-cli"),
 		GimpBin:     env("GIMP_BIN", "/Applications/GIMP.app/Contents/MacOS/gimp-console-2.10"),
 		FfmpegBin:   env("FFMPEG_BIN", "ffmpeg"),

@@ -29,6 +29,8 @@ type Options struct {
 	Runner      *siril.Runner
 	Grade       *grade.Options       // nil → grade.DefaultOptions()
 	Postprocess *postprocess.Options // nil → postprocess.DefaultOptions()
+	Library     calib.MasterStore    // nil → no reuse; masters built into scratch
+	LibraryDir  string               // persistent master library dir (when Library is set)
 	OnProgress  func(Progress)
 }
 
@@ -108,7 +110,22 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
-	masters, mWarn, err := calib.BuildMasters(ctx, opts.Runner, inv, mastersDir, workRun, progress("building master calibration frames"))
+	var masters []calib.Master
+	var mWarn []string
+	if opts.Library != nil {
+		libDir := opts.LibraryDir
+		if libDir == "" {
+			libDir = filepath.Join(workAbs, "library")
+		}
+		if libDir, err = filepath.Abs(libDir); err != nil {
+			return nil, err
+		}
+		masters, mWarn, err = calib.BuildOrReuseMasters(ctx, opts.Runner, inv, opts.Library, libDir, workRun,
+			progress("building/reusing master calibration frames"))
+	} else {
+		masters, mWarn, err = calib.BuildMasters(ctx, opts.Runner, inv, mastersDir, workRun,
+			progress("building master calibration frames"))
+	}
 	if err != nil {
 		return nil, err
 	}
