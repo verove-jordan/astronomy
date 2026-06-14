@@ -1,11 +1,8 @@
 {
   "mcpServers": {
     "siril": {
-      "command": "go",
-      "args": [
-        "run",
-        "${CLAUDE_PROJECT_DIR:-.}/cmd/siril-mcp"
-      ],
+      "command": "${CLAUDE_PROJECT_DIR:-.}/bin/siril-mcp",
+      "args": [],
       "env": {
         "SIRIL_BIN": "/Applications/Siril.app/Contents/MacOS/siril-cli",
         "DATABASE_URL": "postgres://astro:astro@localhost:5432/astrostack?sslmode=disable",

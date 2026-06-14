@@ -112,6 +112,7 @@ See [docs/architecture.md](docs/architecture.md) and [docs/pipeline.md](docs/pip
   [`CLAUDE.md`](CLAUDE.md).
 - Go tests run on the host (they exercise host `siril-cli`); start Postgres first with `just up`.
 - MCP servers: `siril` (Go) and `gimp` (Python) are registered in `.mcp.json` for Claude Code.
+  `.mcp.json` runs `./bin/siril-mcp`, so build it first with `just build-mcp` (included in `just setup`).
 
 ## Deployment
 
