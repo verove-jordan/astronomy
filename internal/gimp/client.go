@@ -100,7 +100,7 @@ func (c *Client) Eval(script string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(c.timeout))
 
 	payload := []byte(script)

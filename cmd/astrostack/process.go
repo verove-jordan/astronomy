@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/config"
@@ -16,6 +17,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/report"
 	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/store"
+	"github.com/verove-jordan/astronomy/internal/videoout"
 )
 
 func runProcess(args []string) error {
@@ -62,10 +64,32 @@ func runProcess(args []string) error {
 		for _, o := range res.Outputs {
 			fmt.Printf("  → %s\n", o)
 		}
+		maybeRenderVideo(ctx, cfg, format, res.Outputs)
 		return nil
 	}
 	if m == mode.Milkyway {
-		return fmt.Errorf("milkyway (one-shot-color) support lands in a later step")
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			return fmt.Errorf("milkyway expects a directory of color images (iPhone DNG/HEIC, jpg/png/tif): %s", path)
+		}
+		grd := preset.Grade
+		res, err := pipeline.ProcessOSC(ctx, pipeline.Options{
+			InputDir:   path,
+			OutputDir:  outDir,
+			WorkDir:    workDir,
+			Runner:     runner,
+			Grade:      &grd,
+			Preset:     &preset,
+			Gimp:       gimp.New(cfg.GimpBin, cfg.GimpHost, cfg.GimpPort),
+			OnProgress: pipelineProgress(*verbose),
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Print(report.RunText(res))
+		if res.Final != nil {
+			maybeRenderVideo(ctx, cfg, format, res.Final.Outputs)
+		}
+		return nil
 	}
 
 	// deepsky / nebula: a directory of mono FITS frames.
@@ -114,7 +138,33 @@ func runProcess(args []string) error {
 		return nil
 	}
 	fmt.Print(report.RunText(res))
+	if res.Final != nil {
+		maybeRenderVideo(ctx, cfg, format, res.Final.Outputs)
+	}
 	return nil
+}
+
+// maybeRenderVideo renders a Ken-Burns MP4 from the final PNG when the format requests video.
+func maybeRenderVideo(ctx context.Context, cfg *config.Config, format mode.Format, outputs []string) {
+	if !format.WantsVideo() {
+		return
+	}
+	var png string
+	for _, o := range outputs {
+		if strings.HasSuffix(o, ".png") {
+			png = o
+			break
+		}
+	}
+	if png == "" {
+		return
+	}
+	mp4 := strings.TrimSuffix(png, ".png") + ".mp4"
+	if err := videoout.Render(ctx, cfg.FfmpegBin, png, mp4, videoout.DefaultOptions()); err != nil {
+		fmt.Fprintf(os.Stderr, "note: video render failed: %v\n", err)
+		return
+	}
+	fmt.Printf("  → %s\n", mp4)
 }
 
 func pipelineProgress(verbose bool) func(pipeline.Progress) {
