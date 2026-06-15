@@ -45,7 +45,7 @@ func TestForPresetsDiffer(t *testing.T) {
 	assert.Equal(t, OSC, mw.Color)
 
 	// Nebula keeps more frames and pushes Ha harder than deepsky.
-	assert.Less(t, neb.Grade.RoundnessMin, deep.Grade.RoundnessMin)
+	assert.Less(t, neb.Grade.RoundnessFloor, deep.Grade.RoundnessFloor)
 	assert.Greater(t, neb.Grade.FWHMSigma, deep.Grade.FWHMSigma)
 	assert.Greater(t, neb.HaScreen, deep.HaScreen)
 

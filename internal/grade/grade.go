@@ -24,17 +24,21 @@ type Metric struct {
 
 // Options are the rejection thresholds. Zero value is not useful; use DefaultOptions.
 type Options struct {
-	RoundnessMin    float64 // reject if roundness < this (elongated stars)
+	RoundnessFloor  float64 // always reject if roundness < this (clearly trailed/elongated)
+	RoundnessSigma  float64 // also reject if roundness < median − k·MADσ (worse than the session)
 	FWHMSigma       float64 // reject if FWHM > median + k·MADσ (soft frames)
 	BackgroundSigma float64 // reject if background > median + k·MADσ (sky glow)
 	StarCountFrac   float64 // reject if star count < frac·median (clouds)
 	RejectTrails    bool    // reject frames with a detected trail
 }
 
-// DefaultOptions returns sensible robust defaults.
+// DefaultOptions returns sensible robust defaults. Roundness is judged relative to the session
+// (real subs are commonly ~0.8 round, so a fixed high cutoff would reject everything); only
+// clearly-trailed frames (below the floor) or per-session outliers are dropped.
 func DefaultOptions() Options {
 	return Options{
-		RoundnessMin:    0.85,
+		RoundnessFloor:  0.55,
+		RoundnessSigma:  2.5,
 		FWHMSigma:       2.5,
 		BackgroundSigma: 3.0,
 		StarCountFrac:   0.5,
@@ -58,11 +62,12 @@ const (
 func Grade(metrics []Metric, opts Options) {
 	// Statistics are over successfully-registered frames only (FWHM > 0); unregistered frames
 	// are left as the caller marked them and excluded from the medians.
-	var fwhms, bgs, stars []float64
+	var fwhms, bgs, rounds, stars []float64
 	for _, m := range metrics {
 		if m.FWHM > 0 {
 			fwhms = append(fwhms, m.FWHM)
 			bgs = append(bgs, m.Background)
+			rounds = append(rounds, m.Roundness)
 			stars = append(stars, float64(m.StarCount))
 		}
 	}
@@ -72,6 +77,7 @@ func Grade(metrics []Metric, opts Options) {
 	}
 	fwhmMed, fwhmMAD := medianMAD(fwhms)
 	bgMed, bgMAD := medianMAD(bgs)
+	roundMed, roundMAD := medianMAD(rounds)
 	starMed := medianOf(stars)
 
 	for i := range metrics {
@@ -83,8 +89,12 @@ func Grade(metrics []Metric, opts Options) {
 		if opts.RejectTrails && m.TrailDetected {
 			reasons = append(reasons, fmt.Sprintf("trail detected (score %.2f)", m.TrailScore))
 		}
-		if m.Roundness > 0 && m.Roundness < opts.RoundnessMin {
-			reasons = append(reasons, fmt.Sprintf("elongated stars (roundness %.2f < %.2f)", m.Roundness, opts.RoundnessMin))
+		if m.Roundness > 0 {
+			if m.Roundness < opts.RoundnessFloor {
+				reasons = append(reasons, fmt.Sprintf("trailed/elongated stars (roundness %.2f < %.2f)", m.Roundness, opts.RoundnessFloor))
+			} else if n >= minFramesForStats && roundMAD > 0 && m.Roundness < roundMed-opts.RoundnessSigma*roundMAD {
+				reasons = append(reasons, fmt.Sprintf("elongated vs session (roundness %.2f < median %.2f)", m.Roundness, roundMed))
+			}
 		}
 		if n >= minFramesForStats {
 			// Soft frame: meaningfully worse than median AND a statistical outlier. The relative

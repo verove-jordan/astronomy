@@ -83,7 +83,7 @@ func For(m Mode) Preset {
 		return Preset{
 			Mode:             Nebula,
 			Color:            Mono,
-			Grade:            grade.Options{RoundnessMin: 0.80, FWHMSigma: 3.0, BackgroundSigma: 3.0, StarCountFrac: 0.4, RejectTrails: true},
+			Grade:            grade.Options{RoundnessFloor: 0.50, RoundnessSigma: 3.0, FWHMSigma: 3.0, BackgroundSigma: 3.0, StarCountFrac: 0.4, RejectTrails: true},
 			BackgroundDegree: 2,
 			HaScreen:         0.60,
 			Saturation:       0.10,
@@ -93,7 +93,7 @@ func For(m Mode) Preset {
 		return Preset{
 			Mode:             Milkyway,
 			Color:            OSC,
-			Grade:            grade.Options{RoundnessMin: 0.75, FWHMSigma: 3.5, BackgroundSigma: 3.5, StarCountFrac: 0.3, RejectTrails: false},
+			Grade:            grade.Options{RoundnessFloor: 0.45, RoundnessSigma: 3.5, FWHMSigma: 3.5, BackgroundSigma: 3.5, StarCountFrac: 0.3, RejectTrails: false},
 			BackgroundDegree: 3, // strong light-pollution gradients from a phone
 			Saturation:       0.10,
 			Curve:            []float64{0, 0, 0.3, 0.30, 0.6, 0.62, 1, 1}, // near-linear, preserve star colors

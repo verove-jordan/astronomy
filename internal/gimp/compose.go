@@ -58,8 +58,12 @@ func composeScript(in Inputs, curve []float64, haScreen, saturation float64, res
 	if len(curve) >= 4 {
 		fmt.Fprintf(&b, "    (gimp-drawable-curves-spline d HISTOGRAM-VALUE %d %s)\n", len(curve), floatVec(curve))
 	}
-	if in.Color && saturation > 0 {
-		fmt.Fprintf(&b, "    (gimp-drawable-hue-saturation d HUE-RANGE-ALL 0 0 %.0f 0)\n", clamp(saturation*100, 0, 100))
+	if in.Color {
+		// Neutralize the green sky-cast (a light SCNR-equivalent) for a natural background.
+		b.WriteString("    (gimp-drawable-hue-saturation d HUE-RANGE-GREEN 0 0 -35 0)\n")
+		if saturation > 0 {
+			fmt.Fprintf(&b, "    (gimp-drawable-hue-saturation d HUE-RANGE-ALL 0 0 %.0f 0)\n", clamp(saturation*100, 0, 100))
+		}
 	}
 	b.WriteString("    (gimp-file-save RUN-NONINTERACTIVE dup d " + sf(res.Tif) + " " + sf(res.Tif) + ")\n")
 	b.WriteString("    (gimp-image-flatten dup)\n")
