@@ -16,7 +16,12 @@ const browseStore = useBrowseStore()
 const jobsStore = useJobsStore()
 
 const dir = ref('')
+const selectedMode = ref('deepsky')
+const selectedFormat = ref('image')
 const launching = ref(false)
+
+const modes = ['deepsky', 'nebula', 'milkyway', 'planetary']
+const formats = ['image', 'video', 'both']
 
 onMounted(async () => {
   await browseStore.browse()
@@ -84,7 +89,7 @@ const calibColumns: Column<Row>[] = [
 async function runPipeline() {
   launching.value = true
   try {
-    const id = await jobsStore.create(dir.value)
+    const id = await jobsStore.create(dir.value, selectedMode.value, selectedFormat.value)
     router.push({ name: 'job', params: { id: String(id) } })
   } finally {
     launching.value = false
@@ -107,7 +112,25 @@ async function runPipeline() {
         </div>
         <button :class="btnGhost" @click="goUp">{{ t('common.up') }}</button>
         <button :class="btnGhost" @click="openDir(dir)">{{ t('common.browse') }}</button>
-        <button :class="btnPrimary" @click="browseStore.inspect(dir)">{{ t('common.inspect') }}</button>
+        <button :class="btnGhost" @click="browseStore.inspect(dir)">{{ t('common.inspect') }}</button>
+      </div>
+
+      <div class="mt-3 flex flex-wrap items-end gap-3">
+        <label class="text-sm">
+          <span class="mb-1 block text-xs font-medium text-slate-500">{{ t('run.mode') }}</span>
+          <select v-model="selectedMode" :class="input">
+            <option v-for="mo in modes" :key="mo" :value="mo">{{ t('run.modes.' + mo) }}</option>
+          </select>
+        </label>
+        <label class="text-sm">
+          <span class="mb-1 block text-xs font-medium text-slate-500">{{ t('run.format') }}</span>
+          <select v-model="selectedFormat" :class="input">
+            <option v-for="fmt in formats" :key="fmt" :value="fmt">{{ t('run.formats.' + fmt) }}</option>
+          </select>
+        </label>
+        <button :class="btnPrimary" :disabled="launching || !dir" @click="runPipeline">
+          {{ t('common.run') }}
+        </button>
       </div>
 
       <div v-if="browseStore.entries.length" class="mt-3 flex flex-wrap gap-2">
@@ -135,11 +158,6 @@ async function runPipeline() {
         >
           <div class="text-2xl font-bold text-brand-600 dark:text-brand-300">{{ n }}</div>
           <div class="text-xs uppercase tracking-wide text-slate-500">{{ type }}</div>
-        </div>
-        <div class="ml-auto flex items-end">
-          <button :class="btnPrimary" :disabled="launching || lightRows.length === 0" @click="runPipeline">
-            {{ t('common.run') }}
-          </button>
         </div>
       </div>
 

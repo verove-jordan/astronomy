@@ -1,6 +1,12 @@
 {
   "app": { "title": "AstroStack", "subtitle": "Automated astrophotography sorting & stacking" },
   "nav": { "import": "Import", "jobs": "Jobs", "library": "Calibration library" },
+  "run": {
+    "mode": "Mode",
+    "format": "Output",
+    "modes": { "deepsky": "Deep-sky", "nebula": "Nebula", "milkyway": "Milky Way", "planetary": "Planetary" },
+    "formats": { "image": "Image", "video": "Video", "both": "Image + video" }
+  },
   "common": {
     "inspect": "Inspect",
     "run": "Run pipeline",

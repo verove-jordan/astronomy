@@ -26,8 +26,12 @@ just setup            # Go deps, dev tools (air/migrate/sqlc/golangci-lint), Sir
 just up               # start Postgres (Docker)
 just migrate          # create the schema
 
-# one-shot, fully automatic:
-just process ~/Astro/M31      # -> ./output/<target>/ (final image + report)
+# one-shot, fully automatic:  just process <mode> <format> <path>
+just process deepsky  image ~/Astro/M31          # mono LRGB+Ha → layered .xcf + tif/png
+just process nebula   image ~/Astro/NGC7000      # Ha-forward, faint nebulosity
+just process milkyway image ~/Photos/MilkyWay    # iPhone ProRAW/HEIC (one-shot-color)
+just process planetary video ~/Astro/moon.mp4    # lucky imaging
+just process deepsky  both  ~/Astro/M31          # also render a Ken-Burns .mp4
 
 # or use the web UI:
 just dev              # API on http://localhost:8080  (host; drives Siril/GIMP)
@@ -59,8 +63,8 @@ Only a few things on the host (macOS):
 | `just up` / `just down` | Start / stop Postgres. |
 | `just migrate` | Apply DB migrations. |
 | `just inspect DIR` | Print the classified inventory of a capture folder (no processing). |
-| `just process DIR` | Run the full auto pipeline; writes the final image + report to `./output`. |
-| `just video FILE` | Process a lunar/planetary video (lucky imaging). |
+| `just process MODE FORMAT PATH` | Full auto pipeline. MODE: `deepsky`·`nebula`·`milkyway`·`planetary`; FORMAT: `image`·`video`·`both`. Input (FITS dir / iPhone-raw dir / video file) is auto-detected. |
+| `just video FILE` | Shortcut for `process planetary video` (lucky imaging). |
 | `just dev` | Run the API server on the host with hot reload. |
 | `just web` | Run the Vue web UI dev server. |
 | `just mcp-siril` | Run the Siril MCP in the foreground (manual testing). |
@@ -68,7 +72,22 @@ Only a few things on the host (macOS):
 | `just check` | Lint + test (the pre-push gate). |
 | `just clean` | Remove containers, volumes, and build artifacts (destructive; confirms). |
 
-`just process` accepts pass-through flags, e.g. `just process ~/Astro/M31 --preset hq --out ~/done`.
+`just process` accepts pass-through flags after the path, e.g. `just process deepsky image ~/Astro/M31 -v --out ~/done`.
+
+### Modes
+
+Each mode retunes grading, alignment, background extraction, stretch, Ha blend, saturation and curves:
+
+| Mode | Input | Pipeline |
+|------|-------|----------|
+| `deepsky` | mono FITS (L/R/G/B/Ha) | calibrate → grade → stack per channel → **co-register channels** → GIMP LRGB+Ha layered composite + gentle curves |
+| `nebula` | mono FITS | like deepsky but lenient grading + stronger background extraction + Ha-forward blend for faint emission |
+| `milkyway` | one-shot-color (iPhone ProRAW/HEIC, jpg/png/tif) | debayer → register → grade → stack → GIMP curves (gradient removal, natural star colors) |
+| `planetary` | video (SER/AVI/MP4/MOV) | lucky imaging: sharpness-rank frames → stack best % → sharpen |
+
+The finishing stage is driven automatically in **GIMP** (the engine talks to the same resident
+Script-Fu server the GIMP MCP uses), producing an editable layered `.xcf` plus flattened TIFF/PNG.
+`format video`/`both` also renders a Ken-Burns `.mp4`.
 
 ## Configuration
 

@@ -34,8 +34,8 @@ export const useJobsStore = defineStore('jobs', () => {
     }
   }
 
-  async function create(path: string): Promise<number> {
-    const data = await apiPost<{ id: number }>('/api/jobs', { path })
+  async function create(path: string, mode: string, format: string): Promise<number> {
+    const data = await apiPost<{ id: number }>('/api/jobs', { path, mode, format })
     return data.id
   }
 

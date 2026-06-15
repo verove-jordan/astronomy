@@ -24,9 +24,14 @@ How `astrostack process <dir>` turns a capture folder into a finished image.
    - **Stack** only the survivors (`select`/`unselect` + `stack … -filter-incl`). Winsorized sigma
      also clips residual trail pixels.
 
-4. **Combine + post-process** (`internal/postprocess`) — assemble whatever channels exist into
-   RGB / LRGB / Ha-blended / SHO / mono, then background extraction, an automatic stretch,
-   saturation, and export to PNG/TIFF/FITS.
+4. **Co-register channels** (`internal/pipeline` → `siril.AlignMastersScript`) — the per-channel
+   masters are registered together to one reference so L/R/G/B/Ha line up before compositing.
+
+5. **Finish in GIMP** (`internal/gimp`) — Siril background-extracts + stretches each channel to a
+   TIFF; the engine then drives the resident GIMP Script-Fu server (shared with the GIMP MCP) to
+   build a layered image — RGB base + L in `LAYER-MODE-LUMINANCE` + Ha red-tinted in `SCREEN` —
+   apply gentle curves/levels/saturation, and export an editable `.xcf` plus flattened TIFF/PNG.
+   If GIMP is unavailable it falls back to the Siril `rgbcomp` finish (`internal/postprocess`).
 
 Each run writes its outputs and a JSON/markdown report; with the API, the full report (including
 per-frame grades) is stored on the job and rendered in the web UI's frame-review page.
@@ -39,6 +44,21 @@ read by Siril) → convert to a FITS sequence → rank frames by Laplacian-varia
 
 High-precision multi-point planetary alignment is a known Siril-CLI limitation; for demanding
 planetary work use the Siril GUI or AutoStakkert!.
+
+## Modes
+
+`internal/mode` maps each capture mode to a `Preset` that retunes the whole pipeline:
+
+- **deepsky** — mono LRGB+Ha, balanced grading, gentle curves.
+- **nebula** — mono LRGB+Ha, lenient grading + stronger background extraction + a heavier Ha
+  screen for faint emission.
+- **milkyway** — one-shot-color (iPhone ProRAW/HEIC, jpg/png/tif) via `pipeline.ProcessOSC`:
+  debayer → register → grade → stack → GIMP curves, with strong gradient removal and natural
+  star colors.
+- **planetary** — lucky imaging (`internal/planetary`): sharpness-ranked best frames, sharpened.
+
+The output `format` (`image`/`video`/`both`) additionally renders a Ken-Burns MP4 via
+`internal/videoout` (ffmpeg).
 
 ## Tuning
 

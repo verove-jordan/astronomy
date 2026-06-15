@@ -15,6 +15,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/config"
 	"github.com/verove-jordan/astronomy/internal/inspect"
 	"github.com/verove-jordan/astronomy/internal/job"
+	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/store"
 )
 
@@ -115,8 +116,9 @@ func (s *Server) masters(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Path string `json:"path"`
-		Kind string `json:"kind"`
+		Path   string `json:"path"`
+		Mode   string `json:"mode"`
+		Format string `json:"format"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		badRequest(w, "invalid body")
@@ -127,11 +129,21 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "path must be inside the data directory")
 		return
 	}
-	kind := body.Kind
-	if kind == "" {
-		kind = "process"
+	if body.Mode == "" {
+		body.Mode = string(mode.Deepsky)
 	}
-	id, err := s.mgr.Enqueue(r.Context(), kind, path)
+	if body.Format == "" {
+		body.Format = string(mode.FormatImage)
+	}
+	if _, err := mode.ParseMode(body.Mode); err != nil {
+		badRequest(w, err.Error())
+		return
+	}
+	if _, err := mode.ParseFormat(body.Format); err != nil {
+		badRequest(w, err.Error())
+		return
+	}
+	id, err := s.mgr.Enqueue(r.Context(), body.Mode, body.Format, path)
 	if err != nil {
 		serverError(w, err)
 		return

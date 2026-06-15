@@ -6,14 +6,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
-	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/config"
+	"github.com/verove-jordan/astronomy/internal/gimp"
+	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
 	"github.com/verove-jordan/astronomy/internal/planetary"
+	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/store"
+	"github.com/verove-jordan/astronomy/internal/videoout"
 )
 
 // Event is a progress update for a job, streamed to subscribers.
@@ -38,8 +42,9 @@ type Manager struct {
 }
 
 type params struct {
-	Path string `json:"path"`
-	Out  string `json:"out,omitempty"`
+	Path   string `json:"path"`
+	Mode   string `json:"mode"`
+	Format string `json:"format"`
 }
 
 // NewManager creates a Manager with a bounded queue.
@@ -60,14 +65,14 @@ func (m *Manager) Start(ctx context.Context, n int) {
 	}
 }
 
-// Enqueue creates a session and a queued job, then schedules it. Returns the job id.
-func (m *Manager) Enqueue(ctx context.Context, kind, path string) (int64, error) {
+// Enqueue creates a session and a queued job (kind = mode), then schedules it. Returns the job id.
+func (m *Manager) Enqueue(ctx context.Context, modeStr, formatStr, path string) (int64, error) {
 	sessionID, err := m.store.CreateSession(ctx, path, "")
 	if err != nil {
 		return 0, err
 	}
-	p, _ := json.Marshal(params{Path: path})
-	id, err := m.store.CreateJob(ctx, sessionID, kind, p)
+	p, _ := json.Marshal(params{Path: path, Mode: modeStr, Format: formatStr})
+	id, err := m.store.CreateJob(ctx, sessionID, modeStr, p)
 	if err != nil {
 		return 0, err
 	}
@@ -147,38 +152,96 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p params) 
 	if p.Path == "" {
 		return nil, fmt.Errorf("job has no path")
 	}
-	var library calib.MasterStore = m.store
+	mo, err := mode.ParseMode(kind)
+	if err != nil {
+		return nil, err
+	}
+	format, _ := mode.ParseFormat(p.Format)
+	if format == "" {
+		format = mode.FormatImage
+	}
+	preset := mode.For(mo)
+	gclient := gimp.New(m.cfg.GimpBin, m.cfg.GimpHost, m.cfg.GimpPort)
+	grd := preset.Grade
 
-	onProgress := func(pr pipeline.Progress) {
+	pipeProg := func(pr pipeline.Progress) {
 		pct := 0
 		if pr.Total > 0 {
 			pct = pr.Index * 100 / pr.Total
 		}
-		if pr.Line == "" { // step change — persist + publish
+		if pr.Line == "" {
 			_ = m.store.UpdateJobProgress(ctx, id, pct, pr.Step, "")
 		}
 		m.publish(Event{JobID: id, Status: store.JobRunning, Progress: pct, Step: pr.Step, Line: pr.Line})
 	}
 
-	switch kind {
-	case "process", "":
-		return pipeline.Process(ctx, pipeline.Options{
-			InputDir:   p.Path,
-			OutputDir:  m.cfg.OutputDir,
-			WorkDir:    m.cfg.WorkDir,
-			Runner:     m.runner,
-			Library:    library,
-			LibraryDir: m.cfg.LibraryDir,
-			OnProgress: onProgress,
-		})
-	case "video":
-		return planetary.Process(ctx, m.runner, m.cfg.FfmpegBin, p.Path, m.cfg.WorkDir, m.cfg.OutputDir,
-			planetary.DefaultOptions(), func(pr siril.Progress) {
-				if pr.Line != "" {
-					m.publish(Event{JobID: id, Status: store.JobRunning, Step: pr.Line})
+	switch mo {
+	case mode.Planetary:
+		r, err := planetary.Process(ctx, m.runner, m.cfg.FfmpegBin, p.Path, m.cfg.WorkDir, m.cfg.OutputDir, preset.Planetary,
+			func(sp siril.Progress) {
+				if sp.Line == "" {
+					m.publish(Event{JobID: id, Status: store.JobRunning, Step: sp.Line})
 				}
 			})
-	default:
-		return nil, fmt.Errorf("unknown job kind %q", kind)
+		if err != nil {
+			return nil, err
+		}
+		r.Outputs = m.appendVideo(ctx, id, format, r.Outputs)
+		return r, nil
+
+	case mode.Milkyway:
+		r, err := pipeline.ProcessOSC(ctx, pipeline.Options{
+			InputDir: p.Path, OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
+			Grade: &grd, Preset: &preset, Gimp: gclient, OnProgress: pipeProg,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if r.Final != nil {
+			r.Final.Outputs = m.appendVideo(ctx, id, format, r.Final.Outputs)
+		}
+		return r, nil
+
+	default: // deepsky / nebula
+		pp := postprocess.Options{
+			BackgroundExtraction: true, BackgroundDegree: preset.BackgroundDegree,
+			Saturation: preset.Saturation, Formats: []string{"png", "tif"},
+		}
+		r, err := pipeline.Process(ctx, pipeline.Options{
+			InputDir: p.Path, OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
+			Grade: &grd, Postprocess: &pp, Preset: &preset, Gimp: gclient,
+			Library: m.store, LibraryDir: m.cfg.LibraryDir, OnProgress: pipeProg,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if r.Final != nil {
+			r.Final.Outputs = m.appendVideo(ctx, id, format, r.Final.Outputs)
+		}
+		return r, nil
 	}
+}
+
+// appendVideo renders a Ken-Burns MP4 from the final PNG when the format requests video.
+func (m *Manager) appendVideo(ctx context.Context, id int64, format mode.Format, outputs []string) []string {
+	if !format.WantsVideo() {
+		return outputs
+	}
+	var png string
+	for _, o := range outputs {
+		if strings.HasSuffix(o, ".png") {
+			png = o
+			break
+		}
+	}
+	if png == "" {
+		return outputs
+	}
+	m.publish(Event{JobID: id, Status: store.JobRunning, Progress: 100, Step: "rendering video"})
+	_ = m.store.UpdateJobProgress(ctx, id, 100, "rendering video", "")
+	mp4 := strings.TrimSuffix(png, ".png") + ".mp4"
+	if err := videoout.Render(ctx, m.cfg.FfmpegBin, png, mp4, videoout.DefaultOptions()); err != nil {
+		return outputs
+	}
+	return append(outputs, mp4)
 }

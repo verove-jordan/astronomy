@@ -29,6 +29,10 @@ const finalImage = computed(() => {
   const out = result.value?.final?.outputs?.find((o) => o.endsWith('.png'))
   return out ? fileUrl(out) : ''
 })
+const finalVideo = computed(() => {
+  const out = result.value?.final?.outputs?.find((o) => o.endsWith('.mp4'))
+  return out ? fileUrl(out) : ''
+})
 
 type Row = Record<string, unknown>
 const ms = (v: unknown) => humanizeMs(Number(v))
@@ -132,6 +136,12 @@ const rejectedClass = (r: Row) =>
           <span class="ml-2 text-sm font-normal text-slate-500">{{ result.final?.mode }} · {{ result.final?.channels?.join('+') }}</span>
         </h2>
         <img :src="finalImage" alt="final stack" class="max-h-[28rem] rounded-md border border-slate-200 dark:border-slate-700" />
+        <video
+          v-if="finalVideo"
+          :src="finalVideo"
+          controls
+          class="mt-3 max-h-[28rem] rounded-md border border-slate-200 dark:border-slate-700"
+        />
         <div class="mt-2 flex flex-wrap gap-3 text-sm">
           <a v-for="o in result.final?.outputs" :key="o" :href="fileUrl(o)" target="_blank" class="text-brand-600 hover:underline dark:text-brand-300">
             ⬇ {{ baseName(o) }}

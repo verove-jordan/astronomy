@@ -1,6 +1,12 @@
 {
   "app": { "title": "AstroStack", "subtitle": "Tri et empilement astrophoto automatiques" },
   "nav": { "import": "Importer", "jobs": "Tâches", "library": "Bibliothèque de calibration" },
+  "run": {
+    "mode": "Mode",
+    "format": "Sortie",
+    "modes": { "deepsky": "Ciel profond", "nebula": "Nébuleuse", "milkyway": "Voie lactée", "planetary": "Planétaire" },
+    "formats": { "image": "Image", "video": "Vidéo", "both": "Image + vidéo" }
+  },
   "common": {
     "inspect": "Inspecter",
     "run": "Lancer le traitement",
