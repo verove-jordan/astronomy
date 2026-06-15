@@ -1,7 +1,10 @@
 // Package config loads runtime configuration from the environment.
 package config
 
-import "os"
+import (
+	"os"
+	"strconv"
+)
 
 // Config holds all runtime configuration for the engine.
 type Config struct {
@@ -16,6 +19,8 @@ type Config struct {
 
 	SirilBin  string
 	GimpBin   string
+	GimpHost  string
+	GimpPort  int
 	FfmpegBin string
 }
 
@@ -31,8 +36,19 @@ func Load() *Config {
 		LibraryDir:  env("ASTRO_LIBRARY_DIR", "./library"),
 		SirilBin:    env("SIRIL_BIN", "/Applications/Siril.app/Contents/MacOS/siril-cli"),
 		GimpBin:     env("GIMP_BIN", "/Applications/GIMP.app/Contents/MacOS/gimp-console-2.10"),
+		GimpHost:    env("GIMP_HOST", "127.0.0.1"),
+		GimpPort:    envInt("GIMP_PORT", 10008),
 		FfmpegBin:   env("FFMPEG_BIN", "ffmpeg"),
 	}
+}
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
 }
 
 func env(key, def string) string {

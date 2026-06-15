@@ -58,9 +58,10 @@ web:
 inspect DIR:
     go run ./cmd/astrostack inspect "{{DIR}}"
 
-# Run the full auto pipeline on a capture directory (host). Flags after DIR, e.g. -v --out ~/done
-process DIR *args:
-    go run ./cmd/astrostack process {{args}} "{{DIR}}"
+# Run the full auto pipeline (host). MODE: deepsky|nebula|milkyway|planetary  FORMAT: image|video|both
+# e.g. just process deepsky image ~/Astro/M31   ·   just process planetary video ~/Astro/moon.mp4
+process MODE FORMAT PATH *args:
+    go run ./cmd/astrostack process {{args}} {{MODE}} {{FORMAT}} "{{PATH}}"
 
 # Process a lunar/planetary video (host).
 video FILE *args:

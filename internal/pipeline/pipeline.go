@@ -6,14 +6,18 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/fsutil"
+	"github.com/verove-jordan/astronomy/internal/gimp"
 	"github.com/verove-jordan/astronomy/internal/grade"
 	"github.com/verove-jordan/astronomy/internal/inspect"
+	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/siril"
 )
@@ -29,6 +33,8 @@ type Options struct {
 	Runner      *siril.Runner
 	Grade       *grade.Options       // nil → grade.DefaultOptions()
 	Postprocess *postprocess.Options // nil → postprocess.DefaultOptions()
+	Preset      *mode.Preset         // mode preset (curves/Ha/saturation for the GIMP finish)
+	Gimp        *gimp.Client         // nil → Siril-only finish (no layered GIMP composite)
 	Library     calib.MasterStore    // nil → no reuse; masters built into scratch
 	LibraryDir  string               // persistent master library dir (when Library is set)
 	OnProgress  func(Progress)
@@ -146,22 +152,41 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
-	combine(ctx, opts, res, outDir, progress("combining channels into final image"))
+	combine(ctx, opts, res, workRun, outDir, progress("aligning channels + combining"))
 	return res, nil
 }
 
-// combine assembles the successful per-channel masters into the final image.
-func combine(ctx context.Context, opts Options, res *Result, outDir string, onProgress func(siril.Progress)) {
-	channels := map[string]string{}
+// filterOrder is the canonical channel order (L first so it is the alignment reference).
+var filterOrder = []string{"L", "R", "G", "B", "Ha", "OIII", "SII"}
+
+// combine co-registers the successful per-channel masters, then assembles the final image.
+func combine(ctx context.Context, opts Options, res *Result, workRun, outDir string, onProgress func(siril.Progress)) {
+	masters := map[string]string{} // filter -> absolute master path
 	for _, ch := range res.Channels {
 		if ch.Err == "" && ch.OutputPath != "" && ch.Filter != "" {
-			channels[ch.Filter] = "master_" + filterTag(ch.Filter)
+			masters[ch.Filter] = filepath.Join(outDir, "master_"+filterTag(ch.Filter)+".fits")
 		}
 	}
-	if len(channels) == 0 {
+	if len(masters) == 0 {
 		res.Warnings = append(res.Warnings, "no channels available to combine")
 		return
 	}
+
+	channels := alignChannels(ctx, opts.Runner, masters, filepath.Join(workRun, "04_aligned"), outDir, res)
+
+	// Preferred path: layered GIMP composite + curves.
+	if opts.Gimp != nil && opts.Preset != nil {
+		if err := opts.Gimp.Available(); err != nil {
+			res.Warnings = append(res.Warnings, "GIMP unavailable, using Siril finish: "+err.Error())
+		} else if final, err := finishWithGimp(ctx, opts, channels, workRun, outDir); err != nil {
+			res.Warnings = append(res.Warnings, "GIMP finishing failed, falling back to Siril: "+err.Error())
+		} else {
+			res.Final = final
+			return
+		}
+	}
+
+	// Fallback: Siril rgbcomp + autostretch.
 	ppOpts := postprocess.DefaultOptions()
 	if opts.Postprocess != nil {
 		ppOpts = *opts.Postprocess
@@ -172,6 +197,178 @@ func combine(ctx context.Context, opts Options, res *Result, outDir string, onPr
 		return
 	}
 	res.Final = final
+}
+
+// finishWithGimp produces stretched per-component TIFFs with Siril, then composites them into a
+// layered image (with curves) in GIMP.
+func finishWithGimp(ctx context.Context, opts Options, channels map[string]string, workRun, outDir string) (*postprocess.Result, error) {
+	stretchDir := filepath.Join(workRun, "05_stretched")
+	if err := fsutil.EnsureDir(stretchDir); err != nil {
+		return nil, err
+	}
+	deg := 1
+	if opts.Preset.BackgroundDegree > 0 {
+		deg = opts.Preset.BackgroundDegree
+	}
+	in, err := prepGimpInputs(ctx, opts.Runner, channels, outDir, stretchDir, deg)
+	if err != nil {
+		return nil, err
+	}
+	g, err := gimp.BuildImage(opts.Gimp, in, opts.Preset.Curve, opts.Preset.HaScreen, opts.Preset.Saturation, filepath.Join(outDir, "final"))
+	if err != nil {
+		return nil, err
+	}
+	return &postprocess.Result{
+		Mode:     compMode(channels),
+		Channels: filterList(channels),
+		Outputs:  []string{g.Xcf, g.Tif, g.Png},
+		Notes:    []string{"layered GIMP composite + curves"},
+	}, nil
+}
+
+// prepGimpInputs runs a Siril script that builds an RGB (or mono) base plus optional L and Ha,
+// background-extracts and stretches each, and saves them as TIFFs for GIMP.
+func prepGimpInputs(ctx context.Context, runner *siril.Runner, channels map[string]string,
+	outDir, stretchDir string, deg int) (gimp.Inputs, error) {
+	has := func(f string) bool { _, ok := channels[f]; return ok }
+	rgb := has("R") && has("G") && has("B")
+
+	var b strings.Builder
+	b.WriteString("requires 1.2.0\nsetext fits\n")
+	base := filepath.Join(stretchDir, "base")
+	if rgb {
+		fmt.Fprintf(&b, "rgbcomp %s %s %s -out=rgb_base\nload rgb_base\n", channels["R"], channels["G"], channels["B"])
+	} else {
+		fmt.Fprintf(&b, "load %s\n", channels[firstFilter(channels)])
+	}
+	fmt.Fprintf(&b, "subsky %d\nautostretch\nsavetif %s\n", deg, base)
+
+	in := gimp.Inputs{Base: base + ".tif", Color: rgb}
+	if rgb && has("L") {
+		lum := filepath.Join(stretchDir, "lum")
+		fmt.Fprintf(&b, "load %s\nsubsky %d\nautostretch\nsavetif %s\n", channels["L"], deg, lum)
+		in.Lum = lum + ".tif"
+	}
+	if has("Ha") {
+		ha := filepath.Join(stretchDir, "ha")
+		fmt.Fprintf(&b, "load %s\nsubsky %d\nautostretch\nsavetif %s\n", channels["Ha"], deg, ha)
+		in.Ha = ha + ".tif"
+	}
+	if _, err := runner.Run(ctx, outDir, b.String(), nil); err != nil {
+		return gimp.Inputs{}, err
+	}
+	return in, nil
+}
+
+func compMode(channels map[string]string) string {
+	has := func(f string) bool { _, ok := channels[f]; return ok }
+	rgb := has("R") && has("G") && has("B")
+	switch {
+	case rgb && has("L") && has("Ha"):
+		return "HaLRGB"
+	case rgb && has("Ha"):
+		return "HaRGB"
+	case rgb && has("L"):
+		return "LRGB"
+	case rgb:
+		return "RGB"
+	default:
+		return "mono"
+	}
+}
+
+func firstFilter(channels map[string]string) string {
+	for _, f := range filterOrder {
+		if _, ok := channels[f]; ok {
+			return f
+		}
+	}
+	for f := range channels {
+		return f
+	}
+	return ""
+}
+
+func filterList(channels map[string]string) []string {
+	out := orderedFilters(channels)
+	return out
+}
+
+// alignChannels co-registers the channel masters to a common reference (Siril global star
+// alignment) and returns a filter->basename map (in outDir) for the finishing stage. If alignment
+// does not produce one frame per channel, it falls back to the unaligned masters with a warning.
+func alignChannels(ctx context.Context, runner *siril.Runner, masters map[string]string,
+	alignDir, outDir string, res *Result) map[string]string {
+	unaligned := map[string]string{}
+	for f := range masters {
+		unaligned[f] = "master_" + filterTag(f)
+	}
+	if len(masters) < 2 {
+		return unaligned // single channel: nothing to co-register
+	}
+
+	ordered := orderedFilters(masters)
+	if err := fsutil.EnsureDir(alignDir); err != nil {
+		res.Warnings = append(res.Warnings, "alignment skipped: "+err.Error())
+		return unaligned
+	}
+	for i, f := range ordered {
+		link := filepath.Join(alignDir, fmt.Sprintf("%d_%s.fits", i, f))
+		_ = removeIfExists(link)
+		if err := os.Symlink(masters[f], link); err != nil {
+			res.Warnings = append(res.Warnings, "alignment skipped: "+err.Error())
+			return unaligned
+		}
+	}
+	if _, err := runner.Run(ctx, alignDir, siril.AlignMastersScript("ch"), nil); err != nil {
+		res.Warnings = append(res.Warnings, "cross-channel alignment failed, using unaligned channels: "+err.Error())
+		return unaligned
+	}
+
+	aligned := map[string]string{}
+	for i, f := range ordered {
+		reg := filepath.Join(alignDir, fmt.Sprintf("r_ch_%05d.fits", i+1))
+		if !fileExists(reg) {
+			res.Warnings = append(res.Warnings, "cross-channel alignment incomplete, using unaligned channels")
+			return unaligned
+		}
+		dst := "aligned_" + filterTag(f)
+		if err := fsutil.CopyFile(reg, filepath.Join(outDir, dst+".fits")); err != nil {
+			res.Warnings = append(res.Warnings, "alignment copy failed, using unaligned channels: "+err.Error())
+			return unaligned
+		}
+		aligned[f] = dst
+	}
+	return aligned
+}
+
+func orderedFilters(masters map[string]string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, f := range filterOrder {
+		if _, ok := masters[f]; ok {
+			out = append(out, f)
+			seen[f] = true
+		}
+	}
+	for f := range masters {
+		if !seen[f] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func fileExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && !info.IsDir()
+}
+
+func removeIfExists(p string) error {
+	if _, err := os.Lstat(p); err == nil {
+		return os.Remove(p)
+	}
+	return nil
 }
 
 func processChannel(ctx context.Context, opts Options, set inspect.Set, masters []calib.Master,

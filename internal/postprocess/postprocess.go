@@ -15,6 +15,7 @@ import (
 // Options tunes the post-processing chain.
 type Options struct {
 	BackgroundExtraction bool     // subtract a polynomial sky background
+	BackgroundDegree     int      // subsky polynomial degree (0 → 1)
 	RemoveGreen          bool     // SCNR green removal (off by default; not always applicable)
 	Saturation           float64  // color saturation boost (0 = skip; ~0.2 typical)
 	Formats              []string // output formats: png, tif, fits
@@ -118,7 +119,11 @@ func buildColor(b *strings.Builder, channels map[string]string, has func(string)
 
 func writeFinish(b *strings.Builder, finalBase string, color bool, opts Options, res *Result) {
 	if opts.BackgroundExtraction {
-		b.WriteString("subsky 1\n")
+		degree := opts.BackgroundDegree
+		if degree <= 0 {
+			degree = 1
+		}
+		fmt.Fprintf(b, "subsky %d\n", degree)
 	}
 	if opts.RemoveGreen && color {
 		b.WriteString("rmgreen 1\n")

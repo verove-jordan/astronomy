@@ -59,6 +59,16 @@ func LightStackScript(seq string, m CalibMasters, outName string) string {
 	return b.String()
 }
 
+// AlignMastersScript links the per-channel master stacks in the work dir as sequence `seq` and
+// registers them together (global star alignment), co-registering the channels to one reference.
+func AlignMastersScript(seq string) string {
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	fmt.Fprintf(&b, "link %s -out=.\n", seq)
+	fmt.Fprintf(&b, "register %s\n", seq)
+	return b.String()
+}
+
 // CalibrateRegisterScript calibrates (if masters are given) and registers a light sequence
 // WITHOUT stacking, so the per-frame registration metrics are written to the .seq for grading.
 func CalibrateRegisterScript(seq string, m CalibMasters) string {

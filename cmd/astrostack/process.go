@@ -8,7 +8,11 @@ import (
 
 	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/config"
+	"github.com/verove-jordan/astronomy/internal/gimp"
+	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
+	"github.com/verove-jordan/astronomy/internal/planetary"
+	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/report"
 	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/store"
@@ -24,19 +28,50 @@ func runProcess(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: astrostack process [--out dir] [--work dir] [--no-db] [-v] <dir>")
+	if fs.NArg() != 3 {
+		return fmt.Errorf("usage: astrostack process [flags] <mode> <format> <path>\n" +
+			"  modes: deepsky nebula milkyway planetary    formats: image video both")
 	}
-	dir := fs.Arg(0)
-	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		return fmt.Errorf("not a directory: %s", dir)
+	m, err := mode.ParseMode(fs.Arg(0))
+	if err != nil {
+		return err
 	}
+	format, err := mode.ParseFormat(fs.Arg(1))
+	if err != nil {
+		return err
+	}
+	path := fs.Arg(2)
 
+	preset := mode.For(m)
 	cfg := config.Load()
 	outDir := pick(*out, cfg.OutputDir)
 	workDir := pick(*work, cfg.WorkDir)
-
 	ctx := context.Background()
+	runner := siril.New(cfg.SirilBin)
+	_ = format // video output is wired in a later step
+
+	if m == mode.Planetary {
+		if info, err := os.Stat(path); err != nil || info.IsDir() {
+			return fmt.Errorf("planetary expects a video file: %s", path)
+		}
+		res, err := planetary.Process(ctx, runner, cfg.FfmpegBin, path, workDir, outDir, preset.Planetary, videoProgress(*verbose))
+		if err != nil {
+			return err
+		}
+		fmt.Printf("\nPlanetary stack: %s\nFrames: %d total, %d stacked\n", res.Source, res.FrameCount, res.StackedFrames)
+		for _, o := range res.Outputs {
+			fmt.Printf("  → %s\n", o)
+		}
+		return nil
+	}
+	if m == mode.Milkyway {
+		return fmt.Errorf("milkyway (one-shot-color) support lands in a later step")
+	}
+
+	// deepsky / nebula: a directory of mono FITS frames.
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		return fmt.Errorf("%s mode expects a directory of FITS frames: %s", m, path)
+	}
 	var library calib.MasterStore
 	if !*noDB {
 		if st, err := store.New(ctx, cfg.DatabaseURL); err != nil {
@@ -47,33 +82,29 @@ func runProcess(args []string) error {
 		}
 	}
 
-	lastStep := ""
-	onProgress := func(p pipeline.Progress) {
-		if p.Line != "" {
-			if *verbose {
-				fmt.Fprintf(os.Stderr, "    %s\n", p.Line)
-			}
-			return
-		}
-		if p.Step != lastStep {
-			lastStep = p.Step
-			fmt.Fprintf(os.Stderr, "[%d/%d] %s\n", p.Index, p.Total, p.Step)
-		}
+	grd := preset.Grade
+	pp := postprocess.Options{
+		BackgroundExtraction: true,
+		BackgroundDegree:     preset.BackgroundDegree,
+		Saturation:           preset.Saturation,
+		Formats:              []string{"png", "tif"},
 	}
-
 	res, err := pipeline.Process(ctx, pipeline.Options{
-		InputDir:   dir,
-		OutputDir:  outDir,
-		WorkDir:    workDir,
-		Runner:     siril.New(cfg.SirilBin),
-		Library:    library,
-		LibraryDir: cfg.LibraryDir,
-		OnProgress: onProgress,
+		InputDir:    path,
+		OutputDir:   outDir,
+		WorkDir:     workDir,
+		Runner:      runner,
+		Grade:       &grd,
+		Postprocess: &pp,
+		Preset:      &preset,
+		Gimp:        gimp.New(cfg.GimpBin, cfg.GimpHost, cfg.GimpPort),
+		Library:     library,
+		LibraryDir:  cfg.LibraryDir,
+		OnProgress:  pipelineProgress(*verbose),
 	})
 	if err != nil {
 		return err
 	}
-
 	if *asJSON {
 		b, err := report.RunJSON(res)
 		if err != nil {
@@ -84,6 +115,37 @@ func runProcess(args []string) error {
 	}
 	fmt.Print(report.RunText(res))
 	return nil
+}
+
+func pipelineProgress(verbose bool) func(pipeline.Progress) {
+	lastStep := ""
+	return func(p pipeline.Progress) {
+		if p.Line != "" {
+			if verbose {
+				fmt.Fprintf(os.Stderr, "    %s\n", p.Line)
+			}
+			return
+		}
+		if p.Step != lastStep {
+			lastStep = p.Step
+			fmt.Fprintf(os.Stderr, "[%d/%d] %s\n", p.Index, p.Total, p.Step)
+		}
+	}
+}
+
+func videoProgress(verbose bool) func(siril.Progress) {
+	lastStep := ""
+	return func(p siril.Progress) {
+		if p.Line == "" {
+			return
+		}
+		if verbose {
+			fmt.Fprintf(os.Stderr, "    %s\n", p.Line)
+		} else if p.Line != lastStep {
+			lastStep = p.Line
+			fmt.Fprintf(os.Stderr, "==> %s\n", p.Line)
+		}
+	}
 }
 
 func pick(v, def string) string {
