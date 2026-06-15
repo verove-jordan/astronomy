@@ -108,6 +108,29 @@ func readFITSFrame(path string) (*Frame, error) {
 			fr.ClassSource = SourceHeader
 		}
 	}
+
+	// Fill anything the header lacked from the filename/folder (common for ASI captures that omit
+	// IMAGETYP/FILTER and encode them in the name, e.g. Light_..._filter-B_-20.0C_gain300_...).
+	meta := parseFilenameMeta(path)
+	if fr.Filter == "" {
+		fr.Filter = meta.Filter
+	}
+	if fr.ExposureMs == 0 {
+		fr.ExposureMs = meta.ExposureMs
+	}
+	if fr.Gain == 0 {
+		fr.Gain = meta.Gain
+	}
+	if !fr.HasTemp && meta.HasTemp {
+		fr.TempMilliC, fr.HasTemp = meta.TempMilliC, true
+	}
+	if fr.BinX <= 1 && meta.Bin > 0 {
+		fr.BinX, fr.BinY = meta.Bin, meta.Bin
+	}
+	if fr.Type == Unknown && meta.Type != Unknown {
+		fr.Type = meta.Type
+		fr.ClassSource = SourceFilename
+	}
 	return fr, nil
 }
 

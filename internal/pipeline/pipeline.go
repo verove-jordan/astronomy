@@ -418,6 +418,8 @@ func processChannel(ctx context.Context, opts Options, set inspect.Set, masters 
 		return ch
 	}
 	ch.OutputPath = outBase + ".fits"
+	// Reclaim the bulky calibrated/registered frame copies now that the master is saved.
+	_ = os.RemoveAll(seqDir)
 	return ch
 }
 

@@ -19,6 +19,7 @@ const (
 // ClassSource records how a frame's type was determined.
 const (
 	SourceHeader    = "header"    // from the FITS IMAGETYP card
+	SourceFilename  = "filename"  // from the file name / folder (e.g. Light_..._filter-B_...)
 	SourceHeuristic = "heuristic" // inferred from exposure + pixel statistics
 	SourceExtension = "extension" // from the file extension (videos)
 )

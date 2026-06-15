@@ -41,7 +41,9 @@ func buildSets(frames []*Frame) []Set {
 func setKeyFor(fr *Frame) SetKey {
 	key := SetKey{Type: fr.Type, Gain: fr.Gain, Offset: fr.Offset, Bin: fr.BinX}
 	if fr.HasTemp && fr.Type != Bias {
-		key.TempBucket = int(math.Round(fr.TempC()))
+		// Bucket to the nearest 5 °C so minor drift (e.g. -19.5/-20.0/-20.5) doesn't split a
+		// light stack, while still separating genuinely different dark temperatures.
+		key.TempBucket = int(math.Round(fr.TempC()/5)) * 5
 	}
 	switch fr.Type {
 	case Light:

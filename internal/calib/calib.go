@@ -6,6 +6,7 @@ package calib
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/verove-jordan/astronomy/internal/fsutil"
@@ -93,6 +94,7 @@ func buildOne(ctx context.Context, runner *siril.Runner, set inspect.Set, built 
 	if _, err := runner.Run(ctx, seqDir, script, onProgress); err != nil {
 		return Master{}, fmt.Errorf("stack master %s: %w", name, err)
 	}
+	_ = os.RemoveAll(seqDir) // master is saved to mastersDir; drop the per-set scratch
 
 	rep := set.Frames[0]
 	return Master{
