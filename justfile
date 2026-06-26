@@ -101,6 +101,18 @@ fmt:
 # The pre-push gate: lint + test.
 check: lint test
 
+# Refresh the gitnexus code-graph (incremental). Run before impact/context queries on fresh edits.
+gitnexus-sync:
+    @.claude/hooks/gitnexus-sync.sh
+
+# Force a full gitnexus re-index (after big refactors or a branch switch).
+gitnexus-reindex:
+    @.claude/hooks/gitnexus-sync.sh --force
+
+# Show the gitnexus index status for this repo.
+gitnexus-status:
+    @gitnexus status
+
 # Tail compose logs.
 logs:
     docker compose logs -f

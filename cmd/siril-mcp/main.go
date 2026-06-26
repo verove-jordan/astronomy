@@ -15,12 +15,14 @@ import (
 
 	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/config"
+	"github.com/verove-jordan/astronomy/internal/graxpert"
 	"github.com/verove-jordan/astronomy/internal/inspect"
 	"github.com/verove-jordan/astronomy/internal/mcpserver"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
 	"github.com/verove-jordan/astronomy/internal/planetary"
 	"github.com/verove-jordan/astronomy/internal/report"
 	"github.com/verove-jordan/astronomy/internal/siril"
+	"github.com/verove-jordan/astronomy/internal/starnet"
 	"github.com/verove-jordan/astronomy/internal/store"
 )
 
@@ -191,6 +193,8 @@ func (a *app) runPipeline(ctx context.Context, args json.RawMessage) (string, er
 		OutputDir:  pick(p.Out, a.cfg.OutputDir),
 		WorkDir:    pick(p.Work, a.cfg.WorkDir),
 		Runner:     a.runner,
+		Graxpert:   graxpert.New(a.cfg.GraxpertBin),
+		Starnet:    starnet.New(a.cfg.StarnetBin),
 		Library:    library,
 		LibraryDir: a.cfg.LibraryDir,
 		OnProgress: func(pr pipeline.Progress) {

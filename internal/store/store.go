@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/verove-jordan/astronomy/internal/inspect"
+	"github.com/verove-jordan/astronomy/internal/skycat"
 )
 
 // Store wraps a pgx connection pool.
@@ -49,26 +50,45 @@ func (s *Store) SaveInventory(ctx context.Context, inv *inspect.Inventory) (int6
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // best-effort on the error path
 
+	// When the FITS carries no OBJECT header, fall back to the capture folder name so light frames are
+	// still cataloged under a target (these folder-organized captures are common for our rig).
+	fallbackObject := folderObject(inv.Root)
+	sessionObject := dominantObject(inv)
+	if sessionObject == "" {
+		sessionObject = fallbackObject
+	}
+
 	var sessionID int64
 	if err := tx.QueryRow(ctx,
 		`INSERT INTO sessions(root_path, object, created_at, updated_at)
 		 VALUES($1,$2,$3,$3) RETURNING id`,
-		inv.Root, dominantObject(inv), now).Scan(&sessionID); err != nil {
+		inv.Root, sessionObject, now).Scan(&sessionID); err != nil {
 		return 0, fmt.Errorf("create session: %w", err)
 	}
 
 	frames := make([]*inspect.Frame, 0, len(inv.Frames)+len(inv.Videos))
 	frames = append(frames, inv.Frames...)
 	frames = append(frames, inv.Videos...)
+
+	targetIDs, err := resolveTargets(ctx, tx, frames, fallbackObject)
+	if err != nil {
+		return 0, err
+	}
+
 	for _, fr := range frames {
+		ra, dec, hasCoords := frameCoords(fr)
+		object := effectiveObject(fr, fallbackObject)
+		targetID := targetIDs[skycat.Normalize(object)] // nil when object is empty/unresolved
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO frames(session_id, path, frame_type, filter, exposure_ms, gain,
 			    cam_offset, temp_milli_c, has_temp, bin_x, bin_y, width, height, object,
-			    instrument, date_obs_ms, class_source, created_at, updated_at)
-			 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$18)`,
+			    instrument, date_obs_ms, class_source, ra_deg, dec_deg, has_coords, target_id,
+			    created_at, updated_at)
+			 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$22)`,
 			sessionID, fr.Path, string(fr.Type), fr.Filter, fr.ExposureMs, fr.Gain,
 			fr.Offset, fr.TempMilliC, fr.HasTemp, fr.BinX, fr.BinY, fr.Width, fr.Height,
-			fr.Object, fr.Instrument, fr.DateObsMs, fr.ClassSource, now); err != nil {
+			object, fr.Instrument, fr.DateObsMs, fr.ClassSource, ra, dec, hasCoords, targetID,
+			now); err != nil {
 			return 0, fmt.Errorf("insert frame %s: %w", fr.Path, err)
 		}
 	}

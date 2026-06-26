@@ -3,6 +3,26 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#4f46e5" />
+    <script>
+      // AstroStack is always dark (a night-sky tool). Force the dark class before first paint
+      // and clear any stale "light" preference so the page can never load white.
+      try {
+        document.documentElement.classList.add("dark");
+        localStorage.removeItem("theme");
+      } catch (e) {
+        /* localStorage unavailable — the static class="dark" still applies */
+      }
+    </script>
+    <style>
+      /* Always-dark night sky: force the page background even if cached CSS is stale. */
+      html,
+      body {
+        background-color: #0b0b0d !important;
+      }
+    </style>
     <title>AstroStack</title>
   </head>
   <body>

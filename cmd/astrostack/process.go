@@ -10,12 +10,13 @@ import (
 	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/config"
 	"github.com/verove-jordan/astronomy/internal/gimp"
+	"github.com/verove-jordan/astronomy/internal/graxpert"
 	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
 	"github.com/verove-jordan/astronomy/internal/planetary"
-	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/report"
 	"github.com/verove-jordan/astronomy/internal/siril"
+	"github.com/verove-jordan/astronomy/internal/starnet"
 	"github.com/verove-jordan/astronomy/internal/store"
 	"github.com/verove-jordan/astronomy/internal/videoout"
 )
@@ -27,6 +28,7 @@ func runProcess(args []string) error {
 	asJSON := fs.Bool("json", false, "emit the run result as JSON")
 	verbose := fs.Bool("v", false, "stream Siril log lines")
 	noDB := fs.Bool("no-db", false, "disable the calibration library (no database)")
+	noAI := fs.Bool("no-ai", false, "skip optional AI tools (GraXpert background extraction, StarNet++ star removal)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -50,7 +52,18 @@ func runProcess(args []string) error {
 	workDir := pick(*work, cfg.WorkDir)
 	ctx := context.Background()
 	runner := siril.New(cfg.SirilBin)
-	_ = format // video output is wired in a later step
+	solve := siril.SolveOptions{FocalMM: cfg.FocalLenMM, PixelUm: cfg.PixelSizeUm, Catalog: cfg.PlateSolveCatalog}
+	spcc := siril.SpccOptions{
+		MonoSensor: cfg.SpccMonoSensor, RFilter: cfg.SpccRFilter, GFilter: cfg.SpccGFilter,
+		BFilter: cfg.SpccBFilter, WhiteRef: cfg.SpccWhiteRef,
+	}
+	// Optional astro-AI host tools (skipped with -no-ai or when the binary is absent).
+	var graxRunner *graxpert.Runner
+	var starRunner *starnet.Runner
+	if !*noAI {
+		graxRunner = graxpert.New(cfg.GraxpertBin)
+		starRunner = starnet.New(cfg.StarnetBin)
+	}
 
 	if m == mode.Planetary {
 		if info, err := os.Stat(path); err != nil || info.IsDir() {
@@ -80,6 +93,11 @@ func runProcess(args []string) error {
 			Grade:      &grd,
 			Preset:     &preset,
 			Gimp:       gimp.New(cfg.GimpBin, cfg.GimpHost, cfg.GimpPort),
+			Graxpert:   graxRunner,
+			Starnet:    starRunner,
+			Solve:      solve,
+			Spcc:       spcc,
+			CatalogDir: cfg.SirilCatalogDir,
 			OnProgress: pipelineProgress(*verbose),
 		})
 		if err != nil {
@@ -97,34 +115,46 @@ func runProcess(args []string) error {
 		return fmt.Errorf("%s mode expects a directory of FITS frames: %s", m, path)
 	}
 	var library calib.MasterStore
+	var catalog pipeline.Catalog
+	var rawCalib calib.RawCalibProvider
+	var deep calib.DeepOptions
+	var reuse pipeline.ReuseConfig
 	if !*noDB {
 		if st, err := store.New(ctx, cfg.DatabaseURL); err != nil {
 			fmt.Fprintf(os.Stderr, "note: calibration library disabled (%v)\n", err)
 		} else {
 			defer st.Close()
 			library = st
+			catalog = st // record the run so its frames become reusable
+			if cfg.ReuseEnabled {
+				rawCalib = st // pool raw bias/darks across sessions into deep masters
+				deep = calib.DeepOptions{TempTolC: cfg.ReuseTempTolC, DarkSinceMs: cfg.DarkSinceMs()}
+				reuse = pipeline.ReuseConfig{Provider: st, ConeDeg: cfg.ReuseConeDeg} // fold in all matching prior lights
+			}
 		}
 	}
 
 	grd := preset.Grade
-	pp := postprocess.Options{
-		BackgroundExtraction: true,
-		BackgroundDegree:     preset.BackgroundDegree,
-		Saturation:           preset.Saturation,
-		Formats:              []string{"png", "tif"},
-	}
 	res, err := pipeline.Process(ctx, pipeline.Options{
-		InputDir:    path,
-		OutputDir:   outDir,
-		WorkDir:     workDir,
-		Runner:      runner,
-		Grade:       &grd,
-		Postprocess: &pp,
-		Preset:      &preset,
-		Gimp:        gimp.New(cfg.GimpBin, cfg.GimpHost, cfg.GimpPort),
-		Library:     library,
-		LibraryDir:  cfg.LibraryDir,
-		OnProgress:  pipelineProgress(*verbose),
+		InputDir:   path,
+		OutputDir:  outDir,
+		WorkDir:    workDir,
+		Runner:     runner,
+		Grade:      &grd,
+		Preset:     &preset,
+		Gimp:       gimp.New(cfg.GimpBin, cfg.GimpHost, cfg.GimpPort),
+		Graxpert:   graxRunner,
+		Starnet:    starRunner,
+		Library:    library,
+		LibraryDir: cfg.LibraryDir,
+		Catalog:    catalog,
+		RawCalib:   rawCalib,
+		Deep:       deep,
+		Reuse:      reuse,
+		Solve:      solve,
+		Spcc:       spcc,
+		CatalogDir: cfg.SirilCatalogDir,
+		OnProgress: pipelineProgress(*verbose),
 	})
 	if err != nil {
 		return err

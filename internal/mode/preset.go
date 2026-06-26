@@ -48,6 +48,32 @@ type Preset struct {
 	Saturation       float64           // final saturation boost
 	Curve            []float64         // gentle curves spline control points, flat x,y pairs in 0..1
 	Planetary        planetary.Options // lucky-imaging settings (planetary only)
+
+	// Noise reduction (Siril `denoise` on the linear stacks). Chroma is denoised harder than
+	// luminance to cut color noise while preserving detail; 0 skips a channel class.
+	DenoiseChroma float64
+	DenoiseLum    float64
+	DenoiseVST    bool
+	DenoiseDA3D   bool
+
+	// DropFilterWheelTransition drops the first frame of a run when its brightness is off (the
+	// wheel was still moving). Conditional — only off-brightness frames are dropped.
+	DropFilterWheelTransition bool
+
+	// Optional astro-AI host tools (used only when the binary is installed; otherwise skipped).
+	// BackgroundAI runs GraXpert background extraction on the linear masters instead of Siril's
+	// polynomial subsky. StarReduce > 0 runs StarNet++ in the finish and screens the stars back at
+	// this opacity (0 = keep full stars, e.g. 0.5 = halved star intensity).
+	BackgroundAI bool
+	StarReduce   float64
+
+	// ColorCalibration attempts plate-solve + SPCC for natural color + a neutral background,
+	// falling back to background neutralization. LinkedStretch keeps that neutral balance.
+	ColorCalibration bool
+	LinkedStretch    bool
+
+	// Previews emits per-channel and final preview PNGs for the UI.
+	Previews bool
 }
 
 // WantsVideo reports whether a video artifact should be produced.
@@ -88,6 +114,13 @@ func For(m Mode) Preset {
 			HaScreen:         0.60,
 			Saturation:       0.10,
 			Curve:            []float64{0, 0, 0.20, 0.27, 0.5, 0.58, 0.8, 0.85, 1, 1}, // lift faint nebulosity
+
+			DenoiseChroma: 0.85, DenoiseLum: 0.30, DenoiseVST: true, DenoiseDA3D: true,
+			BackgroundAI: true, StarReduce: 0.5, // emission nebulae benefit most from star reduction
+			DropFilterWheelTransition: true,
+			ColorCalibration:          true,
+			LinkedStretch:             true,
+			Previews:                  true,
 		}
 	case Milkyway:
 		return Preset{
@@ -97,12 +130,19 @@ func For(m Mode) Preset {
 			BackgroundDegree: 3, // strong light-pollution gradients from a phone
 			Saturation:       0.10,
 			Curve:            []float64{0, 0, 0.3, 0.30, 0.6, 0.62, 1, 1}, // near-linear, preserve star colors
+
+			DenoiseChroma: 0.60, DenoiseVST: true, DenoiseDA3D: true,
+			BackgroundAI:     true, // strong phone light-pollution gradients
+			ColorCalibration: true,
+			LinkedStretch:    true,
+			Previews:         true,
 		}
 	case Planetary:
 		return Preset{
 			Mode:      Planetary,
 			Planetary: planetary.Options{BestPercent: 40, Sharpen: true, Formats: []string{"png", "tif"}},
 			Curve:     []float64{0, 0, 0.5, 0.52, 1, 1},
+			Previews:  true, // lucky-imaging sharpens; no denoise/color-cal
 		}
 	default: // Deepsky
 		return Preset{
@@ -113,6 +153,13 @@ func For(m Mode) Preset {
 			HaScreen:         0.30,
 			Saturation:       0.15,
 			Curve:            []float64{0, 0, 0.25, 0.28, 0.5, 0.55, 0.75, 0.80, 1, 1}, // gentle S
+
+			DenoiseChroma: 0.70, DenoiseLum: 0, DenoiseVST: true, DenoiseDA3D: true,
+			BackgroundAI:              true, // galaxies sit on faint gradients; keep stars (StarReduce 0)
+			DropFilterWheelTransition: true,
+			ColorCalibration:          true,
+			LinkedStretch:             true,
+			Previews:                  true,
 		}
 	}
 }

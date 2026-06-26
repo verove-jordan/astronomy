@@ -34,8 +34,10 @@ the engine runs on the host and only the support services are containerized.
 | `internal/siril` | `SirilRunner`: generate `.ssf`, exec `siril-cli`, parse `progress:`/`log:` + `seqstat` CSV. |
 | `internal/grade` | Per-frame quality metrics + rejection rules; trail handling. |
 | `internal/calib` | Build master calibration frames; match the right masters to each light set; calibration library. |
-| `internal/pipeline` | Orchestrate inspect → masters → calibrate → grade → register → stack → combine. |
+| `internal/pipeline` | Orchestrate inspect → masters → calibrate → grade → register → stack → combine; soft-fail AI steps in `enhance.go`. |
 | `internal/postprocess` | LRGB+Ha channel combine, color calibration, stretch; optional GIMP touch-ups. |
+| `internal/graxpert` | Optional host CLI: GraXpert AI background-gradient extraction / denoise (`GRAXPERT_BIN`). |
+| `internal/starnet` | Optional host CLI: StarNet++ v2 star removal for star-reduced finishing (`STARNET_BIN`). |
 | `internal/planetary` | SER/AVI/MP4/MOV lucky-imaging path. |
 | `internal/store` | Postgres access (`pgx/v5` + `sqlc`), models. |
 | `internal/job` | In-process worker pool + job lifecycle. |
@@ -51,4 +53,5 @@ binary keeps the moving parts minimal.
 ## Deliberate deviation
 
 Running the engine and Go tests on the host is an intentional exception to the house "everything in a
-container" rule, forced by the host-Siril/host-GIMP dependency. It is documented in `CLAUDE.md`.
+container" rule, forced by the host-Siril/host-GIMP dependency (and the optional GraXpert/StarNet++
+CLIs, which run the same way). It is documented in `CLAUDE.md`.

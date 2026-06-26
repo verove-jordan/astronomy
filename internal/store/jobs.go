@@ -13,6 +13,7 @@ const (
 	JobRunning   = "running"
 	JobSucceeded = "succeeded"
 	JobFailed    = "failed"
+	JobCancelled = "cancelled"
 )
 
 // Job is a unit of background work (a pipeline or video run).
@@ -81,7 +82,7 @@ func (s *Store) FinishJob(ctx context.Context, id int64, status string, result j
 	}
 	now := nowMs()
 	progress := 100
-	if status == JobFailed {
+	if status == JobFailed || status == JobCancelled {
 		progress = 0
 	}
 	_, err := s.pool.Exec(ctx,

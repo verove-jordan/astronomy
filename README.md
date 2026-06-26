@@ -54,6 +54,11 @@ Only a few things on the host (macOS):
 | GIMP | `brew install --cask gimp` | optional post-processing (via the GIMP MCP) |
 | ffmpeg | `brew install ffmpeg` | MP4/MOV video frame extraction |
 | OpenCV *(optional)* | `brew install opencv` | only for the optional GoCV trail detector |
+| GraXpert *(optional)* | [graxpert.com](https://www.graxpert.com) | AI background-gradient extraction (else Siril `subsky`) |
+| StarNet++ *(optional)* | [starnetastro.com](https://www.starnetastro.com) | star removal for star-reduced finishing |
+
+The last two are open-source astro-AI tools the engine drives like Siril/GIMP. They are **optional** —
+when absent, the run logs a warning and falls back; disable explicitly with `process … --no-ai`.
 
 ## Usage
 
@@ -81,7 +86,7 @@ Each mode retunes grading, alignment, background extraction, stretch, Ha blend, 
 | Mode | Input | Pipeline |
 |------|-------|----------|
 | `deepsky` | mono FITS (L/R/G/B/Ha) | calibrate → grade → stack per channel → **co-register channels** → GIMP LRGB+Ha layered composite + gentle curves |
-| `nebula` | mono FITS | like deepsky but lenient grading + stronger background extraction + Ha-forward blend for faint emission |
+| `nebula` | mono FITS | like deepsky but lenient grading + AI background extraction + Ha-forward blend + StarNet++ star reduction |
 | `milkyway` | one-shot-color (iPhone ProRAW/HEIC, jpg/png/tif) | debayer → register → grade → stack → GIMP curves (gradient removal, natural star colors) |
 | `planetary` | video (SER/AVI/MP4/MOV) | lucky imaging: sharpness-rank frames → stack best % → sharpen |
 
@@ -107,6 +112,8 @@ secrets).
 | `SIRIL_BIN` | `/Applications/Siril.app/Contents/MacOS/siril-cli` | Path to headless Siril. |
 | `GIMP_BIN` | `/Applications/GIMP.app/Contents/MacOS/gimp-console-2.10` | Path to headless GIMP. |
 | `FFMPEG_BIN` | `ffmpeg` | ffmpeg binary. |
+| `GRAXPERT_BIN` | `/Applications/GraXpert.app/Contents/MacOS/GraXpert` | Optional GraXpert CLI (AI background extraction); missing → Siril `subsky`. |
+| `STARNET_BIN` | `starnet++` | Optional StarNet++ CLI (star removal); missing → full stars. |
 | `VITE_API_BASE` | `http://localhost:8080` | API base URL used by the frontend. |
 
 ## Architecture

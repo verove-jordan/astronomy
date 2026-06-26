@@ -20,6 +20,18 @@ func RunText(r *pipeline.Result) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "AstroStack run\nInput : %s\nOutput: %s\n\n", r.InputDir, r.OutputDir)
 
+	if r.Detection != nil && len(r.Detection.Runs) > 0 {
+		fmt.Fprintf(&b, "Channel detection (signal-based, confidence %.2f):\n", r.Detection.OverallConfidence)
+		for _, run := range r.Detection.Runs {
+			tr := ""
+			if run.WheelTransition > 0 {
+				tr = fmt.Sprintf(", %d wheel-transition", run.WheelTransition)
+			}
+			fmt.Fprintf(&b, "  · %s ×%d (conf %.2f%s)\n", dash(run.Filter), run.Count, run.Confidence, tr)
+		}
+		b.WriteString("\n")
+	}
+
 	fmt.Fprintf(&b, "Masters built: %d\n", len(r.Masters))
 	if len(r.Masters) > 0 {
 		tw := tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)

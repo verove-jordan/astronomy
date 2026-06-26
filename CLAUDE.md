@@ -50,6 +50,44 @@ scripts; parse its `progress:`/`log:`/`status:` lines for job progress. GIMP is 
 vendored MCP (`GIMP_BIN=/Applications/GIMP.app/Contents/MacOS/gimp-console-2.10`) or `gimp-console`
 batch for the automated pipeline.
 
+**Optional astro-AI tools (same host-engine model).** The pipeline can drive two more host-installed,
+open-source CLIs the same way it drives `siril-cli` (`os/exec`, stream stdout, parse `%`): **GraXpert**
+(`GRAXPERT_BIN`, AI background-gradient extraction on the linear masters, ahead of a gentle Siril `subsky` cleanup) and
+**StarNet++** (`STARNET_BIN`, star removal — for star-reduced finishing in GIMP). They are **invoked,
+never vendored or bundled** (their AGPL/free licences stay with the user's own install, exactly like
+GPL Siril/GIMP). Both are **optional**: when the binary is absent the run logs a warning and falls back
+(Siril subsky / full stars). Runners live in `internal/graxpert` and `internal/starnet`; the pipeline
+wiring (soft-fail) is in `internal/pipeline/enhance.go`. Per-mode toggles are `mode.Preset.BackgroundAI`
+and `mode.Preset.StarReduce`. `astrostack process --no-ai` skips both. **Do not add new Python** for
+these — they are external binaries.
+
 **Persistence.** Postgres via `pgx/v5` + `sqlc`; versioned SQL migrations via `golang-migrate`.
 Per the house DB convention, `created_at`/`updated_at` are **int64 millisecond** timestamps; durations
 (exposure) are stored in ms and temperatures in milli-°C to stay integer-clean.
+
+**Code graph (gitnexus).** This repo is indexed by **gitnexus** (a code knowledge-graph; binary
+`gitnexus`, MCP server `gitnexus mcp`). Use it as the FIRST move for any "where / what / what-breaks"
+question about Go (`cmd/`, `internal/`) or Vue/TS (`frontend/src`) — it is faster and more accurate
+than grep:
+
+- "Where is X defined / called?" → `mcp__gitnexus__context({name:"X"})`
+- "Where is the logic for concept Y?" → `mcp__gitnexus__query({query:"Y"})`
+- "What breaks if I change Z?" → `mcp__gitnexus__impact({target:"Z"})`
+- "Do my uncommitted edits drift from the graph?" → `mcp__gitnexus__detect_changes`
+
+Reach for `Grep`/`Glob` only when gitnexus returns nothing or the target is non-code text (i18n keys,
+`.ssf` Siril scripts, SQL, config, markdown). For a deep multi-step exploration, delegate to the
+`gitnexus-search` subagent rather than running many queries inline.
+
+**Sync the graph before you implement.** The graph must reflect current code before you reason about
+a change. Hooks keep it trailing-fresh automatically — a `SessionStart` staleness check (re-index if
+>2h old) plus a debounced background re-index on each source edit (`Edit`/`Write`/`MultiEdit` on
+`*.go`/`*.vue`/`*.ts`/`*.sql`…). But when you need a **guaranteed**-fresh graph at the start of a code
+task — especially right after `git pull`, a branch switch, or a burst of edits — run
+**`just gitnexus-sync`** (incremental; `just gitnexus-reindex` forces a full rebuild) and let it finish
+*before* your impact/context queries. The index lives in `.gitnexus/` (gitignored, local); scope is set
+by `.gitnexusignore`, which keeps the ~32 GB `input/` capture data and the vendored GIMP MCP out of the
+graph. The `mcp__gitnexus__*` tools come from the **host-global** `gitnexus mcp` server (registered in
+`~/.claude.json`, shared across all your repos) — `gitnexus mcp` serves every indexed repo, so always
+pass `repo:"astronomy"` to disambiguate from the other indexed repos. The binary lives in the active
+nvm Node's `bin`; if Node is upgraded, re-point that global server (`claude mcp` / `gitnexus setup`).

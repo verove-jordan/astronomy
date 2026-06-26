@@ -1,6 +1,8 @@
 // Package postprocess combines per-channel master stacks into a finished image with Siril:
-// RGB / LRGB / Ha-enhanced RGB / SHO narrowband / mono depending on which channels exist, then
-// background extraction, an automatic stretch, saturation, and export to PNG/TIFF/FITS.
+// RGB / LRGB / Ha-enhanced RGB / SHO narrowband / mono depending on which channels exist. It runs
+// as three staged Siril invocations — combine (+ background extraction) → color calibration (SPCC
+// with a neutralization fallback) → finish (linked stretch, saturation, export) — so the engine can
+// branch when plate-solving/SPCC is unavailable.
 package postprocess
 
 import (
@@ -14,19 +16,24 @@ import (
 
 // Options tunes the post-processing chain.
 type Options struct {
-	BackgroundExtraction bool     // subtract a polynomial sky background
-	BackgroundDegree     int      // subsky polynomial degree (0 → 1)
-	RemoveGreen          bool     // SCNR green removal (off by default; not always applicable)
-	Saturation           float64  // color saturation boost (0 = skip; ~0.2 typical)
-	Formats              []string // output formats: png, tif, fits
+	BackgroundExtraction bool               // subtract a polynomial sky background (gradient removal)
+	BackgroundDegree     int                // subsky polynomial degree (0 → 1)
+	RemoveGreen          bool               // SCNR green removal (used as the color fallback)
+	Saturation           float64            // color saturation boost (0 = skip; ~0.2 typical)
+	ColorCalibration     bool               // attempt plate-solve + SPCC for natural color
+	LinkedStretch        bool               // autostretch -linked (keep the neutral background)
+	Solve                siril.SolveOptions // plate-solving inputs (focal/pixel/coords/catalog)
+	Spcc                 siril.SpccOptions  // SPCC sensor/filter/white-reference
+	Formats              []string           // output formats: png, tif, fits
 }
 
 // DefaultOptions returns a sensible automatic chain.
 func DefaultOptions() Options {
 	return Options{
 		BackgroundExtraction: true,
-		RemoveGreen:          false,
+		RemoveGreen:          true,
 		Saturation:           0.2,
+		LinkedStretch:        true,
 		Formats:              []string{"png", "tif"},
 	}
 }
@@ -39,16 +46,41 @@ type Result struct {
 	Notes    []string `json:"notes,omitempty"`
 }
 
-// Combine builds the final image from channel masters located in dir (referenced by basename,
-// e.g. "master_L"), writing finalBase.<ext> alongside them.
+// Combine builds the final image from channel masters located in dir (referenced by basename, e.g.
+// "master_L"), writing finalBase.<ext> alongside them.
 func Combine(ctx context.Context, runner *siril.Runner, dir string, channels map[string]string,
 	finalBase string, opts Options, onProgress func(siril.Progress)) (*Result, error) {
 	if len(channels) == 0 {
 		return nil, fmt.Errorf("no channels to combine")
 	}
-	script, res := buildScript(channels, finalBase, opts)
-	if _, err := runner.Run(ctx, dir, script, onProgress); err != nil {
-		return nil, err
+
+	// Stage 1 — combine into a linear `combined.fits` and remove background gradients.
+	combineScript, res := buildCombine(channels, opts)
+	if _, err := runner.Run(ctx, dir, combineScript, onProgress); err != nil {
+		return nil, fmt.Errorf("combine channels: %w", err)
+	}
+
+	// Stage 2 — color calibration (color modes only), SPCC with a neutralization fallback.
+	if isColor(res.Mode) {
+		note, err := ColorCalibrate(ctx, runner, dir, "combined", ColorCalOptions{
+			Enabled: opts.ColorCalibration, RemoveGreen: opts.RemoveGreen, Solve: opts.Solve, Spcc: opts.Spcc,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if note != "" {
+			res.Notes = append(res.Notes, note)
+		}
+	}
+
+	// Stage 3 — finish: a linked stretch preserves the neutral balance; then saturate and export.
+	sat := 0.0
+	if isColor(res.Mode) {
+		sat = opts.Saturation
+	}
+	finishScript := siril.FinishScript("combined", finalBase, opts.LinkedStretch, sat, opts.Formats)
+	if _, err := runner.Run(ctx, dir, finishScript, onProgress); err != nil {
+		return nil, fmt.Errorf("finish image: %w", err)
 	}
 	for _, f := range opts.Formats {
 		res.Outputs = append(res.Outputs, filepath.Join(dir, finalBase+"."+f))
@@ -56,7 +88,9 @@ func Combine(ctx context.Context, runner *siril.Runner, dir string, channels map
 	return res, nil
 }
 
-func buildScript(channels map[string]string, finalBase string, opts Options) (string, *Result) {
+// buildCombine assembles the channels into a linear `combined.fits` (with background extraction),
+// ready for color calibration and finishing.
+func buildCombine(channels map[string]string, opts Options) (string, *Result) {
 	has := func(f string) bool { _, ok := channels[f]; return ok }
 	res := &Result{}
 	for f := range channels {
@@ -65,7 +99,6 @@ func buildScript(channels map[string]string, finalBase string, opts Options) (st
 
 	var b strings.Builder
 	b.WriteString("requires 1.2.0\nsetext fits\n")
-
 	switch {
 	case has("R") && has("G") && has("B"):
 		buildColor(&b, channels, has, res)
@@ -75,13 +108,19 @@ func buildScript(channels map[string]string, finalBase string, opts Options) (st
 		b.WriteString("load combined\n")
 		res.Mode = "SHO"
 	default:
-		mono := firstChannel(channels)
-		fmt.Fprintf(&b, "load %s\n", mono)
+		fmt.Fprintf(&b, "load %s\n", firstChannel(channels))
 		res.Mode = "mono"
 		res.Notes = append(res.Notes, "incomplete channel set — produced a monochrome result")
 	}
 
-	writeFinish(&b, finalBase, res.Mode != "mono", opts, res)
+	if opts.BackgroundExtraction {
+		degree := opts.BackgroundDegree
+		if degree <= 0 {
+			degree = 1
+		}
+		fmt.Fprintf(&b, "subsky %d\n", degree)
+	}
+	b.WriteString("save combined\n")
 	return b.String(), res
 }
 
@@ -117,37 +156,13 @@ func buildColor(b *strings.Builder, channels map[string]string, has func(string)
 	}
 }
 
-func writeFinish(b *strings.Builder, finalBase string, color bool, opts Options, res *Result) {
-	if opts.BackgroundExtraction {
-		degree := opts.BackgroundDegree
-		if degree <= 0 {
-			degree = 1
-		}
-		fmt.Fprintf(b, "subsky %d\n", degree)
-	}
-	if opts.RemoveGreen && color {
-		b.WriteString("rmgreen 1\n")
-	}
-	b.WriteString("autostretch\n")
-	if color && opts.Saturation > 0 {
-		fmt.Fprintf(b, "satu %.2f\n", opts.Saturation)
-	}
-	for _, f := range opts.Formats {
-		b.WriteString(saveCmd(f, finalBase) + "\n")
-	}
-	res.Notes = append(res.Notes, "color calibration (PCC) skipped — requires plate solving")
-}
-
-func saveCmd(format, base string) string {
-	switch format {
-	case "png":
-		return "savepng " + base
-	case "tif", "tiff":
-		return "savetif " + base
-	case "jpg", "jpeg":
-		return "savejpg " + base + " 95"
+// isColor reports whether a finished mode carries color (and thus wants color calibration/SCNR).
+func isColor(mode string) bool {
+	switch mode {
+	case "RGB", "LRGB", "HaRGB", "HaLRGB", "SHO":
+		return true
 	default:
-		return "save " + base // FITS
+		return false
 	}
 }
 

@@ -1,0 +1,27 @@
+# gitnexus code-graph scope (read in addition to .gitignore).
+#
+# Keep the index focused on OUR source — Go (cmd/, internal/) + Vue/TS
+# (frontend/src) + SQL (migrations/). Everything below is capture data,
+# generated output, binary assets, or vendored third-party code: indexing it
+# is pure noise (and input/ alone is ~32 GB of FITS frames).
+
+# --- Astrophotography data: captures, master-frame library, scratch, outputs ---
+/input/
+/library/
+/work/
+/output/
+/data/
+
+# --- Binary assets ---
+/icons/
+
+# --- Vendored GIMP MCP: GIMP's own Python/Scheme, not authored here (see CLAUDE.md) ---
+/mcp-servers/gimp/
+
+# --- Build artifacts & deps (also in .gitignore; listed for clarity) ---
+/bin/
+/dist/
+/tmp/
+/frontend/dist/
+/frontend/.vite/
+/frontend/node_modules/

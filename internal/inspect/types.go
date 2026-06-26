@@ -22,6 +22,8 @@ const (
 	SourceFilename  = "filename"  // from the file name / folder (e.g. Light_..._filter-B_...)
 	SourceHeuristic = "heuristic" // inferred from exposure + pixel statistics
 	SourceExtension = "extension" // from the file extension (videos)
+	SourceSignal    = "signal"    // filter inferred from the signal via wheel-order detection
+	SourceManual    = "manual"    // filter set by an explicit user override
 )
 
 // Frame is one capture file plus the metadata extracted from it.
@@ -44,6 +46,16 @@ type Frame struct {
 	DateObs     string    `json:"date_obs,omitempty"`
 	DateObsMs   int64     `json:"date_obs_ms,omitempty"`
 	ClassSource string    `json:"class_source"`
+	// FilterConfidence is set when the filter was inferred from the signal (ClassSource "signal").
+	FilterConfidence float64 `json:"filter_confidence,omitempty"`
+	// WheelTransition marks a frame whose brightness is off because the filter wheel was still
+	// moving when it was taken (the first frame of a run). The pipeline may drop these.
+	WheelTransition bool `json:"wheel_transition,omitempty"`
+	// Plate-solving hints read from the header when present (else config defaults are used).
+	FocalLenMM  float64 `json:"focal_len_mm,omitempty"`
+	PixelSizeUm float64 `json:"pixel_size_um,omitempty"`
+	ObjCtRA     string  `json:"objctra,omitempty"`
+	ObjCtDec    string  `json:"objctdec,omitempty"`
 }
 
 // ExposureSec is the exposure time in seconds.
@@ -75,11 +87,29 @@ type Set struct {
 
 // Inventory is the full result of scanning a directory.
 type Inventory struct {
-	Root     string   `json:"root"`
-	Frames   []*Frame `json:"frames"`
-	Sets     []Set    `json:"sets"`
-	Videos   []*Frame `json:"videos"`
-	Warnings []string `json:"warnings"`
+	Root             string            `json:"root"`
+	Frames           []*Frame          `json:"frames"`
+	Sets             []Set             `json:"sets"`
+	Videos           []*Frame          `json:"videos"`
+	Warnings         []string          `json:"warnings"`
+	ChannelDetection *ChannelDetection `json:"channel_detection,omitempty"`
+}
+
+// ChannelDetection summarizes signal-based filter detection so the UI can show and override it.
+type ChannelDetection struct {
+	Order             []string      `json:"order"`
+	OverallConfidence float64       `json:"overall_confidence"`
+	Runs              []DetectedRun `json:"runs"`
+}
+
+// DetectedRun is one contiguous same-filter capture block found by detection.
+type DetectedRun struct {
+	Filter          string  `json:"filter"`
+	Count           int     `json:"count"`
+	Confidence      float64 `json:"confidence"`
+	FirstFrame      string  `json:"first_frame"`
+	LastFrame       string  `json:"last_frame"`
+	WheelTransition int     `json:"wheel_transition,omitempty"`
 }
 
 // CountsByType returns the number of frames of each type.

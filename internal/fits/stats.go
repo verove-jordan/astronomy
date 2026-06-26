@@ -16,6 +16,13 @@ type Stats struct {
 	Median float64
 	Min    float64
 	Max    float64
+	// MAD is the median absolute deviation from the median — a robust noise estimate.
+	MAD float64
+	// P90 is the 90th-percentile value — a robust bright-signal proxy.
+	P90 float64
+	// BrightFrac is the fraction of sampled pixels brighter than Median+3·MAD — a coarse
+	// star/structure-richness proxy (broadband frames have many more bright pixels than narrowband).
+	BrightFrac float64
 }
 
 // Dimensions returns the image width and height from NAXIS1/NAXIS2 (0,0 if absent).
@@ -122,12 +129,32 @@ func summarize(vals []float64) Stats {
 	sorted := make([]float64, len(vals))
 	copy(sorted, vals)
 	sort.Float64s(sorted)
+	median := sorted[len(sorted)/2]
+
+	devs := make([]float64, len(sorted))
+	for i, v := range sorted {
+		devs[i] = math.Abs(v - median)
+	}
+	sort.Float64s(devs)
+	mad := devs[len(devs)/2]
+
+	thresh := median + 3*mad
+	bright := 0
+	for _, v := range vals {
+		if v > thresh {
+			bright++
+		}
+	}
+
 	return Stats{
-		Count:  len(vals),
-		Mean:   sum / float64(len(vals)),
-		Median: sorted[len(sorted)/2],
-		Min:    min,
-		Max:    max,
+		Count:      len(vals),
+		Mean:       sum / float64(len(vals)),
+		Median:     median,
+		Min:        min,
+		Max:        max,
+		MAD:        mad,
+		P90:        sorted[(len(sorted)*9)/10],
+		BrightFrac: float64(bright) / float64(len(vals)),
 	}
 }
 

@@ -1,86 +1,90 @@
 <script setup lang="ts" generic="T extends Record<string, unknown>">
-import { reactive, ref, computed } from 'vue'
-import { th, td, input } from '@/constants/styles'
+import { reactive, ref, computed } from "vue";
+import { th, td, input } from "@/constants/styles";
 
 export interface Column<R> {
-  key: string
-  label: string
-  sortable?: boolean
-  searchable?: boolean
-  align?: 'left' | 'right'
-  format?: (value: unknown, row: R) => string
+  key: string;
+  label: string;
+  sortable?: boolean;
+  searchable?: boolean;
+  align?: "left" | "right";
+  format?: (value: unknown, row: R) => string;
 }
 
 const props = defineProps<{
-  columns: Column<T>[]
-  rows: T[]
-  rowClass?: (row: T) => string
-}>()
+  columns: Column<T>[];
+  rows: T[];
+  rowClass?: (row: T) => string;
+}>();
 
 interface SortKey {
-  key: string
-  dir: 1 | -1
+  key: string;
+  dir: 1 | -1;
 }
 
-const sortKeys = ref<SortKey[]>([])
-const search = reactive<Record<string, string>>({})
+const sortKeys = ref<SortKey[]>([]);
+const search = reactive<Record<string, string>>({});
 
-const anySearchable = computed(() => props.columns.some((c) => c.searchable))
+const anySearchable = computed(() => props.columns.some((c) => c.searchable));
 
 function toggleSort(col: Column<T>, shift: boolean) {
-  if (!col.sortable) return
-  const existing = sortKeys.value.find((s) => s.key === col.key)
+  if (!col.sortable) return;
+  const existing = sortKeys.value.find((s) => s.key === col.key);
   if (shift) {
-    if (existing) existing.dir = existing.dir === 1 ? -1 : 1
-    else sortKeys.value.push({ key: col.key, dir: 1 })
+    if (existing) existing.dir = existing.dir === 1 ? -1 : 1;
+    else sortKeys.value.push({ key: col.key, dir: 1 });
   } else if (existing && sortKeys.value.length === 1) {
-    existing.dir = existing.dir === 1 ? -1 : 1
+    existing.dir = existing.dir === 1 ? -1 : 1;
   } else {
-    sortKeys.value = [{ key: col.key, dir: 1 }]
+    sortKeys.value = [{ key: col.key, dir: 1 }];
   }
 }
 
 function sortIndicator(key: string): string {
-  const idx = sortKeys.value.findIndex((s) => s.key === key)
-  if (idx === -1) return ''
-  const arrow = sortKeys.value[idx].dir === 1 ? '▲' : '▼'
-  return sortKeys.value.length > 1 ? `${arrow}${idx + 1}` : arrow
+  const idx = sortKeys.value.findIndex((s) => s.key === key);
+  if (idx === -1) return "";
+  const arrow = sortKeys.value[idx].dir === 1 ? "▲" : "▼";
+  return sortKeys.value.length > 1 ? `${arrow}${idx + 1}` : arrow;
 }
 
 const processed = computed<T[]>(() => {
   let out = props.rows.filter((row) =>
     props.columns.every((c) => {
-      if (!c.searchable) return true
-      const q = (search[c.key] || '').toLowerCase()
-      if (!q) return true
-      return String(row[c.key] ?? '').toLowerCase().includes(q)
+      if (!c.searchable) return true;
+      const q = (search[c.key] || "").toLowerCase();
+      if (!q) return true;
+      return String(row[c.key] ?? "")
+        .toLowerCase()
+        .includes(q);
     }),
-  )
+  );
   if (sortKeys.value.length) {
     out = [...out].sort((a, b) => {
       for (const s of sortKeys.value) {
-        const av = a[s.key]
-        const bv = b[s.key]
-        let cmp = 0
-        if (typeof av === 'number' && typeof bv === 'number') cmp = av - bv
-        else cmp = String(av ?? '').localeCompare(String(bv ?? ''))
-        if (cmp !== 0) return cmp * s.dir
+        const av = a[s.key];
+        const bv = b[s.key];
+        let cmp = 0;
+        if (typeof av === "number" && typeof bv === "number") cmp = av - bv;
+        else cmp = String(av ?? "").localeCompare(String(bv ?? ""));
+        if (cmp !== 0) return cmp * s.dir;
       }
-      return 0
-    })
+      return 0;
+    });
   }
-  return out
-})
+  return out;
+});
 
 function display(col: Column<T>, row: T): string {
-  if (col.format) return col.format(row[col.key], row)
-  const v = row[col.key]
-  return v === undefined || v === null ? '' : String(v)
+  if (col.format) return col.format(row[col.key], row);
+  const v = row[col.key];
+  return v === undefined || v === null ? "" : String(v);
 }
 </script>
 
 <template>
-  <div class="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+  <div
+    class="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700"
+  >
     <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
       <thead class="bg-slate-100 dark:bg-slate-800">
         <tr>
@@ -91,7 +95,9 @@ function display(col: Column<T>, row: T): string {
             @click="(e) => toggleSort(col, e.shiftKey)"
           >
             {{ col.label }}
-            <span v-if="col.sortable" class="ml-1 text-brand-500">{{ sortIndicator(col.key) }}</span>
+            <span v-if="col.sortable" class="ml-1 text-brand-500">{{
+              sortIndicator(col.key)
+            }}</span>
           </th>
         </tr>
         <tr v-if="anySearchable" class="bg-slate-50 dark:bg-slate-900/40">
@@ -110,7 +116,11 @@ function display(col: Column<T>, row: T): string {
         <tr
           v-for="(row, i) in processed"
           :key="i"
-          :class="rowClass ? rowClass(row) : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'"
+          :class="
+            rowClass
+              ? rowClass(row)
+              : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
+          "
         >
           <td
             v-for="col in columns"

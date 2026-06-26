@@ -1,5 +1,5 @@
 <script setup lang="ts">
-defineProps<{ percent: number }>()
+defineProps<{ percent: number }>();
 </script>
 
 <template>
@@ -10,6 +10,9 @@ defineProps<{ percent: number }>()
     aria-valuemin="0"
     aria-valuemax="100"
   >
-    <div class="h-full rounded-full bg-brand-500 transition-all" :style="{ width: percent + '%' }" />
+    <div
+      class="h-full rounded-full bg-brand-500 transition-all"
+      :style="{ width: percent + '%' }"
+    />
   </div>
 </template>

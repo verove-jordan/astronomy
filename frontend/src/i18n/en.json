@@ -1,11 +1,35 @@
 {
-  "app": { "title": "AstroStack", "subtitle": "Automated astrophotography sorting & stacking" },
-  "nav": { "import": "Import", "jobs": "Jobs", "library": "Calibration library" },
+  "app": {
+    "title": "AstroStack",
+    "subtitle": "Automated astrophotography sorting & stacking",
+    "logoAlt": "AstroStack logo"
+  },
+  "nav": {
+    "import": "Import",
+    "jobs": "Jobs",
+    "runs": "Runs",
+    "library": "Calibration library"
+  },
   "run": {
     "mode": "Mode",
     "format": "Output",
-    "modes": { "deepsky": "Deep-sky", "nebula": "Nebula", "milkyway": "Milky Way", "planetary": "Planetary" },
+    "colorCalibration": "Color-calibrate (SPCC)",
+    "denoise": "Reduce noise",
+    "dropTransition": "Drop filter-wheel transition frames",
+    "modes": {
+      "deepsky": "Deep-sky",
+      "nebula": "Nebula",
+      "milkyway": "Milky Way",
+      "planetary": "Planetary"
+    },
     "formats": { "image": "Image", "video": "Video", "both": "Image + video" }
+  },
+  "reuse": {
+    "title": "Reuse prior data",
+    "subtitle": "Found {sessions} earlier session(s) of {object} you can add to this stack.",
+    "enable": "Fold in prior data",
+    "added": "+{frames} frames · +{time} integration",
+    "frames": "{n} frames"
   },
   "common": {
     "inspect": "Inspect",
@@ -18,17 +42,42 @@
     "none": "—",
     "refresh": "Refresh",
     "open": "Open",
-    "up": "Up"
+    "up": "Up",
+    "select": "Select",
+    "cancel": "Cancel"
   },
   "import": {
     "title": "Import & inspect",
-    "hint": "Pick a capture directory to analyze, then run the automatic pipeline.",
+    "hint": "Browse to a capture folder, then run the automatic pipeline.",
     "frames": "Frames",
     "lightSets": "Light sets",
     "calibSets": "Calibration frames",
     "videos": "Videos",
     "warnings": "Warnings",
-    "noData": "Nothing inspected yet — enter a directory and press Inspect."
+    "noData": "Nothing inspected yet — pick a folder and press Inspect.",
+    "openFolder": "Open folder",
+    "selectCapture": "Select a capture folder above, then run.",
+    "useFolder": "Inspect this folder",
+    "noFolders": "No subfolders here.",
+    "browseTitle": "Files",
+    "currentFolder": "Current folder"
+  },
+  "capture": {
+    "summary": "Selected capture",
+    "none": "No capture selected yet.",
+    "target": "Target",
+    "lights": "Light frames",
+    "integration": "Total integration",
+    "filters": "Filters",
+    "frameTypes": "Frame types"
+  },
+  "mapping": {
+    "title": "Channel mapping",
+    "hint": "Map each detected filter to a channel. Set to “Ignore” to drop it.",
+    "ignore": "Ignore",
+    "confidence": "Confidence",
+    "detected": "Detected",
+    "channel": "Channel"
   },
   "fields": {
     "object": "Object",
@@ -59,8 +108,10 @@
   "job": {
     "title": "Job",
     "progress": "Progress",
+    "processing": "Processing",
     "result": "Result",
     "finalImage": "Final image",
+    "livePreview": "Live preview",
     "channelsTitle": "Channels",
     "frameReview": "Frame review",
     "mastersUsed": "Master calibration",
@@ -68,11 +119,40 @@
     "noResult": "No result yet.",
     "rejected": "Rejected",
     "kept": "Kept",
-    "download": "Download"
+    "download": "Download",
+    "logs": "Live log",
+    "followTail": "Follow",
+    "showLogs": "Show log",
+    "hideLogs": "Hide log",
+    "expandLogs": "Expand log",
+    "collapseLogs": "Collapse log",
+    "cancel": "Cancel run",
+    "cancelling": "Cancelling…"
+  },
+  "log": { "empty": "No log output yet." },
+  "viewer": {
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "fit": "Fit to view",
+    "reset": "Reset",
+    "actualSize": "Actual size",
+    "navigator": "Navigator"
+  },
+  "runs": {
+    "title": "Runs",
+    "subtitle": "Every processed run, reopenable from disk.",
+    "empty": "No runs yet — process a capture to see it here.",
+    "open": "Open"
   },
   "library": {
     "title": "Calibration library",
     "empty": "The library is empty. Run a pipeline with calibration frames to populate it."
   },
-  "status": { "queued": "Queued", "running": "Running", "succeeded": "Succeeded", "failed": "Failed" }
+  "status": {
+    "queued": "Queued",
+    "running": "Running",
+    "succeeded": "Succeeded",
+    "failed": "Failed",
+    "cancelled": "Cancelled"
+  }
 }

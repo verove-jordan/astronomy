@@ -14,7 +14,7 @@ func chans(filters ...string) map[string]string {
 	return m
 }
 
-func TestBuildScript_ModeSelection(t *testing.T) {
+func TestBuildCombine_ModeSelection(t *testing.T) {
 	cases := []struct {
 		name     string
 		channels map[string]string
@@ -30,21 +30,30 @@ func TestBuildScript_ModeSelection(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			script, res := buildScript(tc.channels, "final", DefaultOptions())
+			script, res := buildCombine(tc.channels, DefaultOptions())
 			assert.Equal(t, tc.wantMode, res.Mode)
 			for _, want := range tc.contains {
 				assert.Contains(t, script, want)
 			}
-			assert.Contains(t, script, "autostretch")
+			// The combine stage produces a LINEAR `combined.fits` (background-extracted); the
+			// stretch/save now happen in the separate finish stage.
+			assert.Contains(t, script, "subsky")
+			assert.Contains(t, script, "save combined")
+			assert.NotContains(t, script, "autostretch")
 		})
 	}
 }
 
-func TestBuildScript_Formats(t *testing.T) {
-	opts := DefaultOptions()
-	opts.Formats = []string{"png", "tif", "fits"}
-	script, _ := buildScript(chans("R", "G", "B"), "final", opts)
-	assert.Contains(t, script, "savepng final")
-	assert.Contains(t, script, "savetif final")
-	assert.Contains(t, script, "save final")
+func TestIsColor(t *testing.T) {
+	for _, m := range []string{"RGB", "LRGB", "HaRGB", "HaLRGB", "SHO"} {
+		assert.True(t, isColor(m), m)
+	}
+	assert.False(t, isColor("mono"))
+}
+
+func TestSolveFailed(t *testing.T) {
+	assert.True(t, solveFailed("log: Plate solving failed, no match"))
+	assert.True(t, solveFailed("No stars detected in the image"))
+	assert.False(t, solveFailed("Plate solving succeeded: 1.06 arcsec/px"))
+	assert.False(t, solveFailed(""))
 }

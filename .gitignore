@@ -23,6 +23,7 @@ frontend/.vite/
 /data/
 /work/
 /output/
+/input/
 *.fit
 *.fits
 *.fts
@@ -40,3 +41,4 @@ frontend/.vite/
 
 # --- Claude Code ---
 .claude/settings.local.json
+.gitnexus

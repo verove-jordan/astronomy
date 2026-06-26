@@ -1,11 +1,35 @@
 {
-  "app": { "title": "AstroStack", "subtitle": "Tri et empilement astrophoto automatiques" },
-  "nav": { "import": "Importer", "jobs": "Tâches", "library": "Bibliothèque de calibration" },
+  "app": {
+    "title": "AstroStack",
+    "subtitle": "Tri et empilement astrophoto automatiques",
+    "logoAlt": "Logo AstroStack"
+  },
+  "nav": {
+    "import": "Importer",
+    "jobs": "Tâches",
+    "runs": "Traitements",
+    "library": "Bibliothèque de calibration"
+  },
   "run": {
     "mode": "Mode",
     "format": "Sortie",
-    "modes": { "deepsky": "Ciel profond", "nebula": "Nébuleuse", "milkyway": "Voie lactée", "planetary": "Planétaire" },
+    "colorCalibration": "Calibration couleur (SPCC)",
+    "denoise": "Réduire le bruit",
+    "dropTransition": "Écarter les images de transition du filtre",
+    "modes": {
+      "deepsky": "Ciel profond",
+      "nebula": "Nébuleuse",
+      "milkyway": "Voie lactée",
+      "planetary": "Planétaire"
+    },
     "formats": { "image": "Image", "video": "Vidéo", "both": "Image + vidéo" }
+  },
+  "reuse": {
+    "title": "Réutiliser des données antérieures",
+    "subtitle": "{sessions} session(s) antérieure(s) de {object} peuvent être ajoutées à cette pile.",
+    "enable": "Inclure les données antérieures",
+    "added": "+{frames} images · +{time} d'intégration",
+    "frames": "{n} images"
   },
   "common": {
     "inspect": "Inspecter",
@@ -18,17 +42,42 @@
     "none": "—",
     "refresh": "Rafraîchir",
     "open": "Ouvrir",
-    "up": "Parent"
+    "up": "Parent",
+    "select": "Sélectionner",
+    "cancel": "Annuler"
   },
   "import": {
     "title": "Importer & inspecter",
-    "hint": "Choisissez un dossier de captures à analyser, puis lancez le traitement automatique.",
+    "hint": "Naviguez jusqu’à un dossier de captures, puis lancez le traitement automatique.",
     "frames": "Images",
     "lightSets": "Séries de poses",
     "calibSets": "Images de calibration",
     "videos": "Vidéos",
     "warnings": "Avertissements",
-    "noData": "Rien d’inspecté — saisissez un dossier puis cliquez sur Inspecter."
+    "noData": "Rien d’inspecté — choisissez un dossier puis cliquez sur Inspecter.",
+    "openFolder": "Ouvrir le dossier",
+    "selectCapture": "Sélectionnez un dossier de captures ci-dessus, puis lancez.",
+    "useFolder": "Inspecter ce dossier",
+    "noFolders": "Aucun sous-dossier ici.",
+    "browseTitle": "Fichiers",
+    "currentFolder": "Dossier courant"
+  },
+  "capture": {
+    "summary": "Capture sélectionnée",
+    "none": "Aucune capture sélectionnée.",
+    "target": "Cible",
+    "lights": "Poses",
+    "integration": "Intégration totale",
+    "filters": "Filtres",
+    "frameTypes": "Types d’images"
+  },
+  "mapping": {
+    "title": "Affectation des couches",
+    "hint": "Associez chaque filtre détecté à une couche. « Ignorer » pour l’écarter.",
+    "ignore": "Ignorer",
+    "confidence": "Confiance",
+    "detected": "Détecté",
+    "channel": "Couche"
   },
   "fields": {
     "object": "Objet",
@@ -59,8 +108,10 @@
   "job": {
     "title": "Tâche",
     "progress": "Progression",
+    "processing": "Traitement",
     "result": "Résultat",
     "finalImage": "Image finale",
+    "livePreview": "Aperçu en direct",
     "channelsTitle": "Couches",
     "frameReview": "Revue des images",
     "mastersUsed": "Calibration maître",
@@ -68,11 +119,40 @@
     "noResult": "Pas encore de résultat.",
     "rejected": "Rejetées",
     "kept": "Conservées",
-    "download": "Télécharger"
+    "download": "Télécharger",
+    "logs": "Journal en direct",
+    "followTail": "Suivre",
+    "showLogs": "Afficher le journal",
+    "hideLogs": "Masquer le journal",
+    "expandLogs": "Agrandir le journal",
+    "collapseLogs": "Réduire le journal",
+    "cancel": "Annuler le traitement",
+    "cancelling": "Annulation…"
+  },
+  "log": { "empty": "Aucune sortie pour le moment." },
+  "viewer": {
+    "zoomIn": "Zoom avant",
+    "zoomOut": "Zoom arrière",
+    "fit": "Ajuster à la vue",
+    "reset": "Réinitialiser",
+    "actualSize": "Taille réelle",
+    "navigator": "Navigateur"
+  },
+  "runs": {
+    "title": "Traitements",
+    "subtitle": "Chaque traitement, rouvrable depuis le disque.",
+    "empty": "Aucun traitement — lancez une capture pour le voir ici.",
+    "open": "Ouvrir"
   },
   "library": {
     "title": "Bibliothèque de calibration",
     "empty": "La bibliothèque est vide. Lancez un traitement avec des images de calibration pour la remplir."
   },
-  "status": { "queued": "En attente", "running": "En cours", "succeeded": "Réussi", "failed": "Échoué" }
+  "status": {
+    "queued": "En attente",
+    "running": "En cours",
+    "succeeded": "Réussi",
+    "failed": "Échoué",
+    "cancelled": "Annulé"
+  }
 }

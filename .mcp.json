@@ -24,6 +24,17 @@
         "GIMP_PORT": "10008",
         "GIMP_OUTPUT_DIR": "~/gimp-mcp-output"
       }
+    },
+    "chrome": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@1.2.0",
+        "--headless",
+        "--isolated",
+        "--channel=stable",
+        "--viewport=1280x800"
+      ]
     }
   }
 }

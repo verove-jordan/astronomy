@@ -8,21 +8,49 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/verove-jordan/astronomy/internal/channeldetect"
 	"github.com/verove-jordan/astronomy/internal/fits"
 )
 
 var (
 	fitsExts  = map[string]bool{".fits": true, ".fit": true, ".fts": true}
 	videoExts = map[string]bool{".ser": true, ".avi": true, ".mp4": true, ".mov": true, ".mkv": true, ".m4v": true}
+	// cameraRawExts are one-shot-color camera raws (iPhone DNG/HEIC, DSLR raws). They are surfaced
+	// as lights only when a directory holds no FITS/video, so stray jpg/png outputs in a FITS capture
+	// set are never miscounted — which is why those non-raw still formats are excluded here.
+	cameraRawExts = map[string]bool{
+		".dng": true, ".heic": true, ".heif": true,
+		".cr2": true, ".cr3": true, ".nef": true, ".arw": true, ".raf": true,
+	}
 )
 
 // statsSample is how many center pixels to read when inferring a missing IMAGETYP.
 const statsSample = 50000
 
-// Scan walks root recursively, reads FITS metadata, classifies and groups every frame.
+// ScanOptions tunes a scan: signal-based channel detection (for unlabeled captures) and an
+// optional filter override (detected/known filter → chosen channel; "" or "ignore" excludes it).
+type ScanOptions struct {
+	DetectChannels bool
+	Channel        channeldetect.Options
+	FilterMapping  map[string]string
+}
+
+// DefaultScanOptions enables signal-based detection with robust default thresholds.
+func DefaultScanOptions() ScanOptions {
+	return ScanOptions{DetectChannels: true, Channel: channeldetect.DefaultOptions()}
+}
+
+// Scan walks root recursively with default options (channel detection enabled).
 func Scan(ctx context.Context, root string) (*Inventory, error) {
+	return ScanWithOptions(ctx, root, DefaultScanOptions())
+}
+
+// ScanWithOptions walks root, reads FITS metadata, classifies and groups every frame, and — when
+// enabled — infers filters from the signal for unlabeled lights and flags filter-wheel transitions.
+func ScanWithOptions(ctx context.Context, root string, opts ScanOptions) (*Inventory, error) {
 	inv := &Inventory{Root: root}
 	var unknown []*Frame
+	var rawStills []string // camera raws; promoted to lights only if the dir has no FITS/video
 
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -50,6 +78,8 @@ func Scan(ctx context.Context, root string) (*Inventory, error) {
 			}
 		case videoExts[ext]:
 			inv.Videos = append(inv.Videos, &Frame{Path: path, Type: Video, ClassSource: SourceExtension})
+		case cameraRawExts[ext]:
+			rawStills = append(rawStills, path)
 		}
 		return nil
 	})
@@ -58,7 +88,25 @@ func Scan(ctx context.Context, root string) (*Inventory, error) {
 	}
 
 	classifyUnknowns(inv, unknown)
+	if opts.DetectChannels {
+		chOpts := opts.Channel
+		if len(chOpts.Order) == 0 {
+			chOpts = channeldetect.DefaultOptions()
+		}
+		processChannels(inv, chOpts)
+	}
+	// A one-shot-color raw directory (iPhone/DSLR) carries no FITS metadata; surface its stills as
+	// RGB lights so the inventory is non-empty and the UI can offer milkyway mode. Done only when the
+	// dir holds no FITS/video, so FITS capture sets (and stray jpg/png outputs) are unaffected.
+	if len(inv.Frames) == 0 && len(inv.Videos) == 0 && len(rawStills) > 0 {
+		for _, p := range rawStills {
+			inv.Frames = append(inv.Frames, &Frame{Path: p, Type: Light, Filter: "RGB", ClassSource: SourceExtension})
+		}
+	}
 	inv.Sets = buildSets(inv.Frames)
+	if len(opts.FilterMapping) > 0 {
+		ApplyFilterMapping(inv, opts.FilterMapping) // re-groups sets with the override applied
+	}
 	addWarnings(inv)
 	return inv, nil
 }
@@ -102,6 +150,14 @@ func readFITSFrame(path string) (*Frame, error) {
 		fr.DateObs = v
 		fr.DateObsMs = parseDateObs(v)
 	}
+	if v, ok := h.Float("FOCALLEN"); ok {
+		fr.FocalLenMM = v
+	}
+	if v, ok := h.Float("XPIXSZ"); ok {
+		fr.PixelSizeUm = v
+	}
+	fr.ObjCtRA, _ = h.String("OBJCTRA")
+	fr.ObjCtDec, _ = h.String("OBJCTDEC")
 	if v, ok := h.String("IMAGETYP"); ok {
 		if t := classifyImageType(v); t != Unknown {
 			fr.Type = t

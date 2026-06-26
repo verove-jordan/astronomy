@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/inspect"
 	"github.com/verove-jordan/astronomy/internal/job"
 	"github.com/verove-jordan/astronomy/internal/mode"
+	"github.com/verove-jordan/astronomy/internal/pipeline"
 	"github.com/verove-jordan/astronomy/internal/store"
 )
 
@@ -38,10 +40,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/inspect", s.inspect)
 	mux.HandleFunc("GET /api/browse", s.browse)
 	mux.HandleFunc("GET /api/masters", s.masters)
+	mux.HandleFunc("POST /api/reuse/preview", s.reusePreview)
 	mux.HandleFunc("POST /api/jobs", s.createJob)
 	mux.HandleFunc("GET /api/jobs", s.listJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.getJob)
+	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.cancelJob)
 	mux.HandleFunc("GET /api/jobs/{id}/events", s.jobEvents)
+	mux.HandleFunc("GET /api/runs", s.listRuns)
 	mux.HandleFunc("GET /api/file", s.serveFile)
 	return cors(mux)
 }
@@ -114,11 +119,11 @@ func (s *Server) masters(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"masters": masters})
 }
 
-func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
+// reusePreview reports the prior light sessions and added integration a run on the given directory
+// would fold in (the "auto-discover + confirm" data), without processing.
+func (s *Server) reusePreview(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Path   string `json:"path"`
-		Mode   string `json:"mode"`
-		Format string `json:"format"`
+		Path string `json:"path"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		badRequest(w, "invalid body")
@@ -129,26 +134,59 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "path must be inside the data directory")
 		return
 	}
-	if body.Mode == "" {
-		body.Mode = string(mode.Deepsky)
+	if !s.cfg.ReuseEnabled {
+		writeJSON(w, http.StatusOK, &pipeline.ReusePreview{Object: ""})
+		return
 	}
-	if body.Format == "" {
-		body.Format = string(mode.FormatImage)
+	pv, err := pipeline.PreviewReuse(r.Context(), s.store, path, s.cfg.SirilCatalogDir, s.cfg.ReuseConeDeg)
+	if err != nil {
+		serverError(w, err)
+		return
 	}
-	if _, err := mode.ParseMode(body.Mode); err != nil {
+	writeJSON(w, http.StatusOK, pv)
+}
+
+func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
+	var req job.RunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		badRequest(w, "invalid body")
+		return
+	}
+	path, ok := s.withinData(req.Path)
+	if !ok {
+		badRequest(w, "path must be inside the data directory")
+		return
+	}
+	req.Path = path
+	if req.Mode == "" {
+		req.Mode = string(mode.Deepsky)
+	}
+	if req.Format == "" {
+		req.Format = string(mode.FormatImage)
+	}
+	if _, err := mode.ParseMode(req.Mode); err != nil {
 		badRequest(w, err.Error())
 		return
 	}
-	if _, err := mode.ParseFormat(body.Format); err != nil {
+	if _, err := mode.ParseFormat(req.Format); err != nil {
 		badRequest(w, err.Error())
 		return
 	}
-	id, err := s.mgr.Enqueue(r.Context(), body.Mode, body.Format, path)
+	id, err := s.mgr.Enqueue(r.Context(), req)
 	if err != nil {
 		serverError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": id})
+}
+
+func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		badRequest(w, "invalid job id")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cancelled": s.mgr.Cancel(id)})
 }
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
@@ -194,11 +232,11 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 
 	// Send a snapshot first so a late subscriber sees current state.
 	if jb, err := s.store.GetJob(r.Context(), id); err == nil {
+		done := isTerminal(jb.Status)
 		sendEvent(w, flusher, job.Event{
-			JobID: id, Status: jb.Status, Progress: jb.Progress, Step: jb.CurrentStep,
-			Done: jb.Status == store.JobSucceeded || jb.Status == store.JobFailed,
+			JobID: id, Status: jb.Status, Progress: jb.Progress, Step: jb.CurrentStep, Done: done,
 		})
-		if jb.Status == store.JobSucceeded || jb.Status == store.JobFailed {
+		if done {
 			return
 		}
 	}
@@ -225,6 +263,81 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.ServeFile(w, r, abs)
+}
+
+// runSummary is one durable run discovered on disk (see GET /api/runs).
+type runSummary struct {
+	Object       string   `json:"object"`
+	RunID        string   `json:"run_id"`
+	Dir          string   `json:"dir"`
+	RunJSON      string   `json:"run_json"`
+	FinalPreview string   `json:"final_preview,omitempty"`
+	Mode         string   `json:"mode,omitempty"`
+	Channels     []string `json:"channels,omitempty"`
+	CreatedAtMs  int64    `json:"created_at_ms"`
+}
+
+// listRuns scans the output directory for run.json records so any past run can be reopened from
+// disk, independent of the database (e.g. CLI runs). Files are served via /api/file.
+func (s *Server) listRuns(w http.ResponseWriter, _ *http.Request) {
+	outAbs, err := filepath.Abs(s.cfg.OutputDir)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	matches, _ := filepath.Glob(filepath.Join(outAbs, "*", "*", "run.json"))
+	runs := make([]runSummary, 0, len(matches))
+	for _, p := range matches {
+		runs = append(runs, summarizeRun(p))
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].CreatedAtMs > runs[j].CreatedAtMs })
+	writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
+}
+
+func summarizeRun(runJSONPath string) runSummary {
+	sum := runSummary{
+		Dir:     filepath.Dir(runJSONPath),
+		RunJSON: runJSONPath,
+		RunID:   filepath.Base(filepath.Dir(runJSONPath)),
+		Object:  filepath.Base(filepath.Dir(filepath.Dir(runJSONPath))),
+	}
+	if data, err := os.ReadFile(runJSONPath); err == nil {
+		var rj struct {
+			Object string `json:"object"`
+			RunID  string `json:"run_id"`
+			Final  *struct {
+				Mode     string   `json:"mode"`
+				Channels []string `json:"channels"`
+				Outputs  []string `json:"outputs"`
+			} `json:"final"`
+		}
+		if json.Unmarshal(data, &rj) == nil {
+			if rj.Object != "" {
+				sum.Object = rj.Object
+			}
+			if rj.RunID != "" {
+				sum.RunID = rj.RunID
+			}
+			if rj.Final != nil {
+				sum.Mode, sum.Channels = rj.Final.Mode, rj.Final.Channels
+				for _, o := range rj.Final.Outputs {
+					if strings.HasSuffix(o, ".png") {
+						sum.FinalPreview = o
+						break
+					}
+				}
+			}
+		}
+	}
+	if info, err := os.Stat(runJSONPath); err == nil {
+		sum.CreatedAtMs = info.ModTime().UnixMilli()
+	}
+	return sum
+}
+
+// isTerminal reports whether a job status is final (no more events will arrive).
+func isTerminal(status string) bool {
+	return status == store.JobSucceeded || status == store.JobFailed || status == store.JobCancelled
 }
 
 // --- helpers ---
