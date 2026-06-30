@@ -1,6 +1,7 @@
 package comet
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,6 +26,30 @@ func TestTrack_At(t *testing.T) {
 func TestNewTrack_SameTimestampErrors(t *testing.T) {
 	_, err := NewTrack(Point{0, 0}, 42, Point{10, 10}, 42)
 	require.Error(t, err)
+}
+
+func TestFitTrack_RobustToOutliers(t *testing.T) {
+	// True linear motion: x = 100 + 0.001·t, y = 50 + 0.0005·t (t in ms).
+	var obs []Obs
+	for k := 0; k < 30; k++ {
+		ts := int64(k * 100_000)
+		obs = append(obs, Obs{T: ts, P: Point{X: 100 + 0.001*float64(ts), Y: 50 + 0.0005*float64(ts)}})
+	}
+	// A few wild bad detections that a 2-point track would be wrecked by.
+	obs[5].P = Point{X: 800, Y: 700}
+	obs[18].P = Point{X: 0, Y: 0}
+	obs[25].P = Point{X: 1200, Y: 50}
+
+	tr, ok := FitTrack(obs)
+	require.True(t, ok)
+	p := tr.At(1_500_000) // true position there is (1600, 800)
+	assert.InDelta(t, 1600.0, p.X, 2.0)
+	assert.InDelta(t, 800.0, p.Y, 2.0)
+}
+
+func TestFitTrack_TooFew(t *testing.T) {
+	_, ok := FitTrack([]Obs{{T: 0, P: Point{1, 1}}})
+	assert.False(t, ok)
 }
 
 func TestMidTimeAndMiddleFrame(t *testing.T) {
@@ -80,6 +105,35 @@ func TestDetect_FindsComaNotStars(t *testing.T) {
 	require.True(t, ok, "the coma must be detected")
 	assert.InDelta(t, float64(cx), p.X, 2.0, "centroid x near the coma")
 	assert.InDelta(t, float64(cy), p.Y, 2.0, "centroid y near the coma")
+}
+
+// blobImage builds a small frame with a smooth Gaussian blob (the "coma") at (cx,cy).
+func blobImage(w, h int, cx, cy, sigma float64) *fits.Image {
+	im := fits.NewImage(w, h, 1)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			dx, dy := float64(x)-cx, float64(y)-cy
+			im.Pix[0][y*w+x] = float32(0.02 + math.Exp(-(dx*dx+dy*dy)/(2*sigma*sigma)))
+		}
+	}
+	return im
+}
+
+func TestAlignToReference_RecoversShift(t *testing.T) {
+	const w, h = 200, 160
+	ref := blobImage(w, h, 100, 80, 9)
+	tests := []struct{ name string; tx, ty, wantDx, wantDy float64 }{
+		{"integer shift", 104, 75, -4, 5},
+		{"sub-pixel shift", 102.5, 81.5, -2.5, -1.5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := blobImage(w, h, tt.tx, tt.ty, 9) // coma offset from the reference
+			dx, dy := AlignToReference(ref, target, Point{100, 80}, 40, 12)
+			assert.InDelta(t, tt.wantDx, dx, 0.5, "dx")
+			assert.InDelta(t, tt.wantDy, dy, 0.5, "dy")
+		})
+	}
 }
 
 func TestDetect_FlatFieldNoComet(t *testing.T) {

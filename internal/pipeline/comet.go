@@ -9,6 +9,7 @@ import (
 
 	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/comet"
+	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/grade"
 	"github.com/verove-jordan/astronomy/internal/inspect"
@@ -100,7 +101,7 @@ func ProcessComet(ctx context.Context, opts Options) (*Result, error) {
 
 	// 5. Combine each side into a colour image, then StarNet-separate and screen the stars back.
 	opts.report(Progress{Step: "compositing comet + stars", Index: 4, Total: 4})
-	finishComet(ctx, opts, res, starMasters, cometMasters, haveTrack, outDir)
+	finishComet(ctx, opts, res, starMasters, cometMasters, haveTrack, pMid, outDir)
 
 	if res.Final != nil {
 		for _, o := range res.Final.Outputs {
@@ -202,55 +203,74 @@ func gradeMergedComet(mergedDir string, mframes []*inspect.Frame, gradeOpts grad
 	return metrics
 }
 
-// cometTrack locates the comet at the earliest and latest registered survivor frames (auto-centroid, or
-// the preset's manual override) and builds the linear motion track. ok=false → no usable track.
+// cometMaxDetect caps how many frames are centroided for the track fit (time-spread); ~40 is plenty to
+// average out single-frame coma-centroid noise while keeping detection a small fraction of the run.
+const cometMaxDetect = 40
+
+// cometTrack builds the comet's motion track. It prefers the preset's manual 2-point override; otherwise
+// it auto-detects the coma centroid in many time-spread registered frames and **robustly fits** the motion
+// line. A single diffuse coma is too noisy to centroid reliably, so a 2-point track misregisters the comet
+// per channel (the visible R/G/B colour separation) — averaging many detections is what fixes it.
 func cometTrack(opts Options, mergedDir string, mframes []*inspect.Frame, metrics []grade.Metric, res *Result) (comet.Track, bool) {
-	first, last := -1, -1
+	order := survivorsByTime(mergedDir, mframes, metrics)
+	if len(order) < 2 {
+		res.Warnings = append(res.Warnings, "comet: no timestamped registered frames — comet alignment skipped")
+		return comet.Track{}, false
+	}
+	if tr, ok := manualTrack(opts, mframes, order); ok {
+		return tr, true
+	}
+	obs := detectComet(mergedDir, mframes, order)
+	tr, ok := comet.FitTrack(obs)
+	if !ok {
+		res.Warnings = append(res.Warnings, "comet: could not detect the comet in enough frames (provide a manual position) — comet alignment skipped")
+		return comet.Track{}, false
+	}
+	res.Warnings = append(res.Warnings, fmt.Sprintf("comet: motion track fitted from %d/%d detections", len(obs), len(order)))
+	return tr, true
+}
+
+// survivorsByTime returns registered, graded-in, timestamped frame indices in chronological order.
+func survivorsByTime(mergedDir string, mframes []*inspect.Frame, metrics []grade.Metric) []int {
+	var idx []int
 	for i := range mframes {
 		if metrics[i].Rejected || mframes[i].DateObsMs == 0 || !fileExists(regCometPath(mergedDir, i)) {
 			continue
 		}
-		if first < 0 || mframes[i].DateObsMs < mframes[first].DateObsMs {
-			first = i
-		}
-		if last < 0 || mframes[i].DateObsMs > mframes[last].DateObsMs {
-			last = i
-		}
+		idx = append(idx, i)
 	}
-	if first < 0 || last < 0 || first == last {
-		res.Warnings = append(res.Warnings, "comet: no timestamped registered frames — comet alignment skipped")
-		return comet.Track{}, false
-	}
-	p0, ok0 := cometPoint(opts, true, regCometPath(mergedDir, first))
-	p1, ok1 := cometPoint(opts, false, regCometPath(mergedDir, last))
-	if !ok0 || !ok1 {
-		res.Warnings = append(res.Warnings, "comet: could not auto-detect the comet (provide a manual position) — comet alignment skipped")
-		return comet.Track{}, false
-	}
-	tr, err := comet.NewTrack(p0, mframes[first].DateObsMs, p1, mframes[last].DateObsMs)
-	if err != nil {
-		res.Warnings = append(res.Warnings, "comet: "+err.Error())
-		return comet.Track{}, false
-	}
-	return tr, true
+	sort.Slice(idx, func(a, b int) bool { return mframes[idx[a]].DateObsMs < mframes[idx[b]].DateObsMs })
+	return idx
 }
 
-// cometPoint returns the comet position in a registered frame — the preset's manual override when set
-// (registered-frame pixel coordinates), else the auto-detected centroid.
-func cometPoint(opts Options, isFirst bool, regPath string) (comet.Point, bool) {
-	if opts.Preset != nil {
-		if isFirst && opts.Preset.CometX1 > 0 && opts.Preset.CometY1 > 0 {
-			return comet.Point{X: opts.Preset.CometX1, Y: opts.Preset.CometY1}, true
-		}
-		if !isFirst && opts.Preset.CometX2 > 0 && opts.Preset.CometY2 > 0 {
-			return comet.Point{X: opts.Preset.CometX2, Y: opts.Preset.CometY2}, true
+// detectComet auto-detects the coma centroid in up to cometMaxDetect time-spread frames (only confident
+// detections are returned; faint frames where nothing stands out are skipped, not added as bad points).
+func detectComet(mergedDir string, mframes []*inspect.Frame, order []int) []comet.Obs {
+	step := 1
+	if len(order) > cometMaxDetect {
+		step = len(order) / cometMaxDetect
+	}
+	var obs []comet.Obs
+	for k := 0; k < len(order); k += step {
+		i := order[k]
+		if p, ok, err := comet.DetectFile(regCometPath(mergedDir, i), comet.DefaultBlurRadius, comet.DefaultWindow); err == nil && ok {
+			obs = append(obs, comet.Obs{T: mframes[i].DateObsMs, P: p})
 		}
 	}
-	p, ok, err := comet.DetectFile(regPath, comet.DefaultBlurRadius, comet.DefaultWindow)
-	if err != nil {
-		return comet.Point{}, false
+	return obs
+}
+
+// manualTrack builds a 2-point track from the preset's manual comet positions (registered-frame pixel
+// coords) anchored at the earliest and latest survivor times. ok=false when not fully specified.
+func manualTrack(opts Options, mframes []*inspect.Frame, order []int) (comet.Track, bool) {
+	if opts.Preset == nil || opts.Preset.CometX1 <= 0 || opts.Preset.CometY1 <= 0 || opts.Preset.CometX2 <= 0 || opts.Preset.CometY2 <= 0 {
+		return comet.Track{}, false
 	}
-	return p, ok
+	first, last := order[0], order[len(order)-1]
+	tr, err := comet.NewTrack(
+		comet.Point{X: opts.Preset.CometX1, Y: opts.Preset.CometY1}, mframes[first].DateObsMs,
+		comet.Point{X: opts.Preset.CometX2, Y: opts.Preset.CometY2}, mframes[last].DateObsMs)
+	return tr, err == nil
 }
 
 // stackChannelsDual produces, per filter, a star-aligned master and (when a comet track is available) a
@@ -321,7 +341,7 @@ func stackAlignedDir(ctx context.Context, opts Options, seqDir, outBase string, 
 }
 
 // finishComet combines each side into a stretched colour image then composites the comet and stars.
-func finishComet(ctx context.Context, opts Options, res *Result, starMasters, cometMasters map[string]string, haveTrack bool, outDir string) {
+func finishComet(ctx context.Context, opts Options, res *Result, starMasters, cometMasters map[string]string, haveTrack bool, pMid comet.Point, outDir string) {
 	deg := backgroundDegree(ctx, opts)
 	bg := 0.06
 	if opts.Preset != nil && opts.Preset.BackgroundLevel > 0 {
@@ -331,6 +351,9 @@ func finishComet(ctx context.Context, opts Options, res *Result, starMasters, co
 	if !star {
 		res.Warnings = append(res.Warnings, "comet: no star image could be combined")
 		return
+	}
+	if haveTrack {
+		alignCometMasters(cometMasters, pMid, outDir, res) // cross-register the channels on the coma at p_mid
 	}
 	cometOK := haveTrack && combineComet(ctx, opts, cometMasters, outDir, "comet_color", deg, bg, res)
 	if !cometOK {
@@ -380,6 +403,50 @@ func starnetToFits(ctx context.Context, opts Options, outDir, inBase, outBase st
 	}
 	_, err := opts.Runner.Run(ctx, outDir, cometHdr+fmt.Sprintf("load %s\nsave %s\n", outBase, outBase), nil)
 	return err
+}
+
+// Cross-channel coma alignment tuning: a window a little larger than the coma, and a small search range
+// (the residual per-channel offset left after the track fit is only a few pixels).
+const (
+	comaAlignRadius = 70
+	comaMaxShift    = 16.0
+)
+
+// alignCometMasters cross-registers each per-channel comet master onto a reference channel using the coma
+// itself — spatial phase/cross-correlation over a window centred on the (now high-SNR) stacked coma —
+// removing the residual channel-to-channel offset the linear track leaves (the coma's shape differs by
+// filter, biasing its per-frame centroid). The masters are overwritten in place with the aligned pixels,
+// so the subsequent rgbcomp yields a single, well-registered colour comet.
+func alignCometMasters(cometMasters map[string]string, center comet.Point, outDir string, res *Result) {
+	ref := firstFilter(cometMasters) // L-first canonical order → broadband reference when present
+	if ref == "" || len(cometMasters) < 2 {
+		return
+	}
+	refImg, err := fits.ReadImage(filepath.Join(outDir, cometMasters[ref]+".fits"))
+	if err != nil {
+		return
+	}
+	// center is p_mid — the position every frame's coma was shifted to — so the correlation window sits on
+	// the comet, NOT on whatever bright star a blob detector would otherwise lock onto.
+	for filter, base := range cometMasters {
+		if filter == ref {
+			continue
+		}
+		path := filepath.Join(outDir, base+".fits")
+		tgt, err := fits.ReadImage(path)
+		if err != nil {
+			continue
+		}
+		dx, dy := comet.AlignToReference(refImg, tgt, center, comaAlignRadius, comaMaxShift)
+		if dx == 0 && dy == 0 {
+			continue
+		}
+		if err := comet.Translate(tgt, dx, dy).WriteFITS(path); err != nil {
+			res.Warnings = append(res.Warnings, "comet: align "+filter+": "+err.Error())
+			continue
+		}
+		res.Warnings = append(res.Warnings, fmt.Sprintf("comet: cross-aligned %s coma to %s by (%.2f, %.2f) px", filter, ref, dx, dy))
+	}
 }
 
 // combineComet assembles per-channel masters into one stretched colour image saved as outBase.fits/.tif/
