@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { fileUrl } from "@/services/api";
 import GenericTable, {
@@ -7,6 +7,7 @@ import GenericTable, {
 } from "@/components/Common/GenericTable.vue";
 import MetricsChart from "@/components/Dataviz/MetricsChart.vue";
 import ImageViewer from "@/components/Common/ImageViewer.vue";
+import FilePreviewButton from "@/components/Common/FilePreviewButton.vue";
 import FilterChip from "@/components/Common/FilterChip.vue";
 import IconCheck from "@/components/Icons/IconCheck.vue";
 import IconMinus from "@/components/Icons/IconMinus.vue";
@@ -29,6 +30,46 @@ const finalVideo = computed(() => {
   const out = props.result.final?.outputs?.find((o) => o.endsWith(".mp4"));
   return out ? fileUrl(out) : "";
 });
+
+// Channel switcher: flip the preview between the final composite and each channel. Channel PNGs load
+// only when selected (deferred). Ordered by the canonical filter sequence (L, R, G, B, Ha, …).
+const FILTER_ORDER = ["L", "R", "G", "B", "Ha", "OIII", "SII"];
+const channelViews = computed(() =>
+  (props.result.channels ?? [])
+    .filter((c) => c.preview_path)
+    .slice()
+    .sort(
+      (a, b) =>
+        (FILTER_ORDER.indexOf(a.filter) + 1 || 99) -
+        (FILTER_ORDER.indexOf(b.filter) + 1 || 99),
+    )
+    .map((c) => ({ filter: c.filter, src: fileUrl(c.preview_path as string) })),
+);
+const activeView = ref("final"); // "final" or a channel filter name
+const activeSrc = computed(() =>
+  activeView.value === "final"
+    ? finalImage.value
+    : (channelViews.value.find((v) => v.filter === activeView.value)?.src ??
+      finalImage.value),
+);
+// Reset to the composite whenever a different run is opened (the component instance is reused).
+watch(
+  () => props.result,
+  () => {
+    activeView.value = "final";
+  },
+);
+
+// Integration (exposure) time that went into the final image: per channel = stacked subs × per-sub
+// exposure, and the sum across channels.
+const integrationByChannel = computed(() =>
+  (props.result.channels ?? [])
+    .map((c) => ({ filter: c.filter, ms: c.stacked_frames * c.exposure_ms }))
+    .filter((c) => c.ms > 0),
+);
+const totalIntegrationMs = computed(() =>
+  integrationByChannel.value.reduce((sum, c) => sum + c.ms, 0),
+);
 
 const channelRows = computed<Row[]>(() =>
   (props.result.channels ?? []).map((c) => ({
@@ -115,6 +156,7 @@ const channelsWithMetrics = computed<ChannelResult[]>(() =>
 function metricRows(c: ChannelResult): Row[] {
   return (c.metrics ?? []).map((m) => ({
     index: m.index,
+    path: m.path,
     file: baseName(m.path),
     fwhm: m.fwhm,
     roundness: m.roundness,
@@ -148,6 +190,7 @@ const metricColumns: Column<Row>[] = [
     searchable: true,
   },
   { key: "reason", label: t("fields.reason"), searchable: true },
+  { key: "view", label: "", align: "right" },
 ];
 const rejectedClass = (r: Row) =>
   r.status === "rejected"
@@ -164,7 +207,61 @@ const rejectedClass = (r: Row) =>
           {{ result.final?.mode }} · {{ result.final?.channels?.join("+") }}
         </span>
       </h2>
-      <ImageViewer :src="finalImage" alt="final stack" />
+      <div
+        v-if="totalIntegrationMs > 0"
+        class="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm"
+      >
+        <span class="text-slate-600 dark:text-slate-300">
+          {{ t("capture.integration") }}:
+          <span class="font-semibold text-brand-600 dark:text-brand-300">{{
+            humanizeMs(totalIntegrationMs)
+          }}</span>
+        </span>
+        <span
+          v-for="c in integrationByChannel"
+          :key="c.filter"
+          class="inline-flex items-center gap-1.5"
+        >
+          <FilterChip :filter="c.filter" />
+          <span class="text-slate-500 dark:text-slate-400">{{
+            humanizeMs(c.ms)
+          }}</span>
+        </span>
+      </div>
+      <!-- Channel switcher: flip the preview between the final composite and each channel -->
+      <div
+        v-if="channelViews.length"
+        class="mb-2 flex flex-wrap items-center gap-1.5"
+      >
+        <button
+          type="button"
+          class="rounded-md border px-2.5 py-1 text-xs font-medium transition-colors"
+          :class="
+            activeView === 'final'
+              ? 'border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-900/30 dark:text-brand-200'
+              : 'border-slate-200 text-slate-600 hover:border-brand-400 dark:border-slate-700 dark:text-slate-300'
+          "
+          @click="activeView = 'final'"
+        >
+          {{ t("job.finalView") }}
+        </button>
+        <button
+          v-for="v in channelViews"
+          :key="v.filter"
+          type="button"
+          class="rounded-md transition-transform"
+          :class="
+            activeView === v.filter
+              ? 'ring-2 ring-brand-500 ring-offset-1 dark:ring-offset-slate-900'
+              : 'opacity-75 hover:opacity-100'
+          "
+          :aria-label="v.filter"
+          @click="activeView = v.filter"
+        >
+          <FilterChip :filter="v.filter" />
+        </button>
+      </div>
+      <ImageViewer :src="activeSrc" :alt="activeView" />
       <video
         v-if="finalVideo"
         :src="finalVideo"
@@ -252,6 +349,9 @@ const rejectedClass = (r: Row) =>
             >
               {{ value === "rejected" ? t("job.rejected") : t("job.kept") }}
             </span>
+          </template>
+          <template #cell-view="{ row }">
+            <FilePreviewButton :path="String(row.path)" />
           </template>
         </GenericTable>
       </div>

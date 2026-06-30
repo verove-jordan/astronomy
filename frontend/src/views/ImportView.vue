@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, nextTick } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useBrowseStore } from "@/stores/browse";
@@ -14,15 +14,21 @@ import FileBrowser from "@/components/Common/FileBrowser.vue";
 import CaptureSummary from "@/components/Capture/CaptureSummary.vue";
 import FilterMappingEditor from "@/components/Capture/FilterMappingEditor.vue";
 import ReusePanel from "@/components/Capture/ReusePanel.vue";
-import type { ReusePreview } from "@/types";
+import FilePreviewButton from "@/components/Common/FilePreviewButton.vue";
+import CollapsibleCard from "@/components/Common/CollapsibleCard.vue";
+import StatusPill from "@/components/Common/StatusPill.vue";
+import IconFolder from "@/components/Icons/IconFolder.vue";
+import type { CreateOpts } from "@/stores/jobs";
+import type { ReusePreview, ProcessingHistoryEntry } from "@/types";
 import {
   btnPrimary,
+  btnGhost,
   card,
   input,
   frameTypeAccentClass,
   frameTypeCardClass,
 } from "@/constants/styles";
-import { humanizeMs } from "@/utils/format";
+import { humanizeMs, baseName, formatTimestamp } from "@/utils/format";
 import type { FrameSet } from "@/types";
 
 const router = useRouter();
@@ -30,7 +36,7 @@ const { t } = useI18n();
 const browseStore = useBrowseStore();
 const jobsStore = useJobsStore();
 
-const selectedPath = ref("");
+const selectedPaths = ref<string[]>([]);
 const rootPath = ref("");
 const selectedMode = ref("deepsky");
 const selectedFormat = ref("image");
@@ -40,13 +46,33 @@ const launching = ref(false);
 const colorCalibration = ref(true);
 const denoise = ref(true);
 const dropWheelTransition = ref(true);
+const haExcludeStars = ref(true); // default: Hα on the galaxy/nebulosity only; uncheck → over everything
+// Opt-in: drive the local AI agent to auto-tune the finish (deepsky/nebula only). Off by default.
+const supervise = ref(false);
 
-const modes = ["deepsky", "nebula", "milkyway", "planetary"];
+const modes = ["deepsky", "nebula", "milkyway", "planetary", "comet"];
 const formats = ["image", "video", "both"];
+
+// Milky-Way nightscape render style (foreground composite + linear grade); only shown for milkyway.
+const look = ref("natural");
+const looks = ["natural", "iphone", "deepsky"];
+// Sky brightness target for the nightscape auto-levels (data-driven stretch); balanced is the default.
+const brightness = ref("balanced");
+const brightnesses = ["darker", "balanced", "brighter"];
+// Optional calibration-frame folders (dark/flat/bias) applied before stacking; empty = none.
+const darkDir = ref("");
+const flatDir = ref("");
+const biasDir = ref("");
+const isMilkyway = computed(() => selectedMode.value === "milkyway");
+// The supervisor tunes the LRGB/combine finish, which only runs for deepsky/nebula.
+const supportsSupervise = computed(
+  () => selectedMode.value === "deepsky" || selectedMode.value === "nebula",
+);
 
 onMounted(async () => {
   await browseStore.browse();
   rootPath.value = browseStore.path;
+  browseStore.loadProcessed(); // mark folders already used in a past processing
 });
 
 async function openDir(path: string) {
@@ -73,10 +99,10 @@ const reuseSelectionForRun = computed(() =>
     : reuseSelected.value,
 );
 
-async function inspectSelected(path: string) {
-  selectedPath.value = path;
-  await browseStore.inspect(path);
-  reusePreview.value = await jobsStore.previewReuse(path);
+async function inspectSelected(paths: string[]) {
+  selectedPaths.value = paths;
+  await browseStore.inspect(paths);
+  reusePreview.value = await jobsStore.previewReuse(paths);
   // Default: fold in every discovered prior session (user can deselect).
   reuseSelected.value = (reusePreview.value?.reuse.sessions ?? []).map(
     (s) => s.session_id,
@@ -179,32 +205,124 @@ const calibColumns: Column<Row>[] = [
   },
 ];
 
-const canRun = computed(
-  () => !!selectedPath.value && !!inv.value && !launching.value,
+// Individual files (with paths) for the click-to-view file viewer — the set tables omit frame paths.
+const fileRows = computed<Row[]>(() =>
+  (inv.value?.frames ?? []).map((f) => ({
+    name: f.path.split("/").pop() || f.path,
+    path: f.path,
+    type: f.type,
+    filter: f.filter || "",
+    exposure_ms: f.exposure_ms,
+    dims: f.width && f.height ? `${f.width}×${f.height}` : "",
+  })),
 );
+const fileColumns: Column<Row>[] = [
+  { key: "name", label: t("fields.file"), sortable: true, searchable: true },
+  { key: "type", label: t("fields.type"), sortable: true, searchable: true },
+  {
+    key: "filter",
+    label: t("fields.filter"),
+    sortable: true,
+    searchable: true,
+  },
+  {
+    key: "exposure_ms",
+    label: t("fields.exposure"),
+    sortable: true,
+    format: ms,
+  },
+  { key: "dims", label: t("fields.dimensions") },
+  { key: "view", label: "", align: "right" },
+];
+
+const canRun = computed(
+  () => selectedPaths.value.length > 0 && !!inv.value && !launching.value,
+);
+
+// One path → show it; several → a count (the pills in the browser already list them).
+const summaryPath = computed(() => {
+  if (selectedPaths.value.length === 1) return selectedPaths.value[0];
+  if (selectedPaths.value.length)
+    return t("import.nFolders", { n: selectedPaths.value.length });
+  return "";
+});
+
+// The run options shared by "Run" (immediate) and "Add to queue" (sequential lane).
+function runOpts(): CreateOpts {
+  return {
+    paths: selectedPaths.value,
+    filterMap: overrides.value,
+    colorCalibration: colorCalibration.value,
+    denoise: denoise.value,
+    haExcludeStars: haExcludeStars.value,
+    dropWheelTransition: dropWheelTransition.value,
+    supervise: supportsSupervise.value && supervise.value,
+    look: isMilkyway.value ? look.value : undefined,
+    brightness: isMilkyway.value ? brightness.value : undefined,
+    darkDir: isMilkyway.value ? darkDir.value || undefined : undefined,
+    flatDir: isMilkyway.value ? flatDir.value || undefined : undefined,
+    biasDir: isMilkyway.value ? biasDir.value || undefined : undefined,
+    inventory: inv.value,
+    reuseDisabled: reuseDisabledForRun.value,
+    // Only send a session list when the user deselected some; empty = fold in all discovered.
+    reuseSessions: reuseSelectionForRun.value,
+  };
+}
 
 async function runPipeline() {
   launching.value = true;
   try {
     const id = await jobsStore.create(
-      selectedPath.value,
+      selectedPaths.value[0],
       selectedMode.value,
       selectedFormat.value,
-      {
-        filterMap: overrides.value,
-        colorCalibration: colorCalibration.value,
-        denoise: denoise.value,
-        dropWheelTransition: dropWheelTransition.value,
-        inventory: inv.value,
-        reuseDisabled: reuseDisabledForRun.value,
-        // Only send a session list when the user deselected some; empty = fold in all discovered.
-        reuseSessions: reuseSelectionForRun.value,
-      },
+      runOpts(),
     );
     router.push({ name: "job", params: { id: String(id) } });
   } finally {
     launching.value = false;
   }
+}
+
+// Add to queue: enqueue a sequential job and stay on the page so the user can stack more. The chain runs
+// one-at-a-time, auto-advancing — visible in the Tasks tab.
+const queuedCount = ref(0);
+async function queuePipeline() {
+  launching.value = true;
+  try {
+    await jobsStore.create(
+      selectedPaths.value[0],
+      selectedMode.value,
+      selectedFormat.value,
+      { ...runOpts(), sequential: true },
+    );
+    queuedCount.value++;
+    browseStore.loadProcessed(); // surface the just-queued set in the Processing history
+  } finally {
+    launching.value = false;
+  }
+}
+
+// Re-run a past folder-set: re-select the folders that still exist, restore mode/format, inspect, and
+// scroll to the run controls. Deleted folders are dropped (the chips show them crossed-out).
+const runControls = ref<HTMLElement | null>(null);
+async function useHistory(entry: ProcessingHistoryEntry) {
+  const existing = entry.paths.filter((p) => p.exists).map((p) => p.path);
+  if (!existing.length) return;
+  browseStore.selectPaths(existing);
+  if (entry.mode && modes.includes(entry.mode)) selectedMode.value = entry.mode;
+  if (entry.format && formats.includes(entry.format))
+    selectedFormat.value = entry.format;
+  await inspectSelected(existing);
+  await nextTick();
+  runControls.value?.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+// Chip style for a history folder: muted + struck-through when the folder no longer exists on disk.
+function histChip(exists: boolean): string {
+  return exists
+    ? "inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 dark:border-slate-700 dark:text-slate-300"
+    : "inline-flex items-center gap-1 rounded-md border border-dashed border-slate-300 px-2 py-1 text-xs text-slate-400 line-through dark:border-slate-600 dark:text-slate-500";
 }
 </script>
 
@@ -223,16 +341,70 @@ async function runPipeline() {
         :root="rootPath"
         :entries="browseStore.entries"
         :loading="browseStore.loading"
-        :selected="selectedPath"
+        :selected="browseStore.selected"
         :error="browseStore.error"
+        :fetch-children="browseStore.listDir"
+        :processed="browseStore.processedByPath"
         @navigate="openDir"
         @inspect="inspectSelected"
+        @toggle="browseStore.toggleSelected"
+        @clear-selection="browseStore.clearSelected"
       />
     </div>
 
+    <!-- Processing history: re-run a past folder-set (deleted folders shown crossed-out) -->
+    <CollapsibleCard
+      v-if="browseStore.processingHistory.length"
+      :title="t('import.history.title')"
+      storage-key="astrostack.import.history"
+    >
+      <ul class="max-h-72 space-y-3 overflow-y-auto">
+        <li
+          v-for="entry in browseStore.processingHistory"
+          :key="entry.jobId"
+          class="rounded-md border border-slate-200 p-2 dark:border-slate-700"
+        >
+          <div class="flex flex-wrap items-center gap-2">
+            <StatusPill :status="entry.status" />
+            <span class="text-sm font-medium">{{
+              entry.object || t("import.history.untitled")
+            }}</span>
+            <span class="text-xs text-slate-400">
+              {{ entry.mode ? t("run.modes." + entry.mode) : "" }} ·
+              {{ formatTimestamp(entry.createdAtMs) }}
+              <template v-if="entry.runs > 1">
+                · {{ t("import.history.runs", { n: entry.runs }) }}</template
+              >
+            </span>
+            <button
+              :class="btnGhost"
+              class="ml-auto !px-2 !py-1 !text-xs"
+              :disabled="!entry.paths.some((p) => p.exists)"
+              @click="useHistory(entry)"
+            >
+              {{ t("import.history.useAgain") }}
+            </button>
+          </div>
+          <div class="mt-1.5 flex flex-wrap gap-1.5">
+            <span
+              v-for="p in entry.paths"
+              :key="p.path"
+              :class="histChip(p.exists)"
+              :title="
+                p.exists ? p.path : t('import.history.deleted') + ': ' + p.path
+              "
+            >
+              <IconFolder class="h-3 w-3 shrink-0" />
+              {{ baseName(p.path) }}
+            </span>
+          </div>
+        </li>
+      </ul>
+    </CollapsibleCard>
+
     <!-- Selected capture + channel mapping + run controls -->
     <div v-if="inv" class="grid gap-4 lg:grid-cols-2">
-      <CaptureSummary :summary="summary" :path="selectedPath" />
+      <CaptureSummary :summary="summary" :path="summaryPath" />
       <FilterMappingEditor
         v-if="detectedFilters.length"
         v-model="mapping"
@@ -248,13 +420,13 @@ async function runPipeline() {
       :preview="reusePreview"
     />
 
-    <div :class="card">
+    <div ref="runControls" :class="card">
       <div class="flex flex-wrap items-end gap-4">
         <label class="text-sm">
           <span class="mb-1 block text-xs font-medium text-slate-500">{{
             t("run.mode")
           }}</span>
-          <select v-model="selectedMode" :class="input">
+          <select v-model="selectedMode" :class="input" data-demo="run-mode">
             <option v-for="mo in modes" :key="mo" :value="mo">
               {{ t("run.modes." + mo) }}
             </option>
@@ -264,9 +436,33 @@ async function runPipeline() {
           <span class="mb-1 block text-xs font-medium text-slate-500">{{
             t("run.format")
           }}</span>
-          <select v-model="selectedFormat" :class="input">
+          <select
+            v-model="selectedFormat"
+            :class="input"
+            data-demo="run-format"
+          >
             <option v-for="fmt in formats" :key="fmt" :value="fmt">
               {{ t("run.formats." + fmt) }}
+            </option>
+          </select>
+        </label>
+        <label v-if="isMilkyway" class="text-sm">
+          <span class="mb-1 block text-xs font-medium text-slate-500">{{
+            t("run.look")
+          }}</span>
+          <select v-model="look" :class="input">
+            <option v-for="lk in looks" :key="lk" :value="lk">
+              {{ t("run.looks." + lk) }}
+            </option>
+          </select>
+        </label>
+        <label v-if="isMilkyway" class="text-sm">
+          <span class="mb-1 block text-xs font-medium text-slate-500">{{
+            t("run.brightness")
+          }}</span>
+          <select v-model="brightness" :class="input">
+            <option v-for="b in brightnesses" :key="b" :value="b">
+              {{ t("run.brightnesses." + b) }}
             </option>
           </select>
         </label>
@@ -276,28 +472,124 @@ async function runPipeline() {
               v-model="colorCalibration"
               type="checkbox"
               class="accent-brand-500"
+              data-demo="opt-colorCalibration"
             />
             {{ t("run.colorCalibration") }}
           </label>
           <label class="flex items-center gap-2">
-            <input v-model="denoise" type="checkbox" class="accent-brand-500" />
+            <input
+              v-model="denoise"
+              type="checkbox"
+              class="accent-brand-500"
+              data-demo="opt-denoise"
+            />
             {{ t("run.denoise") }}
+          </label>
+          <label class="flex items-center gap-2">
+            <input
+              v-model="haExcludeStars"
+              type="checkbox"
+              class="accent-brand-500"
+              data-demo="opt-haExcludeStars"
+            />
+            {{ t("run.haExcludeStars") }}
           </label>
           <label class="flex items-center gap-2">
             <input
               v-model="dropWheelTransition"
               type="checkbox"
               class="accent-brand-500"
+              data-demo="opt-dropWheelTransition"
             />
             {{ t("run.dropTransition") }}
           </label>
+          <label
+            v-if="supportsSupervise"
+            class="flex items-center gap-2"
+            :title="t('run.superviseHint')"
+          >
+            <input
+              v-model="supervise"
+              type="checkbox"
+              class="accent-brand-500"
+              data-demo="opt-supervise"
+            />
+            {{ t("run.supervise") }}
+          </label>
         </div>
-        <button :class="btnPrimary" :disabled="!canRun" @click="runPipeline">
+        <button
+          :class="btnPrimary"
+          :disabled="!canRun"
+          data-demo="run-pipeline"
+          @click="runPipeline"
+        >
           {{ t("common.run") }}
         </button>
+        <button
+          :class="btnGhost"
+          :disabled="!canRun"
+          :title="t('run.addToQueueHint')"
+          @click="queuePipeline"
+        >
+          {{ t("run.addToQueue") }}
+        </button>
       </div>
-      <p v-if="!selectedPath" class="mt-2 text-xs text-slate-400">
+
+      <!-- Optional calibration-frame folders (milkyway): point at separate dark/flat/bias dirs. -->
+      <details v-if="isMilkyway" class="mt-3 text-sm">
+        <summary class="cursor-pointer text-xs font-medium text-slate-500">
+          {{ t("run.calibration") }}
+        </summary>
+        <div class="mt-2 grid gap-3 sm:grid-cols-3">
+          <label class="text-sm">
+            <span class="mb-1 block text-xs font-medium text-slate-500">{{
+              t("run.darks")
+            }}</span>
+            <input
+              v-model="darkDir"
+              type="text"
+              :placeholder="t('run.calibPlaceholder')"
+              :class="input"
+            />
+          </label>
+          <label class="text-sm">
+            <span class="mb-1 block text-xs font-medium text-slate-500">{{
+              t("run.flats")
+            }}</span>
+            <input
+              v-model="flatDir"
+              type="text"
+              :placeholder="t('run.calibPlaceholder')"
+              :class="input"
+            />
+          </label>
+          <label class="text-sm">
+            <span class="mb-1 block text-xs font-medium text-slate-500">{{
+              t("run.bias")
+            }}</span>
+            <input
+              v-model="biasDir"
+              type="text"
+              :placeholder="t('run.calibPlaceholder')"
+              :class="input"
+            />
+          </label>
+        </div>
+      </details>
+      <p v-if="!selectedPaths.length" class="mt-2 text-xs text-slate-400">
         {{ t("import.selectCapture") }}
+      </p>
+      <p
+        v-if="queuedCount"
+        class="mt-2 text-xs text-success-600 dark:text-success-300"
+      >
+        {{ t("import.queuedToast", { n: queuedCount }) }}
+        <router-link
+          :to="{ name: 'jobs' }"
+          class="font-medium underline hover:text-success-700 dark:hover:text-success-200"
+        >
+          {{ t("import.viewQueue") }}
+        </router-link>
       </p>
     </div>
 
@@ -340,6 +632,23 @@ async function runPipeline() {
           <template #cell-filter="{ value }">
             <FilterChip v-if="value" :filter="String(value)" />
             <span v-else class="text-slate-400">—</span>
+          </template>
+        </GenericTable>
+      </section>
+
+      <section v-if="fileRows.length">
+        <h2 class="mb-2 text-lg font-medium">{{ t("import.files") }}</h2>
+        <GenericTable
+          :columns="fileColumns"
+          :rows="fileRows"
+          max-height="28rem"
+        >
+          <template #cell-filter="{ value }">
+            <FilterChip v-if="value" :filter="String(value)" />
+            <span v-else class="text-slate-400">—</span>
+          </template>
+          <template #cell-view="{ row }">
+            <FilePreviewButton :path="String(row.path)" />
           </template>
         </GenericTable>
       </section>

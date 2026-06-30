@@ -51,6 +51,22 @@ continues on the Siril/GIMP path. They are invoked, never bundled (see CLAUDE.md
 Each run writes its outputs and a JSON/markdown report; with the API, the full report (including
 per-frame grades) is stored on the job and rendered in the web UI's frame-review page.
 
+### Optional AI finish supervisor (opt-in, `internal/pipeline/supervise.go` + `internal/llm`)
+
+When a run **opts in** (the Import page's "Run with local AI agent" checkbox, `process … --supervise`,
+or `astrostack refine <run-dir>`), the finish becomes a bounded optimisation loop instead of a single
+pass. The heavy prep (channel combine, GraXpert, SPCC, stretch) runs once; then the fast GIMP composite
+is re-rendered a few times with varied knobs (saturation, Ha screen/black-point, chroma blur, crop).
+Each render is scored by **deterministic image metrics** *and* a local **vision model** (a host-run,
+OpenAI-compatible server — e.g. mlx-vlm on `:1234`, started with `just run-ia-model`), combined as
+`0.6·metrics + 0.4·model`, and the best render is kept. Iterations (params, scores, reasoning, the
+chosen flag) are persisted and shown in the job's supervisor panel.
+
+It is **off by default and soft-fails**: with the box unticked or the model server unreachable, the
+finish is **byte-identical** to the standard pipeline. `refine` re-tunes an existing stack with **no
+re-stacking** (it reconstructs the channels from the run's `aligned_*`/`master_*` on disk). See
+`.env.example` (`ASTRO_LLM_*`) and the README's *AI finish supervisor* section.
+
 ### Cross-session reuse (`internal/pipeline/reuse.go`, `internal/calib/deep.go`)
 
 Every run records its scanned frames in the Postgres **catalog** (`frames` + a `targets` table of

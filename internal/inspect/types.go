@@ -24,6 +24,8 @@ const (
 	SourceExtension = "extension" // from the file extension (videos)
 	SourceSignal    = "signal"    // filter inferred from the signal via wheel-order detection
 	SourceManual    = "manual"    // filter set by an explicit user override
+	SourceManifest  = "manifest"  // filter/gain from an info.txt sidecar describing capture order
+	SourceWheel     = "wheel"     // filter named from the physical EFW slot (sidecar/filename) via a legend
 )
 
 // Frame is one capture file plus the metadata extracted from it.
@@ -40,12 +42,18 @@ type Frame struct {
 	BinY        int       `json:"bin_y"`
 	Width       int       `json:"width"`
 	Height      int       `json:"height"`
+	// Bayer is the colour-filter-array pattern (e.g. "GRBG") for one-shot-color frames; "" = monochrome.
+	// OSC frames must be debayered, so the mono per-filter pipeline excludes them.
+	Bayer string `json:"bayer,omitempty"`
 	Object      string    `json:"object,omitempty"`
 	Instrument  string    `json:"instrument,omitempty"`
 	Telescope   string    `json:"telescope,omitempty"`
 	DateObs     string    `json:"date_obs,omitempty"`
 	DateObsMs   int64     `json:"date_obs_ms,omitempty"`
 	ClassSource string    `json:"class_source"`
+	// WheelSlot is the physical filter-wheel (EFW) position, 1-based; 0 = unknown. Read from the
+	// SharpCap sidecar or the filename; named to a filter via a legend (info.txt / default order).
+	WheelSlot int `json:"wheel_slot,omitempty"`
 	// FilterConfidence is set when the filter was inferred from the signal (ClassSource "signal").
 	FilterConfidence float64 `json:"filter_confidence,omitempty"`
 	// WheelTransition marks a frame whose brightness is off because the filter wheel was still
@@ -146,4 +154,25 @@ func (inv *Inventory) SetsOfType(t FrameType) []Set {
 		}
 	}
 	return out
+}
+
+// ExcludeBayer removes one-shot-color (Bayer) frames from the inventory and rebuilds the sets, returning
+// how many were removed. The monochrome per-filter pipeline cannot stack OSC mosaics, so they are dropped
+// here (the caller warns); the OSC pipeline processes them instead.
+func (inv *Inventory) ExcludeBayer() int {
+	kept := inv.Frames[:0:0]
+	removed := 0
+	for _, fr := range inv.Frames {
+		if fr.Bayer != "" {
+			removed++
+			continue
+		}
+		kept = append(kept, fr)
+	}
+	if removed == 0 {
+		return 0
+	}
+	inv.Frames = kept
+	inv.Sets = buildSets(inv.Frames)
+	return removed
 }

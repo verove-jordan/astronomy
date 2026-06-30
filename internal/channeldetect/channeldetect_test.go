@@ -133,3 +133,16 @@ func TestDetect_Empty(t *testing.T) {
 	assert.Empty(t, res.Assignments)
 	assert.Equal(t, DefaultOptions().Order, res.Order)
 }
+
+// emissionFor must veto narrowband for star-rich runs: a faint run is only cheaply Ha when stars are
+// absent too, so a faint-but-star-rich (genuine broadband) run cannot avalanche to Ha. When star
+// richness carries no information (neutral 0.5), it reduces to brightness — preserving prior behavior.
+func TestEmissionFor_StarRichnessVetoesNarrowband(t *testing.T) {
+	// faint + star-poor → cheap narrowband
+	assert.InDelta(t, 0.0, emissionFor("Ha", 0.0, 0.0), 1e-9)
+	// faint + star-RICH → narrowband is dearer than broadband, so the run stays broadband
+	assert.Greater(t, emissionFor("Ha", 0.0, 1.0), emissionFor("R", 0.0, 1.0),
+		"a faint but star-rich run must prefer broadband over Ha")
+	// neutral (uninformative) richness → no penalty, narrowband cost is just the brightness blend
+	assert.InDelta(t, 0.5*0.3+0.5*0.5, emissionFor("Ha", 0.3, 0.5), 1e-9)
+}

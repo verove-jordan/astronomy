@@ -8,5 +8,23 @@
   }
   body {
     @apply bg-slate-50 text-slate-900 dark:bg-surface-deep dark:text-slate-100;
+    /* The app is a full-screen SPA: the window must never scroll sideways. A stray few-pixel
+       overflow (e.g. a wide table/map, or the classic-scrollbar vs content-width gap) otherwise
+       gives a phantom horizontal scrollbar with nothing to show. `clip` (not `hidden`) doesn't make
+       the body a scroll container, so the sticky header keeps working; all intended horizontal
+       scrolling stays inside its own `overflow-x-auto` containers (tables, maps). */
+    overflow-x: clip;
+  }
+}
+
+/* Indeterminate "still working" sweep for ProgressBar's active state — a highlight slides across the
+   fill so a near-full bar during a long final step still reads as in-progress, not frozen/complete.
+   Referenced by the JIT `animate-[shimmer_…]` utility; gated behind `motion-safe:` there. */
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
   }
 }

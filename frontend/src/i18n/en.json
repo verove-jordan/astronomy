@@ -5,24 +5,126 @@
     "logoAlt": "AstroStack logo"
   },
   "nav": {
+    "tonight": "Tonight",
+    "goto": "GoTo align",
+    "calendar": "Calendar",
     "import": "Import",
+    "livestack": "Live stack",
     "jobs": "Jobs",
     "runs": "Runs",
-    "library": "Calibration library"
+    "library": "Calibration library",
+    "processing": "Processing"
+  },
+  "goto": {
+    "title": "GoTo alignment assistant",
+    "subtitle": "Pick the best stars — in the best order — to calibrate your mount's GoTo from where the telescope is set up. Skip any star blocked by a house or tree and it is instantly replaced.",
+    "controls": {
+      "location": "Observing site",
+      "mount": "Mount / routine",
+      "count": "Alignment stars",
+      "time": "Time",
+      "specific": "Specific time",
+      "reset": "Reset sequence"
+    },
+    "profiles": {
+      "eq-generic": {
+        "label": "Equatorial (generic)",
+        "note": "German-equatorial mounts. A wide, bright spread for a strong pointing model."
+      },
+      "synscan-eq": {
+        "label": "SkyWatcher SynScan (EQ)",
+        "note": "1/2/3-star: bright stars on the same side of the meridian, well separated."
+      },
+      "celestron-eq": {
+        "label": "Celestron NexStar / AVX (EQ)",
+        "note": "Two align stars far apart on one side of the meridian (add calibration stars after)."
+      },
+      "altaz-generic": {
+        "label": "Alt-Az (generic)",
+        "note": "Alt-azimuth mounts. A wide spread in azimuth, away from the zenith and horizon."
+      },
+      "synscan-altaz": {
+        "label": "SkyWatcher SynScan (Alt-Az)",
+        "note": "Brightest-star / 2-star: two bright stars wide apart in azimuth."
+      },
+      "celestron-altaz": {
+        "label": "Celestron SkyAlign (Alt-Az)",
+        "note": "Three bright stars spread widely across the sky, in any direction."
+      }
+    },
+    "sequence": {
+      "title": "Alignment sequence",
+      "center": "Centered — next",
+      "skip": "Skip — blocked",
+      "undo": "Undo",
+      "accepted": "Centered",
+      "empty": "No stars available right now — lower the count, wait for more to rise, or change the mount profile."
+    },
+    "card": {
+      "look": "Look {dir} · {alt}° up",
+      "meridian": "{side} of meridian",
+      "east": "east",
+      "west": "west",
+      "magnitude": "mag {mag}"
+    },
+    "quality": {
+      "label": "Sequence quality"
+    },
+    "map": {
+      "title": "Sky map",
+      "legend": "Numbered = your alignment stars in order; the dashed path shows their spread."
+    },
+    "why": {
+      "title": "Why this matters",
+      "body": "Centering well-spread stars builds an accurate pointing model, so the mount tracks and slews precisely. Combined with good polar alignment, that lets you push longer exposures.",
+      "polarLink": "Polar alignment is on the Tonight page →"
+    }
+  },
+  "processing": {
+    "tabs": {
+      "import": "Import",
+      "live": "Live stack",
+      "tasks": "Tasks",
+      "runs": "Runs",
+      "library": "Library"
+    }
   },
   "run": {
     "mode": "Mode",
     "format": "Output",
     "colorCalibration": "Color-calibrate (SPCC)",
     "denoise": "Reduce noise",
+    "haExcludeStars": "Hα on nebulosity only (exclude stars)",
     "dropTransition": "Drop filter-wheel transition frames",
+    "supervise": "Run with local AI agent (experimental)",
+    "superviseHint": "Opt-in: a local vision model auto-tunes the finish (saturation, Hα, colour, crop) over a few iterations, keeping the best. Needs a host model server (ASTRO_LLM_URL). Deep-sky / nebula only.",
     "modes": {
       "deepsky": "Deep-sky",
       "nebula": "Nebula",
       "milkyway": "Milky Way",
-      "planetary": "Planetary"
+      "planetary": "Planetary",
+      "comet": "Comet"
     },
-    "formats": { "image": "Image", "video": "Video", "both": "Image + video" }
+    "formats": { "image": "Image", "video": "Video", "both": "Image + video" },
+    "look": "Look",
+    "looks": {
+      "natural": "Natural",
+      "iphone": "iPhone (warm core)",
+      "deepsky": "Punchy"
+    },
+    "brightness": "Brightness",
+    "brightnesses": {
+      "darker": "Darker",
+      "balanced": "Balanced",
+      "brighter": "Brighter"
+    },
+    "calibration": "Calibration frames (optional)",
+    "calibPlaceholder": "/path/to/folder",
+    "darks": "Darks",
+    "flats": "Flats",
+    "bias": "Bias / offset",
+    "addToQueue": "Add to queue",
+    "addToQueueHint": "Queue this processing to run after the others, one at a time."
   },
   "reuse": {
     "title": "Reuse prior data",
@@ -44,7 +146,10 @@
     "open": "Open",
     "up": "Up",
     "select": "Select",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "clear": "Clear",
+    "remove": "Remove",
+    "close": "Close"
   },
   "import": {
     "title": "Import & inspect",
@@ -58,9 +163,43 @@
     "openFolder": "Open folder",
     "selectCapture": "Select a capture folder above, then run.",
     "useFolder": "Inspect this folder",
+    "inspectN": "Inspect {n} folders",
+    "selectedCount": "{n} selected",
+    "nFolders": "{n} folders",
+    "selectFolder": "Add to selection",
     "noFolders": "No subfolders here.",
     "browseTitle": "Files",
-    "currentFolder": "Current folder"
+    "currentFolder": "Current folder",
+    "files": "Files",
+    "view": "View",
+    "processed": "Already processed",
+    "processedGroup": "Processed together · {n} folders",
+    "queuedToast": "Added to the processing queue ({n}).",
+    "viewQueue": "View in Tasks",
+    "history": {
+      "title": "Processing history",
+      "useAgain": "Use again",
+      "runs": "{n}× run",
+      "deleted": "Folder no longer exists",
+      "untitled": "Untitled"
+    }
+  },
+  "livestack": {
+    "title": "Live stacking",
+    "hint": "Watch a folder or S3 bucket and stack subs as they arrive. Press Stop to finish and produce the final master.",
+    "source": "Source",
+    "local": "Local folder",
+    "s3": "S3 bucket",
+    "pickFolder": "Browse to the folder you'll capture into — it can be empty to start.",
+    "useCurrent": "Watch this folder",
+    "watching": "Watching",
+    "bucket": "Bucket",
+    "prefix": "Prefix",
+    "s3hint": "Objects under this bucket/prefix are downloaded and stacked as they appear. Credentials come from the server environment, not here.",
+    "exposure": "Exposure (seconds)",
+    "exposureHint": "Per-sub exposure — drives the integration-time display and is a fallback when a file's header lacks it.",
+    "start": "Start live stacking",
+    "startHint": "Opens the live job: a refreshing preview, sub counter and logs. Stop & finalize when you're done."
   },
   "capture": {
     "summary": "Selected capture",
@@ -91,6 +230,7 @@
     "type": "Type",
     "frames": "Frames",
     "file": "File",
+    "dimensions": "Dimensions",
     "index": "#",
     "fwhm": "FWHM",
     "roundness": "Roundness",
@@ -107,10 +247,12 @@
   },
   "job": {
     "title": "Job",
+    "duration": "Duration",
     "progress": "Progress",
     "processing": "Processing",
     "result": "Result",
     "finalImage": "Final image",
+    "finalView": "Final",
     "livePreview": "Live preview",
     "channelsTitle": "Channels",
     "frameReview": "Frame review",
@@ -121,13 +263,26 @@
     "kept": "Kept",
     "download": "Download",
     "logs": "Live log",
+    "cpu": "CPU",
+    "memory": "RAM",
+    "peak": "Peak",
     "followTail": "Follow",
     "showLogs": "Show log",
     "hideLogs": "Hide log",
     "expandLogs": "Expand log",
     "collapseLogs": "Collapse log",
     "cancel": "Cancel run",
-    "cancelling": "Cancelling…"
+    "cancelling": "Cancelling…",
+    "stopFinalize": "Stop & finalize",
+    "remove": "Remove",
+    "queueBadge": "{n} queued"
+  },
+  "supervisor": {
+    "title": "Local AI agent — finish iterations",
+    "hint": "Each pass re-renders the finish and is scored by the local vision model; the best is kept.",
+    "chosen": "Chosen",
+    "iteration": "Iteration {n}",
+    "scoreSplit": "metrics {det} · model {model}"
   },
   "log": { "empty": "No log output yet." },
   "viewer": {
@@ -136,13 +291,21 @@
     "fit": "Fit to view",
     "reset": "Reset",
     "actualSize": "Actual size",
-    "navigator": "Navigator"
+    "navigator": "Navigator",
+    "black": "Black",
+    "white": "White",
+    "auto": "Auto",
+    "gamma": "Gamma",
+    "gammaHint": "Toggle gamma (eases deep stretches)",
+    "stretchReset": "Reset"
   },
   "runs": {
     "title": "Runs",
     "subtitle": "Every processed run, reopenable from disk.",
     "empty": "No runs yet — process a capture to see it here.",
-    "open": "Open"
+    "open": "Open",
+    "loadMore": "Load more",
+    "count": "{n} of {total}"
   },
   "library": {
     "title": "Calibration library",
@@ -154,5 +317,541 @@
     "succeeded": "Succeeded",
     "failed": "Failed",
     "cancelled": "Cancelled"
+  },
+  "darksky": {
+    "hint": "Draw an area on the map, set a maximum Bortle, then search for the darkest spots — optionally ranked by how open their ~360° horizon is.",
+    "drawArea": "Draw area",
+    "drawing": "Drag on the map…",
+    "maxBortle": "≤ Bortle {n}",
+    "evalHorizon": "Evaluate horizon openness",
+    "search": "Search",
+    "mapLabel": "Dark-sky search map",
+    "coords": "Coordinates",
+    "openMaps": "Open in Google Maps (Street View)",
+    "bortle": "Bortle",
+    "sqm": "SQM",
+    "elevation": "Elevation",
+    "openness": "Open horizon",
+    "distance": "Distance",
+    "locate": "Locate",
+    "useLocation": "Use",
+    "noResults": "No matching locations — try a larger area or a higher Bortle."
+  },
+  "tonight": {
+    "title": "Tonight's targets",
+    "subtitle": "Deep-sky objects ranked for imaging from your location and gear tonight.",
+    "empty": "No targets match your filters.",
+    "loading": "Computing tonight's sky…",
+    "refresh": "Refresh",
+    "autoRefresh": "Auto-refresh",
+    "updated": "Updated {time}",
+    "notVisible": "Not up tonight",
+    "time": { "specific": "Specific time" },
+    "location": {
+      "title": "Location",
+      "lat": "Latitude",
+      "lon": "Longitude",
+      "elevation": "Elevation (m)",
+      "useMyLocation": "Use my location",
+      "search": "Search address",
+      "searchPlaceholder": "City or address…",
+      "noResults": "No matching place.",
+      "map": "Click the map to set your site",
+      "manual": "Coordinates",
+      "favorites": {
+        "title": "Favorites",
+        "save": "Save this site",
+        "remove": "Remove from favorites",
+        "renameHint": "double-click to rename",
+        "namePlaceholder": "Site name"
+      }
+    },
+    "layers": {
+      "title": "Map layers",
+      "lightPollution": "Light pollution",
+      "legendDark": "Darker",
+      "legendBright": "Brighter",
+      "bortle": "Bortle",
+      "clouds": "Clouds",
+      "humidity": "Humidity",
+      "precip": "Rain chance"
+    },
+    "weather": {
+      "title": "Astronomy weather",
+      "subtitle": "Tonight's clouds, seeing, transparency and dew risk across the dark window.",
+      "loading": "Loading the forecast…",
+      "unavailable": "Weather is currently unavailable.",
+      "verdict": "Observability",
+      "best": "Best clear window",
+      "noWindow": "No clear window in the dark hours.",
+      "sources": "Source",
+      "legend": { "less": "less", "more": "more" },
+      "timeline": {
+        "play": "Play / pause the cloud animation",
+        "scrub": "Scrub through time",
+        "now": "Now",
+        "darkWindow": "Dark window"
+      },
+      "metrics": {
+        "clouds": "Cloud cover",
+        "seeing": "Seeing",
+        "transparency": "Transparency",
+        "humidity": "Humidity",
+        "dew": "Dew risk",
+        "wind": "Wind (km/h)",
+        "jet": "Jet stream (km/h)",
+        "instability": "Instability (LI)",
+        "aerosols": "Aerosols (AOD)"
+      },
+      "dewRisk": {
+        "low": "Low dew risk",
+        "moderate": "Watch for dew",
+        "high": "High dew risk"
+      },
+      "aurora": {
+        "label": "Aurora",
+        "unlikely": "unlikely",
+        "possible": "possible",
+        "likely": "likely"
+      }
+    },
+    "site": {
+      "label": "Bortle {bortle} · {sqm} mag/arcsec²",
+      "source": {
+        "api": "Live VIIRS light-pollution data",
+        "atlas": "Offline light-pollution atlas",
+        "viirs": "VIIRS night-lights (NASA Black Marble)",
+        "default": "Default sky brightness (no data)"
+      }
+    },
+    "equipment": {
+      "title": "Telescope & camera",
+      "focalLength": "Focal length (mm)",
+      "aperture": "Aperture (mm)",
+      "barlow": "Barlow (×)",
+      "barlowNone": "None",
+      "pixelSize": "Pixel size (µm)",
+      "sensorWidth": "Sensor width (px)",
+      "sensorHeight": "Sensor height (px)",
+      "fov": "Field of view",
+      "scale": "Image scale"
+    },
+    "mode": {
+      "title": "Mode",
+      "camera": "Camera",
+      "eyepiece": "Eyepiece"
+    },
+    "eyepieces": {
+      "title": "Eyepieces",
+      "focal": "Focal (mm)",
+      "afov": "Apparent field (°)",
+      "label": "Label",
+      "add": "Add eyepiece",
+      "remove": "Remove",
+      "empty": "Add at least one eyepiece.",
+      "hint": "focal mm · apparent field ° · label"
+    },
+    "visual": {
+      "title": "Visual / eyepiece",
+      "eyepiece": "Eyepiece",
+      "magnification": "Magnification",
+      "trueField": "True field",
+      "exitPupil": "Exit pupil",
+      "surfaceBrightness": "Surface brightness (mag/arcmin²)",
+      "noFit": "Wider than your widest eyepiece",
+      "exitWarn": "Exit pupil outside the comfortable 0.5–7 mm range"
+    },
+    "tabs": {
+      "targets": "Targets",
+      "polar": "Polar align",
+      "darksky": "Dark-sky finder"
+    },
+    "polar": {
+      "title": "Polar alignment",
+      "subtitle": "Put the pole star at the right spot on your polar-scope reticle for right now.",
+      "hemisphere": { "north": "Northern", "south": "Southern" },
+      "reticle": {
+        "placeHere": "Put the star in the orange circle",
+        "truePole": "true pole",
+        "polaris": "Polaris",
+        "sigmaOct": "σ Octantis",
+        "cassiopeia": "Cassiopeia",
+        "bigDipper": "Big Dipper",
+        "crux": "Crux",
+        "octans": "Octans",
+        "invertedView": "As seen through the scope (inverted)",
+        "erectView": "Naked-eye (erect) view",
+        "mirrored": "Mirrored (star diagonal)"
+      },
+      "panel": {
+        "clock": "Clock position",
+        "poleStar": "Pole star",
+        "hemisphere": "Hemisphere",
+        "ha": "Hour angle",
+        "separation": "Offset from pole",
+        "alt": "Altitude",
+        "az": "Azimuth",
+        "lst": "Sidereal time",
+        "latTooLow": "The celestial pole is too low here for a polar scope.",
+        "notVisible": "The pole star is below the horizon right now."
+      },
+      "orientation": {
+        "inverting": "Inverting (scope)",
+        "erect": "Erect (naked eye)",
+        "mirror": "Mirror (diagonal)",
+        "hint": "Most polar scopes invert the view. Match the on-screen reticle to what you actually see."
+      },
+      "time": {
+        "specific": "Specific time",
+        "autoRefresh": "Auto-refresh"
+      },
+      "tutorial": {
+        "title": "How to set up and use your polar scope",
+        "intro": "A practical walkthrough for a SkyWatcher polar scope on a Celestron Advanced VX — from one-time setup to using it under a dark sky.",
+        "s1": {
+          "title": "What polar alignment does",
+          "body": "Your mount's RA axis must point at the celestial pole so a single motor can track the sky. The polar scope lets you sight the pole star and place it precisely.",
+          "tips": [
+            "The pole is near — but not exactly at — the pole star.",
+            "Good alignment = long, round-star exposures and reliable go-to."
+          ]
+        },
+        "s2": {
+          "title": "One-time: collimate the polar scope to the RA axis",
+          "body": "Center a distant object on the reticle, rotate the RA axis 180°, and adjust the three grub screws to remove half the drift. Repeat until the object stays put as you rotate.",
+          "tips": [
+            "Do this once in daylight on a far landmark (or on Polaris at night).",
+            "Adjust the reticle grub screws, never the mount's alt/az bolts.",
+            "Tiny turns — the screws are sensitive."
+          ]
+        },
+        "s3": {
+          "title": "Set up the mount (Advanced VX)",
+          "body": "Level the tripod, set the latitude scale to your latitude, and aim the mount at TRUE north (or south), not magnetic north.",
+          "tips": [
+            "Use a bubble level; an unlevel tripod throws off the latitude setting.",
+            "Correct for magnetic declination between compass north and true north.",
+            "Pre-set the latitude bolt near your site latitude before you start."
+          ]
+        },
+        "s4": {
+          "title": "See the reticle at night",
+          "body": "At night you see stars but not the engraved reticle. Illuminate it dimly: shine a RED light obliquely into the front (objective) end, or use the mount's illuminator if fitted.",
+          "tips": [
+            "Red only — white light ruins your dark adaption.",
+            "A red phone screen held near the objective works in a pinch.",
+            "Keep it dim; too bright washes out faint Polaris."
+          ]
+        },
+        "s5": {
+          "title": "Place the pole star",
+          "body": "Rotate the RA axis until the reticle's pole-star marker is at the clock position shown above, then use the mount's ALT and AZ bolts (not RA) to move the star into the marker.",
+          "tips": [
+            "Match the on-screen orientation (inverting/erect) to your scope.",
+            "Move with the slow alt/az bolts; leave RA where you set it.",
+            "Center the star in the small circle, not on the true-pole cross."
+          ]
+        },
+        "s6": {
+          "title": "Verify and refine",
+          "body": "Cross-check with the Advanced VX hand controller's All-Star Polar Align, or do a quick drift check on a star near the meridian and tweak the alt/az bolts.",
+          "tips": [
+            "All-Star uses any bright star — handy when Polaris is hidden.",
+            "Re-check after the mount settles or if you bump the tripod."
+          ]
+        }
+      }
+    },
+    "controls": {
+      "apply": "Apply",
+      "reset": "Reset",
+      "autoApply": "Changes apply automatically.",
+      "minAlt": "Min altitude (°)",
+      "twilight": "Darkness",
+      "minScore": "Min score",
+      "type": "Type",
+      "allTypes": "All types",
+      "fitsFrame": "Fits my frame",
+      "fullyDark": "Up in darkness",
+      "excludeMoon": "Away from the Moon",
+      "favoritesOnly": "Favorites only",
+      "narrowbandOnly": "Narrowband only"
+    },
+    "fav": {
+      "add": "Add to favorites",
+      "remove": "Remove from favorites"
+    },
+    "twilightKind": {
+      "astro": "Astronomical",
+      "nautical": "Nautical"
+    },
+    "dark": {
+      "title": "Tonight's darkness",
+      "window": "Dark {dusk} → {dawn}",
+      "duration": "{hours} h of darkness",
+      "moon": "Moon",
+      "moonIllum": "{pct}% lit",
+      "noDark": "No astronomical darkness tonight.",
+      "moonUp": "up",
+      "moonDown": "below horizon"
+    },
+    "moonPhase": {
+      "new": "New moon",
+      "waxing_crescent": "Waxing crescent",
+      "first_quarter": "First quarter",
+      "waxing_gibbous": "Waxing gibbous",
+      "full": "Full moon",
+      "waning_gibbous": "Waning gibbous",
+      "last_quarter": "Last quarter",
+      "waning_crescent": "Waning crescent"
+    },
+    "cols": {
+      "name": "Target",
+      "type": "Type",
+      "score": "Score",
+      "altNow": "Alt now",
+      "maxAlt": "Max alt",
+      "transit": "Transit",
+      "size": "Size",
+      "mag": "Mag",
+      "fovFit": "Frame fit",
+      "moonSep": "Moon sep",
+      "palette": "Palette",
+      "bestEp": "Best eyepiece",
+      "power": "Magnification",
+      "trueField": "True field"
+    },
+    "types": {
+      "galaxy": "Galaxy",
+      "nebula": "Nebula",
+      "emission_nebula": "Emission nebula",
+      "planetary_nebula": "Planetary nebula",
+      "dark_nebula": "Dark nebula",
+      "cluster": "Open cluster",
+      "globular": "Globular cluster",
+      "supernova_remnant": "Supernova remnant",
+      "other": "Other"
+    },
+    "tiers": {
+      "excellent": "Excellent",
+      "good": "Good",
+      "fair": "Fair",
+      "poor": "Poor"
+    },
+    "detail": {
+      "title": "{name} — why this score",
+      "select": "Select a target to see its altitude curve and score breakdown.",
+      "subScores": "Score breakdown",
+      "reason": "Summary"
+    },
+    "sub": {
+      "max_alt": "Altitude",
+      "alt_now": "Altitude now",
+      "dark_hours": "Dark hours",
+      "framing": "Framing",
+      "detectability": "Detectability",
+      "moon": "Moon"
+    },
+    "chart": {
+      "title": "Tonight's sky",
+      "altitude": "Altitude",
+      "horizon": "Horizon",
+      "minAlt": "Min alt",
+      "transit": "Transit",
+      "now": "Now",
+      "sun": "Sun",
+      "moon": "Moon",
+      "sunset": "Sunset",
+      "sunrise": "Sunrise",
+      "moonrise": "Moonrise",
+      "moonset": "Moonset"
+    },
+    "sections": {
+      "setup": "Setup",
+      "filters": "Filters",
+      "map": "Sky map"
+    },
+    "preview": {
+      "aladin": "Open in Aladin ↗",
+      "google": "Google Images ↗",
+      "unavailable": "Preview unavailable (offline?)."
+    },
+    "composition": {
+      "title": "Filters / emission",
+      "load": "Load",
+      "source": { "curated": "known", "typical": "by type" }
+    },
+    "lines": {
+      "ha": "Hα",
+      "oiii": "OIII",
+      "sii": "SII",
+      "hb": "Hβ",
+      "nii": "NII"
+    },
+    "map": {
+      "title": "Sky map",
+      "hint": "Each dot is a target placed by altitude (centre = zenith) and azimuth; colour = score."
+    }
+  },
+  "calendar": {
+    "title": "Sky calendar",
+    "subtitle": "Rare events to watch and capture from your location — scored for the naked eye and for your gear.",
+    "empty": "No events match your filters.",
+    "loading": "Computing the sky calendar…",
+    "refresh": "Refresh",
+    "updated": "Updated {time}",
+    "sections": { "location": "Location", "filters": "Filters" },
+    "range": {
+      "label": "Window",
+      "d30": "Next 30 days",
+      "d90": "Next 90 days",
+      "d180": "Next 6 months",
+      "d365": "Next year"
+    },
+    "mode": {
+      "byDate": "By date",
+      "byType": "By type"
+    },
+    "series": {
+      "type": "Type",
+      "subtype": "Subtype",
+      "any": "Any",
+      "heading": "Next {count} · {type}"
+    },
+    "day": {
+      "showing": "Showing {day}",
+      "showAll": "Show all dates"
+    },
+    "cols": {
+      "score": "Score",
+      "date": "Date",
+      "event": "Event",
+      "kind": "Type",
+      "vis": "Naked eye · scope",
+      "mag": "Mag",
+      "instrument": "Best with"
+    },
+    "filters": {
+      "instrument": "Visible with",
+      "anyInstrument": "Any instrument",
+      "kinds": "Event types",
+      "notableOnly": "Notable only",
+      "comets": "Comets (online)",
+      "satellites": "Satellite transits (online)"
+    },
+    "vis": {
+      "nakedEye": "Naked eye",
+      "binocular": "Binoculars",
+      "scope": "Your scope"
+    },
+    "tiers": {
+      "naked_eye": "Naked eye",
+      "binocular": "Binoculars",
+      "telescope": "Telescope",
+      "none": "Not visible"
+    },
+    "kinds": {
+      "solar_eclipse": "Solar eclipse",
+      "lunar_eclipse": "Lunar eclipse",
+      "conjunction": "Conjunction",
+      "opposition": "Opposition",
+      "elongation": "Greatest elongation",
+      "planet_moon": "Moon & planet",
+      "moon_phase": "Moon phase",
+      "supermoon": "Supermoon",
+      "equinox": "Equinox",
+      "solstice": "Solstice",
+      "perihelion": "Perihelion",
+      "aphelion": "Aphelion",
+      "meteor_shower": "Meteor shower",
+      "comet": "Comet",
+      "satellite_transit": "Satellite transit"
+    },
+    "bodies": {
+      "sun": "Sun",
+      "moon": "Moon",
+      "mercury": "Mercury",
+      "venus": "Venus",
+      "mars": "Mars",
+      "jupiter": "Jupiter",
+      "saturn": "Saturn",
+      "uranus": "Uranus",
+      "neptune": "Neptune",
+      "iss": "ISS",
+      "tiangong": "Tiangong",
+      "hst": "Hubble"
+    },
+    "phase": {
+      "new": "New moon",
+      "first_quarter": "First quarter",
+      "full": "Full moon",
+      "last_quarter": "Last quarter"
+    },
+    "eclipseType": {
+      "total": "Total",
+      "partial": "Partial",
+      "annular": "Annular",
+      "annular_total": "Hybrid",
+      "penumbral": "Penumbral"
+    },
+    "season": {
+      "march": "March equinox",
+      "june": "June solstice",
+      "september": "September equinox",
+      "december": "December solstice",
+      "perihelion": "Earth at perihelion",
+      "aphelion": "Earth at aphelion"
+    },
+    "titleFmt": {
+      "conjunction": "{a} & {b}, {sep}° apart",
+      "planet_moon": "Moon near {body}, {sep}°",
+      "opposition": "{body} at opposition",
+      "elongation": "{body} at greatest elongation",
+      "solar_eclipse": "{type} solar eclipse",
+      "lunar_eclipse": "{type} lunar eclipse",
+      "satellite_transit": "{sat} crosses the {body}"
+    },
+    "detail": {
+      "select": "Select an event to see its details and best viewing time.",
+      "when": "When",
+      "captureTimes": "Capture times",
+      "maximum": "Maximum",
+      "duration": "Duration",
+      "inPath": "Your site is inside the transit path ✓",
+      "notInPath": "Your site is just outside the path centre",
+      "altitude": "Altitude at best",
+      "moon": "Moon",
+      "moonIllum": "{pct}% lit",
+      "separation": "Separation",
+      "magnitude": "Magnitude",
+      "visibility": "Visibility",
+      "chart": "That night",
+      "transitNote": "Transit predictions need fresh orbital data and are reliable only a few days ahead.",
+      "visibleRange": "Visible {from}–{to}",
+      "why": "Why this score",
+      "scoreFormula": "Score = rarity × best-instrument visibility",
+      "scoreGood": "Well placed on all fronts",
+      "scoreLimited": "Mainly limited by {factor}",
+      "tooFaint": "too faint",
+      "belowHorizon": "not up in the dark"
+    },
+    "factor": {
+      "rarity": "Rarity",
+      "altitude": "Altitude",
+      "sun_up": "Sun up",
+      "moon": "Moonlight",
+      "brightness": "Brightness"
+    },
+    "contact": {
+      "partial_begin": "Partial begins",
+      "partial_end": "Partial ends",
+      "central_begin": "Totality / annularity begins",
+      "central_end": "Totality / annularity ends",
+      "total_begin": "Totality begins",
+      "total_end": "Totality ends",
+      "penumbral_begin": "Penumbral begins",
+      "penumbral_end": "Penumbral ends",
+      "maximum": "Maximum"
+    }
   }
 }

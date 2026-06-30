@@ -23,6 +23,9 @@ type Stats struct {
 	// BrightFrac is the fraction of sampled pixels brighter than Median+3·MAD — a coarse
 	// star/structure-richness proxy (broadband frames have many more bright pixels than narrowband).
 	BrightFrac float64
+	// Peaks counts local maxima brighter than Median+6·MAD in the sampled run — a coarse count of
+	// distinct bright point sources (stars/hot pixels). Lights show many; darks a few; flats/bias ~0.
+	Peaks int
 }
 
 // Dimensions returns the image width and height from NAXIS1/NAXIS2 (0,0 if absent).
@@ -155,7 +158,21 @@ func summarize(vals []float64) Stats {
 		MAD:        mad,
 		P90:        sorted[(len(sorted)*9)/10],
 		BrightFrac: float64(bright) / float64(len(vals)),
+		Peaks:      countPeaks(vals, median+6*mad),
 	}
+}
+
+// countPeaks counts local maxima in the (spatially-ordered) sample that exceed thresh — a cheap
+// proxy for distinct bright point sources. A star field yields many; a dark a few hot pixels; a
+// flat or bias essentially none. Works on the contiguous center run Stats already read.
+func countPeaks(vals []float64, thresh float64) int {
+	peaks := 0
+	for i := 1; i < len(vals)-1; i++ {
+		if vals[i] > thresh && vals[i] > vals[i-1] && vals[i] >= vals[i+1] {
+			peaks++
+		}
+	}
+	return peaks
 }
 
 func absI64(v int64) int64 {

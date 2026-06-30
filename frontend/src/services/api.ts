@@ -1,6 +1,6 @@
 // Centralized fetch wrapper. Stores call these; components never fetch directly.
 
-const BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
+export const BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
 
 export class ApiError extends Error {
   constructor(
@@ -15,11 +15,13 @@ async function request<T>(
   method: string,
   path: string,
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
   const res = await fetch(BASE + path, {
     method,
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
+    signal,
   });
   if (!res.ok) {
     let message = res.statusText;
@@ -34,10 +36,19 @@ async function request<T>(
   return (await res.json()) as T;
 }
 
-export const apiGet = <T>(path: string) => request<T>("GET", path);
+export const apiGet = <T>(path: string, signal?: AbortSignal) =>
+  request<T>("GET", path, undefined, signal);
 export const apiPost = <T>(path: string, body?: unknown) =>
   request<T>("POST", path, body);
 
 export const fileUrl = (path: string) =>
   `${BASE}/api/file?path=${encodeURIComponent(path)}`;
+// thumbUrl is a small server-resized JPEG of an output image — used by the Runs gallery instead of the
+// full-resolution PNG so the page loads fast (the full image is fetched only when a run is opened).
+export const thumbUrl = (path: string, w?: number) =>
+  `${BASE}/api/thumb?path=${encodeURIComponent(path)}${w ? `&w=${w}` : ""}`;
 export const eventsUrl = (jobId: number) => `${BASE}/api/jobs/${jobId}/events`;
+export const previewUrl = (path: string, max?: number) =>
+  `${BASE}/api/preview?path=${encodeURIComponent(path)}${
+    max ? `&max=${max}` : ""
+  }`;

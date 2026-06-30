@@ -16,6 +16,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+
+	"github.com/verove-jordan/astronomy/internal/sysmon"
 )
 
 // Runner executes GraXpert via its command-line interface.
@@ -27,10 +30,12 @@ type Runner struct {
 // reports Unavailable, so "not configured" and "not installed" are handled identically by callers.
 func New(bin string) *Runner { return &Runner{bin: bin} }
 
-// Progress is one line of GraXpert output with any embedded percentage extracted.
+// Progress is one line of GraXpert output with any embedded percentage extracted. When Sample is
+// non-nil the Progress carries a live resource reading instead of a log line (Line is empty).
 type Progress struct {
 	Line    string
 	Percent int // -1 when the line carried no percentage
+	Sample  *sysmon.Sample
 }
 
 // BackgroundOptions tune GraXpert background extraction. GraXpert 3.x exposes only GPU toggling on
@@ -115,6 +120,22 @@ func (r *Runner) run(ctx context.Context, args []string, onProgress func(Progres
 		return fmt.Errorf("start graxpert: %w", err)
 	}
 
+	// emit serializes callbacks so the monitor goroutine's samples can't race the scan loop's lines.
+	var emitMu sync.Mutex
+	emit := func(p Progress) {
+		if onProgress == nil {
+			return
+		}
+		emitMu.Lock()
+		defer emitMu.Unlock()
+		onProgress(p)
+	}
+
+	mon := sysmon.Start(ctx, cmd.Process.Pid, 0, func(s sysmon.Sample) {
+		emit(Progress{Sample: &s})
+	})
+	defer mon.Stop()
+
 	var log strings.Builder
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -122,9 +143,7 @@ func (r *Runner) run(ctx context.Context, args []string, onProgress func(Progres
 		line := scanner.Text()
 		log.WriteString(line)
 		log.WriteByte('\n')
-		if onProgress != nil {
-			onProgress(Progress{Line: line, Percent: parsePercent(line)})
-		}
+		emit(Progress{Line: line, Percent: parsePercent(line)})
 	}
 
 	if err := cmd.Wait(); err != nil {

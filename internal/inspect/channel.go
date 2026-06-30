@@ -38,7 +38,7 @@ func keyForConfig(fr *Frame) cfgKey {
 func processChannels(inv *Inventory, opts channeldetect.Options) {
 	var lights []*Frame
 	for _, fr := range inv.Frames {
-		if fr.Type == Light {
+		if fr.Type == Light && fr.Bayer == "" { // OSC (Bayer) frames are not mono per-filter lights
 			lights = append(lights, fr)
 		}
 	}

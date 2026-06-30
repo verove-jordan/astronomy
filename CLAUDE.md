@@ -65,6 +65,23 @@ these — they are external binaries.
 Per the house DB convention, `created_at`/`updated_at` are **int64 millisecond** timestamps; durations
 (exposure) are stored in ms and temperatures in milli-°C to stay integer-clean.
 
+**`info.txt` sidecars + heterogeneous combine.** Older captures have bare filenames (no
+filter/gain/type); a hand-written `info.txt`/`info.txt.txt` next to them lists the capture order — one
+filter token per chronological capture sub-run — plus gain/exposure/temp (e.g. `LLL RR GG BB Ha Ha` /
+`gain L200 RGB250 Ha300`). `internal/inspect/manifest.go` parses it and back-fills frames as a **fallback
+only** (header/filename always win; it never overrides). To combine sessions of one target shot at
+**different gain and/or orientation**, drop them under one folder (e.g. `input/M101/`) and inspect it:
+same-filter light sets at different gain become separate groups, each calibrated with its **own
+gain-matched masters** (the library keys on `g{gain}o{offset}_b{bin}`). A session shot through a different
+optical train (e.g. a star diagonal) is **mirror-flipped** and can never be aligned by rotation — so each
+group is first **parity-normalized** (`parityCache` in `reuse_process.go`: plate-solve one frame `-noflip`,
+read the sign of `det(CD)` = `CDELT1·CDELT2·det(PC)` — Siril 1.4.3 stores PC+CDELT, not CD — and `mirrorx`
+any group not at the East-left `det<0` convention). Groups are then co-registered (homography,
+**`-framing=min`** = common field-of-view) and stacked **`-weight=wfwhm`** — see
+`pipeline/reuse_process.go` `processChannelGroups`. The single-session path is byte-identical. Jobs over
+the same input dir are **serialized** (`job.Manager.lockTarget`) and master writes are atomic
+(temp+rename in `calib`) so concurrent runs never corrupt the shared `library/`.
+
 **Code graph (gitnexus).** This repo is indexed by **gitnexus** (a code knowledge-graph; binary
 `gitnexus`, MCP server `gitnexus mcp`). Use it as the FIRST move for any "where / what / what-breaks"
 question about Go (`cmd/`, `internal/`) or Vue/TS (`frontend/src`) — it is faster and more accurate

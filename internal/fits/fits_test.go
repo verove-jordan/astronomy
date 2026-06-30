@@ -118,6 +118,25 @@ func TestOpen_ParsesHeaderCards(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestCountPeaks(t *testing.T) {
+	tests := []struct {
+		name   string
+		vals   []float64
+		thresh float64
+		want   int
+	}{
+		{"flat run has no peaks", []float64{100, 100, 100, 100, 100}, 110, 0},
+		{"two stars above threshold", []float64{100, 500, 100, 100, 600, 100}, 300, 2},
+		{"bright pixel below threshold ignored", []float64{100, 250, 100}, 300, 0},
+		{"plateau peak counted once", []float64{100, 500, 500, 100}, 300, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, countPeaks(tt.vals, tt.thresh))
+		})
+	}
+}
+
 func TestStats_CenterSample(t *testing.T) {
 	path := writeFITS(t, 8, 8, 12345, nil)
 	f, err := Open(path)

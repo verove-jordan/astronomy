@@ -9,7 +9,10 @@ import (
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/gimp"
 	"github.com/verove-jordan/astronomy/internal/grade"
+	"github.com/verove-jordan/astronomy/internal/graxpert"
 	"github.com/verove-jordan/astronomy/internal/inspect"
+	"github.com/verove-jordan/astronomy/internal/mode"
+	"github.com/verove-jordan/astronomy/internal/nightscape"
 	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/rawconv"
 	"github.com/verove-jordan/astronomy/internal/siril"
@@ -22,9 +25,20 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 	if err := opts.Runner.Available(ctx); err != nil {
 		return nil, fmt.Errorf("siril unavailable: %w", err)
 	}
-	frames, err := inspect.ListRawFrames(opts.InputDir)
+	// One-shot-color source: raw stills (iPhone/DSLR), or — for older OSC captures — Bayer CFA FITS,
+	// which Siril demosaics with `convert -debayer`.
+	roots := opts.scanRoots()
+	frames, err := inspect.ListRawFramesMany(roots)
 	if err != nil {
 		return nil, err
+	}
+	debayer := false
+	if len(frames) == 0 {
+		frames, err = inspect.ListFITSFramesMany(roots)
+		if err != nil {
+			return nil, err
+		}
+		debayer = true
 	}
 	if len(frames) == 0 {
 		return nil, fmt.Errorf("no color images found in %s", opts.InputDir)
@@ -39,26 +53,50 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 	runID := time.Now().Format("20060102_150405")
-	workRun := filepath.Join(workAbs, "milkyway", "run_"+runID)
-	outDir := filepath.Join(outAbs, "milkyway", runID)
+	// Name the run after the target (walking past generic "Sorted_DNG"/date folders) so every night of
+	// a target lands under output/<target>/<runID>, consistent with the deep-sky path.
+	object := smartObject(opts.InputDir)
+	if object == "" || object == "." || object == string(filepath.Separator) {
+		object = "osc"
+	}
+	workRun := filepath.Join(workAbs, object, "run_"+runID)
+	outDir := filepath.Join(outAbs, object, runID)
 	if err := fsutil.EnsureDir(outDir); err != nil {
 		return nil, err
 	}
-	res := &Result{InputDir: opts.InputDir, OutputDir: outDir, Object: "milkyway", RunID: runID}
+	res := &Result{InputDir: opts.InputDir, OutputDir: outDir, Object: object, RunID: runID}
+
+	// Milky-Way nightscapes use the dedicated foreground-composite recipe (star-aligned sky stack +
+	// single clean foreground), not the generic OSC stack. Bayer-FITS OSC captures (no raws to
+	// develop) fall through to the generic path.
+	if opts.Preset != nil && opts.Preset.Mode == mode.Milkyway && !debayer {
+		return processNightscape(ctx, opts, res, frames, workRun, outDir)
+	}
 
 	seqDir := filepath.Join(workRun, "02_osc")
 	opts.report(Progress{Step: "convert + register", Index: 1, Total: 3})
-	// iPhone/processed DNGs are frequently undecodable by Siril's bundled libraw (convert writes its
-	// plan file but no FITS); transcode raws to TIFF — which Siril ingests natively — first.
-	_, prepWarn, err := rawconv.PrepareTIFF(ctx, frames, seqDir, func(i, n int, name string) {
-		opts.report(Progress{Step: "convert + register", Index: 1, Total: 3, Line: fmt.Sprintf("prepared %d/%d %s", i, n, name)})
-	})
-	if err != nil {
-		return nil, fmt.Errorf("prepare OSC frames: %w", err)
+	if debayer {
+		// Bayer FITS: link the frames into the sequence dir; `convert -debayer` demosaics them.
+		if _, err := fsutil.LinkFrames(seqDir, frames); err != nil {
+			return nil, fmt.Errorf("link OSC frames: %w", err)
+		}
+	} else {
+		// iPhone/processed DNGs are frequently undecodable by Siril's bundled libraw (convert writes its
+		// plan file but no FITS); transcode raws to TIFF — which Siril ingests natively — first.
+		_, prepWarn, perr := rawconv.PrepareTIFF(ctx, frames, seqDir, func(i, n int, name string) {
+			opts.report(Progress{Step: "convert + register", Index: 1, Total: 3, Line: fmt.Sprintf("prepared %d/%d %s", i, n, name)})
+		})
+		if perr != nil {
+			return nil, fmt.Errorf("prepare OSC frames: %w", perr)
+		}
+		res.Warnings = append(res.Warnings, prepWarn...)
 	}
-	res.Warnings = append(res.Warnings, prepWarn...)
 
-	convReg := "requires 1.2.0\nsetext fits\nconvert osc -out=.\nregister osc\n"
+	convert := "convert osc -out=.\n"
+	if debayer {
+		convert = "convert osc -debayer -out=.\n"
+	}
+	convReg := "requires 1.2.0\nsetext fits\n" + convert + "register osc\n"
 	if cr, err := opts.Runner.Run(ctx, seqDir, convReg, opts.sirilLines("convert + register")); err != nil {
 		return nil, fmt.Errorf("convert+register: %w\n%s", err, sirilTail(cr))
 	}
@@ -86,7 +124,7 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 	}}
 
 	opts.report(Progress{Step: "stacking", Index: 2, Total: 3})
-	if st, err := opts.Runner.Run(ctx, seqDir, siril.StackSelectedScript("r_osc", regCount, rejectedReg, masterBase), opts.sirilLines("stacking")); err != nil {
+	if st, err := opts.Runner.Run(ctx, seqDir, siril.StackSelectedScript("r_osc", regCount, rejectedReg, masterBase, ""), opts.sirilLines("stacking")); err != nil {
 		return nil, fmt.Errorf("stacking: %w\n%s", err, sirilTail(st))
 	}
 
@@ -124,9 +162,14 @@ func finishOSC(ctx context.Context, opts Options, res *Result, masterPath, workR
 		return
 	}
 	deg := backgroundDegree(ctx, opts) // always [1,4]; gentle 1 after GraXpert, else the preset degree
+	bgLevel := 0.0
+	if opts.Preset != nil {
+		bgLevel = opts.Preset.BackgroundLevel
+	}
 	base := filepath.Join(stretchDir, "base")
+	// Linked + dark target background keeps the wide-field sky neutral and dark (not Siril's washed 0.25).
 	script := "requires 1.2.0\nsetext fits\n" + fmt.Sprintf("load %s\n", masterPath) +
-		siril.SubskyCmd(deg) + fmt.Sprintf("autostretch\nsavetif %s\n", base)
+		siril.SubskyCmd(deg) + siril.AutostretchCmd(true, bgLevel) + fmt.Sprintf("\nsavetif %s\n", base)
 	if st, err := opts.Runner.Run(ctx, stretchDir, script, opts.sirilLines("finishing (GIMP)")); err != nil {
 		res.Warnings = append(res.Warnings, "background extraction/stretch failed: "+err.Error()+"\n"+sirilTail(st))
 		return
@@ -147,4 +190,54 @@ func finishOSC(ctx context.Context, opts Options, res *Result, masterPath, workR
 		}
 	}
 	res.Final = &postprocess.Result{Mode: "OSC-RGB", Channels: []string{"RGB"}, Outputs: []string{base + ".tif"}, Notes: []string{"Siril stretch (GIMP unavailable)"}}
+}
+
+// processNightscape runs the Milky-Way nightscape recipe (foreground/background composite) and maps
+// its result onto the standard Result/run.json contract so the UI and durable record are unchanged.
+func processNightscape(ctx context.Context, opts Options, res *Result, frames []string, workRun, outDir string) (*Result, error) {
+	opts.report(Progress{Step: "nightscape: register + composite", Index: 1, Total: 1})
+	// GraXpert gradient removal + chroma denoise on the sky stack, honouring the preset toggle (and
+	// --no-ai, which nils the runner). nil → the auto-levels still balance the sky without it.
+	var grax *graxpert.Runner
+	if opts.Preset.BackgroundAI {
+		grax = opts.Graxpert
+	}
+	nopts := nightscape.Options{
+		Siril:            opts.Runner,
+		Graxpert:         grax,
+		Frames:           frames,
+		WorkDir:          workRun,
+		OutDir:           outDir,
+		Look:             nightscape.LookByName(opts.Preset.Look),
+		Brightness:       opts.Preset.BackgroundLevel,
+		ColorCalibration: opts.Preset.ColorCalibration,
+		Solve:            opts.Solve,
+		Spcc:             opts.Spcc,
+		Focal35mm:        nightscape.ReadFocal35mm(frames),
+		DarkDir:          opts.DarkDir,
+		FlatDir:          opts.FlatDir,
+		BiasDir:          opts.BiasDir,
+		ForegroundFrame:  opts.Preset.ForegroundFrame,
+		Orientation:      opts.Preset.Orientation,
+		OnProgress:       opts.sirilLines("nightscape: register + composite"),
+	}
+	nres, err := nightscape.Process(ctx, nopts)
+	if err != nil {
+		return nil, fmt.Errorf("nightscape: %w", err)
+	}
+	res.Warnings = append(res.Warnings, nres.Warnings...)
+	res.Channels = []ChannelResult{{
+		Filter: "RGB", InputFrames: nres.InputFrames, StackedFrames: nres.StackedFrames,
+		OutputPath: nres.CompositeFITS, PreviewPath: nres.PreviewPNG,
+	}}
+	res.Final = &postprocess.Result{
+		Mode: "OSC-RGB nightscape", Channels: []string{"RGB"},
+		Outputs: []string{nres.FinalPNG, nres.CompositeFITS, nres.SkyFITS, nres.ForegroundFITS},
+		Notes:   []string{fmt.Sprintf("foreground composite, %s look (%dx%d)", nopts.Look.Name, nres.Width, nres.Height)},
+	}
+	if nres.PreviewPNG != "" {
+		opts.report(Progress{Step: "nightscape: register + composite", Index: 1, Total: 1, Preview: nres.PreviewPNG})
+	}
+	writeRunJSON(outDir, res)
+	return res, nil
 }

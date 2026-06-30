@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { useJobsStore } from "@/stores/jobs";
 import { useJobStream } from "@/composables/useJobStream";
@@ -14,8 +14,9 @@ import LogConsole from "@/components/Common/LogConsole.vue";
 import CaptureSummary from "@/components/Capture/CaptureSummary.vue";
 import ChannelMappingList from "@/components/Capture/ChannelMappingList.vue";
 import RunResultPanels from "@/components/Common/RunResultPanels.vue";
+import SupervisorPanel from "@/components/Common/SupervisorPanel.vue";
 import { btnDanger, card } from "@/constants/styles";
-import { baseName } from "@/utils/format";
+import { baseName, formatBytes } from "@/utils/format";
 import type { Inventory } from "@/types";
 
 const props = defineProps<{ id: string }>();
@@ -23,10 +24,18 @@ const { t } = useI18n();
 const jobsStore = useJobsStore();
 
 const jobId = Number(props.id);
-const { progress, step, status, done, lines, preview, seed } = useJobStream(
-  jobId,
-  () => jobsStore.get(jobId),
-);
+const {
+  progress,
+  step,
+  status,
+  done,
+  lines,
+  preview,
+  rssBytes,
+  cpuPercent,
+  peakRssBytes,
+  seed,
+} = useJobStream(jobId, () => jobsStore.get(jobId));
 
 const reInv = ref<Inventory | null>(null);
 const cancelling = ref(false);
@@ -51,6 +60,31 @@ const liveStatus = computed(() =>
 const running = computed(
   () => liveStatus.value === "running" || liveStatus.value === "queued",
 );
+// Live-stacking jobs run until stopped; the "cancel" affordance is really "stop & finalize".
+const isLive = computed(() => job.value?.params?.mode === "livestack");
+
+// Processing timer: ticks each second while running, then freezes at the total once the job finishes.
+const now = ref(Date.now());
+let timer: ReturnType<typeof setInterval> | null = null;
+onMounted(() => {
+  timer = setInterval(() => (now.value = Date.now()), 1000);
+});
+onBeforeUnmount(() => {
+  if (timer) clearInterval(timer);
+});
+const elapsedMs = computed(() => {
+  const start = job.value?.created_at;
+  if (!start) return 0;
+  const end = running.value ? now.value : (job.value?.updated_at ?? now.value);
+  return Math.max(0, end - start);
+});
+function fmtElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
+}
 
 const stashed = computed(() => jobsStore.captureFor(jobId));
 const summary = computed(() => {
@@ -96,13 +130,19 @@ async function cancelJob() {
       <span v-if="result?.input_dir" class="text-sm text-slate-500">{{
         baseName(result.input_dir)
       }}</span>
+      <span
+        v-if="job && !running && elapsedMs > 0"
+        class="text-sm text-slate-500"
+      >
+        {{ t("job.duration") }} {{ fmtElapsed(elapsedMs) }}
+      </span>
       <button
         v-if="running"
         :class="[btnDanger, 'ml-auto']"
         :disabled="cancelling"
         @click="cancelJob"
       >
-        {{ t("job.cancel") }}
+        {{ isLive ? t("job.stopFinalize") : t("job.cancel") }}
       </button>
     </div>
 
@@ -116,11 +156,43 @@ async function cancelJob() {
     <!-- While processing: keep capture context visible + live progress, logs and preview -->
     <template v-if="running">
       <div :class="card">
-        <div class="mb-2 flex justify-between text-sm">
-          <span>{{ step || t("common.loading") }}</span>
-          <span>{{ progress }}%</span>
+        <div class="mb-2 flex items-center justify-between gap-3 text-sm">
+          <span class="min-w-0 truncate">{{
+            step || t("common.loading")
+          }}</span>
+          <span
+            class="flex shrink-0 items-center gap-3 text-slate-500 dark:text-slate-400"
+          >
+            <span class="tabular-nums">{{ fmtElapsed(elapsedMs) }}</span>
+            <span class="font-medium text-slate-700 dark:text-slate-200"
+              >{{ progress }}%</span
+            >
+          </span>
         </div>
-        <ProgressBar :percent="progress" />
+        <ProgressBar :percent="progress" :active="running" />
+        <div
+          v-if="rssBytes || cpuPercent"
+          class="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-slate-500 dark:text-slate-400"
+        >
+          <span
+            >{{ t("job.cpu") }}
+            <span class="font-medium text-slate-700 dark:text-slate-200"
+              >{{ Math.round(cpuPercent) }}%</span
+            ></span
+          >
+          <span
+            >{{ t("job.memory") }}
+            <span class="font-medium text-slate-700 dark:text-slate-200">{{
+              formatBytes(rssBytes)
+            }}</span></span
+          >
+          <span v-if="peakRssBytes"
+            >{{ t("job.peak") }}
+            <span class="font-medium text-slate-700 dark:text-slate-200">{{
+              formatBytes(peakRssBytes)
+            }}</span></span
+          >
+        </div>
       </div>
 
       <div class="grid gap-4 lg:grid-cols-2">
@@ -140,10 +212,10 @@ async function cancelJob() {
       <LogConsole :lines="lines" />
     </template>
 
-    <!-- After completion: the full result panels (shared with the Runs gallery) -->
-    <RunResultPanels
-      v-else-if="result && (result.channels?.length || result.final)"
-      :result="result"
-    />
+    <!-- After completion: the full result panels + the supervisor iteration timeline -->
+    <template v-else-if="result && (result.channels?.length || result.final)">
+      <RunResultPanels :result="result" />
+      <SupervisorPanel :result="result" />
+    </template>
   </div>
 </template>

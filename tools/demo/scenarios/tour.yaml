@@ -1,0 +1,51 @@
+# AstroStack — quick tour with NO live job (deterministic).
+# Because no step defines a `job` block, the recorder runs `fallbackRun` instead — it replays an
+# existing finished run from /processing/runs. This needs no capture data and no reprocessing, so it's
+# the scenario to use for a first end-to-end smoke test of the recorder + ffmpeg pipeline.
+#
+# Run with:  just demo tour
+meta:
+  title: "AstroStack — a quick tour"
+  lang: en
+  viewport: [1920, 1080]
+  scale: 2
+  fps: 30
+  voiceover: none
+
+intro:
+  title: AstroStack
+  subtitle: Plan, capture and process your astrophotography
+  seconds: 3
+
+steps:
+  - name: tonight
+    caption: "Plan tonight — targets scored by altitude, the Moon and sky darkness"
+    goto: /tonight
+    dwell: 3
+
+  - name: calendar
+    caption: "An offline almanac of eclipses, conjunctions and meteor showers"
+    goto: /calendar
+    dwell: 3
+
+  - name: import
+    caption: "Auto-sorts a night of captures from the FITS headers — L · R · G · B · Hα"
+    goto: /processing/import
+    dwell: 3
+
+  - name: runs
+    caption: "Past runs are saved to a browsable gallery"
+    goto: /processing/runs
+    dwell: 2.5
+
+fallbackRun:
+  name: open-run
+  caption: "The finished image, integration time and per-channel quality metrics"
+  click: { firstCard: true }
+  zoom: { scale: 1.2 }
+  dwell: 4.5
+
+outro:
+  title: AstroStack
+  subtitle: Go · Vue · Siril · GIMP · GraXpert · StarNet++
+  seconds: 3

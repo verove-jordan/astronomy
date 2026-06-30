@@ -44,6 +44,23 @@ type Result struct {
 	Channels []string `json:"channels"` // filters used
 	Outputs  []string `json:"outputs"`  // written file paths
 	Notes    []string `json:"notes,omitempty"`
+	// Iterations records each pass of the optional local-AI-agent finish supervisor (empty for a
+	// normal finish). It feeds the UI's supervisor panel directly from the run result.
+	Iterations []IterationRecord `json:"iterations,omitempty"`
+}
+
+// IterationRecord is one supervised finish render: its preview, the deterministic + model scores, the
+// model's one-line reasoning, the composite params used, and whether it was the chosen best.
+// Primitive fields only (no pipeline import) so package pipeline can populate it without a cycle.
+type IterationRecord struct {
+	Index         int                `json:"index"`
+	PngPath       string             `json:"png_path"`
+	DetScore      float64            `json:"det_score"`
+	ModelScore    float64            `json:"model_score"`
+	CombinedScore float64            `json:"combined_score"`
+	Reasoning     string             `json:"reasoning"`
+	Chosen        bool               `json:"chosen"`
+	Params        map[string]float64 `json:"params,omitempty"`
 }
 
 // Combine builds the final image from channel masters located in dir (referenced by basename, e.g.

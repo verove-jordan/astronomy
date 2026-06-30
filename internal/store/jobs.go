@@ -92,6 +92,21 @@ func (s *Store) FinishJob(ctx context.Context, id int64, status string, result j
 	return err
 }
 
+// FailRunningJobs marks every job still in the "running" state as failed. Called at startup to reconcile
+// jobs orphaned by a server restart: jobs run in an in-process worker pool that does NOT survive a
+// restart (e.g. an `air` hot-reload rebuild), so any row still "running" at boot has no live worker and
+// would otherwise hang forever in the UI. Returns the number reconciled.
+func (s *Store) FailRunningJobs(ctx context.Context, errMsg string) (int64, error) {
+	now := nowMs()
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE jobs SET status=$2, error=$3, progress=0, finished_at_ms=$4, updated_at=$4 WHERE status=$1`,
+		JobRunning, JobFailed, errMsg, now)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // GetJob returns one job by id.
 func (s *Store) GetJob(ctx context.Context, id int64) (*Job, error) {
 	rows, err := s.pool.Query(ctx, jobSelect+` WHERE id=$1`, id)

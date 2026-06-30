@@ -18,6 +18,12 @@ import (
 	"github.com/verove-jordan/astronomy/internal/store"
 )
 
+// sirilLimits builds the Siril resource caps (thread count, memory ratio, OS niceness) from config,
+// so a heavy stack stays within bounds instead of saturating CPU and RAM.
+func sirilLimits(cfg *config.Config) siril.Limits {
+	return siril.Limits{MaxCPUs: cfg.MaxCPUs, MemRatio: cfg.SirilMemRatio, Nice: cfg.SirilNice}
+}
+
 func runServe(_ []string) error {
 	cfg := config.Load()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -32,13 +38,16 @@ func runServe(_ []string) error {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
-	runner := siril.New(cfg.SirilBin)
+	runner := siril.New(cfg.SirilBin, sirilLimits(cfg))
 	if err := runner.Available(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: Siril unavailable — processing jobs will fail (%v)\n", err)
 	}
 
 	mgr := job.NewManager(st, runner, cfg)
-	workers := runtime.NumCPU() / 2
+	workers := cfg.MaxWorkers
+	if workers <= 0 {
+		workers = runtime.NumCPU() / 2
+	}
 	if workers < 1 {
 		workers = 1
 	}

@@ -52,16 +52,11 @@ func assignCyclic(s []Sample, runs [][]int, order []string) (filters []string, r
 		rich[r] = sr / float64(len(idxs))
 	}
 	nl, nr := minMaxNorm(levels), minMaxNorm(rich)
-	score := make([]float64, R)
-	for r := range score {
-		score[r] = 0.5*nl[r] + 0.5*nr[r]
-	}
-
 	em := make([][]float64, R)
 	for r := 0; r < R; r++ {
 		em[r] = make([]float64, L)
 		for p := 0; p < L; p++ {
-			em[r][p] = emissionCost(order[p], score[r])
+			em[r][p] = emissionFor(order[p], nl[r], nr[r])
 		}
 	}
 
@@ -88,14 +83,20 @@ func overallConfidence(levels []float64, avgEmission float64) float64 {
 	return math.Max(0, math.Min(1, spread)) * fit
 }
 
-// emissionCost scores how well a run of the given brightness fits a filter position.
-// score is the run's normalized brightness in [0,1].
-func emissionCost(filter string, score float64) float64 {
+// emissionFor scores how well a run fits a filter position from its normalized brightness (levelScore)
+// and star richness (richScore), both in [0,1]. Luminance is the brightest; narrowband is faint AND
+// star-poor, so a star-rich run (real broadband) is never cheaply narrowband — this stops a faint tail
+// from avalanching to Ha. R/G/B sit in the middle and are resolved by wheel position, not brightness.
+func emissionFor(filter string, levelScore, richScore float64) float64 {
+	score := 0.5*levelScore + 0.5*richScore
 	switch {
 	case filter == "L":
 		return 1 - score // luminance is the brightest broadband
 	case isNarrowband(filter):
-		return score // narrowband is the faintest
+		// faint counts as narrowband only when stars are absent too: a run richer than the neutral
+		// mid-point pays a penalty, so a star-rich (broadband) tail never collapses to Ha. When richness
+		// carries no information (flat → 0.5 for all), the penalty is zero and this reduces to brightness.
+		return score + math.Max(0, richScore-0.5)
 	default:
 		return math.Max(score, 1-score) - 0.5 // broadband R/G/B sit in the middle
 	}

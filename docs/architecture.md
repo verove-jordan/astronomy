@@ -8,7 +8,7 @@ the engine runs on the host and only the support services are containerized.
 ┌─────────────────────────── HOST (macOS) ───────────────────────────┐
 │  astrostack (Go)                          siril-mcp (Go, stdio)      │
 │   • CLI: inspect / process / video         • MCP tools for Claude    │
-│   • HTTP API + SSE progress  (chi)          (shares internal/ pkgs)  │
+│   • HTTP API + SSE progress  (stdlib)       (shares internal/ pkgs)  │
 │   • in-process job worker pool                                       │
 │        │ exec                 │ exec               │ exec            │
 │        ▼                      ▼                    ▼                 │
@@ -24,13 +24,21 @@ the engine runs on the host and only the support services are containerized.
 └──────────────────────────────────────────────────┘
 ```
 
+On the same host and in the same way (`exec` + parse stdout), the engine also drives the **optional**
+tools — **GraXpert** and **StarNet++** (AI background extraction / star removal) and, only when a run
+opts in, a local OpenAI-compatible **vision-model server** (`:1234`, e.g. mlx-vlm via `just
+run-ia-model`) that auto-tunes the finish. All three **soft-fail**: absent or unreachable, the run
+falls back to the pure Siril/GIMP path. The browser also calls the engine's `/api/sky/*` **planner**
+endpoints (tonight's targets, GoTo alignment, events, weather, light-pollution), which use only keyless
+public data services by default.
+
 ## Components
 
 | Package | Responsibility |
 |---------|----------------|
 | `internal/config` | Environment configuration. |
 | `internal/fits` | Read FITS headers + pixels (`codeberg.org/astrogo/fitsio`). |
-| `internal/inspect` | Walk a directory, classify each file (light/dark/flat/bias/dark-flat/video), group into sets. |
+| `internal/inspect` | Walk a directory, classify each file (light/dark/flat/bias/dark-flat/video), group into sets. Bare-filename legacy captures are labeled from an `info.txt` sidecar (`manifest.go`) that lists the per-sub-run filter order + gain. |
 | `internal/siril` | `SirilRunner`: generate `.ssf`, exec `siril-cli`, parse `progress:`/`log:` + `seqstat` CSV. |
 | `internal/grade` | Per-frame quality metrics + rejection rules; trail handling. |
 | `internal/calib` | Build master calibration frames; match the right masters to each light set; calibration library. |
@@ -38,10 +46,14 @@ the engine runs on the host and only the support services are containerized.
 | `internal/postprocess` | LRGB+Ha channel combine, color calibration, stretch; optional GIMP touch-ups. |
 | `internal/graxpert` | Optional host CLI: GraXpert AI background-gradient extraction / denoise (`GRAXPERT_BIN`). |
 | `internal/starnet` | Optional host CLI: StarNet++ v2 star removal for star-reduced finishing (`STARNET_BIN`). |
+| `internal/llm` | Optional, opt-in: drives a host-run OpenAI-compatible vision model to auto-tune the finish (the supervisor loop; soft-fails when the server is down). |
 | `internal/planetary` | SER/AVI/MP4/MOV lucky-imaging path. |
-| `internal/store` | Postgres access (`pgx/v5` + `sqlc`), models. |
+| `internal/livestack` + `internal/source` | Incremental live-stacking session + its watched source (local dir or S3 via `minio-go`). |
+| `internal/nightscape` | Milky-Way / one-shot-color foreground+sky composite recipe. |
+| `internal/store` | Postgres access via **raw `pgx/v5`** (no ORM/sqlc); schema applied from embedded, versioned `*.up.sql` migrations (`store.Migrate`, tracked in `schema_migrations`). |
 | `internal/job` | In-process worker pool + job lifecycle. |
-| `internal/api` | chi router, handlers, SSE progress. |
+| `internal/api` | HTTP handlers (Go 1.22 `http.ServeMux` method routing) + SSE progress; the `/api/sky/*` planner endpoints. |
+| `astro` · `skycat` · `skyplan` | Ephemeris, sky-object catalog, and visibility/event scoring behind the **planner** (`/api/sky/*`). |
 | `internal/report` | JSON + markdown run reports. |
 
 ## Why no Redis / Celery

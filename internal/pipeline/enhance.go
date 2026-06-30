@@ -24,6 +24,38 @@ func aiBackground(ctx context.Context, opts Options) bool {
 		opts.Graxpert.Available(ctx) == nil
 }
 
+// aiToolWarnings reports preset-enabled AI steps whose host binary is unreachable. Both steps
+// soft-fall-back (GraXpert→Siril subsky, StarNet→keep stars), but those fallbacks are exactly what
+// produces the "the AI isn't doing anything" symptom — an uncorrected gradient/brown sky and full
+// stars. Emitting a warning makes the skip visible in the run record instead of a silent no-op.
+func aiToolWarnings(ctx context.Context, opts Options) []string {
+	if opts.Preset == nil {
+		return nil
+	}
+	var w []string
+	if opts.Preset.BackgroundAI {
+		switch {
+		case opts.Graxpert == nil:
+			w = append(w, "GraXpert background extraction is enabled for this mode but disabled for this run (--no-ai); using Siril subsky — expect residual gradients")
+		default:
+			if err := opts.Graxpert.Available(ctx); err != nil {
+				w = append(w, "GraXpert background extraction enabled but unavailable ("+err.Error()+"); using Siril subsky — expect residual gradients/brown sky")
+			}
+		}
+	}
+	if opts.Preset.StarReduce > 0 {
+		switch {
+		case opts.Starnet == nil:
+			w = append(w, "StarNet++ star reduction is enabled for this mode but disabled for this run (--no-ai); keeping full stars")
+		default:
+			if err := opts.Starnet.Available(ctx); err != nil {
+				w = append(w, "StarNet++ star reduction enabled but unavailable ("+err.Error()+"); keeping full stars")
+			}
+		}
+	}
+	return w
+}
+
 // backgroundDegree is the Siril subsky polynomial degree for the finish stage, always in Siril's
 // valid [1,4] range (Siril rejects 0). When GraXpert already extracted the background it returns 1 —
 // a gentle linear cleanup after the AI extraction, and a safety net if GraXpert soft-failed;
@@ -49,7 +81,7 @@ func extractBackgroundAI(ctx context.Context, opts Options, masterPath string, o
 	out := strings.TrimSuffix(masterPath, ".fits") + "_graxpert.fits"
 	fwd := func(p graxpert.Progress) {
 		if onProgress != nil {
-			onProgress(siril.Progress{Line: p.Line, Percent: p.Percent})
+			onProgress(siril.Progress{Line: p.Line, Percent: p.Percent, Sample: p.Sample})
 		}
 	}
 	if err := opts.Graxpert.ExtractBackground(ctx, masterPath, out, graxpert.BackgroundOptions{}, fwd); err != nil {
@@ -60,6 +92,54 @@ func extractBackgroundAI(ctx context.Context, opts Options, masterPath string, o
 	}
 	if err := os.Rename(out, masterPath); err != nil {
 		return "GraXpert background extraction skipped: " + err.Error()
+	}
+	return ""
+}
+
+// extractCombinedBackground runs a SECOND background-extraction pass on the combined linear RGB
+// (outDir/<base>.fits) to remove the residual large-scale colour gradient (amp-glow + light pollution)
+// that survives per-channel extraction + the combine — this is what makes the whole sky homogeneous.
+// GraXpert when available, else a deterministic RBF subsky (far better than a polynomial for an
+// asymmetric gradient). Soft-fail: returns a human-readable note, never an error; a no-op when the
+// preset disables it (CombinedBackgroundAI false).
+func extractCombinedBackground(ctx context.Context, opts Options, runner *siril.Runner, outDir, base, hdr string) (note string) {
+	if opts.Preset == nil || !opts.Preset.CombinedBackgroundAI {
+		return ""
+	}
+	rbf := func() string { // RBF subsky flattens the asymmetric amp-glow/light-pollution residual
+		if _, err := runner.Run(ctx, outDir, hdr+"load "+base+"\n"+siril.SubskyRBFCmd()+"save "+base+"\n", nil); err != nil {
+			return "combined RBF subsky skipped: " + err.Error()
+		}
+		return ""
+	}
+	if opts.Graxpert != nil && opts.Graxpert.Available(ctx) == nil {
+		if n := extractBackgroundAI(ctx, opts, filepath.Join(outDir, base+".fits"), nil); n != "" {
+			return "combined " + n
+		}
+		return rbf() // GraXpert removes most; the follow-up RBF cleans the residual it leaves
+	}
+	return rbf() // GraXpert absent → RBF alone (deterministic, better than a polynomial here)
+}
+
+// denoiseAI runs GraXpert AI denoising in place on a linear FITS (the combined RGB colour base). It is
+// an edge-preserving learned denoiser, so it cuts the heavy chrominance noise of thin colour subs
+// WITHOUT smearing star colour halos (unlike a gaussian blur). Soft-fail by contract: returns a
+// human-readable note, never an error, so a missing/erroring GraXpert leaves the input untouched.
+func denoiseAI(ctx context.Context, opts Options, path string, onProgress func(siril.Progress)) (note string) {
+	out := strings.TrimSuffix(path, ".fits") + "_graxpert.fits"
+	fwd := func(p graxpert.Progress) {
+		if onProgress != nil {
+			onProgress(siril.Progress{Line: p.Line, Percent: p.Percent, Sample: p.Sample})
+		}
+	}
+	if err := opts.Graxpert.Denoise(ctx, path, out, graxpert.DenoiseOptions{}, fwd); err != nil {
+		return "GraXpert denoise skipped: " + err.Error()
+	}
+	if !fileExists(out) {
+		return "GraXpert denoise skipped: no output produced"
+	}
+	if err := os.Rename(out, path); err != nil {
+		return "GraXpert denoise skipped: " + err.Error()
 	}
 	return ""
 }
@@ -79,7 +159,7 @@ func reduceStarsAI(ctx context.Context, opts Options, withStarsTif, outDir strin
 	starless := filepath.Join(outDir, "final_starless.tif")
 	fwd := func(p starnet.Progress) {
 		if onProgress != nil {
-			onProgress(siril.Progress{Line: p.Line, Percent: p.Percent})
+			onProgress(siril.Progress{Line: p.Line, Percent: p.Percent, Sample: p.Sample})
 		}
 	}
 	if err := opts.Starnet.RemoveStars(ctx, withStarsTif, starless, starnet.Options{}, fwd); err != nil {

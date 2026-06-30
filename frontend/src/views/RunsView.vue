@@ -2,7 +2,7 @@
 import { ref, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { useJobsStore } from "@/stores/jobs";
-import { fileUrl } from "@/services/api";
+import { fileUrl, thumbUrl } from "@/services/api";
 import RunResultPanels from "@/components/Common/RunResultPanels.vue";
 import FilterChip from "@/components/Common/FilterChip.vue";
 import Spinner from "@/components/Common/Spinner.vue";
@@ -75,6 +75,7 @@ function fmtDate(ms: number): string {
             card,
             'group min-w-0 text-left transition-shadow hover:shadow-md',
           ]"
+          data-demo="run-card"
           @click="openRun(run)"
         >
           <div
@@ -82,10 +83,11 @@ function fmtDate(ms: number): string {
           >
             <img
               v-if="run.final_preview"
-              :src="fileUrl(run.final_preview)"
+              :src="thumbUrl(run.final_preview, 480)"
               :alt="run.object"
               class="h-full w-full object-cover transition-transform group-hover:scale-[1.02]"
               loading="lazy"
+              decoding="async"
             />
             <div
               v-else
@@ -119,6 +121,28 @@ function fmtDate(ms: number): string {
             />
           </div>
         </button>
+      </div>
+
+      <div
+        v-if="jobsStore.runs.length"
+        class="flex items-center justify-center gap-3 pt-2"
+      >
+        <button
+          v-if="jobsStore.runsHasMore"
+          :class="btnGhost"
+          :disabled="jobsStore.loadingMore"
+          @click="jobsStore.listRuns(false)"
+        >
+          {{ jobsStore.loadingMore ? t("common.loading") : t("runs.loadMore") }}
+        </button>
+        <span class="text-xs text-slate-400">
+          {{
+            t("runs.count", {
+              n: jobsStore.runs.length,
+              total: jobsStore.runsTotal,
+            })
+          }}
+        </span>
       </div>
     </template>
   </div>

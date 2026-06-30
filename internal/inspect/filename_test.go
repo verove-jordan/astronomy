@@ -41,3 +41,64 @@ func TestFilterFromDirs(t *testing.T) {
 	assert.Equal(t, "G", parseFilenameMeta("input/galaxy/G/Light_30sec_frame1.fit").Filter)
 	assert.Equal(t, Dark, parseFilenameMeta("input/galaxy/Darks/something_30sec.fit").Type)
 }
+
+func TestTypeFromDirs_Compound(t *testing.T) {
+	cases := []struct {
+		path string
+		want FrameType
+	}{
+		{"input/2020_05_06/darks_0gain_300s_-25deg/autorun/x.fit", Dark},
+		{"input/C2019/offset_-15_250gain/autorun/x.fit", Bias},
+		{"input/2020_05_06/flats_0gain_Ha/autorun/x.fit", Flat},
+		{"input/M27/offsets/2019-08-30_00_23/x.fit", Bias},
+		{"input/M27/darks/2019-08-30_00_02/x.fit", Dark},
+		{"input/sess/master_flats/x.fit", Flat},
+		{"input/sess/dark_flats/x.fit", DarkFlat},
+		{"input/sess/darkstar_nebula/L/x.fit", Unknown}, // "darkstar" is not the word "dark"
+		{"input/M27/m27/data/2019-08-29_22_20/x.fit", Unknown}, // a light folder names no type
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			assert.Equal(t, tc.want, typeFromDirs(tc.path))
+		})
+	}
+}
+
+func TestFilterFromDirs_Robust(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		{"input/m33/L/2019/x.fit", "L"},
+		{"input/M81_M82_2019/M81M82/V/2019/x.fit", "G"}, // Johnson V → green channel
+		{"input/M81_M82_2019/M81M82/R/2019/x.fit", "R"},
+		{"input/sess/Red/x.fit", "R"},
+		{"input/sess/Ha_300s/x.fit", "Ha"},
+		{"input/sess/R band/x.fit", "R"},
+		{"input/M27/m27/data/2019/x.fit", ""}, // non-filter folder
+		// Compound session name that merely mentions a filter must NOT be read as that filter.
+		{"input/2020_05_06/m81_m82_LRGB_0gain_Ha_180gain_120s/autorun/x.fit", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			assert.Equal(t, tc.want, filterFromDirs(tc.path))
+		})
+	}
+}
+
+func TestWheelSlotFromFilename(t *testing.T) {
+	cases := []struct {
+		path string
+		want int
+	}{
+		{"input/M33/CapObj/2021-08-14_00_47/2021-08-14-0047_6-1-CapObj_0000.FIT", 1},
+		{"input/M27/data/2019/2019-08-29-2220_5-2-L_0000.FIT", 2},
+		{"input/C2019/autorun/2020-04-13-2239_3-4-autorun_0018.FIT", 4},
+		{"input/galaxy/L/Light_ASIImg_30sec_filter-L_frame0001.fit", 0}, // ordinary name: no slot
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			assert.Equal(t, tc.want, parseFilenameMeta(tc.path).WheelSlot)
+		})
+	}
+}

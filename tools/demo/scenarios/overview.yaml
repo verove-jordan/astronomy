@@ -1,0 +1,83 @@
+# AstroStack — full product tour with a live ×7 stacking job.
+# Regenerate with:  /demo-video overview --job output/video_demo
+# Run with:         just demo overview   (app must be up: just up && just dev + just web)
+#
+# IMPORTANT: the `run` step launches a REAL pipeline run on `job.input` and records it at real time;
+# post-processing then time-lapses that one span ×7 (see `speed: 7`). `job.input` MUST point at a folder
+# that actually contains a SMALL capture set (mono FITS L/R/G/B/Hα for deepsky). If the folder is empty
+# the Import inspect yields no inventory, the run controls never appear, and the recorder will time out —
+# stage a small capture set in output/video_demo first, or point --job at an input/ folder that has data.
+meta:
+  title: "AstroStack — from raw subs to a finished image"
+  lang: en
+  viewport: [1920, 1080]
+  scale: 2
+  fps: 30
+  baseWeb: http://localhost:5173
+  baseApi: http://localhost:8080
+  # music: assets/music/ambient.mp3   # drop a royalty-free track here to enable the score
+  voiceover: say
+
+intro:
+  title: AstroStack
+  subtitle: Automated astrophotography — plan, capture, process
+  seconds: 3
+
+steps:
+  - name: tonight
+    caption: "Tonight's targets — deep-sky objects ranked for your location, gear, Moon and darkness"
+    narrate: "AstroStack plans your night, ranking every deep-sky target by your location, gear, the Moon and sky darkness."
+    goto: /tonight
+    dwell: 3.5
+
+  - name: target-detail
+    caption: "Every target is scored and sortable — with altitude curves, framing and a live sky map"
+    scrollTo: { css: "table" }
+    highlight: { css: "table" }
+    zoom: { scale: 1.15 }
+    dwell: 3
+
+  - name: calendar
+    caption: "Sky calendar — eclipses, conjunctions, meteor showers and ISS passes, scored for your site"
+    narrate: "A built-in almanac surfaces the rare events worth capturing — scored for the naked eye and your gear."
+    goto: /calendar
+    dwell: 3
+
+  - name: goto
+    caption: "GoTo alignment — the best stars, in the best order, to calibrate your mount"
+    goto: /goto
+    dwell: 3
+
+  - name: import
+    caption: "Import and inspect — browse a capture folder; it auto-sorts L · R · G · B · Hα from the FITS headers"
+    narrate: "Point AstroStack at a night of captures and it auto-sorts every frame from the FITS headers."
+    goto: /processing/import
+    dwell: 2.5
+
+  # ---- the live job: recorded at real time, then time-lapsed ×7 in post ----
+  - name: run
+    caption: "One click calibrates, registers and stacks every channel — then finishes in Siril and GIMP"
+    narrate: "One click calibrates, registers and stacks every channel, then finishes the image. Here it is at seven times speed."
+    job:
+      input: output/video_demo
+      mode: deepsky
+      format: image
+    waitForJob: { until: complete, maxSeconds: 600 }
+    speed: 7
+    dwell: 1.5
+
+  - name: result
+    caption: "The finished image, total integration time and per-channel quality metrics"
+    highlight: { css: "img" }
+    zoom: { scale: 1.25 }
+    dwell: 4.5
+
+  - name: gallery
+    caption: "Every run is saved to a browsable gallery you can reopen anytime"
+    goto: /processing/runs
+    dwell: 3.5
+
+outro:
+  title: AstroStack
+  subtitle: Go · Vue · Siril · GIMP · GraXpert · StarNet++
+  seconds: 3.5
