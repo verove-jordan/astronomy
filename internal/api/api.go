@@ -14,23 +14,50 @@ import (
 	"strings"
 
 	"github.com/verove-jordan/astronomy/internal/config"
+	"github.com/verove-jordan/astronomy/internal/darksky"
+	"github.com/verove-jordan/astronomy/internal/elevation"
 	"github.com/verove-jordan/astronomy/internal/inspect"
 	"github.com/verove-jordan/astronomy/internal/job"
+	"github.com/verove-jordan/astronomy/internal/lightpollution"
 	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
+	"github.com/verove-jordan/astronomy/internal/preview"
+	"github.com/verove-jordan/astronomy/internal/skyevents"
+	"github.com/verove-jordan/astronomy/internal/skyplan"
 	"github.com/verove-jordan/astronomy/internal/store"
+	"github.com/verove-jordan/astronomy/internal/weather"
 )
 
 // Server holds the API dependencies.
 type Server struct {
-	mgr   *job.Manager
-	store *store.Store
-	cfg   *config.Config
+	mgr            *job.Manager
+	store          *store.Store
+	cfg            *config.Config
+	scanCache      *inspect.ScanCache
+	planner        *skyplan.Planner
+	events         *skyevents.Engine
+	lightpollution *lightpollution.Provider
+	elevation      *elevation.Provider
+	darksky        *darksky.Finder
+	weather        *weather.Provider
 }
 
 // New builds the API server.
 func New(mgr *job.Manager, st *store.Store, cfg *config.Config) *Server {
-	return &Server{mgr: mgr, store: st, cfg: cfg}
+	lp := lightpollution.New(cfg)
+	elev := elevation.New(cfg)
+	return &Server{
+		mgr:            mgr,
+		store:          st,
+		cfg:            cfg,
+		scanCache:      inspect.NewScanCache(),
+		planner:        skyplan.New(cfg.SirilCatalogDir),
+		events:         skyevents.New(cfg),
+		lightpollution: lp,
+		elevation:      elev,
+		darksky:        darksky.New(lp, elev, cfg.DarkSkyMaxCells, cfg.HorizonCandidates),
+		weather:        weather.New(cfg),
+	}
 }
 
 // Handler returns the HTTP handler with routes and CORS.
@@ -47,7 +74,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.cancelJob)
 	mux.HandleFunc("GET /api/jobs/{id}/events", s.jobEvents)
 	mux.HandleFunc("GET /api/runs", s.listRuns)
+	mux.HandleFunc("GET /api/processed", s.processed)
 	mux.HandleFunc("GET /api/file", s.serveFile)
+	mux.HandleFunc("GET /api/preview", s.previewFile)
+	mux.HandleFunc("GET /api/sky/targets", s.skyTargets)
+	mux.HandleFunc("GET /api/sky/events", s.skyEvents)
+	mux.HandleFunc("GET /api/sky/series", s.skyEventSeries)
+	mux.HandleFunc("GET /api/sky/polar", s.skyPolar)
+	mux.HandleFunc("GET /api/sky/align", s.skyAlign)
+	mux.HandleFunc("GET /api/sky/geocode", s.geocode)
+	mux.HandleFunc("GET /api/sky/lightpollution", s.lightPollution)
+	mux.HandleFunc("GET /api/sky/lightpollution/tiles/{z}/{x}/{y}", s.lightPollutionTile)
+	mux.HandleFunc("GET /api/sky/darksites", s.darkSites)
+	mux.HandleFunc("GET /api/sky/weather", s.skyWeather)
+	mux.HandleFunc("GET /api/sky/weather/grid", s.skyWeatherGrid)
 	return cors(mux)
 }
 
@@ -62,18 +102,19 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) inspect(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Path string `json:"path"`
+		Path  string   `json:"path"`
+		Paths []string `json:"paths"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		badRequest(w, "invalid body")
 		return
 	}
-	path, ok := s.withinData(body.Path)
+	roots, ok := s.resolveRoots(body.Path, body.Paths)
 	if !ok {
 		badRequest(w, "path must be inside the data directory")
 		return
 	}
-	inv, err := inspect.Scan(r.Context(), path)
+	inv, err := s.scanCache.ScanMany(r.Context(), roots, inspect.DefaultScanOptions())
 	if err != nil {
 		serverError(w, err)
 		return
@@ -101,13 +142,25 @@ func (s *Server) browse(w http.ResponseWriter, r *http.Request) {
 		Path  string `json:"path"`
 		IsDir bool   `json:"is_dir"`
 	}
-	var dirs []entry
+	// Directories first, then files — each group already name-sorted by os.ReadDir. Files are listed
+	// (so the browser shows folder contents) but are not selectable for processing; dotfiles are hidden.
+	var dirs, files []entry
 	for _, e := range entries {
-		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
-			dirs = append(dirs, entry{Name: e.Name(), Path: filepath.Join(abs, e.Name()), IsDir: true})
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		it := entry{Name: e.Name(), Path: filepath.Join(abs, e.Name()), IsDir: e.IsDir()}
+		if e.IsDir() {
+			dirs = append(dirs, it)
+		} else {
+			files = append(files, it)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"path": abs, "entries": dirs})
+	out := append(dirs, files...)
+	if out == nil {
+		out = []entry{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": abs, "entries": out})
 }
 
 func (s *Server) masters(w http.ResponseWriter, r *http.Request) {
@@ -123,13 +176,14 @@ func (s *Server) masters(w http.ResponseWriter, r *http.Request) {
 // would fold in (the "auto-discover + confirm" data), without processing.
 func (s *Server) reusePreview(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Path string `json:"path"`
+		Path  string   `json:"path"`
+		Paths []string `json:"paths"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		badRequest(w, "invalid body")
 		return
 	}
-	path, ok := s.withinData(body.Path)
+	roots, ok := s.resolveRoots(body.Path, body.Paths)
 	if !ok {
 		badRequest(w, "path must be inside the data directory")
 		return
@@ -138,7 +192,7 @@ func (s *Server) reusePreview(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, &pipeline.ReusePreview{Object: ""})
 		return
 	}
-	pv, err := pipeline.PreviewReuse(r.Context(), s.store, path, s.cfg.SirilCatalogDir, s.cfg.ReuseConeDeg)
+	pv, err := pipeline.PreviewReuseMany(r.Context(), s.store, s.scanCache, roots, s.cfg.SirilCatalogDir, s.cfg.ReuseConeDeg)
 	if err != nil {
 		serverError(w, err)
 		return
@@ -152,12 +206,26 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "invalid body")
 		return
 	}
-	path, ok := s.withinData(req.Path)
-	if !ok {
-		badRequest(w, "path must be inside the data directory")
-		return
+	if req.Live != nil && req.Live.SourceKind == "s3" {
+		// A livestack S3 source uses a synthetic "s3://bucket/prefix" path as the lock/display key, not a
+		// filesystem path — skip data-dir confinement (and the rewrite that would corrupt the scheme).
+		if req.Live.Bucket == "" {
+			badRequest(w, "s3 live source requires a bucket")
+			return
+		}
+	} else {
+		roots, ok := s.resolveRoots(req.Path, req.Paths)
+		if !ok {
+			badRequest(w, "path must be inside the data directory")
+			return
+		}
+		req.Path = roots[0] // primary dir: session, target lock, run naming
+		if len(roots) > 1 {
+			req.Paths = roots // multi-folder selection, merged into one session
+		} else {
+			req.Paths = nil // single folder → unchanged single-session run
+		}
 	}
-	req.Path = path
 	if req.Mode == "" {
 		req.Mode = string(mode.Deepsky)
 	}
@@ -265,6 +333,35 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, abs)
 }
 
+// previewFile decodes a capture file (FITS/TIFF/raw/PNG/JPEG) under the data dir into a downsampled,
+// linearly-normalized 16-bit buffer the viewer stretches client-side. Streams a compact binary body
+// (header + uint16 samples; see preview.Preview.Encode), not JSON.
+func (s *Server) previewFile(w http.ResponseWriter, r *http.Request) {
+	path, ok := s.withinData(r.URL.Query().Get("path"))
+	if !ok {
+		badRequest(w, "path must be inside the data directory")
+		return
+	}
+	if !preview.SupportedExt(path) {
+		badRequest(w, "unsupported file type for preview")
+		return
+	}
+	maxEdge := s.cfg.PreviewMaxEdge
+	if q := r.URL.Query().Get("max"); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n > 0 {
+			maxEdge = n
+		}
+	}
+	pv, err := preview.Load(r.Context(), path, maxEdge)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = pv.Encode(w)
+}
+
 // runSummary is one durable run discovered on disk (see GET /api/runs).
 type runSummary struct {
 	Object       string   `json:"object"`
@@ -343,6 +440,27 @@ func isTerminal(status string) bool {
 // --- helpers ---
 
 func (s *Server) withinData(p string) (string, bool) { return s.within(p, s.cfg.DataDir) }
+
+// resolveRoots confines each selected capture folder to the data dir and returns the cleaned absolute
+// paths. A legacy single `path` is treated as a one-element list when `paths` is empty. Returns
+// ok=false (caller replies 400) when nothing is given or any path escapes the data dir.
+func (s *Server) resolveRoots(path string, paths []string) ([]string, bool) {
+	if len(paths) == 0 && path != "" {
+		paths = []string{path}
+	}
+	if len(paths) == 0 {
+		return nil, false
+	}
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		abs, ok := s.withinData(p)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, abs)
+	}
+	return out, true
+}
 
 func (s *Server) within(p, root string) (string, bool) {
 	if p == "" {

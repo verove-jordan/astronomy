@@ -9,6 +9,16 @@ export const btnGhost = `${btn} bg-slate-200 text-slate-800 hover:bg-slate-300 d
 
 export const btnDanger = `${btn} bg-danger-600 text-white hover:bg-danger-500`;
 
+// Segmented control (a row of mutually-exclusive toggle buttons): the wrapper, each button, and the
+// active/idle states. Shared by the calendar mode switch, the Tonight tab strip, the camera/eyepiece
+// toggle and the polar-scope orientation toggle.
+export const segWrap =
+  "flex overflow-hidden rounded-md border border-slate-300 dark:border-slate-600";
+export const segBtn = "px-2 py-1 text-xs transition-colors";
+export const segActive = "bg-brand-600 text-white";
+export const segIdle =
+  "bg-transparent text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700";
+
 export const card =
   "rounded-lg border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-surface-raised";
 
@@ -85,3 +95,64 @@ export const entryBase =
   "inline-flex items-center gap-1.5 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 transition-colors hover:border-brand-400 hover:text-brand-600 dark:border-slate-700 dark:text-slate-300 dark:hover:border-brand-500";
 export const entrySelected =
   "inline-flex items-center gap-1.5 rounded-md border border-brand-500 bg-brand-50 px-2 py-1 text-xs font-medium text-brand-700 ring-1 ring-brand-500 dark:border-brand-500 dark:bg-brand-900/30 dark:text-brand-200";
+
+// --- Tonight / sky-target scoring (complete JIT-safe strings, keyed by runtime value) ---
+
+export type ScoreTier = "excellent" | "good" | "fair" | "poor";
+
+// scoreTier buckets a 0–100 score; mirrored by SCORE_TIER_HEX in constants/colors.ts for the sky map.
+export function scoreTier(score: number): ScoreTier {
+  if (score >= 80) return "excellent";
+  if (score >= 60) return "good";
+  if (score >= 40) return "fair";
+  return "poor";
+}
+
+export const scoreTierPill: Record<ScoreTier, string> = {
+  excellent:
+    "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300",
+  good: "bg-brand-100 text-brand-800 dark:bg-brand-900/40 dark:text-brand-300",
+  fair: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
+  poor: "bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300",
+};
+
+// scoreTierBar: fill color for a ProgressBar tinted by tier.
+export const scoreTierBar: Record<ScoreTier, string> = {
+  excellent: "bg-green-500",
+  good: "bg-brand-500",
+  fair: "bg-amber-500",
+  poor: "bg-slate-400 dark:bg-slate-500",
+};
+
+// skyTypePill: chip colors per derived object type.
+export const skyTypePill: Record<string, string> = {
+  galaxy:
+    "bg-violet-100 text-violet-800 ring-1 ring-violet-200 dark:bg-violet-900/40 dark:text-violet-300 dark:ring-violet-800/50",
+  nebula:
+    "bg-rose-100 text-rose-800 ring-1 ring-rose-200 dark:bg-rose-900/40 dark:text-rose-300 dark:ring-rose-800/50",
+  emission_nebula:
+    "bg-rose-100 text-rose-800 ring-1 ring-rose-200 dark:bg-rose-900/40 dark:text-rose-300 dark:ring-rose-800/50",
+  planetary_nebula:
+    "bg-cyan-100 text-cyan-800 ring-1 ring-cyan-200 dark:bg-cyan-900/40 dark:text-cyan-300 dark:ring-cyan-800/50",
+  dark_nebula:
+    "bg-slate-200 text-slate-700 ring-1 ring-slate-300 dark:bg-slate-700/50 dark:text-slate-200 dark:ring-slate-600",
+  cluster:
+    "bg-amber-100 text-amber-800 ring-1 ring-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:ring-amber-800/50",
+  globular:
+    "bg-orange-100 text-orange-800 ring-1 ring-orange-200 dark:bg-orange-900/40 dark:text-orange-300 dark:ring-orange-800/50",
+  supernova_remnant:
+    "bg-teal-100 text-teal-800 ring-1 ring-teal-200 dark:bg-teal-900/40 dark:text-teal-300 dark:ring-teal-800/50",
+  other:
+    "bg-slate-100 text-slate-700 ring-1 ring-slate-300 dark:bg-slate-700/40 dark:text-slate-200 dark:ring-slate-600",
+};
+export const skyTypePillClass = (objType?: string): string =>
+  skyTypePill[objType ?? ""] ?? skyTypePill.other;
+
+// emissionLineBar: bar fill color per emission line (mirrors the filter palette colors).
+export const emissionLineBar: Record<string, string> = {
+  ha: "bg-rose-500",
+  oiii: "bg-cyan-500",
+  sii: "bg-amber-500",
+  hb: "bg-sky-500",
+  nii: "bg-red-500",
+};

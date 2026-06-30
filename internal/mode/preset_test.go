@@ -8,7 +8,7 @@ import (
 )
 
 func TestParseMode(t *testing.T) {
-	for _, s := range []string{"deepsky", "Nebula", "MILKYWAY", "planetary"} {
+	for _, s := range []string{"deepsky", "Nebula", "MILKYWAY", "planetary", "comet"} {
 		_, err := ParseMode(s)
 		assert.NoError(t, err, s)
 	}
@@ -56,4 +56,11 @@ func TestForPresetsDiffer(t *testing.T) {
 	// Planetary carries lucky-imaging settings.
 	assert.Greater(t, pl.Planetary.BestPercent, 0)
 	assert.True(t, pl.Planetary.Sharpen)
+
+	// Comet reuses the deepsky tuning but is tagged Comet and keeps StarNet on (for the star layer).
+	com := For(Comet)
+	assert.Equal(t, Comet, com.Mode)
+	assert.Equal(t, Mono, com.Color)
+	assert.Greater(t, com.StarReduce, 0.0)
+	assert.False(t, com.Supervise)
 }

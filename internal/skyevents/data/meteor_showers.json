@@ -1,0 +1,14 @@
+[
+  { "code": "QUA", "name": "Quadrantids",       "month": 1,  "day": 3,  "zhr": 110, "ra_deg": 230.0, "dec_deg": 49.0,  "parent": "2003 EH1" },
+  { "code": "LYR", "name": "Lyrids",            "month": 4,  "day": 22, "zhr": 18,  "ra_deg": 271.0, "dec_deg": 34.0,  "parent": "C/1861 G1 Thatcher" },
+  { "code": "ETA", "name": "Eta Aquariids",     "month": 5,  "day": 6,  "zhr": 50,  "ra_deg": 338.0, "dec_deg": -1.0,  "parent": "1P/Halley" },
+  { "code": "SDA", "name": "Delta Aquariids",   "month": 7,  "day": 30, "zhr": 25,  "ra_deg": 340.0, "dec_deg": -16.0, "parent": "96P/Machholz" },
+  { "code": "PER", "name": "Perseids",          "month": 8,  "day": 12, "zhr": 100, "ra_deg": 48.0,  "dec_deg": 58.0,  "parent": "109P/Swift-Tuttle" },
+  { "code": "DRA", "name": "Draconids",         "month": 10, "day": 8,  "zhr": 10,  "ra_deg": 262.0, "dec_deg": 54.0,  "parent": "21P/Giacobini-Zinner" },
+  { "code": "ORI", "name": "Orionids",          "month": 10, "day": 21, "zhr": 20,  "ra_deg": 95.0,  "dec_deg": 16.0,  "parent": "1P/Halley" },
+  { "code": "STA", "name": "Southern Taurids",  "month": 11, "day": 5,  "zhr": 10,  "ra_deg": 52.0,  "dec_deg": 15.0,  "parent": "2P/Encke" },
+  { "code": "NTA", "name": "Northern Taurids",  "month": 11, "day": 12, "zhr": 15,  "ra_deg": 58.0,  "dec_deg": 22.0,  "parent": "2P/Encke" },
+  { "code": "LEO", "name": "Leonids",           "month": 11, "day": 17, "zhr": 15,  "ra_deg": 152.0, "dec_deg": 22.0,  "parent": "55P/Tempel-Tuttle" },
+  { "code": "GEM", "name": "Geminids",          "month": 12, "day": 14, "zhr": 150, "ra_deg": 112.0, "dec_deg": 33.0,  "parent": "3200 Phaethon" },
+  { "code": "URS", "name": "Ursids",            "month": 12, "day": 22, "zhr": 10,  "ra_deg": 217.0, "dec_deg": 76.0,  "parent": "8P/Tuttle" }
+]

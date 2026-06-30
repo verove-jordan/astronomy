@@ -1,6 +1,8 @@
 # --- Go ---
 /bin/
 /dist/
+/astrostack
+/siril-mcp
 *.exe
 *.test
 *.out
@@ -8,11 +10,23 @@ coverage.*
 tmp/
 .air/
 
+# --- local runtime venv (created by scripts/ia-model.sh; never committed) ---
+.venv-ia/
+# scratch
+probe_tmp/
+
 # --- Node / frontend ---
 node_modules/
 frontend/dist/
 frontend/.vite/
 *.local
+
+# --- demo recorder (tools/demo) ---
+tools/demo/dist/
+# user-supplied / licensed demo music is never committed (keep the folder + its README)
+tools/demo/assets/music/*
+!tools/demo/assets/music/README.md
+# rendered videos + recorder scratch land under output/ (already ignored), e.g. output/demo/
 
 # --- env & secrets ---
 .env

@@ -8,10 +8,28 @@ export interface CreateOpts {
   dropWheelTransition?: boolean;
   colorCalibration?: boolean;
   denoise?: boolean;
+  haExcludeStars?: boolean;
+  supervise?: boolean; // opt-in: drive the local AI agent to auto-tune the finish
+  sequential?: boolean; // queue into the single-worker sequential lane (chained "Add to queue")
+  look?: string; // milkyway render style: natural | iphone | deepsky
+  brightness?: string; // milkyway sky brightness: darker | balanced | brighter
+  darkDir?: string; // milkyway: optional dark calibration frames folder
+  flatDir?: string; // milkyway: optional flat calibration frames folder
+  biasDir?: string; // milkyway: optional bias/offset calibration frames folder
   inventory?: Inventory | null;
+  // Multi-folder selection: the capture folders to merge into one session. The `path` argument is the
+  // primary (first) dir; `paths` (when length > 1) tells the backend to merge them. Single folder → omit.
+  paths?: string[];
   // Cross-session reuse: disable entirely, or restrict folded-in prior data to chosen session ids.
   reuseDisabled?: boolean;
   reuseSessions?: number[];
+  // Live stacking (mode "livestack"): which source to watch and the per-sub exposure.
+  live?: {
+    sourceKind: "local" | "s3";
+    bucket?: string;
+    prefix?: string;
+    exposureSec?: number;
+  };
 }
 
 export const useJobsStore = defineStore("jobs", () => {
@@ -55,6 +73,7 @@ export const useJobsStore = defineStore("jobs", () => {
     opts: CreateOpts = {},
   ): Promise<number> {
     const body: Record<string, unknown> = { path, mode, format };
+    if (opts.paths && opts.paths.length > 1) body.paths = opts.paths;
     if (opts.filterMap && Object.keys(opts.filterMap).length)
       body.filter_map = opts.filterMap;
     if (opts.dropWheelTransition !== undefined)
@@ -62,18 +81,34 @@ export const useJobsStore = defineStore("jobs", () => {
     if (opts.colorCalibration !== undefined)
       body.color_calibration = opts.colorCalibration;
     if (opts.denoise !== undefined) body.denoise = opts.denoise;
+    if (opts.haExcludeStars !== undefined)
+      body.ha_exclude_stars = opts.haExcludeStars;
+    if (opts.supervise) body.supervise = true;
+    if (opts.sequential) body.sequential = true;
+    if (opts.look) body.look = opts.look;
+    if (opts.brightness) body.brightness = opts.brightness;
+    if (opts.darkDir) body.dark_dir = opts.darkDir;
+    if (opts.flatDir) body.flat_dir = opts.flatDir;
+    if (opts.biasDir) body.bias_dir = opts.biasDir;
     if (opts.reuseDisabled) body.reuse_disabled = true;
     if (opts.reuseSessions && opts.reuseSessions.length)
       body.reuse_sessions = opts.reuseSessions;
+    if (opts.live)
+      body.live = {
+        source_kind: opts.live.sourceKind,
+        bucket: opts.live.bucket,
+        prefix: opts.live.prefix,
+        exposure_sec: opts.live.exposureSec,
+      };
     const data = await apiPost<{ id: number }>("/api/jobs", body);
     if (opts.inventory) captureByJob.value[data.id] = opts.inventory;
     return data.id;
   }
 
-  // previewReuse asks the backend what prior light sessions a run on this path would fold in.
-  async function previewReuse(path: string): Promise<ReusePreview | null> {
+  // previewReuse asks the backend what prior light sessions a run over these folders would fold in.
+  async function previewReuse(paths: string[]): Promise<ReusePreview | null> {
     try {
-      return await apiPost<ReusePreview>("/api/reuse/preview", { path });
+      return await apiPost<ReusePreview>("/api/reuse/preview", { paths });
     } catch {
       return null;
     }

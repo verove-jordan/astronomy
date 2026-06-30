@@ -3,9 +3,11 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/verove-jordan/astronomy/internal/calib"
+	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/grade"
 	"github.com/verove-jordan/astronomy/internal/inspect"
@@ -18,7 +20,7 @@ import (
 // channel master. Each group is calibrated with its own masters — crucially, its own session's flat —
 // then every calibrated frame is co-registered and stacked together, growing the total integration.
 func processChannelGroups(ctx context.Context, opts Options, object, filter string, groups []lightGroup,
-	masters []calib.Master, flats *flatCache, workRun, outDir string, gradeOpts grade.Options,
+	masters []calib.Master, flats *flatCache, parity *parityCache, workRun, outDir string, gradeOpts grade.Options,
 	onProgress func(siril.Progress)) ChannelResult {
 	rep := groups[0]
 	ch := ChannelResult{
@@ -44,6 +46,11 @@ func processChannelGroups(ctx context.Context, opts Options, object, filter stri
 			return ch
 		}
 		base := siril.CalibratedSeq("light", cm) // "pp_light" with masters, else "light"
+		// Correct a mirror/parity flip (e.g. a session shot through a star diagonal) before the merge:
+		// a mirrored session can never be aligned by rotation, so its calibrated frames are flipped here.
+		if note := parity.correct(ctx, g, grpDir, base, len(g.Frames)); note != "" {
+			ch.Selection.Notes = append(ch.Selection.Notes, note)
+		}
 		calibrated = append(calibrated, calibratedFramePaths(grpDir, base, len(g.Frames))...)
 		frames = append(frames, g.Frames...)
 		ch.InputFrames += len(g.Frames)
@@ -55,13 +62,16 @@ func processChannelGroups(ctx context.Context, opts Options, object, filter stri
 		ch.Err = err.Error()
 		return ch
 	}
+	// Register with field rotation (homography, Siril's default) and crop the output to the common
+	// field-of-view (framing=min) so two differently-oriented sessions integrate over their shared sky
+	// with no ragged low-coverage borders. Stack weighted by wFWHM so the sharper/deeper subs dominate.
 	noMasters := siril.CalibMasters{}
-	if _, err := opts.Runner.Run(ctx, mergedDir, siril.CalibrateRegisterScript("light", noMasters), onProgress); err != nil {
+	if _, err := opts.Runner.Run(ctx, mergedDir, siril.CalibrateRegisterFramedScript("light", noMasters, "homography", "min"), onProgress); err != nil {
 		ch.Err = err.Error()
 		return ch
 	}
 	finishStackedChannel(ctx, opts, mergedDir, siril.CalibratedSeq("light", noMasters),
-		siril.RegisteredSeq("light", noMasters), filter, frames, outDir, gradeOpts, onProgress, &ch)
+		siril.RegisteredSeq("light", noMasters), filter, frames, outDir, gradeOpts, "wfwhm", onProgress, &ch)
 	return ch
 }
 
@@ -142,6 +152,91 @@ func (c *flatCache) sessionFlat(ctx context.Context, opts Options, g lightGroup,
 	}
 	c.built[key] = outBase + ".fits"
 	return c.built[key], ""
+}
+
+// parityTargetSign is the det(CD) sign every session is normalized to. Negative = the standard East-left
+// orientation, which the primary rig (ASI1600MM + FC-100) produces natively — so normal data is never
+// flipped, only a foreign mirror-flipped session is. Stacking is guaranteed either way: opposite-parity
+// frames cannot co-register, so all groups must share one sign.
+const parityTargetSign = -1
+
+// parityCache detects and corrects mirror/parity flips across sessions. A session shot through a different
+// optical train (e.g. a star diagonal) is mirror-flipped: star registration matches asterisms by chirality,
+// so it can never be aligned by rotation and must be physically flipped first. parityCache plate-solves one
+// calibrated frame per session to read its parity (the sign of det(CD)) and flips the frames of any session
+// whose parity differs from parityTargetSign. It is shared across channels so each session solves once.
+type parityCache struct {
+	runner *siril.Runner
+	solve  siril.SolveOptions
+	seen   map[string]int // parityKey → sign (-1/+1), or 0 when parity could not be determined
+}
+
+func newParityCache(runner *siril.Runner, solve siril.SolveOptions) *parityCache {
+	return &parityCache{runner: runner, solve: solve, seen: map[string]int{}}
+}
+
+// parityKey identifies a physical session. Parity is a property of the optical train, so filter and
+// exposure are excluded (a session solves once for all its channels); camera config is included so the
+// combined-folder case — both sessions sharing one SessionID but differing by gain — stays separable.
+func parityKey(g lightGroup) string {
+	return fmt.Sprintf("%d|%d|%d|%d|%d", g.SessionID, g.Key.Gain, g.Key.Offset, g.Key.Bin, g.Key.TempBucket)
+}
+
+// correct flips group g's calibrated frames (named base_00001…base_0000n in grpDir) when its parity
+// differs from the target, so it can co-register with the other sessions. It returns a human-facing note
+// when it flips a session or cannot determine its parity, and "" when nothing was needed.
+func (pc *parityCache) correct(ctx context.Context, g lightGroup, grpDir, base string, n int) string {
+	sign, note := pc.signFor(ctx, g, grpDir, base)
+	if sign == 0 || sign == parityTargetSign {
+		return note // undetermined (warned) or already aligned (no-op)
+	}
+	names := make([]string, n)
+	for i := range names {
+		names[i] = fmt.Sprintf("%s_%05d", base, i+1)
+	}
+	if _, err := pc.runner.Run(ctx, grpDir, siril.MirrorFramesScript(names), nil); err != nil {
+		return fmt.Sprintf("session %d: parity flip failed (%v) — frames left unmirrored", g.SessionID, err)
+	}
+	return fmt.Sprintf("session %d: mirror-corrected (parity flip) so it stacks with the other sessions", g.SessionID)
+}
+
+// signFor returns the cached parity sign for g's session, plate-solving one reference frame on first sight.
+func (pc *parityCache) signFor(ctx context.Context, g lightGroup, grpDir, base string) (int, string) {
+	key := parityKey(g)
+	if s, ok := pc.seen[key]; ok {
+		return s, ""
+	}
+	sign, warn := pc.solveParity(ctx, grpDir, base)
+	pc.seen[key] = sign
+	if warn != "" {
+		return sign, fmt.Sprintf("session %d: %s", g.SessionID, warn)
+	}
+	return sign, ""
+}
+
+// solveParity plate-solves the first calibrated frame (without flipping it) and reads the parity from the
+// WCS. It returns 0 and a warning when solving or reading the WCS fails — the group is then left unflipped
+// (no worse than before: if it really is mirrored, its frames simply fail to register and are graded out).
+func (pc *parityCache) solveParity(ctx context.Context, grpDir, base string) (int, string) {
+	const probe = "_parity_probe"
+	ref := fmt.Sprintf("%s_%05d", base, 1)
+	if _, err := pc.runner.Run(ctx, grpDir, siril.ParityProbeScript(ref, probe, pc.solve), nil); err != nil {
+		return 0, "parity undetermined (plate-solve failed) — flip not applied"
+	}
+	probePath := filepath.Join(grpDir, probe+".fits")
+	defer func() { _ = os.Remove(probePath) }()
+	f, err := fits.Open(probePath)
+	if err != nil {
+		return 0, "parity undetermined (no solved WCS) — flip not applied"
+	}
+	det, ok := f.Header.CDDeterminant()
+	if !ok {
+		return 0, "parity undetermined (WCS lacks CD/PC matrix) — flip not applied"
+	}
+	if det < 0 {
+		return -1, ""
+	}
+	return 1, ""
 }
 
 // orderedPlanFilters returns the plan's channel filters in canonical order (L first).

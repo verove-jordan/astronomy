@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/verove-jordan/astronomy/internal/fits"
 )
 
 // Kind classifies what a process path points at.
@@ -62,6 +64,52 @@ func DetectInput(path string) (Kind, error) {
 	}
 }
 
+// ListFITSFrames returns the FITS frame files under dir, sorted by name (acquisition order).
+func ListFITSFrames(dir string) ([]string, error) {
+	var out []string
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if fitsExts[strings.ToLower(filepath.Ext(p))] {
+			out = append(out, p)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// IsOSCDir reports whether dir holds one-shot-color (Bayer CFA) FITS frames that must be debayered — i.e.
+// it should run through the OSC pipeline, not the mono per-filter pipeline. It samples the first frames
+// and returns true only when every sampled frame is CFA, so a mono or mixed directory is never misrouted.
+func IsOSCDir(dir string) bool {
+	frames, err := ListFITSFrames(dir)
+	if err != nil || len(frames) == 0 {
+		return false
+	}
+	const sample = 16
+	checked := 0
+	for _, p := range frames {
+		if checked >= sample {
+			break
+		}
+		f, err := fits.Open(p)
+		if err != nil {
+			continue
+		}
+		checked++
+		b, ok := f.Header.String("BAYERPAT")
+		if bp := strings.TrimSpace(b); !ok || bp == "" || strings.EqualFold(bp, "NONE") {
+			return false // a monochrome frame → not an OSC directory
+		}
+	}
+	return checked > 0
+}
+
 // ListRawFrames returns the one-shot-color still files under dir, sorted (acquisition order).
 func ListRawFrames(dir string) ([]string, error) {
 	var out []string
@@ -76,6 +124,30 @@ func ListRawFrames(dir string) ([]string, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// ListFITSFramesMany returns the FITS frames under all dirs, concatenated then sorted by full path
+// (which groups each directory's frames together, in acquisition order) — the OSC multi-folder scan.
+func ListFITSFramesMany(dirs []string) ([]string, error) {
+	return listFramesMany(dirs, ListFITSFrames)
+}
+
+// ListRawFramesMany returns the one-shot-color stills under all dirs, concatenated then sorted.
+func ListRawFramesMany(dirs []string) ([]string, error) {
+	return listFramesMany(dirs, ListRawFrames)
+}
+
+func listFramesMany(dirs []string, list func(string) ([]string, error)) ([]string, error) {
+	var out []string
+	for _, d := range dirs {
+		frames, err := list(d)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, frames...)
 	}
 	sort.Strings(out)
 	return out, nil

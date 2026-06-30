@@ -7,6 +7,7 @@ import GenericTable, {
 } from "@/components/Common/GenericTable.vue";
 import MetricsChart from "@/components/Dataviz/MetricsChart.vue";
 import ImageViewer from "@/components/Common/ImageViewer.vue";
+import FilePreviewButton from "@/components/Common/FilePreviewButton.vue";
 import FilterChip from "@/components/Common/FilterChip.vue";
 import IconCheck from "@/components/Icons/IconCheck.vue";
 import IconMinus from "@/components/Icons/IconMinus.vue";
@@ -29,6 +30,17 @@ const finalVideo = computed(() => {
   const out = props.result.final?.outputs?.find((o) => o.endsWith(".mp4"));
   return out ? fileUrl(out) : "";
 });
+
+// Integration (exposure) time that went into the final image: per channel = stacked subs × per-sub
+// exposure, and the sum across channels.
+const integrationByChannel = computed(() =>
+  (props.result.channels ?? [])
+    .map((c) => ({ filter: c.filter, ms: c.stacked_frames * c.exposure_ms }))
+    .filter((c) => c.ms > 0),
+);
+const totalIntegrationMs = computed(() =>
+  integrationByChannel.value.reduce((sum, c) => sum + c.ms, 0),
+);
 
 const channelRows = computed<Row[]>(() =>
   (props.result.channels ?? []).map((c) => ({
@@ -115,6 +127,7 @@ const channelsWithMetrics = computed<ChannelResult[]>(() =>
 function metricRows(c: ChannelResult): Row[] {
   return (c.metrics ?? []).map((m) => ({
     index: m.index,
+    path: m.path,
     file: baseName(m.path),
     fwhm: m.fwhm,
     roundness: m.roundness,
@@ -148,6 +161,7 @@ const metricColumns: Column<Row>[] = [
     searchable: true,
   },
   { key: "reason", label: t("fields.reason"), searchable: true },
+  { key: "view", label: "", align: "right" },
 ];
 const rejectedClass = (r: Row) =>
   r.status === "rejected"
@@ -164,6 +178,27 @@ const rejectedClass = (r: Row) =>
           {{ result.final?.mode }} · {{ result.final?.channels?.join("+") }}
         </span>
       </h2>
+      <div
+        v-if="totalIntegrationMs > 0"
+        class="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm"
+      >
+        <span class="text-slate-600 dark:text-slate-300">
+          {{ t("capture.integration") }}:
+          <span class="font-semibold text-brand-600 dark:text-brand-300">{{
+            humanizeMs(totalIntegrationMs)
+          }}</span>
+        </span>
+        <span
+          v-for="c in integrationByChannel"
+          :key="c.filter"
+          class="inline-flex items-center gap-1.5"
+        >
+          <FilterChip :filter="c.filter" />
+          <span class="text-slate-500 dark:text-slate-400">{{
+            humanizeMs(c.ms)
+          }}</span>
+        </span>
+      </div>
       <ImageViewer :src="finalImage" alt="final stack" />
       <video
         v-if="finalVideo"
@@ -252,6 +287,9 @@ const rejectedClass = (r: Row) =>
             >
               {{ value === "rejected" ? t("job.rejected") : t("job.kept") }}
             </span>
+          </template>
+          <template #cell-view="{ row }">
+            <FilePreviewButton :path="String(row.path)" />
           </template>
         </GenericTable>
       </div>

@@ -4,9 +4,16 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/verove-jordan/astronomy/internal/siril"
 )
+
+// spccTimeout bounds the SPCC step. SPCC plate-solves then fetches a photometric star catalogue
+// online (Gaia DR3 xp_sampled); that fetch is normally seconds but can stall, and the CLI drives the
+// pipeline with a background context (no deadline). Bound it so a slow fetch falls back to
+// neutralization instead of hanging the whole run.
+const spccTimeout = 4 * time.Minute
 
 // ColorCalOptions parameterize the color-calibration stage.
 type ColorCalOptions struct {
@@ -23,7 +30,9 @@ type ColorCalOptions struct {
 // hard Siril failure of the fallback returns an error, so a calibration miss never aborts the run.
 func ColorCalibrate(ctx context.Context, runner *siril.Runner, dir, base string, opts ColorCalOptions) (string, error) {
 	if opts.Enabled {
-		res, err := runner.Run(ctx, dir, siril.ColorCalibrateScript(base, base, opts.Solve, opts.Spcc), nil)
+		sctx, cancel := context.WithTimeout(ctx, spccTimeout)
+		res, err := runner.Run(sctx, dir, siril.ColorCalibrateScript(base, base, opts.Solve, opts.Spcc), nil)
+		cancel()
 		if err == nil && res != nil && !solveFailed(res.Log) {
 			return "SPCC color calibration applied", nil
 		}
@@ -34,7 +43,10 @@ func ColorCalibrate(ctx context.Context, runner *siril.Runner, dir, base string,
 		}
 		return "", nil
 	}
-	if _, err := runner.Run(ctx, dir, siril.NeutralizeScript(base, base, 0, 0), nil); err != nil {
+	// Fallback: extract each channel's background (degree-1 plane — equalizes the R/G/B pedestals
+	// toward a neutral sky, not just green) then strip the residual green cast. A safety net mainly
+	// for the no-GraXpert / offline path; harmless when the background was already flattened upstream.
+	if _, err := runner.Run(ctx, dir, siril.NeutralizeScript(base, base, 1, 0), nil); err != nil {
 		return "", fmt.Errorf("color neutralization: %w", err)
 	}
 	if opts.Enabled {

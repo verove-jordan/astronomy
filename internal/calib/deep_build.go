@@ -121,8 +121,15 @@ func stackPooled(ctx context.Context, runner *siril.Runner, mt MasterType, key i
 	if _, err := fsutil.LinkFrames(seqDir, paths); err != nil {
 		return Master{}, err
 	}
-	if _, err := runner.Run(ctx, seqDir, siril.StackMasterScript("cal", outBase), onProgress); err != nil {
+	// Stack into a run-unique hidden temp in the library dir, then atomically rename into place. With the
+	// shared library, two concurrent runs building the same-signature master must never let one read the
+	// other's half-written file; the rename publishes the whole master in one step (same filesystem).
+	tmpBase := filepath.Join(mastersDir, ".tmp_"+filepath.Base(workDir)+"_"+name)
+	if _, err := runner.Run(ctx, seqDir, siril.StackMasterScript("cal", tmpBase), onProgress); err != nil {
 		return Master{}, fmt.Errorf("stack master %s: %w", name, err)
+	}
+	if err := os.Rename(tmpBase+".fits", outBase+".fits"); err != nil {
+		return Master{}, fmt.Errorf("publish master %s: %w", name, err)
 	}
 	_ = os.RemoveAll(seqDir)
 	return Master{

@@ -1,0 +1,125 @@
+package weather
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/verove-jordan/astronomy/internal/fsutil"
+)
+
+// Forecasts and grids are cached in-process and on disk, keyed by rounded location (+ layers for the
+// grid). The disk file's mod-time is the freshness clock, so a cached forecast survives a restart and
+// repeated panning never hammers the upstream feeds.
+
+type cachedForecast struct {
+	f  SiteForecast
+	at time.Time
+}
+
+type cachedGrid struct {
+	g  Grid
+	at time.Time
+}
+
+func (p *Provider) cachedForecast(key string) (SiteForecast, bool) {
+	p.mu.Lock()
+	c, ok := p.memoFc[key]
+	p.mu.Unlock()
+	if ok && time.Since(c.at) < p.ttl {
+		return c.f, true
+	}
+	if f, at, ok := readJSON[SiteForecast](p.forecastPath(key)); ok && time.Since(at) < p.ttl {
+		p.mu.Lock()
+		p.memoFc[key] = cachedForecast{f, at}
+		p.mu.Unlock()
+		return f, true
+	}
+	return SiteForecast{}, false
+}
+
+func (p *Provider) anyForecast(key string) (SiteForecast, bool) {
+	p.mu.Lock()
+	c, ok := p.memoFc[key]
+	p.mu.Unlock()
+	if ok {
+		return c.f, true
+	}
+	f, _, ok := readJSON[SiteForecast](p.forecastPath(key))
+	return f, ok
+}
+
+func (p *Provider) storeForecast(key string, f SiteForecast) {
+	p.mu.Lock()
+	p.memoFc[key] = cachedForecast{f, time.Now()}
+	p.mu.Unlock()
+	writeJSON(p.forecastPath(key), f)
+}
+
+func (p *Provider) cachedGrid(key string) (Grid, bool) {
+	p.mu.Lock()
+	c, ok := p.memoGrid[key]
+	p.mu.Unlock()
+	if ok && time.Since(c.at) < p.ttl {
+		return c.g, true
+	}
+	if g, at, ok := readJSON[Grid](p.gridPath(key)); ok && time.Since(at) < p.ttl {
+		p.mu.Lock()
+		p.memoGrid[key] = cachedGrid{g, at}
+		p.mu.Unlock()
+		return g, true
+	}
+	return Grid{}, false
+}
+
+func (p *Provider) anyGrid(key string) (Grid, bool) {
+	p.mu.Lock()
+	c, ok := p.memoGrid[key]
+	p.mu.Unlock()
+	if ok {
+		return c.g, true
+	}
+	g, _, ok := readJSON[Grid](p.gridPath(key))
+	return g, ok
+}
+
+func (p *Provider) storeGrid(key string, g Grid) {
+	p.mu.Lock()
+	p.memoGrid[key] = cachedGrid{g, time.Now()}
+	p.mu.Unlock()
+	writeJSON(p.gridPath(key), g)
+}
+
+func (p *Provider) forecastPath(key string) string {
+	return filepath.Join(p.cacheDir, "forecast", key+".json")
+}
+
+func (p *Provider) gridPath(key string) string {
+	return filepath.Join(p.cacheDir, "grid", key+".json")
+}
+
+func readJSON[T any](path string) (T, time.Time, bool) {
+	var v T
+	info, err := os.Stat(path)
+	if err != nil {
+		return v, time.Time{}, false
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return v, time.Time{}, false
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return v, time.Time{}, false
+	}
+	return v, info.ModTime(), true
+}
+
+func writeJSON(path string, v any) {
+	if err := fsutil.EnsureDir(filepath.Dir(path)); err != nil {
+		return
+	}
+	if b, err := json.Marshal(v); err == nil {
+		_ = os.WriteFile(path, b, 0o644)
+	}
+}

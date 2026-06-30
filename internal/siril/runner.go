@@ -13,20 +13,35 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+
+	"github.com/verove-jordan/astronomy/internal/sysmon"
 )
+
+// Limits bound a Siril run's resource use so a heavy stack does not freeze the host. MaxCPUs and
+// MemRatio are applied via Siril's own `setcpu`/`setmem` script commands; Nice lowers the
+// siril-cli OS scheduling priority. A zero value in any field leaves that knob at Siril's default.
+type Limits struct {
+	MaxCPUs  int     // setcpu N — cap processing threads (<=0 → Siril default: all cores)
+	MemRatio float64 // setmem R — fraction of available RAM Siril may use (<=0 → Siril default 0.9)
+	Nice     int     // OS niceness added to the child process (<=0 → unchanged)
+}
 
 // Runner executes Siril scripts via the siril-cli binary.
 type Runner struct {
 	bin string
+	lim Limits
 }
 
-// New returns a Runner for the given siril-cli path.
-func New(bin string) *Runner { return &Runner{bin: bin} }
+// New returns a Runner for the given siril-cli path and resource limits.
+func New(bin string, lim Limits) *Runner { return &Runner{bin: bin, lim: lim} }
 
-// Progress is one line of Siril output, with any embedded percentage extracted.
+// Progress is one line of Siril output, with any embedded percentage extracted. When Sample is
+// non-nil the Progress carries a live resource reading instead of a log line (Line is empty).
 type Progress struct {
 	Line    string
 	Percent int // -1 when the line carried no percentage
+	Sample  *sysmon.Sample
 }
 
 // Result is the outcome of a script run.
@@ -68,7 +83,7 @@ func (r *Runner) Run(ctx context.Context, workDir, script string, onProgress fun
 		return nil, fmt.Errorf("create work dir: %w", err)
 	}
 	scriptPath := filepath.Join(absWork, "_astrostack.ssf")
-	if err := os.WriteFile(scriptPath, []byte(script), 0o644); err != nil {
+	if err := os.WriteFile(scriptPath, []byte(r.lim.apply(script)), 0o644); err != nil {
 		return nil, fmt.Errorf("write script: %w", err)
 	}
 
@@ -82,6 +97,25 @@ func (r *Runner) Run(ctx context.Context, workDir, script string, onProgress fun
 		return nil, fmt.Errorf("start siril: %w", err)
 	}
 
+	// emit serializes callbacks: the resource monitor runs on its own goroutine, so without this
+	// lock its samples would race the stdout scan loop's log lines into a single onProgress.
+	var emitMu sync.Mutex
+	emit := func(p Progress) {
+		if onProgress == nil {
+			return
+		}
+		emitMu.Lock()
+		defer emitMu.Unlock()
+		onProgress(p)
+	}
+
+	// Keep the host responsive and report this step's live CPU/RAM. Both hang off the child PID.
+	setPriority(cmd.Process.Pid, r.lim.Nice)
+	mon := sysmon.Start(ctx, cmd.Process.Pid, 0, func(s sysmon.Sample) {
+		emit(Progress{Sample: &s})
+	})
+	defer mon.Stop()
+
 	var log strings.Builder
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -90,9 +124,7 @@ func (r *Runner) Run(ctx context.Context, workDir, script string, onProgress fun
 		log.WriteString(line)
 		log.WriteByte('\n')
 		clean := logPrefix.ReplaceAllString(line, "")
-		if onProgress != nil {
-			onProgress(Progress{Line: clean, Percent: parsePercent(clean)})
-		}
+		emit(Progress{Line: clean, Percent: parsePercent(clean)})
 	}
 
 	res := &Result{Log: log.String()}
@@ -118,4 +150,33 @@ func parsePercent(line string) int {
 		return n
 	}
 	return -1
+}
+
+// apply injects Siril's setcpu/setmem throttle commands into a script, right after the leading
+// `requires` line (Siril requires that directive first). A zero-valued Limits, or a script without a
+// `requires` line (e.g. an external eval_ssf snippet), is returned unchanged rather than risk an
+// invalid command order — throttling is best-effort and must never produce a broken script.
+func (l Limits) apply(script string) string {
+	header := l.header()
+	if header == "" {
+		return script
+	}
+	if strings.HasPrefix(script, "requires ") {
+		if i := strings.IndexByte(script, '\n'); i >= 0 {
+			return script[:i+1] + header + script[i+1:]
+		}
+	}
+	return script
+}
+
+// header builds the setcpu/setmem lines for the configured limits (empty when neither is set).
+func (l Limits) header() string {
+	var b strings.Builder
+	if l.MaxCPUs > 0 {
+		fmt.Fprintf(&b, "setcpu %d\n", l.MaxCPUs)
+	}
+	if l.MemRatio > 0 {
+		fmt.Fprintf(&b, "setmem %.2f\n", l.MemRatio)
+	}
+	return b.String()
 }

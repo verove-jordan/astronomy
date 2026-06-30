@@ -42,7 +42,7 @@ func runVideo(args []string) error {
 		}
 	}
 
-	res, err := planetary.Process(context.Background(), siril.New(cfg.SirilBin), cfg.FfmpegBin,
+	res, err := planetary.Process(context.Background(), siril.New(cfg.SirilBin, sirilLimits(cfg)), cfg.FfmpegBin,
 		file, pick(*work, cfg.WorkDir), pick(*out, cfg.OutputDir),
 		planetary.Options{BestPercent: *best, Sharpen: true, Formats: []string{"png", "tif"}}, onProgress)
 	if err != nil {

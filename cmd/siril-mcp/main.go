@@ -12,12 +12,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/config"
+	"github.com/verove-jordan/astronomy/internal/gimp"
 	"github.com/verove-jordan/astronomy/internal/graxpert"
 	"github.com/verove-jordan/astronomy/internal/inspect"
+	"github.com/verove-jordan/astronomy/internal/llm"
 	"github.com/verove-jordan/astronomy/internal/mcpserver"
+	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
 	"github.com/verove-jordan/astronomy/internal/planetary"
 	"github.com/verove-jordan/astronomy/internal/report"
@@ -36,7 +40,9 @@ type app struct {
 
 func main() {
 	cfg := config.Load()
-	a := &app{cfg: cfg, runner: siril.New(cfg.SirilBin)}
+	a := &app{cfg: cfg, runner: siril.New(cfg.SirilBin, siril.Limits{
+		MaxCPUs: cfg.MaxCPUs, MemRatio: cfg.SirilMemRatio, Nice: cfg.SirilNice,
+	})}
 	if st, err := store.New(context.Background(), cfg.DatabaseURL); err != nil {
 		fmt.Fprintf(os.Stderr, "siril-mcp: calibration library disabled (%v)\n", err)
 	} else {
@@ -120,6 +126,19 @@ func (a *app) register(s *mcpserver.Server) {
 			"dir":    str("working directory for the script (optional; defaults to ASTRO_WORK_DIR)"),
 		}, "script"),
 		Handler: a.evalSSF,
+	})
+	s.AddTool(mcpserver.Tool{
+		Name: "refine_finish",
+		Description: "Re-run ONLY the finish on an already-stacked run, driving the local-AI-agent " +
+			"supervisor to re-tune the GIMP composite (saturation, Hα, colour, crop, stars) over a few " +
+			"iterations and keep the best — WITHOUT re-stacking. Point it at an existing run directory " +
+			"(output/<object>/<runID>/ with run.json + aligned_*/master_*.fits); updates final.* in place. " +
+			"Needs a host model server (ASTRO_LLM_URL); falls back to the standard finish if it is absent.",
+		InputSchema: obj(map[string]any{
+			"run_dir": str("absolute path to the run directory (output/<object>/<runID>) with run.json + masters"),
+			"mode":    str("finish preset override: deepsky|nebula (optional; default deepsky)"),
+		}, "run_dir"),
+		Handler: a.refineFinish,
 	})
 }
 
@@ -256,6 +275,77 @@ func (a *app) evalSSF(ctx context.Context, args json.RawMessage) (string, error)
 		return res.Log, err
 	}
 	return "", err
+}
+
+func (a *app) refineFinish(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		RunDir string `json:"run_dir"`
+		Mode   string `json:"mode"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	if p.RunDir == "" {
+		return "", fmt.Errorf("run_dir is required")
+	}
+	m := mode.Deepsky
+	if p.Mode != "" {
+		parsed, err := mode.ParseMode(p.Mode)
+		if err != nil {
+			return "", err
+		}
+		m = parsed
+	}
+	preset := mode.For(m)
+	preset.Supervise = true // refine_finish exists to drive the agent (soft-falls if the server is down)
+
+	var supervisor *llm.Runner
+	if a.cfg.LLMBaseURL != "" {
+		supervisor = llm.New(a.cfg.LLMBaseURL, a.cfg.LLMModel, a.cfg.LLMImageFormat)
+	}
+	solve := siril.SolveOptions{FocalMM: a.cfg.FocalLenMM, PixelUm: a.cfg.PixelSizeUm, Catalog: a.cfg.PlateSolveCatalog}
+	spcc := siril.SpccOptions{
+		MonoSensor: a.cfg.SpccMonoSensor, OSCSensor: a.cfg.NightscapeOSCSensor,
+		RFilter: a.cfg.SpccRFilter, GFilter: a.cfg.SpccGFilter,
+		BFilter: a.cfg.SpccBFilter, WhiteRef: a.cfg.SpccWhiteRef,
+	}
+
+	final, err := pipeline.RefineExistingRun(ctx, pipeline.Options{
+		WorkDir:    a.cfg.WorkDir,
+		Runner:     a.runner,
+		Gimp:       gimp.New(a.cfg.GimpBin, a.cfg.GimpHost, a.cfg.GimpPort),
+		Graxpert:   graxpert.New(a.cfg.GraxpertBin),
+		Starnet:    starnet.New(a.cfg.StarnetBin),
+		Supervisor: supervisor,
+		Preset:     &preset,
+		Solve:      solve,
+		Spcc:       spcc,
+		OnProgress: func(pr pipeline.Progress) {
+			if pr.Line == "" {
+				fmt.Fprintf(os.Stderr, "[siril-mcp] %s\n", pr.Step)
+			}
+		},
+	}, p.RunDir)
+	if err != nil {
+		return "", err
+	}
+
+	out := fmt.Sprintf("Refined finish for %s\nMode: %s (channels %s)\nOutputs:\n",
+		p.RunDir, final.Mode, strings.Join(final.Channels, "+"))
+	for _, o := range final.Outputs {
+		out += "  " + o + "\n"
+	}
+	if n := len(final.Iterations); n > 0 {
+		out += fmt.Sprintf("Supervisor: %d iteration(s)\n", n)
+		for _, it := range final.Iterations {
+			mark := " "
+			if it.Chosen {
+				mark = "*"
+			}
+			out += fmt.Sprintf("  %s iter %d  score %.1f  %s\n", mark, it.Index+1, it.CombinedScore, it.Reasoning)
+		}
+	}
+	return out, nil
 }
 
 func pick(v, def string) string {

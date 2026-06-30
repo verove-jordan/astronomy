@@ -11,8 +11,8 @@ import (
 // Passing this (instead of nil) to Runner.Run is what makes a Siril failure diagnosable.
 func (o Options) sirilLines(step string) func(siril.Progress) {
 	return func(p siril.Progress) {
-		if p.Line != "" {
-			o.report(Progress{Step: step, Line: p.Line})
+		if p.Line != "" || p.Sample != nil {
+			o.report(Progress{Step: step, Line: p.Line, Sample: p.Sample})
 		}
 	}
 }

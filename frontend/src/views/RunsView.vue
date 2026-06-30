@@ -75,6 +75,7 @@ function fmtDate(ms: number): string {
             card,
             'group min-w-0 text-left transition-shadow hover:shadow-md',
           ]"
+          data-demo="run-card"
           @click="openRun(run)"
         >
           <div

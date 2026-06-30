@@ -97,6 +97,83 @@ func CalibrateRegisterScript(seq string, m CalibMasters) string {
 	return b.String()
 }
 
+// CalibrateRegisterFramedScript calibrates (if masters are given), computes registration in two passes
+// (metrics only, no transformed images), then applies it with a chosen output framing. Used for the
+// cross-session merge so frames from differently-oriented sessions are cropped to their common field of
+// view (framing="min" = the area shared by all frames). The two-pass register also picks the reference
+// by quality + framing, which suits heterogeneous data. transf defaults to homography — Siril's default,
+// which already absorbs field rotation. Metrics land in <target>_.seq (read by grading), and seqapplyreg
+// generates r_<target> for the frames that registered, preserving the 1:1 index space grading relies on.
+func CalibrateRegisterFramedScript(seq string, m CalibMasters, transf, framing string) string {
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	fmt.Fprintf(&b, "link %s -out=.\n", seq)
+	target := seq
+	if args := calibrateArgs(m); len(args) > 0 {
+		fmt.Fprintf(&b, "calibrate %s %s -prefix=pp_\n", seq, strings.Join(args, " "))
+		target = "pp_" + seq
+	}
+	reg := "register " + target + " -2pass"
+	if transf != "" {
+		reg += " -transf=" + transf
+	}
+	fmt.Fprintf(&b, "%s\n", reg)
+	apply := "seqapplyreg " + target
+	if framing != "" {
+		apply += " -framing=" + framing
+	}
+	fmt.Fprintf(&b, "%s\n", apply)
+	return b.String()
+}
+
+// CalibrateStarAlignToRefScript calibrates a light sequence (if masters are given) and registers it with
+// the reference frame pinned to refIndex (1-based). Comet mode pins the session-MIDDLE frame so the stars
+// (and the star layer composited back) settle at the mid-session geometry — minimizing drift. It produces
+// the registered r_<target> sequence and writes per-frame metrics to <target>_.seq for grading. Mirrors
+// CalibrateRegisterScript plus the forced reference (the nightscape middle-frame pattern).
+func CalibrateStarAlignToRefScript(seq string, m CalibMasters, refIndex int) string {
+	if refIndex < 1 {
+		refIndex = 1
+	}
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	fmt.Fprintf(&b, "link %s -out=.\n", seq)
+	target := seq
+	if args := calibrateArgs(m); len(args) > 0 {
+		fmt.Fprintf(&b, "calibrate %s %s -prefix=pp_\n", seq, strings.Join(args, " "))
+		target = "pp_" + seq
+	}
+	fmt.Fprintf(&b, "setref %s %d\n", target, refIndex)
+	fmt.Fprintf(&b, "register %s -2pass\n", target)
+	fmt.Fprintf(&b, "seqapplyreg %s\n", target)
+	return b.String()
+}
+
+// StackAlignedScript links already-aligned frames in the work dir as sequence `seq` and stacks them with
+// Winsorized sigma rejection + light (addscale) normalization into outName — no calibration or
+// registration. Used for the comet-mode per-channel stacks (the frames are already globally star-aligned,
+// or comet-translated): the rejection clips the *moving* feature (stars in the comet stack, the comet in
+// the star stack), leaving the fixed one sharp.
+func StackAlignedScript(seq, outName string) string {
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	fmt.Fprintf(&b, "link %s -out=.\n", seq)
+	fmt.Fprintf(&b, "stack %s rej winsorized 3 3 -norm=addscale -output_norm -out=%s\n", seq, outName)
+	return b.String()
+}
+
+// PixelMathScript evaluates a Siril pixel-math expression and saves the result as outName. Image operands
+// are referenced as $name$ — a FITS file in the work dir, without extension (e.g. "$stars$ - $starless$"
+// to isolate the comet star layer, or "max($comet$, $stars$)" to screen the stars back over the starless
+// comet). Mirrors the inline `pm "max(...)"` blends in internal/postprocess.
+func PixelMathScript(expr, outName string) string {
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	fmt.Fprintf(&b, "pm %q\n", expr)
+	fmt.Fprintf(&b, "save %s\n", outName)
+	return b.String()
+}
+
 // CalibratedSeq is the sequence name after calibration — the input to registration and the
 // stable, 1:1-with-inputs index space used for grading. Its .seq file is this name + "_.seq".
 func CalibratedSeq(seq string, m CalibMasters) string {
@@ -114,7 +191,9 @@ func RegisteredSeq(seq string, m CalibMasters) string {
 // StackSelectedScript resets the registered sequence to all-included, unselects our graded-out
 // frames (1-based registered indices), then stacks only the survivors. Winsorized sigma rejection
 // additionally clips residual satellite/plane trail pixels.
-func StackSelectedScript(regSeq string, regCount int, rejected []int, outName string) string {
+// weight (if non-empty) is a Siril stack weighting mode (noise|wfwhm|nbstars|nbstack); it favors the
+// sharper/deeper subs and is used for the cross-session merge. Empty leaves the stack unweighted.
+func StackSelectedScript(regSeq string, regCount int, rejected []int, outName, weight string) string {
 	var b strings.Builder
 	b.WriteString(scriptHeader)
 	if regCount > 0 {
@@ -123,8 +202,18 @@ func StackSelectedScript(regSeq string, regCount int, rejected []int, outName st
 	for _, idx := range rejected {
 		fmt.Fprintf(&b, "unselect %s %d %d\n", regSeq, idx, idx)
 	}
-	fmt.Fprintf(&b, "stack %s rej winsorized 3 3 -norm=addscale -output_norm -filter-incl -out=%s\n", regSeq, outName)
+	fmt.Fprintf(&b, "stack %s rej winsorized 3 3 -norm=addscale -output_norm%s -filter-incl -out=%s\n",
+		regSeq, weightArg(weight), outName)
 	return b.String()
+}
+
+// weightArg renders the optional stack weighting flag (empty string when unweighted, keeping the
+// command byte-identical to the unweighted path).
+func weightArg(weight string) string {
+	if weight == "" {
+		return ""
+	}
+	return " -weight=" + weight
 }
 
 // ConvertScript converts the files in the work dir into a FITS sequence named `seq`.
@@ -280,6 +369,30 @@ func ColorCalibrateScript(loadName, outName string, s SolveOptions, c SpccOption
 	return b.String()
 }
 
+// ParityProbeScript plate-solves a single frame WITHOUT flipping it (-noflip) and saves the result, so
+// the caller can read the solved WCS and derive the image parity (sign of det(CD)). Because -noflip leaves
+// the pixels untouched, the probe's parity matches the frames the caller will mirror.
+func ParityProbeScript(loadName, outName string, s SolveOptions) string {
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	fmt.Fprintf(&b, "load %s\n", loadName)
+	fmt.Fprintf(&b, "%s -noflip\n", platesolveCmd(s))
+	fmt.Fprintf(&b, "save %s\n", outName)
+	return b.String()
+}
+
+// MirrorFramesScript flips each named frame about the horizontal axis in place (load/mirrorx/save),
+// inverting its parity so a mirror-flipped session can co-register with the others. Siril has no
+// sequence-level mirror, so each frame is handled individually; an empty list yields a header-only no-op.
+func MirrorFramesScript(names []string) string {
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	for _, n := range names {
+		fmt.Fprintf(&b, "load %s\nmirrorx\nsave %s\n", n, n)
+	}
+	return b.String()
+}
+
 func platesolveCmd(s SolveOptions) string {
 	cmd := "platesolve"
 	if s.Coords != "" {
@@ -301,29 +414,39 @@ func platesolveCmd(s SolveOptions) string {
 }
 
 func spccCmd(c SpccOptions) string {
-	cmd := "spcc"
+	args := []string{"spcc"}
 	switch {
 	case c.OSCSensor != "":
-		cmd += fmt.Sprintf(" -oscsensor=%q", c.OSCSensor)
+		args = append(args, sirilKV("-oscsensor", c.OSCSensor))
 	case c.MonoSensor != "":
-		cmd += fmt.Sprintf(" -monosensor=%q", c.MonoSensor)
+		args = append(args, sirilKV("-monosensor", c.MonoSensor))
 		if c.RFilter != "" {
-			cmd += fmt.Sprintf(" -rfilter=%q", c.RFilter)
+			args = append(args, sirilKV("-rfilter", c.RFilter))
 		}
 		if c.GFilter != "" {
-			cmd += fmt.Sprintf(" -gfilter=%q", c.GFilter)
+			args = append(args, sirilKV("-gfilter", c.GFilter))
 		}
 		if c.BFilter != "" {
-			cmd += fmt.Sprintf(" -bfilter=%q", c.BFilter)
+			args = append(args, sirilKV("-bfilter", c.BFilter))
 		}
 	}
 	if c.WhiteRef != "" {
-		cmd += fmt.Sprintf(" -whiteref=%q", c.WhiteRef)
+		args = append(args, sirilKV("-whiteref", c.WhiteRef))
 	}
 	if c.Narrowband {
-		cmd += " -narrowband"
+		args = append(args, "-narrowband")
 	}
-	return cmd
+	return strings.Join(args, " ")
+}
+
+// sirilKV formats a `-key=value` argument, wrapping the WHOLE token in double quotes. Siril's SSF
+// tokenizer splits on whitespace and does NOT honor quotes around only the value, so quoting just
+// the value (e.g. -monosensor="ZWO ASI1600MM") makes Siril read the trailing ASI1600MM" as a
+// separate, invalid argument. The entire token must be quoted: "-monosensor=ZWO ASI1600MM".
+// Verified against Siril 1.4.3 `spcc`: the value-only form aborts with "Invalid argument", the
+// whole-token form succeeds.
+func sirilKV(key, val string) string {
+	return fmt.Sprintf("%q", key+"="+val)
 }
 
 // SubskyCmd returns a Siril `subsky` background-extraction command for the given polynomial degree,
@@ -337,6 +460,33 @@ func SubskyCmd(degree int) string {
 		degree = 4
 	}
 	return fmt.Sprintf("subsky %d\n", degree)
+}
+
+// SubskyRBFCmd builds a Siril RBF (radial-basis-function) background extraction — a smooth, spline-like
+// model that handles complex asymmetric gradients (amp-glow + vignetting + light pollution) far better
+// than a low-degree polynomial. Used as the deterministic fallback for the combined-RGB gradient pass
+// when GraXpert is unavailable. `-tolerance=1.5` keeps stars/galaxy out of the background samples;
+// `-dither` avoids banding on the low-dynamic-range sky.
+func SubskyRBFCmd() string {
+	return "subsky -rbf -smooth=0.5 -samples=30 -tolerance=1.5 -dither\n"
+}
+
+// AutostretchCmd builds a Siril `autostretch` with an explicit dark target background. Siril's bare
+// `autostretch` targets a bright 0.25 background — a washed-out, lifted sky that reads as a brown/grey
+// haze once channels are combined and curved. Deep-sky finishing wants a dark sky (~0.05–0.08), so we
+// pass the full signature `autostretch [-linked] <shadowsclip> <targetbg>` (shadowsclip stays at the
+// −2.8σ default; the second positional is the target background). `linked` stretches all channels with
+// one transfer function, preserving the (SPCC-)neutralized color balance instead of re-cast­ing it.
+// targetBg is clamped to a sane (0, 0.5] range; 0 falls back to 0.06.
+func AutostretchCmd(linked bool, targetBg float64) string {
+	if targetBg <= 0 || targetBg > 0.5 {
+		targetBg = 0.06
+	}
+	cmd := "autostretch"
+	if linked {
+		cmd += " -linked"
+	}
+	return cmd + fmt.Sprintf(" -2.8 %.3f", targetBg)
 }
 
 // NeutralizeScript is the offline color fallback: extract the background (equalizing channels toward

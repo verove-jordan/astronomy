@@ -66,11 +66,34 @@ type ReusePreview struct {
 	Reuse                ReuseSummary `json:"reuse"`
 }
 
+// Scanner scans capture folders into one merged inventory. *inspect.ScanCache (which caches per
+// directory, so re-inspecting after adding a folder only scans the new ones) satisfies it, as does the
+// uncached package-level inspect.ScanMany.
+type Scanner interface {
+	ScanMany(ctx context.Context, roots []string, opts inspect.ScanOptions) (*inspect.Inventory, error)
+}
+
+// plainScanner is the uncached default scanner (the package-level scan).
+type plainScanner struct{}
+
+func (plainScanner) ScanMany(ctx context.Context, roots []string, opts inspect.ScanOptions) (*inspect.Inventory, error) {
+	return inspect.ScanMany(ctx, roots, opts)
+}
+
 // PreviewReuse scans dir and reports the prior light sessions a run would integrate (target matched by
 // coordinate cone or normalized name). It runs no Siril and persists nothing — it is the data behind
 // the "auto-discover + confirm" UI.
 func PreviewReuse(ctx context.Context, provider ReuseProvider, dir, catalogDir string, coneDeg float64) (*ReusePreview, error) {
-	inv, err := inspect.Scan(ctx, dir)
+	return PreviewReuseMany(ctx, provider, plainScanner{}, []string{dir}, catalogDir, coneDeg)
+}
+
+// PreviewReuseMany reports the prior light sessions and added integration a run over the given capture
+// dirs (merged into one session) would fold in, without processing. The dirs are scanned as one
+// inventory so the dominant target and current integration reflect the whole multi-folder selection.
+// The scanner lets callers share a directory-scan cache so re-inspecting an overlapping folder set
+// doesn't re-read every header.
+func PreviewReuseMany(ctx context.Context, provider ReuseProvider, scanner Scanner, dirs []string, catalogDir string, coneDeg float64) (*ReusePreview, error) {
+	inv, err := scanner.ScanMany(ctx, dirs, inspect.DefaultScanOptions())
 	if err != nil {
 		return nil, err
 	}

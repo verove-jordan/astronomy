@@ -7,7 +7,7 @@ export interface Column<R> {
   label: string;
   sortable?: boolean;
   searchable?: boolean;
-  align?: "left" | "right";
+  align?: "left" | "right" | "center";
   format?: (value: unknown, row: R) => string;
 }
 
@@ -15,6 +15,7 @@ const props = defineProps<{
   columns: Column<T>[];
   rows: T[];
   rowClass?: (row: T) => string;
+  maxHeight?: string; // when set, the body scrolls vertically within this height and the header sticks
 }>();
 
 interface SortKey {
@@ -53,9 +54,8 @@ const processed = computed<T[]>(() => {
       if (!c.searchable) return true;
       const q = (search[c.key] || "").toLowerCase();
       if (!q) return true;
-      return String(row[c.key] ?? "")
-        .toLowerCase()
-        .includes(q);
+      // Search the DISPLAYED value (applies col.format) so translated labels match in any locale.
+      return display(c, row).toLowerCase().includes(q);
     }),
   );
   if (sortKeys.value.length) {
@@ -83,15 +83,31 @@ function display(col: Column<T>, row: T): string {
 
 <template>
   <div
-    class="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700"
+    :class="[
+      'rounded-lg border border-slate-200 dark:border-slate-700',
+      maxHeight ? 'overflow-auto' : 'overflow-x-auto',
+    ]"
+    :style="maxHeight ? { maxHeight } : undefined"
   >
     <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
-      <thead class="bg-slate-100 dark:bg-slate-800">
+      <thead
+        :class="[
+          'bg-slate-100 dark:bg-slate-800',
+          maxHeight ? 'sticky top-0 z-10' : '',
+        ]"
+      >
         <tr>
           <th
             v-for="col in columns"
             :key="col.key"
-            :class="[th, col.align === 'right' ? 'text-right' : 'text-left']"
+            :class="[
+              th,
+              col.align === 'right'
+                ? 'text-right'
+                : col.align === 'center'
+                  ? 'text-center'
+                  : 'text-left',
+            ]"
             @click="(e) => toggleSort(col, e.shiftKey)"
           >
             {{ col.label }}
@@ -125,7 +141,14 @@ function display(col: Column<T>, row: T): string {
           <td
             v-for="col in columns"
             :key="col.key"
-            :class="[td, col.align === 'right' ? 'text-right' : 'text-left']"
+            :class="[
+              td,
+              col.align === 'right'
+                ? 'text-right'
+                : col.align === 'center'
+                  ? 'text-center'
+                  : 'text-left',
+            ]"
           >
             <slot :name="'cell-' + col.key" :row="row" :value="row[col.key]">
               {{ display(col, row) }}

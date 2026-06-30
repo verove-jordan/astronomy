@@ -1,0 +1,220 @@
+name,constellation,ra_j2000_deg,dec_j2000_deg,mag
+Sirius,CMa,101.288,-16.716,-1.46
+Canopus,Car,95.987,-52.696,-0.74
+Rigil Kentaurus,Cen,219.900,-60.834,-0.27
+Arcturus,Boo,213.917,19.182,-0.05
+Vega,Lyr,279.233,38.784,0.03
+Capella,Aur,79.171,45.998,0.08
+Rigel,Ori,78.633,-8.202,0.13
+Procyon,CMi,114.825,5.225,0.38
+Achernar,Eri,24.429,-57.237,0.46
+Betelgeuse,Ori,88.792,7.407,0.50
+Hadar,Cen,210.954,-60.373,0.61
+Altair,Aql,297.696,8.868,0.76
+Acrux,Cru,186.650,-63.099,0.77
+Aldebaran,Tau,68.979,16.509,0.85
+Spica,Vir,201.300,-11.161,1.04
+Antares,Sco,247.350,-26.432,1.06
+Pollux,Gem,116.329,28.026,1.14
+Fomalhaut,PsA,344.413,-29.622,1.16
+Deneb,Cyg,310.358,45.280,1.25
+Mimosa,Cru,191.929,-59.689,1.25
+Regulus,Leo,152.092,11.967,1.35
+Adhara,CMa,104.658,-28.972,1.50
+Castor,Gem,113.650,31.888,1.58
+Shaula,Sco,263.404,-37.104,1.62
+Gacrux,Cru,187.792,-57.113,1.63
+Bellatrix,Ori,81.283,6.350,1.64
+Elnath,Tau,81.575,28.608,1.65
+Alnilam,Ori,84.054,-1.202,1.69
+Miaplacidus,Car,138.300,-69.717,1.69
+Alnair,Gru,332.058,-46.961,1.74
+Gamma Velorum,Vel,122.383,-47.337,1.75
+Alioth,UMa,193.508,55.960,1.77
+Alnitak,Ori,85.192,-1.943,1.77
+Dubhe,UMa,165.933,61.751,1.79
+Mirfak,Per,51.079,49.861,1.79
+Wezen,CMa,107.096,-26.393,1.83
+Alkaid,UMa,206.883,49.313,1.85
+Kaus Australis,Sgr,276.042,-34.385,1.85
+Avior,Car,125.629,-59.509,1.86
+Sargas,Sco,264.329,-42.998,1.86
+Menkalinan,Aur,89.883,44.947,1.90
+Atria,TrA,252.167,-69.028,1.91
+Alhena,Gem,99.429,16.399,1.93
+Peacock,Pav,306.413,-56.735,1.94
+Delta Velorum,Vel,131.175,-54.709,1.96
+Alphard,Hya,141.896,-8.659,1.98
+Mirzam,CMa,95.675,-17.956,1.98
+Polaris,UMi,37.954,89.264,1.98
+Hamal,Ari,31.792,23.462,2.00
+Diphda,Cet,10.896,-17.987,2.04
+Mirach,And,17.433,35.621,2.05
+Nunki,Sgr,283.817,-26.297,2.05
+Alpheratz,And,2.096,29.091,2.06
+Menkent,Cen,211.671,-36.370,2.06
+Beta Gruis,Gru,340.667,-46.884,2.07
+Kochab,UMi,222.675,74.156,2.07
+Rasalhague,Oph,263.733,12.560,2.07
+Saiph,Ori,86.938,-9.670,2.07
+Algieba,Leo,154.992,19.842,2.08
+Almach,And,30.975,42.330,2.10
+Denebola,Leo,177.267,14.572,2.11
+Algol,Per,47.042,40.956,2.12
+Muhlifain,Cen,190.379,-48.960,2.20
+Aspidiske,Car,139.271,-59.275,2.21
+Naos,Pup,120.896,-40.003,2.21
+Suhail,Vel,137.000,-43.432,2.21
+Alphecca,CrB,233.671,26.715,2.22
+Eltanin,Dra,269.150,51.489,2.23
+Mintaka,Ori,83.000,-0.299,2.23
+Mizar,UMa,200.983,54.925,2.23
+Sadr,Cyg,305.558,40.257,2.23
+Schedar,Cas,10.125,56.537,2.24
+Caph,Cas,2.296,59.150,2.28
+Dschubba,Sco,240.083,-22.622,2.29
+Epsilon Scorpii,Sco,252.542,-34.293,2.29
+Alpha Lupi,Lup,220.483,-47.388,2.30
+Epsilon Centauri,Cen,204.971,-53.466,2.30
+Eta Centauri,Cen,218.875,-42.158,2.31
+Izar,Boo,221.246,27.074,2.37
+Merak,UMa,165.458,56.383,2.37
+Kappa Scorpii,Sco,265.621,-39.030,2.39
+Ankaa,Phe,6.571,-42.306,2.40
+Enif,Peg,326.046,9.875,2.40
+Scheat,Peg,345.942,28.083,2.42
+Sabik,Oph,257.596,-15.725,2.43
+Phecda,UMa,178.458,53.695,2.44
+Alderamin,Cep,319.646,62.586,2.45
+Aludra,CMa,111.025,-29.303,2.45
+Gamma Cassiopeiae,Cas,14.179,60.717,2.47
+Markeb,Vel,140.529,-55.011,2.47
+Markab,Peg,346.192,15.205,2.49
+Menkar,Cet,45.571,4.090,2.54
+Zeta Centauri,Cen,208.887,-47.288,2.55
+Acrab,Sco,241.358,-19.805,2.56
+Zeta Ophiuchi,Oph,249.288,-10.567,2.56
+Zosma,Leo,168.525,20.524,2.56
+Arneb,Lep,83.183,-17.822,2.58
+Delta Centauri,Cen,182.088,-50.723,2.58
+Gienah,Crv,183.950,-17.542,2.59
+Ascella,Sgr,285.654,-29.880,2.60
+Zubeneschamali,Lib,229.250,-9.383,2.61
+Mahasim,Aur,89.929,37.213,2.62
+Unukalhai,Ser,236.067,6.426,2.63
+Sheratan,Ari,28.658,20.808,2.64
+Kraz,Crv,188.596,-23.397,2.65
+Phact,Col,84.913,-34.074,2.65
+Beta Lupi,Lup,224.633,-43.134,2.68
+Muphrid,Boo,208.671,18.398,2.68
+Ruchbah,Cas,21.454,60.235,2.68
+Alpha Muscae,Mus,189.296,-69.136,2.69
+Hassaleh,Aur,74.250,33.166,2.69
+Mu Velorum,Vel,161.692,-49.420,2.69
+Kaus Media,Sgr,275.250,-29.828,2.70
+Lesath,Sco,262.692,-37.296,2.70
+Pi Puppis,Pup,109.288,-37.098,2.71
+Tarazed,Aql,296.567,10.613,2.72
+Yed Prior,Oph,243.587,-3.694,2.73
+Porrima,Vir,190.417,-1.449,2.74
+Iota Centauri,Cen,200.150,-36.712,2.75
+Zubenelgenubi,Lib,222.721,-16.042,2.75
+Cebalrai,Oph,265.867,4.567,2.76
+Theta Carinae,Car,160.737,-64.394,2.76
+Hatysa,Ori,83.858,-5.910,2.77
+Gamma Lupi,Lup,233.783,-41.167,2.78
+Kornephoros,Her,247.554,21.490,2.78
+Cursa,Eri,76.963,-5.086,2.79
+Imai,Cru,183.787,-58.749,2.79
+Rastaban,Dra,262.608,52.301,2.79
+Kaus Borealis,Sgr,276.992,-25.422,2.81
+Nihal,Lep,82.062,-20.759,2.81
+Rho Puppis,Pup,121.888,-24.304,2.81
+Zeta Herculis,Her,250.321,31.603,2.81
+Tau Scorpii,Sco,248.971,-28.216,2.82
+Algenib,Peg,3.308,15.184,2.83
+Beta Trianguli Australis,TrA,238.787,-63.431,2.83
+Vindemiatrix,Vir,195.546,10.959,2.83
+Atik,Per,58.533,31.884,2.85
+Beta Arae,Ara,261.325,-55.530,2.85
+Deneb Algedi,Cap,326.758,-16.127,2.85
+Alpha Tucanae,Tuc,334.625,-60.260,2.86
+Alcyone,Tau,56.871,24.105,2.87
+Delta Cygni,Cyg,296.242,45.131,2.87
+Gamma Trianguli Australis,TrA,229.729,-68.679,2.87
+Tejat,Gem,95.742,22.514,2.87
+Acamar,Eri,44.567,-40.305,2.88
+Gomeisa,CMi,111.788,8.289,2.89
+Pi Sagittarii,Sgr,287.442,-21.024,2.89
+Pi Scorpii,Sco,239.713,-26.114,2.89
+Epsilon Persei,Per,59.463,40.010,2.90
+Sadalsuud,Aqr,322.892,-5.571,2.90
+Zaurak,Eri,59.508,-13.509,2.91
+Gamma Persei,Per,46.200,53.506,2.93
+Matar,Peg,340.750,30.221,2.93
+Tau Puppis,Pup,102.483,-50.615,2.94
+Algorab,Crv,187.467,-16.516,2.95
+Alpha Arae,Ara,262.958,-49.876,2.95
+Sadalmelik,Aqr,331.446,-0.320,2.95
+Ras Elased Australis,Leo,146.463,23.774,2.97
+Upsilon Carinae,Car,146.775,-65.072,2.97
+Alnasl,Sgr,271.450,-30.424,2.99
+Okab,Aql,286.354,13.863,2.99
+Aldhanab,Gru,328.483,-37.365,3.00
+Beta Trianguli,Tri,32.388,34.987,3.00
+Gamma Hydrae,Hya,199.729,-23.171,3.00
+Mu1 Scorpii,Sco,252.967,-38.047,3.00
+Zeta Tauri,Tau,84.413,21.142,3.00
+Psi Ursae Majoris,UMa,167.417,44.499,3.01
+Epsilon Corvi,Crv,182.529,-22.620,3.02
+Furud,CMa,95.079,-30.063,3.02
+Iota Scorpii,Sco,266.896,-40.127,3.03
+Seginus,Boo,218.021,38.308,3.04
+Beta Muscae,Mus,191.571,-68.108,3.05
+Dabih,Cap,305.254,-14.781,3.05
+Pherkad,UMi,230.183,71.834,3.05
+Tania Australis,UMa,155.583,41.499,3.05
+Mebsuta,Gem,100.983,25.131,3.06
+Altais,Dra,288.137,67.662,3.07
+Rasalgethi,Her,258.663,14.390,3.08
+Nu Hydrae,Hya,162.404,-16.194,3.11
+Zeta Hydrae,Hya,133.850,5.946,3.11
+Sarin,Her,258.758,24.839,3.12
+Talitha,UMa,134.804,48.042,3.12
+Wazn,Col,87.742,-35.768,3.12
+Zeta Arae,Ara,254.654,-55.990,3.13
+Alpha Lyncis,Lyn,140.262,34.392,3.14
+Pi Herculis,Her,258.762,36.809,3.16
+Aldhibah,Dra,257.196,65.715,3.17
+Theta Ursae Majoris,UMa,143.212,51.677,3.17
+Albireo,Cyg,292.679,27.960,3.18
+Tabit,Ori,72.458,6.961,3.19
+Zeta Cygni,Cyg,318.233,30.227,3.20
+Errai,Cep,354.837,77.632,3.21
+Alfirk,Cep,322.167,70.561,3.23
+Eta Serpentis,Ser,275.329,-2.899,3.23
+Yed Posterior,Oph,244.579,-4.692,3.23
+Sulafat,Lyr,284.737,32.689,3.26
+Brachium,Lib,226.017,-25.282,3.29
+Edasich,Dra,231.233,58.966,3.29
+Beta Phoenicis,Phe,16.521,-46.718,3.31
+Megrez,UMa,183.858,57.032,3.31
+Chertan,Leo,168.558,15.430,3.32
+Alpha Reticuli,Ret,63.604,-62.474,3.33
+Alzirr,Gem,101.321,12.896,3.35
+Segin,Cas,28.600,63.670,3.35
+Heze,Vir,203.675,-0.596,3.38
+Auva,Vir,193.900,3.397,3.39
+Gamma Phoenicis,Phe,22.092,-43.318,3.41
+Beta Pavonis,Pav,311.238,-66.203,3.42
+Adhafera,Leo,154.171,23.417,3.43
+Alpha Telescopii,Tel,276.742,-45.968,3.49
+Nekkar,Boo,225.488,40.391,3.49
+Tau Ceti,Cet,26.017,-15.938,3.50
+Sheliak,Lyr,282.521,33.363,3.52
+Wasat,Gem,110.029,21.982,3.53
+Meissa,Ori,83.783,9.934,3.54
+Delta Pavonis,Pav,302.179,-66.182,3.55
+Epsilon Crucis,Cru,185.342,-60.401,3.59
+Zavijava,Vir,177.675,1.765,3.60
+Sigma Octantis,Oct,317.192,-88.956,5.47

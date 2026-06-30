@@ -5,24 +5,126 @@
     "logoAlt": "Logo AstroStack"
   },
   "nav": {
+    "tonight": "Ce soir",
+    "goto": "Alignement GoTo",
+    "calendar": "Calendrier",
     "import": "Importer",
+    "livestack": "Empilement direct",
     "jobs": "Tâches",
     "runs": "Traitements",
-    "library": "Bibliothèque de calibration"
+    "library": "Bibliothèque de calibration",
+    "processing": "Traitement"
+  },
+  "goto": {
+    "title": "Assistant d'alignement GoTo",
+    "subtitle": "Choisissez les meilleures étoiles — dans le bon ordre — pour calibrer le GoTo de la monture depuis l'emplacement du télescope. Ignorez une étoile masquée par une maison ou un arbre : elle est aussitôt remplacée.",
+    "controls": {
+      "location": "Site d'observation",
+      "mount": "Monture / procédure",
+      "count": "Étoiles d'alignement",
+      "time": "Heure",
+      "specific": "Heure précise",
+      "reset": "Réinitialiser la séquence"
+    },
+    "profiles": {
+      "eq-generic": {
+        "label": "Équatoriale (générique)",
+        "note": "Montures équatoriales allemandes. Une répartition large et brillante pour un bon modèle de pointage."
+      },
+      "synscan-eq": {
+        "label": "SkyWatcher SynScan (ÉQ)",
+        "note": "1/2/3 étoiles : des étoiles brillantes du même côté du méridien, bien séparées."
+      },
+      "celestron-eq": {
+        "label": "Celestron NexStar / AVX (ÉQ)",
+        "note": "Deux étoiles d'alignement éloignées, d'un même côté du méridien (étoiles de calibration ensuite)."
+      },
+      "altaz-generic": {
+        "label": "Azimutale (générique)",
+        "note": "Montures azimutales. Une large répartition en azimut, loin du zénith et de l'horizon."
+      },
+      "synscan-altaz": {
+        "label": "SkyWatcher SynScan (Azimutale)",
+        "note": "Étoile la plus brillante / 2 étoiles : deux étoiles brillantes très écartées en azimut."
+      },
+      "celestron-altaz": {
+        "label": "Celestron SkyAlign (Azimutale)",
+        "note": "Trois étoiles brillantes réparties largement dans le ciel, dans n'importe quelle direction."
+      }
+    },
+    "sequence": {
+      "title": "Séquence d'alignement",
+      "center": "Centrée — suivante",
+      "skip": "Ignorer — masquée",
+      "undo": "Annuler",
+      "accepted": "Centrée",
+      "empty": "Aucune étoile disponible pour l'instant — réduisez le nombre, attendez que d'autres se lèvent, ou changez de profil de monture."
+    },
+    "card": {
+      "look": "Regardez {dir} · {alt}° de hauteur",
+      "meridian": "{side} du méridien",
+      "east": "est",
+      "west": "ouest",
+      "magnitude": "mag {mag}"
+    },
+    "quality": {
+      "label": "Qualité de la séquence"
+    },
+    "map": {
+      "title": "Carte du ciel",
+      "legend": "Numérotées = vos étoiles d'alignement dans l'ordre ; le tracé en pointillés montre leur répartition."
+    },
+    "why": {
+      "title": "Pourquoi c'est important",
+      "body": "Centrer des étoiles bien réparties construit un modèle de pointage précis : la monture suit et pointe avec exactitude. Combiné à une bonne mise en station, cela permet d'allonger les poses.",
+      "polarLink": "La mise en station est sur la page Ce soir →"
+    }
+  },
+  "processing": {
+    "tabs": {
+      "import": "Importer",
+      "live": "Empilement direct",
+      "tasks": "Tâches",
+      "runs": "Traitements",
+      "library": "Bibliothèque"
+    }
   },
   "run": {
     "mode": "Mode",
     "format": "Sortie",
     "colorCalibration": "Calibration couleur (SPCC)",
     "denoise": "Réduire le bruit",
+    "haExcludeStars": "Hα sur la nébulosité seule (exclure les étoiles)",
     "dropTransition": "Écarter les images de transition du filtre",
+    "supervise": "Lancer avec l'agent IA local (expérimental)",
+    "superviseHint": "Optionnel : un modèle de vision local ajuste automatiquement la finition (saturation, Hα, couleur, recadrage) sur quelques itérations et garde la meilleure. Nécessite un serveur de modèle local (ASTRO_LLM_URL). Ciel profond / nébuleuse uniquement.",
     "modes": {
       "deepsky": "Ciel profond",
       "nebula": "Nébuleuse",
       "milkyway": "Voie lactée",
-      "planetary": "Planétaire"
+      "planetary": "Planétaire",
+      "comet": "Comète"
     },
-    "formats": { "image": "Image", "video": "Vidéo", "both": "Image + vidéo" }
+    "formats": { "image": "Image", "video": "Vidéo", "both": "Image + vidéo" },
+    "look": "Rendu",
+    "looks": {
+      "natural": "Naturel",
+      "iphone": "iPhone (cœur chaud)",
+      "deepsky": "Punchy"
+    },
+    "brightness": "Luminosité",
+    "brightnesses": {
+      "darker": "Plus sombre",
+      "balanced": "Équilibré",
+      "brighter": "Plus clair"
+    },
+    "calibration": "Images de calibration (optionnel)",
+    "calibPlaceholder": "/chemin/vers/dossier",
+    "darks": "Darks",
+    "flats": "Flats",
+    "bias": "Bias / offset",
+    "addToQueue": "Ajouter à la file",
+    "addToQueueHint": "Mettre ce traitement en file pour l'exécuter après les autres, un à la fois."
   },
   "reuse": {
     "title": "Réutiliser des données antérieures",
@@ -44,7 +146,10 @@
     "open": "Ouvrir",
     "up": "Parent",
     "select": "Sélectionner",
-    "cancel": "Annuler"
+    "cancel": "Annuler",
+    "clear": "Effacer",
+    "remove": "Retirer",
+    "close": "Fermer"
   },
   "import": {
     "title": "Importer & inspecter",
@@ -58,9 +163,43 @@
     "openFolder": "Ouvrir le dossier",
     "selectCapture": "Sélectionnez un dossier de captures ci-dessus, puis lancez.",
     "useFolder": "Inspecter ce dossier",
+    "inspectN": "Inspecter {n} dossiers",
+    "selectedCount": "{n} sélectionné·s",
+    "nFolders": "{n} dossiers",
+    "selectFolder": "Ajouter à la sélection",
     "noFolders": "Aucun sous-dossier ici.",
     "browseTitle": "Fichiers",
-    "currentFolder": "Dossier courant"
+    "currentFolder": "Dossier courant",
+    "files": "Fichiers",
+    "view": "Voir",
+    "processed": "Déjà traité",
+    "processedGroup": "Traité ensemble · {n} dossiers",
+    "queuedToast": "Ajouté à la file de traitement ({n}).",
+    "viewQueue": "Voir dans Tâches",
+    "history": {
+      "title": "Historique des traitements",
+      "useAgain": "Réutiliser",
+      "runs": "{n} fois",
+      "deleted": "Dossier introuvable",
+      "untitled": "Sans titre"
+    }
+  },
+  "livestack": {
+    "title": "Empilement en direct",
+    "hint": "Surveillez un dossier ou un bucket S3 et empilez les poses à mesure qu’elles arrivent. Appuyez sur Arrêter pour terminer et produire l’image finale.",
+    "source": "Source",
+    "local": "Dossier local",
+    "s3": "Bucket S3",
+    "pickFolder": "Naviguez jusqu’au dossier où vous allez capturer — il peut être vide au départ.",
+    "useCurrent": "Surveiller ce dossier",
+    "watching": "Surveillance",
+    "bucket": "Bucket",
+    "prefix": "Préfixe",
+    "s3hint": "Les objets sous ce bucket/préfixe sont téléchargés et empilés dès leur apparition. Les identifiants proviennent de l’environnement serveur, pas d’ici.",
+    "exposure": "Exposition (secondes)",
+    "exposureHint": "Exposition par pose — sert à l’affichage du temps d’intégration et de valeur de repli quand l’en-tête d’un fichier ne la précise pas.",
+    "start": "Démarrer l’empilement",
+    "startHint": "Ouvre la tâche en direct : aperçu rafraîchi, compteur de poses et journaux. Arrêter & finaliser une fois terminé."
   },
   "capture": {
     "summary": "Capture sélectionnée",
@@ -91,6 +230,7 @@
     "type": "Type",
     "frames": "Images",
     "file": "Fichier",
+    "dimensions": "Dimensions",
     "index": "#",
     "fwhm": "FWHM",
     "roundness": "Rondeur",
@@ -107,6 +247,7 @@
   },
   "job": {
     "title": "Tâche",
+    "duration": "Durée",
     "progress": "Progression",
     "processing": "Traitement",
     "result": "Résultat",
@@ -121,13 +262,26 @@
     "kept": "Conservées",
     "download": "Télécharger",
     "logs": "Journal en direct",
+    "cpu": "CPU",
+    "memory": "RAM",
+    "peak": "Pic",
     "followTail": "Suivre",
     "showLogs": "Afficher le journal",
     "hideLogs": "Masquer le journal",
     "expandLogs": "Agrandir le journal",
     "collapseLogs": "Réduire le journal",
     "cancel": "Annuler le traitement",
-    "cancelling": "Annulation…"
+    "cancelling": "Annulation…",
+    "stopFinalize": "Arrêter & finaliser",
+    "remove": "Retirer",
+    "queueBadge": "{n} en attente"
+  },
+  "supervisor": {
+    "title": "Agent IA local — itérations de finition",
+    "hint": "Chaque passe re-rend la finition et est notée par le modèle de vision local ; la meilleure est conservée.",
+    "chosen": "Retenue",
+    "iteration": "Itération {n}",
+    "scoreSplit": "métriques {det} · modèle {model}"
   },
   "log": { "empty": "Aucune sortie pour le moment." },
   "viewer": {
@@ -136,7 +290,13 @@
     "fit": "Ajuster à la vue",
     "reset": "Réinitialiser",
     "actualSize": "Taille réelle",
-    "navigator": "Navigateur"
+    "navigator": "Navigateur",
+    "black": "Noir",
+    "white": "Blanc",
+    "auto": "Auto",
+    "gamma": "Gamma",
+    "gammaHint": "Activer le gamma (facilite les étirements profonds)",
+    "stretchReset": "Réinitialiser"
   },
   "runs": {
     "title": "Traitements",
@@ -154,5 +314,541 @@
     "succeeded": "Réussi",
     "failed": "Échoué",
     "cancelled": "Annulé"
+  },
+  "darksky": {
+    "hint": "Dessinez une zone sur la carte, choisissez un Bortle maximum, puis recherchez les endroits les plus sombres — éventuellement classés selon l'ouverture de leur horizon à ~360°.",
+    "drawArea": "Dessiner une zone",
+    "drawing": "Glissez sur la carte…",
+    "maxBortle": "≤ Bortle {n}",
+    "evalHorizon": "Évaluer l'ouverture de l'horizon",
+    "search": "Rechercher",
+    "mapLabel": "Carte de recherche de ciel sombre",
+    "coords": "Coordonnées",
+    "openMaps": "Ouvrir dans Google Maps (Street View)",
+    "bortle": "Bortle",
+    "sqm": "SQM",
+    "elevation": "Altitude",
+    "openness": "Horizon dégagé",
+    "distance": "Distance",
+    "locate": "Localiser",
+    "useLocation": "Utiliser",
+    "noResults": "Aucun lieu correspondant — élargissez la zone ou augmentez le Bortle."
+  },
+  "tonight": {
+    "title": "Cibles de ce soir",
+    "subtitle": "Objets du ciel profond classés pour l'imagerie depuis votre lieu et votre matériel ce soir.",
+    "empty": "Aucune cible ne correspond à vos filtres.",
+    "loading": "Calcul du ciel de ce soir…",
+    "refresh": "Rafraîchir",
+    "autoRefresh": "Rafraîchissement auto",
+    "updated": "Mis à jour à {time}",
+    "notVisible": "Pas visible ce soir",
+    "time": { "specific": "Heure précise" },
+    "location": {
+      "title": "Lieu",
+      "lat": "Latitude",
+      "lon": "Longitude",
+      "elevation": "Altitude (m)",
+      "useMyLocation": "Utiliser ma position",
+      "search": "Rechercher une adresse",
+      "searchPlaceholder": "Ville ou adresse…",
+      "noResults": "Aucun lieu trouvé.",
+      "map": "Cliquez sur la carte pour définir votre site",
+      "manual": "Coordonnées",
+      "favorites": {
+        "title": "Favoris",
+        "save": "Enregistrer ce site",
+        "remove": "Retirer des favoris",
+        "renameHint": "double-cliquez pour renommer",
+        "namePlaceholder": "Nom du site"
+      }
+    },
+    "layers": {
+      "title": "Calques",
+      "lightPollution": "Pollution lumineuse",
+      "legendDark": "Plus sombre",
+      "legendBright": "Plus clair",
+      "bortle": "Bortle",
+      "clouds": "Nuages",
+      "humidity": "Humidité",
+      "precip": "Risque de pluie"
+    },
+    "weather": {
+      "title": "Météo astro",
+      "subtitle": "Nuages, turbulence, transparence et risque de buée de la nuit, sur la fenêtre sombre.",
+      "loading": "Chargement des prévisions…",
+      "unavailable": "Météo indisponible pour le moment.",
+      "verdict": "Observabilité",
+      "best": "Meilleure fenêtre dégagée",
+      "noWindow": "Aucune fenêtre dégagée pendant la nuit.",
+      "sources": "Source",
+      "legend": { "less": "moins", "more": "plus" },
+      "timeline": {
+        "play": "Lire / mettre en pause l'animation des nuages",
+        "scrub": "Parcourir le temps",
+        "now": "Maintenant",
+        "darkWindow": "Fenêtre sombre"
+      },
+      "metrics": {
+        "clouds": "Couverture nuageuse",
+        "seeing": "Turbulence",
+        "transparency": "Transparence",
+        "humidity": "Humidité",
+        "dew": "Risque de buée",
+        "wind": "Vent (km/h)",
+        "jet": "Courant-jet (km/h)",
+        "instability": "Instabilité (LI)",
+        "aerosols": "Aérosols (AOD)"
+      },
+      "dewRisk": {
+        "low": "Faible risque de buée",
+        "moderate": "Attention à la buée",
+        "high": "Fort risque de buée"
+      },
+      "aurora": {
+        "label": "Aurore",
+        "unlikely": "improbable",
+        "possible": "possible",
+        "likely": "probable"
+      }
+    },
+    "site": {
+      "label": "Bortle {bortle} · {sqm} mag/arcsec²",
+      "source": {
+        "api": "Données de pollution lumineuse VIIRS en direct",
+        "atlas": "Atlas de pollution lumineuse hors ligne",
+        "viirs": "Lumières nocturnes VIIRS (NASA Black Marble)",
+        "default": "Luminosité du ciel par défaut (sans donnée)"
+      }
+    },
+    "equipment": {
+      "title": "Télescope & caméra",
+      "focalLength": "Focale (mm)",
+      "aperture": "Ouverture (mm)",
+      "barlow": "Barlow (×)",
+      "barlowNone": "Aucun",
+      "pixelSize": "Taille de pixel (µm)",
+      "sensorWidth": "Largeur capteur (px)",
+      "sensorHeight": "Hauteur capteur (px)",
+      "fov": "Champ",
+      "scale": "Échelle"
+    },
+    "mode": {
+      "title": "Mode",
+      "camera": "Caméra",
+      "eyepiece": "Oculaire"
+    },
+    "eyepieces": {
+      "title": "Oculaires",
+      "focal": "Focale (mm)",
+      "afov": "Champ apparent (°)",
+      "label": "Étiquette",
+      "add": "Ajouter un oculaire",
+      "remove": "Retirer",
+      "empty": "Ajoutez au moins un oculaire.",
+      "hint": "focale mm · champ apparent ° · étiquette"
+    },
+    "visual": {
+      "title": "Visuel / oculaire",
+      "eyepiece": "Oculaire",
+      "magnification": "Grossissement",
+      "trueField": "Champ réel",
+      "exitPupil": "Pupille de sortie",
+      "surfaceBrightness": "Brillance de surface (mag/arcmin²)",
+      "noFit": "Plus large que votre oculaire le plus large",
+      "exitWarn": "Pupille de sortie hors de la plage confortable de 0,5 à 7 mm"
+    },
+    "tabs": {
+      "targets": "Cibles",
+      "polar": "Mise en station",
+      "darksky": "Ciel sombre"
+    },
+    "polar": {
+      "title": "Mise en station",
+      "subtitle": "Placez l'étoile polaire au bon endroit sur le réticule de votre viseur polaire, pour maintenant.",
+      "hemisphere": { "north": "Nord", "south": "Sud" },
+      "reticle": {
+        "placeHere": "Placez l'étoile dans le cercle orange",
+        "truePole": "pôle vrai",
+        "polaris": "Polaris",
+        "sigmaOct": "σ Octantis",
+        "cassiopeia": "Cassiopée",
+        "bigDipper": "Grande Ourse",
+        "crux": "Croix du Sud",
+        "octans": "Octant",
+        "invertedView": "Vue dans le viseur (inversée)",
+        "erectView": "Vue à l'œil nu (droite)",
+        "mirrored": "Miroir (renvoi coudé)"
+      },
+      "panel": {
+        "clock": "Position horaire",
+        "poleStar": "Étoile polaire",
+        "hemisphere": "Hémisphère",
+        "ha": "Angle horaire",
+        "separation": "Écart au pôle",
+        "alt": "Hauteur",
+        "az": "Azimut",
+        "lst": "Temps sidéral",
+        "latTooLow": "Le pôle céleste est trop bas ici pour un viseur polaire.",
+        "notVisible": "L'étoile polaire est sous l'horizon en ce moment."
+      },
+      "orientation": {
+        "inverting": "Inversée (viseur)",
+        "erect": "Droite (œil nu)",
+        "mirror": "Miroir (renvoi)",
+        "hint": "La plupart des viseurs polaires inversent l'image. Faites correspondre le réticule à l'écran à ce que vous voyez réellement."
+      },
+      "time": {
+        "specific": "Heure précise",
+        "autoRefresh": "Rafraîchir auto"
+      },
+      "tutorial": {
+        "title": "Comment régler et utiliser votre viseur polaire",
+        "intro": "Un guide pratique pour un viseur polaire SkyWatcher sur une Celestron Advanced VX — du réglage initial à l'utilisation sous un ciel sombre.",
+        "s1": {
+          "title": "À quoi sert la mise en station",
+          "body": "L'axe AD de la monture doit pointer le pôle céleste pour qu'un seul moteur suive le ciel. Le viseur polaire permet de viser l'étoile polaire et de la placer précisément.",
+          "tips": [
+            "Le pôle est proche — mais pas exactement — de l'étoile polaire.",
+            "Une bonne mise en station = poses longues à étoiles rondes et go-to fiable."
+          ]
+        },
+        "s2": {
+          "title": "Une fois : aligner le viseur sur l'axe AD",
+          "body": "Centrez un objet lointain sur le réticule, tournez l'axe AD de 180°, puis ajustez les trois vis pour corriger la moitié de l'écart. Répétez jusqu'à ce que l'objet reste fixe pendant la rotation.",
+          "tips": [
+            "À faire une fois, de jour sur un repère lointain (ou sur Polaris la nuit).",
+            "Réglez les vis du réticule, jamais les boulons alt/az de la monture.",
+            "De très petits réglages — les vis sont sensibles."
+          ]
+        },
+        "s3": {
+          "title": "Installer la monture (Advanced VX)",
+          "body": "Mettez le trépied de niveau, réglez l'échelle de latitude sur votre latitude, et visez le nord VRAI (ou sud), pas le nord magnétique.",
+          "tips": [
+            "Utilisez un niveau à bulle ; un trépied non nivelé fausse la latitude.",
+            "Corrigez la déclinaison magnétique entre nord boussole et nord vrai.",
+            "Pré-réglez le boulon de latitude proche de votre latitude avant de commencer."
+          ]
+        },
+        "s4": {
+          "title": "Voir le réticule la nuit",
+          "body": "La nuit, on voit les étoiles mais pas le réticule gravé. Éclairez-le faiblement : dirigez une lumière ROUGE en biais dans l'avant (objectif), ou utilisez l'illuminateur de la monture s'il existe.",
+          "tips": [
+            "Rouge uniquement — la lumière blanche ruine l'adaptation à l'obscurité.",
+            "Un écran de téléphone en rouge près de l'objectif dépanne très bien.",
+            "Restez faible ; trop fort masque la faible Polaris."
+          ]
+        },
+        "s5": {
+          "title": "Placer l'étoile polaire",
+          "body": "Tournez l'axe AD jusqu'à ce que le repère de l'étoile sur le réticule soit à la position horaire indiquée ci-dessus, puis utilisez les boulons ALT et AZ (pas l'AD) pour amener l'étoile dans le repère.",
+          "tips": [
+            "Faites correspondre l'orientation à l'écran (inversée/droite) à votre viseur.",
+            "Bougez avec les boulons alt/az ; laissez l'AD où vous l'avez réglé.",
+            "Centrez l'étoile dans le petit cercle, pas sur la croix du pôle vrai."
+          ]
+        },
+        "s6": {
+          "title": "Vérifier et affiner",
+          "body": "Recoupez avec la mise en station All-Star de la raquette Advanced VX, ou faites un contrôle de dérive rapide sur une étoile près du méridien et ajustez les boulons alt/az.",
+          "tips": [
+            "All-Star utilise n'importe quelle étoile brillante — pratique si Polaris est cachée.",
+            "Revérifiez après stabilisation de la monture ou si vous heurtez le trépied."
+          ]
+        }
+      }
+    },
+    "controls": {
+      "apply": "Appliquer",
+      "reset": "Réinitialiser",
+      "autoApply": "Les changements s'appliquent automatiquement.",
+      "minAlt": "Altitude min. (°)",
+      "twilight": "Obscurité",
+      "minScore": "Score min.",
+      "type": "Type",
+      "allTypes": "Tous les types",
+      "fitsFrame": "Tient dans le champ",
+      "fullyDark": "Visible de nuit",
+      "excludeMoon": "Loin de la Lune",
+      "favoritesOnly": "Favoris seulement",
+      "narrowbandOnly": "Bande étroite uniquement"
+    },
+    "fav": {
+      "add": "Ajouter aux favoris",
+      "remove": "Retirer des favoris"
+    },
+    "twilightKind": {
+      "astro": "Astronomique",
+      "nautical": "Nautique"
+    },
+    "dark": {
+      "title": "Obscurité de ce soir",
+      "window": "Nuit noire {dusk} → {dawn}",
+      "duration": "{hours} h d'obscurité",
+      "moon": "Lune",
+      "moonIllum": "{pct}% éclairée",
+      "noDark": "Pas de nuit astronomique ce soir.",
+      "moonUp": "levée",
+      "moonDown": "sous l'horizon"
+    },
+    "moonPhase": {
+      "new": "Nouvelle lune",
+      "waxing_crescent": "Premier croissant",
+      "first_quarter": "Premier quartier",
+      "waxing_gibbous": "Gibbeuse croissante",
+      "full": "Pleine lune",
+      "waning_gibbous": "Gibbeuse décroissante",
+      "last_quarter": "Dernier quartier",
+      "waning_crescent": "Dernier croissant"
+    },
+    "cols": {
+      "name": "Cible",
+      "type": "Type",
+      "score": "Score",
+      "altNow": "Alt. actuelle",
+      "maxAlt": "Alt. max",
+      "transit": "Passage",
+      "size": "Taille",
+      "mag": "Mag",
+      "fovFit": "Cadrage",
+      "moonSep": "Sép. Lune",
+      "palette": "Palette",
+      "bestEp": "Meilleur oculaire",
+      "power": "Grossissement",
+      "trueField": "Champ réel"
+    },
+    "types": {
+      "galaxy": "Galaxie",
+      "nebula": "Nébuleuse",
+      "emission_nebula": "Nébuleuse en émission",
+      "planetary_nebula": "Nébuleuse planétaire",
+      "dark_nebula": "Nébuleuse obscure",
+      "cluster": "Amas ouvert",
+      "globular": "Amas globulaire",
+      "supernova_remnant": "Rémanent de supernova",
+      "other": "Autre"
+    },
+    "tiers": {
+      "excellent": "Excellent",
+      "good": "Bon",
+      "fair": "Moyen",
+      "poor": "Faible"
+    },
+    "detail": {
+      "title": "{name} — pourquoi ce score",
+      "select": "Sélectionnez une cible pour voir sa courbe d'altitude et le détail du score.",
+      "subScores": "Détail du score",
+      "reason": "Résumé"
+    },
+    "sub": {
+      "max_alt": "Altitude",
+      "alt_now": "Altitude actuelle",
+      "dark_hours": "Heures de nuit",
+      "framing": "Cadrage",
+      "detectability": "Détectabilité",
+      "moon": "Lune"
+    },
+    "chart": {
+      "title": "Le ciel ce soir",
+      "altitude": "Altitude",
+      "horizon": "Horizon",
+      "minAlt": "Alt. min",
+      "transit": "Passage",
+      "now": "Maintenant",
+      "sun": "Soleil",
+      "moon": "Lune",
+      "sunset": "Coucher du Soleil",
+      "sunrise": "Lever du Soleil",
+      "moonrise": "Lever de Lune",
+      "moonset": "Coucher de Lune"
+    },
+    "sections": {
+      "setup": "Réglages",
+      "filters": "Filtres",
+      "map": "Carte du ciel"
+    },
+    "preview": {
+      "aladin": "Ouvrir dans Aladin ↗",
+      "google": "Google Images ↗",
+      "unavailable": "Aperçu indisponible (hors ligne ?)."
+    },
+    "composition": {
+      "title": "Filtres / émission",
+      "load": "Charger",
+      "source": { "curated": "vérifié", "typical": "par type" }
+    },
+    "lines": {
+      "ha": "Hα",
+      "oiii": "OIII",
+      "sii": "SII",
+      "hb": "Hβ",
+      "nii": "NII"
+    },
+    "map": {
+      "title": "Carte du ciel",
+      "hint": "Chaque point est une cible placée par altitude (centre = zénith) et azimut ; couleur = score."
+    }
+  },
+  "calendar": {
+    "title": "Calendrier du ciel",
+    "subtitle": "Événements rares à observer et capturer depuis votre lieu — notés pour l'œil nu et pour votre matériel.",
+    "empty": "Aucun événement ne correspond aux filtres.",
+    "loading": "Calcul du calendrier du ciel…",
+    "refresh": "Actualiser",
+    "updated": "Mis à jour {time}",
+    "sections": { "location": "Lieu", "filters": "Filtres" },
+    "range": {
+      "label": "Période",
+      "d30": "30 prochains jours",
+      "d90": "90 prochains jours",
+      "d180": "6 prochains mois",
+      "d365": "Prochaine année"
+    },
+    "mode": {
+      "byDate": "Par date",
+      "byType": "Par type"
+    },
+    "series": {
+      "type": "Type",
+      "subtype": "Sous-type",
+      "any": "Tous",
+      "heading": "Prochains {count} · {type}"
+    },
+    "day": {
+      "showing": "Affichage du {day}",
+      "showAll": "Tout afficher"
+    },
+    "cols": {
+      "score": "Score",
+      "date": "Date",
+      "event": "Événement",
+      "kind": "Type",
+      "vis": "Œil nu · instrument",
+      "mag": "Mag",
+      "instrument": "Visible avec"
+    },
+    "filters": {
+      "instrument": "Visible avec",
+      "anyInstrument": "Tout instrument",
+      "kinds": "Types d'événement",
+      "notableOnly": "Notables uniquement",
+      "comets": "Comètes (en ligne)",
+      "satellites": "Transits de satellites (en ligne)"
+    },
+    "vis": {
+      "nakedEye": "Œil nu",
+      "binocular": "Jumelles",
+      "scope": "Votre instrument"
+    },
+    "tiers": {
+      "naked_eye": "Œil nu",
+      "binocular": "Jumelles",
+      "telescope": "Télescope",
+      "none": "Non visible"
+    },
+    "kinds": {
+      "solar_eclipse": "Éclipse solaire",
+      "lunar_eclipse": "Éclipse lunaire",
+      "conjunction": "Conjonction",
+      "opposition": "Opposition",
+      "elongation": "Élongation maximale",
+      "planet_moon": "Lune & planète",
+      "moon_phase": "Phase lunaire",
+      "supermoon": "Super-Lune",
+      "equinox": "Équinoxe",
+      "solstice": "Solstice",
+      "perihelion": "Périhélie",
+      "aphelion": "Aphélie",
+      "meteor_shower": "Pluie d'étoiles filantes",
+      "comet": "Comète",
+      "satellite_transit": "Transit de satellite"
+    },
+    "bodies": {
+      "sun": "Soleil",
+      "moon": "Lune",
+      "mercury": "Mercure",
+      "venus": "Vénus",
+      "mars": "Mars",
+      "jupiter": "Jupiter",
+      "saturn": "Saturne",
+      "uranus": "Uranus",
+      "neptune": "Neptune",
+      "iss": "ISS",
+      "tiangong": "Tiangong",
+      "hst": "Hubble"
+    },
+    "phase": {
+      "new": "Nouvelle Lune",
+      "first_quarter": "Premier quartier",
+      "full": "Pleine Lune",
+      "last_quarter": "Dernier quartier"
+    },
+    "eclipseType": {
+      "total": "Totale",
+      "partial": "Partielle",
+      "annular": "Annulaire",
+      "annular_total": "Hybride",
+      "penumbral": "Pénombrale"
+    },
+    "season": {
+      "march": "Équinoxe de mars",
+      "june": "Solstice de juin",
+      "september": "Équinoxe de septembre",
+      "december": "Solstice de décembre",
+      "perihelion": "Terre au périhélie",
+      "aphelion": "Terre à l'aphélie"
+    },
+    "titleFmt": {
+      "conjunction": "{a} & {b}, séparés de {sep}°",
+      "planet_moon": "Lune près de {body}, {sep}°",
+      "opposition": "{body} à l'opposition",
+      "elongation": "{body} à l'élongation maximale",
+      "solar_eclipse": "Éclipse solaire {type}",
+      "lunar_eclipse": "Éclipse lunaire {type}",
+      "satellite_transit": "{sat} traverse {body}"
+    },
+    "detail": {
+      "select": "Sélectionnez un événement pour voir ses détails et le meilleur moment d'observation.",
+      "when": "Quand",
+      "captureTimes": "Heures de capture",
+      "maximum": "Maximum",
+      "duration": "Durée",
+      "inPath": "Votre site est dans la bande de transit ✓",
+      "notInPath": "Votre site est juste hors du centre de la bande",
+      "altitude": "Altitude au meilleur moment",
+      "moon": "Lune",
+      "moonIllum": "{pct}% éclairée",
+      "separation": "Séparation",
+      "magnitude": "Magnitude",
+      "visibility": "Visibilité",
+      "chart": "Cette nuit-là",
+      "transitNote": "Les prévisions de transit nécessitent des données orbitales fraîches et ne sont fiables que quelques jours à l'avance.",
+      "visibleRange": "Visible {from}–{to}",
+      "why": "Pourquoi ce score",
+      "scoreFormula": "Score = rareté × visibilité du meilleur instrument",
+      "scoreGood": "Bien placé sur tous les plans",
+      "scoreLimited": "Surtout limité par {factor}",
+      "tooFaint": "trop faible",
+      "belowHorizon": "pas levé la nuit"
+    },
+    "factor": {
+      "rarity": "Rareté",
+      "altitude": "Altitude",
+      "sun_up": "Soleil levé",
+      "moon": "Clair de Lune",
+      "brightness": "Éclat"
+    },
+    "contact": {
+      "partial_begin": "Début partielle",
+      "partial_end": "Fin partielle",
+      "central_begin": "Début totalité / annularité",
+      "central_end": "Fin totalité / annularité",
+      "total_begin": "Début totalité",
+      "total_end": "Fin totalité",
+      "penumbral_begin": "Début pénombre",
+      "penumbral_end": "Fin pénombre",
+      "maximum": "Maximum"
+    }
   }
 }

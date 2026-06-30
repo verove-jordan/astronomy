@@ -54,18 +54,44 @@ dev:
 web:
     cd frontend && pnpm dev
 
+# Serve the local vision model for the finish supervisor (host; first run downloads ~26 GB).
+run-ia-model:
+    @scripts/ia-model.sh
+
+# Stop a backgrounded model server (run-ia-model is normally foreground; Ctrl-C there).
+stop-ia-model:
+    @pkill -f mlx_vlm.server || true
+
+# Health-check the local model server.
+ia-model-status:
+    @curl -fsS "http://127.0.0.1:${ASTRO_LLM_PORT:-1234}/health" && echo " OK"
+
 # Inspect a capture directory and print the inventory (host).
 inspect DIR:
     go run ./cmd/astrostack inspect "{{DIR}}"
+
+# Download/refresh the offline light-pollution atlas (hybrid fallback) into the data dir. Configure a
+# source via ASTRO_LIGHTPOLLUTION_ATLAS_URL or ..._TIFF_URL in .env (see scripts/update-light-pollution.sh).
+update-light-pollution-data:
+    @scripts/update-light-pollution.sh
 
 # Run the full auto pipeline (host). MODE: deepsky|nebula|milkyway|planetary  FORMAT: image|video|both
 # e.g. just process deepsky image ~/Astro/M31   ·   just process planetary video ~/Astro/moon.mp4
 process MODE FORMAT PATH *args:
     go run ./cmd/astrostack process {{args}} {{MODE}} {{FORMAT}} "{{PATH}}"
 
+# Re-run the finish via the local AI agent on an existing run dir — no re-stack. e.g. just refine output/M101/<runID>
+refine RUNDIR *args:
+    go run ./cmd/astrostack refine {{args}} "{{RUNDIR}}"
+
 # Process a lunar/planetary video (host).
 video FILE *args:
     go run ./cmd/astrostack video {{args}} "{{FILE}}"
+
+# Record a demo video of the web UI from a YAML scenario (host; needs the app running — see just dev/web).
+# Generate a scenario with the /demo-video Claude command. e.g. just demo overview · just demo tour --headless
+demo scenario="tour" *args:
+    @scripts/demo.sh {{scenario}} {{args}}
 
 # Run the Siril MCP server in the foreground (manual testing).
 mcp-siril:

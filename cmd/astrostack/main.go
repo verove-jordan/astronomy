@@ -30,6 +30,8 @@ func main() {
 		err = runInspect(os.Args[2:])
 	case "process":
 		err = runProcess(os.Args[2:])
+	case "refine":
+		err = runRefine(os.Args[2:])
 	case "video":
 		err = runVideo(os.Args[2:])
 	case "serve":
@@ -58,6 +60,7 @@ func usage() {
 Usage:
   astrostack inspect <dir>           classify a capture folder and print the inventory
   astrostack process <dir> [flags]   run the full auto pipeline
+  astrostack refine  <run-dir>       re-run the finish (local AI agent) on an existing run — no re-stack
   astrostack video   <file> [flags]  process a lunar/planetary video
   astrostack serve                   run the HTTP API server
   astrostack migrate                 apply database migrations
