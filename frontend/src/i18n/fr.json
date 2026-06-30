@@ -252,6 +252,7 @@
     "processing": "Traitement",
     "result": "Résultat",
     "finalImage": "Image finale",
+    "finalView": "Finale",
     "livePreview": "Aperçu en direct",
     "channelsTitle": "Couches",
     "frameReview": "Revue des images",
@@ -302,7 +303,9 @@
     "title": "Traitements",
     "subtitle": "Chaque traitement, rouvrable depuis le disque.",
     "empty": "Aucun traitement — lancez une capture pour le voir ici.",
-    "open": "Ouvrir"
+    "open": "Ouvrir",
+    "loadMore": "Charger plus",
+    "count": "{n} sur {total}"
   },
   "library": {
     "title": "Bibliothèque de calibration",

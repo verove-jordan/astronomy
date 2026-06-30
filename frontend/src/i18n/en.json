@@ -252,6 +252,7 @@
     "processing": "Processing",
     "result": "Result",
     "finalImage": "Final image",
+    "finalView": "Final",
     "livePreview": "Live preview",
     "channelsTitle": "Channels",
     "frameReview": "Frame review",
@@ -302,7 +303,9 @@
     "title": "Runs",
     "subtitle": "Every processed run, reopenable from disk.",
     "empty": "No runs yet — process a capture to see it here.",
-    "open": "Open"
+    "open": "Open",
+    "loadMore": "Load more",
+    "count": "{n} of {total}"
   },
   "library": {
     "title": "Calibration library",

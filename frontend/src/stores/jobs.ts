@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { ref, computed } from "vue";
 import { apiGet, apiPost } from "@/services/api";
 import type { Inventory, Job, ReusePreview, RunSummary } from "@/types";
 
@@ -31,6 +31,9 @@ export interface CreateOpts {
     exposureSec?: number;
   };
 }
+
+// Runs gallery page size (paginated so a large output dir loads fast).
+const RUNS_PAGE = 12;
 
 export const useJobsStore = defineStore("jobs", () => {
   const jobs = ref<Job[]>([]);
@@ -135,17 +138,31 @@ export const useJobsStore = defineStore("jobs", () => {
     return data.cancelled;
   }
 
-  // listRuns loads the durable on-disk run records (independent of the DB) for the Runs gallery.
-  async function listRuns() {
-    loading.value = true;
+  // Durable on-disk run records (independent of the DB) for the Runs gallery, paginated so a large
+  // output dir stays fast. listRuns(true) loads the first page; listRuns(false) appends the next.
+  const runsTotal = ref(0);
+  const loadingMore = ref(false);
+  const runsHasMore = computed(() => runs.value.length < runsTotal.value);
+  async function listRuns(reset = true) {
+    if (reset) {
+      runs.value = [];
+      runsTotal.value = 0;
+      loading.value = true;
+    } else {
+      loadingMore.value = true;
+    }
     error.value = "";
     try {
-      const data = await apiGet<{ runs: RunSummary[] }>("/api/runs");
-      runs.value = data.runs || [];
+      const data = await apiGet<{ runs: RunSummary[]; total: number }>(
+        `/api/runs?offset=${runs.value.length}&limit=${RUNS_PAGE}`,
+      );
+      runs.value = [...runs.value, ...(data.runs || [])];
+      runsTotal.value = data.total ?? runs.value.length;
     } catch (e) {
       error.value = (e as Error).message;
     } finally {
       loading.value = false;
+      loadingMore.value = false;
     }
   }
 
@@ -153,6 +170,9 @@ export const useJobsStore = defineStore("jobs", () => {
     jobs,
     current,
     runs,
+    runsTotal,
+    runsHasMore,
+    loadingMore,
     loading,
     error,
     captureByJob,

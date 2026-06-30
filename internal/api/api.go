@@ -25,6 +25,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/skyevents"
 	"github.com/verove-jordan/astronomy/internal/skyplan"
 	"github.com/verove-jordan/astronomy/internal/store"
+	"github.com/verove-jordan/astronomy/internal/thumb"
 	"github.com/verove-jordan/astronomy/internal/weather"
 )
 
@@ -77,6 +78,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/processed", s.processed)
 	mux.HandleFunc("GET /api/file", s.serveFile)
 	mux.HandleFunc("GET /api/preview", s.previewFile)
+	mux.HandleFunc("GET /api/thumb", s.serveThumb)
 	mux.HandleFunc("GET /api/sky/targets", s.skyTargets)
 	mux.HandleFunc("GET /api/sky/events", s.skyEvents)
 	mux.HandleFunc("GET /api/sky/series", s.skyEventSeries)
@@ -362,6 +364,40 @@ func (s *Server) previewFile(w http.ResponseWriter, r *http.Request) {
 	_ = pv.Encode(w)
 }
 
+// serveThumb returns a small JPEG thumbnail of a run output image. The gallery uses this instead of the
+// full-resolution PNG — the page's main slowdown. Confined to the output dir and disk-cached.
+func (s *Server) serveThumb(w http.ResponseWriter, r *http.Request) {
+	abs, ok := s.within(r.URL.Query().Get("path"), s.cfg.OutputDir)
+	if !ok {
+		badRequest(w, "path must be inside the output directory")
+		return
+	}
+	dim := clampAtoi(r.URL.Query().Get("w"), 480, 32, 1024)
+	data, err := thumb.Cached(filepath.Join(s.cfg.WorkDir, "cache", "thumbs"), abs, dim, 80)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(data)
+}
+
+// clampAtoi parses s as an int (falling back to def) and clamps the result into [lo, hi].
+func clampAtoi(s string, def, lo, hi int) int {
+	n := def
+	if v, err := strconv.Atoi(s); err == nil {
+		n = v
+	}
+	if n < lo {
+		n = lo
+	}
+	if n > hi {
+		n = hi
+	}
+	return n
+}
+
 // runSummary is one durable run discovered on disk (see GET /api/runs).
 type runSummary struct {
 	Object       string   `json:"object"`
@@ -374,21 +410,47 @@ type runSummary struct {
 	CreatedAtMs  int64    `json:"created_at_ms"`
 }
 
-// listRuns scans the output directory for run.json records so any past run can be reopened from
-// disk, independent of the database (e.g. CLI runs). Files are served via /api/file.
-func (s *Server) listRuns(w http.ResponseWriter, _ *http.Request) {
+// listRuns scans the output directory for run.json records so any past run can be reopened from disk,
+// independent of the database (e.g. CLI runs). Results are paginated (newest first) so a large gallery
+// stays fast: every run is cheaply stat-ed for ordering, but only the requested page is read+summarized.
+func (s *Server) listRuns(w http.ResponseWriter, r *http.Request) {
 	outAbs, err := filepath.Abs(s.cfg.OutputDir)
 	if err != nil {
 		serverError(w, err)
 		return
 	}
 	matches, _ := filepath.Glob(filepath.Join(outAbs, "*", "*", "run.json"))
-	runs := make([]runSummary, 0, len(matches))
-	for _, p := range matches {
-		runs = append(runs, summarizeRun(p))
+
+	// Order by mtime (newest first) with a cheap Stat per file — no run.json is read here.
+	type runFile struct {
+		path  string
+		mtime int64
 	}
-	sort.Slice(runs, func(i, j int) bool { return runs[i].CreatedAtMs > runs[j].CreatedAtMs })
-	writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
+	files := make([]runFile, 0, len(matches))
+	for _, p := range matches {
+		var mtime int64
+		if info, err := os.Stat(p); err == nil {
+			mtime = info.ModTime().UnixMilli()
+		}
+		files = append(files, runFile{path: p, mtime: mtime})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mtime > files[j].mtime })
+
+	total := len(files)
+	offset := clampAtoi(r.URL.Query().Get("offset"), 0, 0, total)
+	limit := clampAtoi(r.URL.Query().Get("limit"), 12, 1, 100)
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+
+	runs := make([]runSummary, 0, end-offset)
+	for _, f := range files[offset:end] {
+		runs = append(runs, summarizeRun(f.path)) // ReadFile only for the page
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"runs": runs, "total": total, "offset": offset, "limit": limit,
+	})
 }
 
 func summarizeRun(runJSONPath string) runSummary {

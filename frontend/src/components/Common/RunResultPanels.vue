@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { fileUrl } from "@/services/api";
 import GenericTable, {
@@ -30,6 +30,35 @@ const finalVideo = computed(() => {
   const out = props.result.final?.outputs?.find((o) => o.endsWith(".mp4"));
   return out ? fileUrl(out) : "";
 });
+
+// Channel switcher: flip the preview between the final composite and each channel. Channel PNGs load
+// only when selected (deferred). Ordered by the canonical filter sequence (L, R, G, B, Ha, …).
+const FILTER_ORDER = ["L", "R", "G", "B", "Ha", "OIII", "SII"];
+const channelViews = computed(() =>
+  (props.result.channels ?? [])
+    .filter((c) => c.preview_path)
+    .slice()
+    .sort(
+      (a, b) =>
+        (FILTER_ORDER.indexOf(a.filter) + 1 || 99) -
+        (FILTER_ORDER.indexOf(b.filter) + 1 || 99),
+    )
+    .map((c) => ({ filter: c.filter, src: fileUrl(c.preview_path as string) })),
+);
+const activeView = ref("final"); // "final" or a channel filter name
+const activeSrc = computed(() =>
+  activeView.value === "final"
+    ? finalImage.value
+    : (channelViews.value.find((v) => v.filter === activeView.value)?.src ??
+      finalImage.value),
+);
+// Reset to the composite whenever a different run is opened (the component instance is reused).
+watch(
+  () => props.result,
+  () => {
+    activeView.value = "final";
+  },
+);
 
 // Integration (exposure) time that went into the final image: per channel = stacked subs × per-sub
 // exposure, and the sum across channels.
@@ -199,7 +228,40 @@ const rejectedClass = (r: Row) =>
           }}</span>
         </span>
       </div>
-      <ImageViewer :src="finalImage" alt="final stack" />
+      <!-- Channel switcher: flip the preview between the final composite and each channel -->
+      <div
+        v-if="channelViews.length"
+        class="mb-2 flex flex-wrap items-center gap-1.5"
+      >
+        <button
+          type="button"
+          class="rounded-md border px-2.5 py-1 text-xs font-medium transition-colors"
+          :class="
+            activeView === 'final'
+              ? 'border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-900/30 dark:text-brand-200'
+              : 'border-slate-200 text-slate-600 hover:border-brand-400 dark:border-slate-700 dark:text-slate-300'
+          "
+          @click="activeView = 'final'"
+        >
+          {{ t("job.finalView") }}
+        </button>
+        <button
+          v-for="v in channelViews"
+          :key="v.filter"
+          type="button"
+          class="rounded-md transition-transform"
+          :class="
+            activeView === v.filter
+              ? 'ring-2 ring-brand-500 ring-offset-1 dark:ring-offset-slate-900'
+              : 'opacity-75 hover:opacity-100'
+          "
+          :aria-label="v.filter"
+          @click="activeView = v.filter"
+        >
+          <FilterChip :filter="v.filter" />
+        </button>
+      </div>
+      <ImageViewer :src="activeSrc" :alt="activeView" />
       <video
         v-if="finalVideo"
         :src="finalVideo"

@@ -43,6 +43,10 @@ export const apiPost = <T>(path: string, body?: unknown) =>
 
 export const fileUrl = (path: string) =>
   `${BASE}/api/file?path=${encodeURIComponent(path)}`;
+// thumbUrl is a small server-resized JPEG of an output image — used by the Runs gallery instead of the
+// full-resolution PNG so the page loads fast (the full image is fetched only when a run is opened).
+export const thumbUrl = (path: string, w?: number) =>
+  `${BASE}/api/thumb?path=${encodeURIComponent(path)}${w ? `&w=${w}` : ""}`;
 export const eventsUrl = (jobId: number) => `${BASE}/api/jobs/${jobId}/events`;
 export const previewUrl = (path: string, max?: number) =>
   `${BASE}/api/preview?path=${encodeURIComponent(path)}${

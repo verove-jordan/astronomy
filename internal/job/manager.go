@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -230,6 +231,14 @@ func (m *Manager) lockTarget(path string) func() {
 // the sequential lane, all stopping when ctx is cancelled. The single seq worker is what makes stacked
 // "Add to queue" jobs run strictly one-at-a-time in submission order, auto-advancing.
 func (m *Manager) Start(ctx context.Context, n int) {
+	// Reconcile jobs orphaned by a previous server instance. The worker pool is in-process and does not
+	// survive a restart (notably an `air` hot-reload rebuild), so any job still "running" in the DB at
+	// boot has no live worker — mark it failed rather than leave it hanging at its last percentage.
+	if rows, err := m.store.FailRunningJobs(ctx, "interrupted by a server restart"); err != nil {
+		log.Printf("astrostack: reconcile running jobs failed: %v", err)
+	} else if rows > 0 {
+		log.Printf("astrostack: reconciled %d orphaned running job(s) as failed on startup", rows)
+	}
 	for i := 0; i < n; i++ {
 		go m.worker(ctx, m.queue)
 	}
@@ -269,17 +278,29 @@ func (m *Manager) Cancel(id int64) bool {
 		cancel() // running → terminate the siril-cli subprocess
 		return true
 	}
-	// Not running: if it is still queued, mark it cancelled so the worker skips it when dequeued. This is
-	// "remove from queue" for a stacked job that has not started yet.
+	// Not owned by this process. Either it is still queued (cancel-before-start), or it is "running" in
+	// the DB but orphaned — its worker died with a previous server instance (an `air` restart) and will
+	// never finish. Terminate both in the DB so the UI stops showing a phantom in-progress job.
 	job, err := m.store.GetJob(context.Background(), id)
-	if err != nil || job.Status != store.JobQueued {
+	if err != nil {
 		return false
 	}
-	if err := m.store.FinishJob(context.Background(), id, store.JobCancelled, nil, "cancelled before start"); err != nil {
+	switch job.Status {
+	case store.JobQueued:
+		if err := m.store.FinishJob(context.Background(), id, store.JobCancelled, nil, "cancelled before start"); err != nil {
+			return false
+		}
+		m.publish(Event{JobID: id, Status: store.JobCancelled, Step: "cancelled", Done: true})
+		return true
+	case store.JobRunning:
+		if err := m.store.FinishJob(context.Background(), id, store.JobFailed, nil, "interrupted (server restarted while running)"); err != nil {
+			return false
+		}
+		m.publish(Event{JobID: id, Status: store.JobFailed, Step: "interrupted", Done: true})
+		return true
+	default:
 		return false
 	}
-	m.publish(Event{JobID: id, Status: store.JobCancelled, Step: "cancelled", Done: true})
-	return true
 }
 
 // Subscribe returns a channel of events for a job and an unsubscribe function.
