@@ -45,8 +45,12 @@ func MatchForLight(light inspect.SetKey, masters []Master) Selection {
 	}
 	if f := bestFlat(light, masters); f != nil {
 		sel.Flat = f
+		if f.Filter != light.Filter {
+			sel.Notes = append(sel.Notes, fmt.Sprintf(
+				"no %s flat — using the %s flat (corrects shared dust/vignetting)", light.Filter, flatLabel(f)))
+		}
 	} else {
-		sel.Notes = append(sel.Notes, fmt.Sprintf("no matching flat for filter %q — flat correction skipped", light.Filter))
+		sel.Notes = append(sel.Notes, "no flat available — flat correction skipped")
 	}
 	if b := bestBias(light, masters); b != nil {
 		sel.Bias = b
@@ -75,14 +79,26 @@ func bestDark(light inspect.SetKey, masters []Master) *Master {
 	return best
 }
 
+// bestFlat picks the flat to apply to a light: an exact filter match when one exists, otherwise ANY
+// available flat — common for older sessions that shot a single flat set. A wrong-filter flat still
+// corrects the session's shared dust/vignetting (most dust sits on the sensor window, common to every
+// filter), which is far better than stacking raw. MatchForLight notes when a cross-filter flat is used.
 func bestFlat(light inspect.SetKey, masters []Master) *Master {
+	if m := pickFlat(light, masters, true); m != nil {
+		return m
+	}
+	return pickFlat(light, masters, false)
+}
+
+// pickFlat selects a flat master, optionally requiring its filter to match the light; among candidates
+// it prefers one whose camera settings match, then the one built from the most frames.
+func pickFlat(light inspect.SetKey, masters []Master, requireFilter bool) *Master {
 	var best *Master
 	for i := range masters {
 		m := &masters[i]
-		if m.Type != MasterFlat || m.Filter != light.Filter {
+		if m.Type != MasterFlat || (requireFilter && m.Filter != light.Filter) {
 			continue
 		}
-		// Prefer a flat that also matches the camera settings, then the one with more frames.
 		if best == nil ||
 			(sameCamera(light, m) && !sameCamera(light, best)) ||
 			(sameCamera(light, m) == sameCamera(light, best) && m.FrameCount > best.FrameCount) {
@@ -90,6 +106,14 @@ func bestFlat(light inspect.SetKey, masters []Master) *Master {
 		}
 	}
 	return best
+}
+
+// flatLabel names a flat for a note: its filter, or "session" for an unfiltered/shared flat set.
+func flatLabel(m *Master) string {
+	if m.Filter == "" {
+		return "session"
+	}
+	return m.Filter
 }
 
 func bestBias(light inspect.SetKey, masters []Master) *Master {

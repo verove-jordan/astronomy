@@ -149,6 +149,52 @@ func Open(path string) (*File, error) {
 	return &File{Header: hdr, DataOffset: consumed, path: path}, nil
 }
 
+// StripKeyword blanks every primary-header card whose keyword equals key (case-insensitive), in place:
+// the matching 80-byte card becomes spaces, leaving all data offsets unchanged. It is a no-op when the
+// key is absent. Used to drop a spurious BAYERPAT card that older ASICAP captures stamp on MONO frames —
+// which would otherwise make Siril treat the (monochrome) master as an undebayered CFA image, wrecking
+// denoise and plate-solving. Only the mono pipeline calls this, and it only ever stacks non-Bayer
+// frames, so any BAYERPAT it finds is the spurious leftover.
+func StripKeyword(path, key string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	want := strings.ToUpper(strings.TrimSpace(key))
+	block := make([]byte, blockSize)
+	var blockStart int64
+	for {
+		if _, err := io.ReadFull(f, block); err != nil {
+			return fmt.Errorf("strip %s in %s: %w", key, path, err)
+		}
+		changed, end := false, false
+		for off := 0; off < blockSize; off += cardSize {
+			switch strings.ToUpper(strings.TrimRight(string(block[off:off+8]), " ")) {
+			case "END":
+				end = true
+			case want:
+				for i := off; i < off+cardSize; i++ {
+					block[i] = ' '
+				}
+				changed = true
+			}
+			if end {
+				break
+			}
+		}
+		if changed {
+			if _, err := f.WriteAt(block, blockStart); err != nil {
+				return err
+			}
+		}
+		if end {
+			return nil
+		}
+		blockStart += blockSize
+	}
+}
+
 // parseCard decodes one 80-byte card; the second return is true for the END card.
 func parseCard(b []byte) (Card, bool) {
 	key := strings.TrimRight(string(b[0:8]), " ")

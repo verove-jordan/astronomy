@@ -101,9 +101,9 @@ func runProcess(args []string) error {
 	}
 
 	if m == mode.Planetary {
-		if info, err := os.Stat(path); err != nil || info.IsDir() {
-			return fmt.Errorf("planetary expects a video file: %s", path)
-		}
+		if _, err := os.Stat(path); err != nil {
+			return fmt.Errorf("planetary input not found: %s", path)
+		} // a video file, a SER, or a folder of frames are all accepted by planetary.Process
 		res, err := planetary.Process(ctx, runner, cfg.FfmpegBin, path, workDir, outDir, preset.Planetary, videoProgress(*verbose))
 		if err != nil {
 			return err

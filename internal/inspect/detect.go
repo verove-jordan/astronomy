@@ -1,14 +1,13 @@
 package inspect
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/verove-jordan/astronomy/internal/fits"
 )
 
 // Kind classifies what a process path points at.
@@ -83,31 +82,25 @@ func ListFITSFrames(dir string) ([]string, error) {
 	return out, nil
 }
 
-// IsOSCDir reports whether dir holds one-shot-color (Bayer CFA) FITS frames that must be debayered — i.e.
-// it should run through the OSC pipeline, not the mono per-filter pipeline. It samples the first frames
-// and returns true only when every sampled frame is CFA, so a mono or mixed directory is never misrouted.
+// IsOSCDir reports whether dir holds GENUINE one-shot-color (Bayer CFA) FITS frames that must be
+// debayered — i.e. it should run through the OSC pipeline, not the mono per-filter pipeline. It scans
+// the directory and applies the same spurious-BAYERPAT veto as the inventory (clearSpuriousBayer), so a
+// MONO filter-wheel session whose older-ASICAP frames carry a stray BAYERPAT — which a raw header check
+// would misread as colour — is correctly reported as NOT OSC. True only when frames remain CFA after the
+// veto (no filter-wheel / mono-filter evidence anywhere), i.e. a real OSC capture. A mono or mixed
+// directory is never misrouted. Channel detection is off: the veto only needs header/wheel/manifest
+// filters, which resolve without it.
 func IsOSCDir(dir string) bool {
-	frames, err := ListFITSFrames(dir)
-	if err != nil || len(frames) == 0 {
+	inv, err := ScanWithOptions(context.Background(), dir, ScanOptions{})
+	if err != nil || len(inv.Frames) == 0 {
 		return false
 	}
-	const sample = 16
-	checked := 0
-	for _, p := range frames {
-		if checked >= sample {
-			break
-		}
-		f, err := fits.Open(p)
-		if err != nil {
-			continue
-		}
-		checked++
-		b, ok := f.Header.String("BAYERPAT")
-		if bp := strings.TrimSpace(b); !ok || bp == "" || strings.EqualFold(bp, "NONE") {
-			return false // a monochrome frame → not an OSC directory
+	for _, fr := range inv.Frames {
+		if fr.Bayer == "" {
+			return false // a monochrome (or spurious-Bayer-cleared) frame → not an OSC directory
 		}
 	}
-	return checked > 0
+	return true
 }
 
 // ListRawFrames returns the one-shot-color still files under dir, sorted (acquisition order).

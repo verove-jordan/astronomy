@@ -12,6 +12,7 @@ import FilterChip from "@/components/Common/FilterChip.vue";
 import IconCheck from "@/components/Icons/IconCheck.vue";
 import IconMinus from "@/components/Icons/IconMinus.vue";
 import IconDownload from "@/components/Icons/IconDownload.vue";
+import IconChevronRight from "@/components/Icons/IconChevronRight.vue";
 import { card } from "@/constants/styles";
 import { humanizeMs, baseName, tempC } from "@/utils/format";
 import type { ChannelResult, RunResult } from "@/types";
@@ -22,13 +23,30 @@ const { t } = useI18n();
 type Row = Record<string, unknown>;
 const ms = (v: unknown) => humanizeMs(Number(v));
 
+// Outputs come either from the deep-sky `final` wrapper or, for planetary/comet lucky-imaging runs,
+// from the flat top-level result. Notes fall back the same way.
+const outputs = computed<string[]>(
+  () => props.result.final?.outputs ?? props.result.outputs ?? [],
+);
+const notes = computed<string[]>(
+  () => props.result.final?.notes ?? props.result.notes ?? [],
+);
 const finalImage = computed(() => {
-  const out = props.result.final?.outputs?.find((o) => o.endsWith(".png"));
+  const out = outputs.value.find((o) => o.endsWith(".png"));
   return out ? fileUrl(out) : "";
 });
 const finalVideo = computed(() => {
-  const out = props.result.final?.outputs?.find((o) => o.endsWith(".mp4"));
+  const out = outputs.value.find((o) => o.endsWith(".mp4"));
   return out ? fileUrl(out) : "";
+});
+
+// Planetary/comet lucky-imaging stats (frames kept of total), shown when there is no per-channel table.
+const stackStats = computed(() => {
+  const total = props.result.frame_count;
+  const kept = props.result.stacked_frames;
+  return typeof total === "number" && typeof kept === "number"
+    ? { total, kept }
+    : null;
 });
 
 // Channel switcher: flip the preview between the final composite and each channel. Channel PNGs load
@@ -59,6 +77,18 @@ watch(
     activeView.value = "final";
   },
 );
+
+// Ordered list of switchable views (Final first, then each channel) for the prev/next arrows; cyclic.
+const views = computed(() => [
+  "final",
+  ...channelViews.value.map((v) => v.filter),
+]);
+function step(dir: number) {
+  const list = views.value;
+  if (list.length < 2) return;
+  const i = list.indexOf(activeView.value);
+  activeView.value = list[(i + dir + list.length) % list.length];
+}
 
 // Integration (exposure) time that went into the final image: per channel = stacked subs × per-sub
 // exposure, and the sum across channels.
@@ -203,8 +233,17 @@ const rejectedClass = (r: Row) =>
     <section v-if="finalImage" :class="card">
       <h2 class="mb-3 text-lg font-medium">
         {{ t("job.finalImage") }}
-        <span class="ml-2 text-sm font-normal text-slate-500">
+        <span
+          v-if="result.final"
+          class="ml-2 text-sm font-normal text-slate-500"
+        >
           {{ result.final?.mode }} · {{ result.final?.channels?.join("+") }}
+        </span>
+        <span
+          v-else-if="stackStats"
+          class="ml-2 text-sm font-normal text-slate-500"
+        >
+          {{ t("job.framesStacked", { kept: stackStats.kept, total: stackStats.total }) }}
         </span>
       </h2>
       <div
@@ -261,7 +300,35 @@ const rejectedClass = (r: Row) =>
           <FilterChip :filter="v.filter" />
         </button>
       </div>
-      <ImageViewer :src="activeSrc" :alt="activeView" />
+      <div class="relative">
+        <ImageViewer :src="activeSrc" :alt="activeView" />
+        <!-- Prev/next arrows: step through Final + each channel (cyclic) so it's clear you can switch -->
+        <template v-if="channelViews.length">
+          <button
+            type="button"
+            class="absolute left-2 top-1/2 z-10 -translate-y-1/2 rounded-md bg-slate-900/80 p-2 text-slate-200 backdrop-blur transition-colors hover:bg-slate-700"
+            :aria-label="t('common.previous')"
+            :title="t('common.previous')"
+            @click="step(-1)"
+          >
+            <IconChevronRight class="rotate-180" />
+          </button>
+          <button
+            type="button"
+            class="absolute right-2 top-1/2 z-10 -translate-y-1/2 rounded-md bg-slate-900/80 p-2 text-slate-200 backdrop-blur transition-colors hover:bg-slate-700"
+            :aria-label="t('common.next')"
+            :title="t('common.next')"
+            @click="step(1)"
+          >
+            <IconChevronRight />
+          </button>
+          <span
+            class="pointer-events-none absolute left-2 top-2 z-10 rounded-md bg-slate-900/80 px-2 py-1 text-xs font-medium text-slate-100 backdrop-blur"
+          >
+            {{ activeView === "final" ? t("job.finalView") : activeView }}
+          </span>
+        </template>
+      </div>
       <video
         v-if="finalVideo"
         :src="finalVideo"
@@ -270,7 +337,7 @@ const rejectedClass = (r: Row) =>
       />
       <div class="mt-2 flex flex-wrap gap-3 text-sm">
         <a
-          v-for="o in result.final?.outputs"
+          v-for="o in outputs"
           :key="o"
           :href="fileUrl(o)"
           target="_blank"
@@ -279,9 +346,9 @@ const rejectedClass = (r: Row) =>
           <IconDownload /> {{ baseName(o) }}
         </a>
       </div>
-      <ul v-if="result.final?.notes?.length" class="mt-2 space-y-1">
+      <ul v-if="notes.length" class="mt-2 space-y-1">
         <li
-          v-for="(n, i) in result.final?.notes"
+          v-for="(n, i) in notes"
           :key="i"
           class="text-xs text-slate-500 dark:text-slate-400"
         >
@@ -290,7 +357,7 @@ const rejectedClass = (r: Row) =>
       </ul>
     </section>
 
-    <section>
+    <section v-if="channelRows.length">
       <h2 class="mb-2 text-lg font-medium">{{ t("job.channelsTitle") }}</h2>
       <GenericTable :columns="channelColumns" :rows="channelRows">
         <template #cell-filter="{ value }">

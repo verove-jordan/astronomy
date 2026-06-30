@@ -163,6 +163,10 @@ type RunRequest struct {
 	// Sequential routes this job into the single-worker queue lane so stacked "Add to queue" jobs run
 	// one-at-a-time in submission order, auto-advancing — instead of the parallel pool. Default false.
 	Sequential bool `json:"sequential,omitempty"`
+
+	// CalibExclude lists calib.SuggestID keys (per light-set, per role) the user unchecked in the Import
+	// "Calibration" panel; those darks/flats/bias are dropped from each channel's matched selection.
+	CalibExclude []string `json:"calib_exclude,omitempty"`
 }
 
 // LiveRequest is the live-stacking source + capture settings. Credentials are never carried here — the
@@ -610,7 +614,8 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunReque
 			JobID:      id, FinishIterStore: m.store, // persist supervised iterations against this job
 			Library: m.store, LibraryDir: m.cfg.LibraryDir, OnProgress: pipeProg,
 			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir,
-			Catalog: m.store, // always record the run so its frames become reusable
+			Catalog:      m.store, // always record the run so its frames become reusable
+			CalibExclude: p.CalibExclude,
 		}
 		if m.cfg.ReuseEnabled && !p.ReuseDisabled {
 			opts.RawCalib = m.store // pool raw bias/darks across sessions into deep masters

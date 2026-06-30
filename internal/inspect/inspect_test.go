@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -110,6 +111,35 @@ func TestScan_EXPOINUSExposureAndBayerOSC(t *testing.T) {
 	assert.Equal(t, 1, removed)
 	assert.Empty(t, inv.Frames)
 	assert.Empty(t, inv.SetsOfType(Light))
+}
+
+// TestScan_SpuriousBayerOnMonoRig reproduces the older-ASICAP capture of a MONO camera (ASI 1600MM Pro):
+// every frame carries a BAYERPAT card, yet the lights are shot through a filter wheel (L/R/G/B/Ha). The
+// CFA card is spurious — without the veto the whole session is dropped as one-shot-color and the job
+// "succeeds" instantly with no channels. The filter wheel proves the rig is mono, so Bayer must be cleared
+// on the filtered lights AND their calibration frames; ExcludeBayer must then drop nothing.
+func TestScan_SpuriousBayerOnMonoRig(t *testing.T) {
+	dir := t.TempDir()
+	const bayer = "'GRBG'"
+	// Filtered lights (a filter wheel ⇒ mono rig), each tagged with the bogus CFA pattern.
+	for i, filt := range []string{"'L'", "'R'", "'G'", "'B'", "'Ha'"} {
+		fitstest.Write(t, dir, "light_"+strconv.Itoa(i)+".fits", 8, 8, 2400,
+			map[string]string{"IMAGETYP": "'Light'", "FILTER": filt, "BAYERPAT": bayer, "EXPOINUS": "120000000"})
+	}
+	// Calibration frames carry no filter but belong to the same mono rig — they too must be un-Bayered.
+	fitstest.Write(t, dir, "dark_0.fits", 8, 8, 800,
+		map[string]string{"IMAGETYP": "'Dark'", "BAYERPAT": bayer, "EXPOINUS": "120000000"})
+	fitstest.Write(t, dir, "bias_0.fits", 8, 8, 500,
+		map[string]string{"IMAGETYP": "'Bias'", "BAYERPAT": bayer, "EXPOINUS": "1000"})
+
+	inv, err := Scan(context.Background(), dir)
+	require.NoError(t, err)
+	require.Len(t, inv.Frames, 7)
+	for _, fr := range inv.Frames {
+		assert.Empty(t, fr.Bayer, "%s: spurious BAYERPAT must be cleared on a filter-wheel (mono) session", filepath.Base(fr.Path))
+	}
+	assert.Zero(t, inv.ExcludeBayer(), "no frame should be dropped as one-shot-color")
+	assert.NotEmpty(t, inv.SetsOfType(Light), "the mono lights must survive into stackable sets")
 }
 
 func TestIsOSCDir(t *testing.T) {

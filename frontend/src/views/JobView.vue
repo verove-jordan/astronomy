@@ -212,8 +212,14 @@ async function cancelJob() {
       <LogConsole :lines="lines" />
     </template>
 
-    <!-- After completion: the full result panels + the supervisor iteration timeline -->
-    <template v-else-if="result && (result.channels?.length || result.final)">
+    <!-- After completion: the full result panels + the supervisor iteration timeline. `outputs` covers
+         planetary/comet lucky-imaging runs, which carry no channels/final wrapper. -->
+    <template
+      v-else-if="
+        result &&
+        (result.channels?.length || result.final || result.outputs?.length)
+      "
+    >
       <RunResultPanels :result="result" />
       <SupervisorPanel :result="result" />
     </template>

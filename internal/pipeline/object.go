@@ -43,3 +43,21 @@ func smartObject(dir string) string {
 	}
 	return sanitize(filepath.Base(clean))
 }
+
+// objectCandidates returns plate-solve name candidates for an object/folder name: the full name first,
+// then each of its tokens (split on the usual separators). A compound capture name like "M81_M82_2020"
+// rarely matches a catalogue as a whole, but its tokens ("M81", "M82") do — giving the solver a
+// position seed instead of a fragile blind solve. "Most specific first"; duplicates/empties dropped.
+func objectCandidates(object string) []string {
+	out := []string{object}
+	seen := map[string]bool{strings.ToLower(object): true}
+	for _, tok := range strings.FieldsFunc(object, func(r rune) bool {
+		return r == '_' || r == '-' || r == ' ' || r == '.'
+	}) {
+		if low := strings.ToLower(tok); tok != "" && !seen[low] {
+			seen[low] = true
+			out = append(out, tok)
+		}
+	}
+	return out
+}

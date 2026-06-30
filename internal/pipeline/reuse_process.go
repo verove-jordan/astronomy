@@ -27,7 +27,7 @@ func processChannelGroups(ctx context.Context, opts Options, object, filter stri
 		Object:     object,
 		Filter:     filter,
 		ExposureMs: rep.Key.ExposureMs,
-		Selection:  calib.MatchForLight(rep.Key, masters), // representative selection (notes/UI)
+		Selection:  calib.MatchForLightExcluding(rep.Key, masters, opts.CalibExclude), // representative selection (notes/UI)
 	}
 
 	var calibrated []string     // calibrated frame paths, in registration order
@@ -100,7 +100,7 @@ func newFlatCache(p ReuseProvider) *flatCache {
 // the flat is this run's flat for the current session, or the group's own session flat for prior data.
 func (c *flatCache) mastersFor(ctx context.Context, opts Options, g lightGroup,
 	masters []calib.Master, workRun string) (siril.CalibMasters, []string) {
-	sel := calib.MatchForLight(g.Key, masters)
+	sel := calib.MatchForLightExcluding(g.Key, masters, opts.CalibExclude)
 	dark, flat, bias := sel.Masters()
 	if g.Current {
 		return siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias}, nil

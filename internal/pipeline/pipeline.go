@@ -83,6 +83,10 @@ type Options struct {
 	// path: lights in opts.InputDir are calibrated against masters built from these before stacking.
 	// Empty keeps the proven uncalibrated single-pass path. Offset == bias.
 	DarkDir, FlatDir, BiasDir string
+
+	// CalibExclude holds SuggestID keys (per light-set, per role) the user unchecked in the Import
+	// "Calibration" panel; the matcher drops those darks/flats/bias from each channel's selection.
+	CalibExclude []string
 }
 
 // scanRoots returns the capture folders to merge for this run: the explicit InputDirs when set,
@@ -202,10 +206,15 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	// Resolve target coordinates for plate-solving from the object/folder name when the header
-	// carried none, so SPCC can run on otherwise-unlocatable captures (e.g. ASI lights of M101).
+	// carried none, so SPCC can run on otherwise-unlocatable captures (e.g. ASI lights of M101). A
+	// compound folder name ("M81_M82_2020") won't resolve as a whole, so also try each of its tokens —
+	// the first catalogued one ("M81") gives the solver a position seed instead of a fragile blind solve.
 	if opts.Solve.Coords == "" {
-		if c, ok := skycat.Resolve(object, opts.CatalogDir); ok {
-			opts.Solve.Coords = c
+		for _, name := range objectCandidates(object) {
+			if c, ok := skycat.Resolve(name, opts.CatalogDir); ok {
+				opts.Solve.Coords = c
+				break
+			}
 		}
 	}
 
@@ -347,6 +356,16 @@ func combine(ctx context.Context, opts Options, res *Result, workRun, outDir str
 	if len(masters) == 0 {
 		res.Warnings = append(res.Warnings, "no channels available to combine")
 		return
+	}
+	// No blue filter but OIII present (e.g. an LRG+Ha+OIII narrowband-broadband set): use OIII as the
+	// blue channel. OIII (~500 nm) is blue-green, so the broadband L/R/G keep natural star colour while
+	// OIII supplies the blue nebulosity — a natural HaLRGB look. The UI filter-mapping can override this.
+	if _, hasB := masters["B"]; !hasB {
+		if oiii, ok := masters["OIII"]; ok {
+			masters["B"] = oiii
+			delete(masters, "OIII")
+			res.Warnings = append(res.Warnings, "OIII used as the blue channel (no B filter)")
+		}
 	}
 
 	channels := alignChannels(ctx, opts.Runner, masters, filepath.Join(workRun, "04_aligned"), outDir, res)
@@ -648,7 +667,7 @@ func removeIfExists(p string) error {
 
 func processChannel(ctx context.Context, opts Options, set inspect.Set, masters []calib.Master,
 	workRun, outDir string, gradeOpts grade.Options, onProgress func(siril.Progress)) ChannelResult {
-	sel := calib.MatchForLight(set.Key, masters)
+	sel := calib.MatchForLightExcluding(set.Key, masters, opts.CalibExclude)
 	ch := ChannelResult{
 		Object:      set.Key.Object,
 		Filter:      set.Key.Filter,
@@ -714,6 +733,14 @@ func finishStackedChannel(ctx context.Context, opts Options, seqDir, baseSeq, re
 		return
 	}
 	ch.OutputPath = outBase + ".fits"
+
+	// Drop any spurious BAYERPAT the stack inherited from older ASICAP mono captures: left in place it
+	// makes Siril treat this monochrome master as an undebayered CFA image (a checkerboard) — which
+	// breaks the per-channel denoise and, after rgbcomp, the plate-solve that SPCC needs. Safe here: the
+	// mono pipeline only ever stacks non-Bayer frames. Soft-fail (cosmetic header edit).
+	if err := fits.StripKeyword(ch.OutputPath, "BAYERPAT"); err != nil {
+		ch.Selection.Notes = append(ch.Selection.Notes, "BAYERPAT strip skipped: "+err.Error())
+	}
 
 	// AI background extraction (GraXpert) on the linear master, replacing Siril's polynomial subsky at
 	// finish. Soft-fail: a missing/erroring GraXpert leaves the master untouched.

@@ -1,7 +1,13 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { apiGet, apiPost } from "@/services/api";
-import type { Inventory, Job, ReusePreview, RunSummary } from "@/types";
+import type {
+  Inventory,
+  Job,
+  ReusePreview,
+  CalibPreview,
+  RunSummary,
+} from "@/types";
 
 export interface CreateOpts {
   filterMap?: Record<string, string>;
@@ -23,6 +29,8 @@ export interface CreateOpts {
   // Cross-session reuse: disable entirely, or restrict folded-in prior data to chosen session ids.
   reuseDisabled?: boolean;
   reuseSessions?: number[];
+  // Library calibration the user unchecked in the Calibration panel (calib.SuggestID keys to skip).
+  calibExclude?: string[];
   // Live stacking (mode "livestack"): which source to watch and the per-sub exposure.
   live?: {
     sourceKind: "local" | "s3";
@@ -96,6 +104,8 @@ export const useJobsStore = defineStore("jobs", () => {
     if (opts.reuseDisabled) body.reuse_disabled = true;
     if (opts.reuseSessions && opts.reuseSessions.length)
       body.reuse_sessions = opts.reuseSessions;
+    if (opts.calibExclude && opts.calibExclude.length)
+      body.calib_exclude = opts.calibExclude;
     if (opts.live)
       body.live = {
         source_kind: opts.live.sourceKind,
@@ -112,6 +122,17 @@ export const useJobsStore = defineStore("jobs", () => {
   async function previewReuse(paths: string[]): Promise<ReusePreview | null> {
     try {
       return await apiPost<ReusePreview>("/api/reuse/preview", { paths });
+    } catch {
+      return null;
+    }
+  }
+
+  // previewCalibration asks which library master dark/flat/bias would calibrate each inspected channel.
+  async function previewCalibration(
+    paths: string[],
+  ): Promise<CalibPreview | null> {
+    try {
+      return await apiPost<CalibPreview>("/api/calib/preview", { paths });
     } catch {
       return null;
     }
@@ -180,6 +201,7 @@ export const useJobsStore = defineStore("jobs", () => {
     get,
     create,
     previewReuse,
+    previewCalibration,
     captureFor,
     inspectCapture,
     cancel,

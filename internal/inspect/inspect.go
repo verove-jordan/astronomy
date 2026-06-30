@@ -141,11 +141,61 @@ func ScanWithOptions(ctx context.Context, root string, opts ScanOptions) (*Inven
 // finalizeInventory groups frames into sets, applies an optional filter override, and adds
 // completeness warnings — the steps that must run once over the full (possibly multi-root) frame set.
 func finalizeInventory(inv *Inventory, opts ScanOptions) {
+	clearSpuriousBayer(inv)
 	inv.Sets = buildSets(inv.Frames)
 	if len(opts.FilterMapping) > 0 {
 		ApplyFilterMapping(inv, opts.FilterMapping) // re-groups sets with the override applied
 	}
 	addWarnings(inv)
+}
+
+// clearSpuriousBayer drops the Bayer (one-shot-color) flag from frames that cannot actually be CFA.
+// Older ASICAP/ZWO captures write a BAYERPAT card even for MONO cameras (e.g. the ASI 1600MM Pro): the
+// mono per-filter pipeline would then route every frame to the OSC path, ExcludeBayer would drop the
+// whole session, and the job "succeeds" in milliseconds with "no channels to combine". A one-shot-color
+// camera is incompatible with a filter wheel, so a frame carrying a mono filter or a physical wheel slot
+// proves the rig is monochrome — and its calibration frames (which carry no filter) belong to that same
+// rig. We therefore clear Bayer on (a) every filter-wheel exposure and (b) the calibration frames,
+// whenever the session shows any filter-wheel evidence. Genuine OSC sessions (no mono filter, no wheel
+// slot anywhere) are left untouched, as are unfiltered colour lights dropped into a mono folder — both
+// keep their Bayer flag and are still excluded from the mono pipeline downstream.
+func clearSpuriousBayer(inv *Inventory) {
+	monoRig := false
+	for _, fr := range inv.Frames {
+		if fr.WheelSlot > 0 || isMonoFilter(fr.Filter) {
+			monoRig = true
+			break
+		}
+	}
+	if !monoRig {
+		return
+	}
+	cleared := 0
+	for _, fr := range inv.Frames {
+		if fr.Bayer == "" {
+			continue
+		}
+		if fr.WheelSlot > 0 || isMonoFilter(fr.Filter) || isCalibration(fr.Type) {
+			fr.Bayer = ""
+			cleared++
+		}
+	}
+	if cleared > 0 {
+		inv.Warnings = append(inv.Warnings, fmt.Sprintf(
+			"%d frame(s) carry a BAYERPAT card but the session uses a filter wheel (mono rig) — "+
+				"treating them as monochrome, not one-shot-color", cleared))
+	}
+}
+
+// isMonoFilter reports whether f names a single mono filter-wheel slot (L/R/G/B/Ha/Sii/Oiii/…), as
+// opposed to the empty/one-shot-color label ("", "RGB", "OSC", "COLOR").
+func isMonoFilter(f string) bool {
+	switch strings.ToUpper(strings.TrimSpace(f)) {
+	case "", "RGB", "OSC", "COLOR", "COLOUR":
+		return false
+	default:
+		return true
+	}
 }
 
 // ScanMany scans multiple roots and merges them into one Inventory: frames, videos, and per-file

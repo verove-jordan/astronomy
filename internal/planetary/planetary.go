@@ -8,6 +8,7 @@ package planetary
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,6 +43,14 @@ type Result struct {
 
 var videoExts = map[string]bool{".mp4": true, ".mov": true, ".mkv": true, ".m4v": true, ".avi": true}
 
+// imageExts are the still-frame formats a Moon/planetary capture uses when shot as an image series
+// instead of a video — FITS plus the processed/raw stills Siril converts into a sequence.
+var imageExts = map[string]bool{
+	".fits": true, ".fit": true, ".fts": true,
+	".tif": true, ".tiff": true, ".png": true, ".jpg": true, ".jpeg": true,
+	".cr2": true, ".cr3": true, ".nef": true, ".arw": true, ".raf": true, ".dng": true,
+}
+
 // Process runs the lucky-imaging pipeline on a single video file.
 func Process(ctx context.Context, runner *siril.Runner, ffmpegBin, videoPath, workDir, outDir string,
 	opts Options, onProgress func(siril.Progress)) (*Result, error) {
@@ -68,10 +77,20 @@ func Process(ctx context.Context, runner *siril.Runner, ffmpegBin, videoPath, wo
 	}
 	res := &Result{Source: videoPath}
 
-	// 1. Extract frames (ffmpeg) or hand the SER straight to Siril.
+	// 1. Get the frames into seqDir: extract a video (ffmpeg), hand a SER straight to Siril, or — when
+	//    the input is a folder of pre-captured stills (the Moon/planets shot as a FITS/TIFF image series
+	//    rather than a video) — stage those frames directly. All three converge on a FITS sequence next.
 	report(onProgress, "extracting frames")
 	ext := strings.ToLower(filepath.Ext(videoPath))
-	switch {
+	switch info, statErr := os.Stat(videoPath); {
+	case statErr == nil && info.IsDir():
+		n, err := stageImageFrames(videoPath, seqDir)
+		if err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			return nil, fmt.Errorf("no image frames found in %s (expected FITS/TIFF/PNG/raw stills)", videoPath)
+		}
 	case videoExts[ext]:
 		if err := extractFrames(ctx, ffmpegBin, videoPath, seqDir); err != nil {
 			return nil, err
@@ -83,7 +102,7 @@ func Process(ctx context.Context, runner *siril.Runner, ffmpegBin, videoPath, wo
 			return nil, err
 		}
 	default:
-		return nil, fmt.Errorf("unsupported video format %q", ext)
+		return nil, fmt.Errorf("unsupported planetary input %q — use a video (mp4/mov/mkv/avi), a SER, or a folder of frames", videoPath)
 	}
 
 	// 2. Convert to a FITS sequence.
@@ -115,6 +134,49 @@ func Process(ctx context.Context, runner *siril.Runner, ffmpegBin, videoPath, wo
 	}
 	res.Notes = append(res.Notes, "frames stacked without surface alignment — for high-resolution planets use the Siril GUI / AutoStakkert!")
 	return res, nil
+}
+
+// stageImageFrames symlinks every still frame under dir (recursively — capture programs nest frames in
+// per-run/timestamp subfolders) into seqDir as a flat, numbered set, so Siril's convert builds one
+// sequence from a folder of pre-captured images (no video to extract). Hidden dirs are skipped. Returns
+// the number staged; a cross-device target falls back to a copy.
+func stageImageFrames(dir, seqDir string) (int, error) {
+	var srcs []string
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			if p != dir && strings.HasPrefix(d.Name(), ".") {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if imageExts[strings.ToLower(filepath.Ext(p))] {
+			srcs = append(srcs, p)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	sort.Strings(srcs) // stable acquisition order (timestamped names sort chronologically)
+	staged := 0
+	for _, src := range srcs {
+		abs, err := filepath.Abs(src)
+		if err != nil {
+			return staged, err
+		}
+		link := filepath.Join(seqDir, fmt.Sprintf("frame_%05d%s", staged+1, strings.ToLower(filepath.Ext(src))))
+		_ = os.Remove(link)
+		if err := os.Symlink(abs, link); err != nil {
+			if cerr := fsutil.CopyFile(abs, link); cerr != nil { // cross-device fallback
+				return staged, fmt.Errorf("stage %s: %w", src, cerr)
+			}
+		}
+		staged++
+	}
+	return staged, nil
 }
 
 // selectBest measures each frame's sharpness and returns the 1-based indices to reject.

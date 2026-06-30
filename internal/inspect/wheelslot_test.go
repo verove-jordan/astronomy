@@ -90,6 +90,46 @@ func TestScan_ClassifiesByWheelSlotDespiteOffByOneManifest(t *testing.T) {
 	}
 }
 
+// ngc6992 (Veil): the info.txt capture order (O3, Ha, L, R, G) is NOT the physical wheel-slot order
+// (L=1, R=2, G=3, O3=4, Ha=5). The legend must be LEARNED from each folder's physical slot, not assumed
+// from capture position — otherwise "O3" is dropped, every label shifts, and slot 5 shows the bare "S5"
+// placeholder. Also exercises the "O3"→OIII manifest alias.
+func TestScan_NamesNarrowbandFromManifestByPhysicalSlot(t *testing.T) {
+	root := t.TempDir()
+	autorun := filepath.Join(root, "ngc6992", "autorun")
+	require.NoError(t, os.MkdirAll(autorun, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(autorun, "info.txt"),
+		[]byte("O3 250 gain\nHa 250 gain\nL 100 gain\nR 100\nG 100\n10 x 60s\n"), 0o644))
+
+	// Folder timestamps are in capture order (O3, Ha, L, R, G); each sits in a different physical slot.
+	steps := []struct {
+		ts   string
+		slot int
+	}{
+		{"2020-07-12_21_00_00Z", 4}, // O3 → slot 4
+		{"2020-07-12_21_10_00Z", 5}, // Ha → slot 5
+		{"2020-07-12_21_20_00Z", 1}, // L  → slot 1
+		{"2020-07-12_21_30_00Z", 2}, // R  → slot 2
+		{"2020-07-12_21_40_00Z", 3}, // G  → slot 3
+	}
+	for i, s := range steps {
+		sub := filepath.Join(autorun, s.ts)
+		require.NoError(t, os.MkdirAll(sub, 0o755))
+		writeSlotFrame(t, sub, fmt.Sprintf("2020-07-12-21%d0_6-%d-autorun_0000.FIT", i, s.slot), s.slot)
+	}
+
+	inv, err := Scan(context.Background(), filepath.Join(root, "ngc6992"))
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]int{"L": 1, "R": 1, "G": 1, "Ha": 1, "OIII": 1}, filterCounts(inv),
+		"each physical slot resolves to its real filter (slot 4→OIII, slot 5→Ha); no unnamed S5")
+	for _, fr := range inv.Frames {
+		if fr.Type == Light {
+			assert.Equal(t, SourceWheel, fr.ClassSource, fr.Path)
+		}
+	}
+}
+
 // A SharpCap/ASICAP session with NO sidecar text and a non-descriptive "data" folder: the filter comes
 // from the filename slot, named by the default wheel order. Reproduces M27's data/ (LRGB slots 1-4).
 func TestScan_NamesByFilenameSlotWithoutSidecar(t *testing.T) {

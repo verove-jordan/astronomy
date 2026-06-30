@@ -118,6 +118,39 @@ func TestOpen_ParsesHeaderCards(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestStripKeyword(t *testing.T) {
+	path := writeFITS(t, 8, 8, 1234, map[string]string{
+		"BAYERPAT": "'GRBG'", "GAIN": "100", "FILTER": "'L'",
+	})
+
+	before, err := ReadImage(path)
+	require.NoError(t, err)
+	pre, _ := Open(path)
+	if _, had := pre.Header.String("BAYERPAT"); !had {
+		t.Fatal("precondition: BAYERPAT should be present before stripping")
+	}
+
+	require.NoError(t, StripKeyword(path, "BAYERPAT"))
+
+	f, err := Open(path)
+	require.NoError(t, err)
+	_, ok := f.Header.String("BAYERPAT")
+	assert.False(t, ok, "BAYERPAT should be removed")
+	// Neighbouring cards survive intact.
+	g, ok := f.Header.Int("GAIN")
+	assert.True(t, ok)
+	assert.Equal(t, int64(100), g)
+	filt, _ := f.Header.String("FILTER")
+	assert.Equal(t, "L", filt)
+
+	after, err := ReadImage(path)
+	require.NoError(t, err)
+	assert.Equal(t, before.Pix, after.Pix, "pixel data must be byte-identical (header-only edit)")
+
+	// No-op (and no error) when the key is already absent.
+	require.NoError(t, StripKeyword(path, "BAYERPAT"))
+}
+
 func TestCountPeaks(t *testing.T) {
 	tests := []struct {
 		name   string

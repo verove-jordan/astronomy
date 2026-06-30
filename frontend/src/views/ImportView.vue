@@ -14,12 +14,17 @@ import FileBrowser from "@/components/Common/FileBrowser.vue";
 import CaptureSummary from "@/components/Capture/CaptureSummary.vue";
 import FilterMappingEditor from "@/components/Capture/FilterMappingEditor.vue";
 import ReusePanel from "@/components/Capture/ReusePanel.vue";
+import CalibrationPanel from "@/components/Capture/CalibrationPanel.vue";
 import FilePreviewButton from "@/components/Common/FilePreviewButton.vue";
 import CollapsibleCard from "@/components/Common/CollapsibleCard.vue";
 import StatusPill from "@/components/Common/StatusPill.vue";
 import IconFolder from "@/components/Icons/IconFolder.vue";
 import type { CreateOpts } from "@/stores/jobs";
-import type { ReusePreview, ProcessingHistoryEntry } from "@/types";
+import type {
+  ReusePreview,
+  CalibPreview,
+  ProcessingHistoryEntry,
+} from "@/types";
 import {
   btnPrimary,
   btnGhost,
@@ -82,6 +87,9 @@ async function openDir(path: string) {
 const reusePreview = ref<ReusePreview | null>(null);
 const reuseEnabled = ref(true);
 const reuseSelected = ref<number[]>([]);
+// Calibration suggestions from the library + the suggestion ids the user unchecked to skip.
+const calibPreview = ref<CalibPreview | null>(null);
+const calibExcluded = ref<string[]>([]);
 
 const reuseSessionIds = computed(() =>
   (reusePreview.value?.reuse.sessions ?? []).map((s) => s.session_id),
@@ -102,12 +110,18 @@ const reuseSelectionForRun = computed(() =>
 async function inspectSelected(paths: string[]) {
   selectedPaths.value = paths;
   await browseStore.inspect(paths);
-  reusePreview.value = await jobsStore.previewReuse(paths);
+  // Reuse + calibration previews are independent — fetch them together.
+  const [reuse, calib] = await Promise.all([
+    jobsStore.previewReuse(paths),
+    jobsStore.previewCalibration(paths),
+  ]);
+  reusePreview.value = reuse;
   // Default: fold in every discovered prior session (user can deselect).
-  reuseSelected.value = (reusePreview.value?.reuse.sessions ?? []).map(
-    (s) => s.session_id,
-  );
+  reuseSelected.value = (reuse?.reuse.sessions ?? []).map((s) => s.session_id);
   reuseEnabled.value = true;
+  // Default: include every matched library master (user can uncheck).
+  calibPreview.value = calib;
+  calibExcluded.value = [];
 }
 
 const inv = computed(() => browseStore.inventory);
@@ -266,6 +280,8 @@ function runOpts(): CreateOpts {
     reuseDisabled: reuseDisabledForRun.value,
     // Only send a session list when the user deselected some; empty = fold in all discovered.
     reuseSessions: reuseSelectionForRun.value,
+    // Library masters the user unchecked in the Calibration panel (skipped at process time).
+    calibExclude: calibExcluded.value,
   };
 }
 
@@ -418,6 +434,12 @@ function histChip(exists: boolean): string {
       v-model:enabled="reuseEnabled"
       v-model:selected="reuseSelected"
       :preview="reusePreview"
+    />
+
+    <CalibrationPanel
+      v-if="inv"
+      v-model:excluded="calibExcluded"
+      :preview="calibPreview"
     />
 
     <div ref="runControls" :class="card">

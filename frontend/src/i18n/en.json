@@ -133,6 +133,12 @@
     "added": "+{frames} frames · +{time} integration",
     "frames": "{n} frames"
   },
+  "calib": {
+    "title": "Calibration · matched from your library",
+    "subtitle": "These library masters match your lights and will be applied. Uncheck any to skip it.",
+    "frames": "{n} frames",
+    "role": { "dark": "Dark", "flat": "Flat", "bias": "Bias" }
+  },
   "common": {
     "inspect": "Inspect",
     "run": "Run pipeline",
@@ -149,7 +155,9 @@
     "cancel": "Cancel",
     "clear": "Clear",
     "remove": "Remove",
-    "close": "Close"
+    "close": "Close",
+    "previous": "Previous",
+    "next": "Next"
   },
   "import": {
     "title": "Import & inspect",
@@ -253,6 +261,7 @@
     "result": "Result",
     "finalImage": "Final image",
     "finalView": "Final",
+    "framesStacked": "{kept} of {total} frames stacked",
     "livePreview": "Live preview",
     "channelsTitle": "Channels",
     "frameReview": "Frame review",

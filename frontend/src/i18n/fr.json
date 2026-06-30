@@ -133,6 +133,12 @@
     "added": "+{frames} images · +{time} d'intégration",
     "frames": "{n} images"
   },
+  "calib": {
+    "title": "Calibration · depuis votre bibliothèque",
+    "subtitle": "Ces maîtres de votre bibliothèque correspondent à vos poses et seront appliqués. Décochez-en un pour l'ignorer.",
+    "frames": "{n} images",
+    "role": { "dark": "Dark", "flat": "Flat", "bias": "Bias" }
+  },
   "common": {
     "inspect": "Inspecter",
     "run": "Lancer le traitement",
@@ -149,7 +155,9 @@
     "cancel": "Annuler",
     "clear": "Effacer",
     "remove": "Retirer",
-    "close": "Fermer"
+    "close": "Fermer",
+    "previous": "Précédent",
+    "next": "Suivant"
   },
   "import": {
     "title": "Importer & inspecter",
@@ -253,6 +261,7 @@
     "result": "Résultat",
     "finalImage": "Image finale",
     "finalView": "Finale",
+    "framesStacked": "{kept} poses empilées sur {total}",
     "livePreview": "Aperçu en direct",
     "channelsTitle": "Couches",
     "frameReview": "Revue des images",

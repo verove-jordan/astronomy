@@ -104,6 +104,27 @@ export interface Selection {
   notes?: string[];
 }
 
+// Calibration suggestions (POST /api/calib/preview): per inspected light channel, the library master
+// dark/flat/bias that would be applied. `id` is the per-(channel,role) key sent back to exclude one.
+export interface CalibSuggestion {
+  id: string;
+  role: string; // "dark" | "flat" | "bias"
+  master: Master;
+}
+export interface CalibChannel {
+  filter: string;
+  exposure_ms: number;
+  gain: number;
+  offset: number;
+  temp_bucket_c: number;
+  bin: number;
+  suggestions: CalibSuggestion[];
+  notes?: string[];
+}
+export interface CalibPreview {
+  channels: CalibChannel[];
+}
+
 export interface ChannelResult {
   object: string;
   filter: string;
@@ -147,6 +168,13 @@ export interface RunResult {
   channels: ChannelResult[];
   final?: FinalResult;
   warnings: string[];
+  // Planetary / comet lucky-imaging runs return a flat result (no `final` wrapper): the stacked
+  // image outputs plus frame stats. RunResultPanels falls back to these when `final` is absent.
+  outputs?: string[];
+  notes?: string[];
+  source?: string;
+  frame_count?: number;
+  stacked_frames?: number;
 }
 
 // JobParams mirrors the POST /api/jobs body (also returned in Job.params).

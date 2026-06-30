@@ -69,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/browse", s.browse)
 	mux.HandleFunc("GET /api/masters", s.masters)
 	mux.HandleFunc("POST /api/reuse/preview", s.reusePreview)
+	mux.HandleFunc("POST /api/calib/preview", s.calibPreview)
 	mux.HandleFunc("POST /api/jobs", s.createJob)
 	mux.HandleFunc("GET /api/jobs", s.listJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.getJob)
@@ -195,6 +196,30 @@ func (s *Server) reusePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pv, err := pipeline.PreviewReuseMany(r.Context(), s.store, s.scanCache, roots, s.cfg.SirilCatalogDir, s.cfg.ReuseConeDeg)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pv)
+}
+
+// calibPreview reports which library master dark/flat/bias would calibrate each inspected light channel,
+// so the Import "Calibration" panel can show + let the user exclude them. POST /api/calib/preview
+func (s *Server) calibPreview(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Path  string   `json:"path"`
+		Paths []string `json:"paths"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		badRequest(w, "invalid body")
+		return
+	}
+	roots, ok := s.resolveRoots(body.Path, body.Paths)
+	if !ok {
+		badRequest(w, "path must be inside the data directory")
+		return
+	}
+	pv, err := pipeline.PreviewCalibration(r.Context(), s.scanCache, s.store, roots)
 	if err != nil {
 		serverError(w, err)
 		return
