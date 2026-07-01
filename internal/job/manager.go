@@ -23,6 +23,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
 	"github.com/verove-jordan/astronomy/internal/planetary"
+	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/source"
 	"github.com/verove-jordan/astronomy/internal/starnet"
@@ -44,6 +45,14 @@ type Event struct {
 	RSSBytes     int64   `json:"rss_bytes,omitempty"`      // live resident memory of the step's subprocess
 	CPUPercent   float64 `json:"cpu_percent,omitempty"`    // live CPU usage (100 == one core)
 	PeakRSSBytes int64   `json:"peak_rss_bytes,omitempty"` // peak resident memory seen this step
+
+	// Live byte progress for an S3 transfer job (streamed, never persisted — the Progress int is).
+	BytesDone  int64 `json:"bytes_done,omitempty"`
+	BytesTotal int64 `json:"bytes_total,omitempty"`
+
+	// Iteration carries one supervised-finish pass (preview + tier + defects + scores) as it happens,
+	// so the UI streams the AI agent's iterations live instead of only after the job finishes.
+	Iteration *postprocess.IterationRecord `json:"iteration,omitempty"`
 
 	Done bool `json:"done,omitempty"`
 }
@@ -101,11 +110,12 @@ type Manager struct {
 	runner *siril.Runner
 	cfg    *config.Config
 
-	queue    chan int64
-	seqQueue chan int64 // sequential lane: stacked "Add to queue" jobs run one-at-a-time, auto-advancing
-	mu       sync.Mutex
-	subs     map[int64][]chan Event
-	cancels  map[int64]context.CancelFunc // cancel funcs for in-flight jobs (kill support)
+	queue     chan int64
+	seqQueue  chan int64 // sequential lane: stacked "Add to queue" jobs run one-at-a-time, auto-advancing
+	xferQueue chan int64 // S3 transfer lane: uploads/downloads run in their own pool, never starving runs
+	mu        sync.Mutex
+	subs      map[int64][]chan Event
+	cancels   map[int64]context.CancelFunc // cancel funcs for in-flight jobs (kill support)
 
 	pathMu    sync.Mutex
 	pathLocks map[string]*sync.Mutex // serializes jobs sharing an input dir (shared library/output)
@@ -160,6 +170,11 @@ type RunRequest struct {
 	// vision model). Default false → the standard single-pass finish. Requires ASTRO_LLM_URL reachable.
 	Supervise bool `json:"supervise,omitempty"`
 
+	// Refine, when set, makes this job re-finish an already-completed run (no re-stack) under the AI
+	// supervisor instead of processing from scratch. Built by Manager.Refine from a source job; the
+	// worker branches to the finish-only path (see execute → executeRefine).
+	Refine *RefineRequest `json:"refine,omitempty"`
+
 	// Sequential routes this job into the single-worker queue lane so stacked "Add to queue" jobs run
 	// one-at-a-time in submission order, auto-advancing — instead of the parallel pool. Default false.
 	Sequential bool `json:"sequential,omitempty"`
@@ -167,6 +182,32 @@ type RunRequest struct {
 	// CalibExclude lists calib.SuggestID keys (per light-set, per role) the user unchecked in the Import
 	// "Calibration" panel; those darks/flats/bias are dropped from each channel's matched selection.
 	CalibExclude []string `json:"calib_exclude,omitempty"`
+
+	// Transfer, when set, makes this an S3 transfer job (upload/sync/download/remove-local) instead of a
+	// pipeline run — it is intercepted before mode parsing and reuses the whole job progress/SSE stack.
+	Transfer *TransferRequest `json:"transfer,omitempty"`
+
+	// StorageMode selects where a pipeline run's files live: "local" (default, keep) or "s3" (pull inputs,
+	// process, push inputs+outputs, then remove local copies). S3 targets the run's S3Target.
+	StorageMode string    `json:"storage_mode,omitempty"`
+	S3          *S3Target `json:"s3,omitempty"`
+}
+
+// TransferRequest describes an S3 folder transfer. Credentials are NOT carried here (env only); Bucket +
+// Prefix + Namespace ("data" for captures / "output" for results) + RelPath locate the folder and its
+// mirror key (`<Prefix>/<Namespace>/<RelPath>`).
+type TransferRequest struct {
+	Op        string `json:"op"` // upload | sync | download | removeLocal
+	Bucket    string `json:"bucket"`
+	Prefix    string `json:"prefix"`
+	Namespace string `json:"namespace"` // "data" | "output"
+	RelPath   string `json:"rel_path"`
+}
+
+// S3Target is the bucket + prefix a full-S3 run reads inputs from and pushes results to.
+type S3Target struct {
+	Bucket string `json:"bucket"`
+	Prefix string `json:"prefix"`
 }
 
 // LiveRequest is the live-stacking source + capture settings. Credentials are never carried here — the
@@ -177,6 +218,16 @@ type LiveRequest struct {
 	Bucket      string  `json:"bucket,omitempty"`
 	Prefix      string  `json:"prefix,omitempty"`
 	ExposureSec float64 `json:"exposure_sec,omitempty"` // per-sub exposure (fallback + integration display)
+}
+
+// RefineRequest re-finishes an existing completed run under the AI supervisor. RunDir is the run's
+// output folder (output/<object>/<runID>); the finish is re-run from its on-disk masters (Tier A/B) or,
+// when AllowRestack is set and the raw frames are still present, re-stacked from scratch (Tier C).
+type RefineRequest struct {
+	RunDir       string `json:"run_dir"`
+	MaxIters     int    `json:"max_iters,omitempty"`     // 0 → engine default (4, hard max 8)
+	Tier         string `json:"tier,omitempty"`          // ceiling "A"|"B"|"C"; "" → full (C when raws available)
+	AllowRestack bool   `json:"allow_restack,omitempty"` // permit Tier-C re-stack from the source input dir
 }
 
 // inputRoots returns the capture folders this run scans: the multi-select Paths when set, else just
@@ -209,6 +260,7 @@ func NewManager(st *store.Store, runner *siril.Runner, cfg *config.Config) *Mana
 		cfg:       cfg,
 		queue:     make(chan int64, 256),
 		seqQueue:  make(chan int64, 256),
+		xferQueue: make(chan int64, 256),
 		subs:      map[int64][]chan Event{},
 		cancels:   map[int64]context.CancelFunc{},
 		pathLocks: map[string]*sync.Mutex{},
@@ -247,6 +299,9 @@ func (m *Manager) Start(ctx context.Context, n int) {
 		go m.worker(ctx, m.queue)
 	}
 	go m.worker(ctx, m.seqQueue)
+	// Two transfer workers so a couple of uploads/downloads can overlap without touching the run pool.
+	go m.worker(ctx, m.xferQueue)
+	go m.worker(ctx, m.xferQueue)
 }
 
 // Enqueue creates a session and a queued job (kind = mode), then schedules it. Returns the job id.
@@ -261,7 +316,10 @@ func (m *Manager) Enqueue(ctx context.Context, req RunRequest) (int64, error) {
 		return 0, err
 	}
 	target := m.queue
-	if req.Sequential {
+	switch {
+	case req.Transfer != nil:
+		target = m.xferQueue // S3 transfers run in their own lane
+	case req.Sequential:
 		target = m.seqQueue // run after the rest of the chain, one-at-a-time
 	}
 	select {
@@ -270,6 +328,58 @@ func (m *Manager) Enqueue(ctx context.Context, req RunRequest) (int64, error) {
 		return 0, fmt.Errorf("job queue is full")
 	}
 	return id, nil
+}
+
+// Restart re-runs a finished job as a brand-new job with the same parameters, returning the new job id.
+// The original job's stored params (its RunRequest) are replayed verbatim through Enqueue, so it lands
+// in the same lane (parallel or sequential) and re-applies the same folders, mode, calibration and reuse
+// choices. The original record is left intact for history. It refuses a job that is still queued or
+// running — there is nothing to restart while it is live.
+func (m *Manager) Restart(ctx context.Context, id int64) (int64, error) {
+	j, err := m.store.GetJob(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	if j.Status == store.JobQueued || j.Status == store.JobRunning {
+		return 0, fmt.Errorf("job %d is still %s", id, j.Status)
+	}
+	var req RunRequest
+	if err := json.Unmarshal(j.Params, &req); err != nil {
+		return 0, fmt.Errorf("job %d has invalid params: %w", id, err)
+	}
+	return m.Enqueue(ctx, req)
+}
+
+// Refine enqueues a job that re-finishes an already-completed run under the AI supervisor without
+// re-stacking (Tier A/B), or — when opts.AllowRestack is set and the raw frames survive — re-stacking
+// too (Tier C). It clones the source job's processing choices (mode/format/filter map/calibration) so
+// the finish matches, then lands in the normal worker to lock the target, stream progress and persist
+// iterations like any run. opts.RunDir defaults to the source run's output dir. Returns the new job id.
+func (m *Manager) Refine(ctx context.Context, sourceJobID int64, opts RefineRequest) (int64, error) {
+	j, err := m.store.GetJob(ctx, sourceJobID)
+	if err != nil {
+		return 0, err
+	}
+	if j.Status == store.JobQueued || j.Status == store.JobRunning {
+		return 0, fmt.Errorf("job %d is still %s", sourceJobID, j.Status)
+	}
+	var src RunRequest
+	if err := json.Unmarshal(j.Params, &src); err != nil {
+		return 0, fmt.Errorf("job %d has invalid params: %w", sourceJobID, err)
+	}
+	if opts.RunDir == "" {
+		var prev pipeline.Result
+		if len(j.Result) == 0 || json.Unmarshal(j.Result, &prev) != nil || prev.OutputDir == "" {
+			return 0, fmt.Errorf("job %d has no completed run to refine", sourceJobID)
+		}
+		opts.RunDir = prev.OutputDir
+	}
+	req := src // clone the source's processing choices; only the refine-specific bits change
+	req.Live = nil
+	req.Sequential = false
+	req.Supervise = true
+	req.Refine = &opts
+	return m.Enqueue(ctx, req)
 }
 
 // Cancel kills an in-flight job (cancelling its context terminates the running siril-cli). Returns
@@ -398,6 +508,11 @@ func (m *Manager) run(ctx context.Context, id int64) {
 }
 
 func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunRequest) (any, error) {
+	// S3 transfer jobs are intercepted before pipeline-mode parsing — they reuse the whole progress/SSE
+	// stack but do not run Siril.
+	if p.Transfer != nil {
+		return m.runTransfer(ctx, id, p.Transfer)
+	}
 	if p.Path == "" {
 		return nil, fmt.Errorf("job has no path")
 	}
@@ -451,8 +566,8 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunReque
 	graxRunner := graxpert.New(m.cfg.GraxpertBin) // optional; skipped when binary absent
 	starRunner := starnet.New(m.cfg.StarnetBin)   // optional; skipped when binary absent
 	var superRunner *llm.Runner
-	if p.Supervise { // opt-in local-AI-agent finish; nil → standard finish
-		superRunner = llm.New(m.cfg.LLMBaseURL, m.cfg.LLMModel, m.cfg.LLMImageFormat)
+	if p.Supervise || p.Refine != nil { // opt-in local-AI-agent finish (always on for a refine); nil → standard finish
+		superRunner = llm.New(m.cfg.LLMBaseURL, m.cfg.LLMModel, m.cfg.LLMImageFormat).WithTimeout(m.cfg.LLMTimeout)
 	}
 	grd := preset.Grade
 
@@ -477,6 +592,14 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunReque
 	pipeProg := func(pr pipeline.Progress) {
 		pct := stepPercent(pr.Index, pr.Total)
 		lastPct, lastStep = pct, pr.Step
+
+		// Supervised-finish iteration: stream the completed pass (preview + tier + defects + scores) so
+		// the UI shows the agent iterating live. Live-only (persistence is handled in the pipeline).
+		if pr.Iteration != nil {
+			m.publish(Event{JobID: id, Status: store.JobRunning, Progress: pct, Step: pr.Step,
+				Preview: pr.Iteration.PngPath, Iteration: pr.Iteration})
+			return
+		}
 
 		// Live resource reading: track the step's peak RSS and stream it. Never persisted (live-only).
 		// Skip an all-zero sample (subprocess already gone) so a streamed resource event always carries
@@ -515,6 +638,11 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunReque
 		m.publish(Event{JobID: id, Status: store.JobRunning, Progress: pct, Step: pr.Step, Preview: pr.Preview})
 	}
 
+	// A refine job re-finishes an existing run under the supervisor instead of processing from scratch.
+	if p.Refine != nil {
+		return m.executeRefine(ctx, id, p, preset, gclient, graxRunner, starRunner, superRunner, solve, spcc, pipeProg)
+	}
+
 	switch mo {
 	case mode.Planetary:
 		r, err := planetary.Process(ctx, m.runner, m.cfg.FfmpegBin, p.Path, m.cfg.WorkDir, m.cfg.OutputDir, preset.Planetary,
@@ -534,6 +662,7 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunReque
 			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
 			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
 			Solve: solve, Spcc: spcc, DarkDir: p.DarkDir, FlatDir: p.FlatDir, BiasDir: p.BiasDir,
+			PhoneCalib: m.store, LibraryDir: m.cfg.LibraryDir,
 			CatalogDir: m.cfg.SirilCatalogDir, OnProgress: pipeProg,
 		})
 		if err != nil {
@@ -633,6 +762,38 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunReque
 		}
 		return r, nil
 	}
+}
+
+// executeRefine re-finishes an already-completed run under the AI supervisor (no re-stack): it forces
+// supervision on, applies the refine ceiling/iteration cap, runs the finish-only pipeline from the
+// run's on-disk masters, then returns the refreshed run record so JobView shows the new final +
+// iterations. Tier C (re-stack from raws) is not wired here yet, so the loop caps at Tier B.
+func (m *Manager) executeRefine(ctx context.Context, id int64, p RunRequest, preset mode.Preset,
+	gclient *gimp.Client, grax *graxpert.Runner, star *starnet.Runner, super *llm.Runner,
+	solve siril.SolveOptions, spcc siril.SpccOptions, pipeProg func(pipeline.Progress)) (any, error) {
+	preset.Supervise = true
+	preset.SuperviseTier = p.Refine.Tier
+	if p.Refine.MaxIters > 0 {
+		preset.SuperviseMaxIters = p.Refine.MaxIters
+	}
+	opts := pipeline.Options{
+		OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
+		Preset: &preset, Gimp: gclient, Graxpert: grax, Starnet: star,
+		Supervisor: super, JobID: id, FinishIterStore: m.store,
+		Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir, OnProgress: pipeProg,
+	}
+	if _, err := pipeline.RefineExistingRun(ctx, opts, p.Refine.RunDir); err != nil {
+		return nil, err
+	}
+	res, err := pipeline.ReadRunResult(p.Refine.RunDir)
+	if err != nil {
+		return nil, err
+	}
+	if res.Final != nil {
+		format, _ := mode.ParseFormat(p.Format)
+		res.Final.Outputs = m.appendVideo(ctx, id, format, res.Final.Outputs)
+	}
+	return res, nil
 }
 
 // deepOptions builds the raw-calibration pool window from config: a temperature tolerance and an

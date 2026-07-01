@@ -20,11 +20,11 @@ func BrightnessTarget(s string) (level float64, ok bool) {
 	case "":
 		return 0, false
 	case "darker", "dark":
-		return 0.04, true
+		return 0.035, true
 	case "balanced", "balance", "default":
-		return 0.06, true
+		return 0.05, true
 	case "brighter", "bright":
-		return 0.09, true
+		return 0.07, true
 	}
 	if v, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil && v > 0 && v < 0.5 {
 		return v, true
@@ -150,6 +150,10 @@ type Preset struct {
 	// SuperviseMaxIters bounds the loop (0 → engine default). See internal/pipeline supervise.go.
 	Supervise         bool
 	SuperviseMaxIters int
+	// SuperviseTier caps how far the agent may reach when it re-processes between iterations:
+	// "A" = GIMP composite only, "B" = also the linear finish prep, "C"/"" = also re-stack from the
+	// raw frames (full autonomy). Empty → full. Tier C additionally needs raw frames (Options.Reprocess).
+	SuperviseTier string
 
 	// Nightscape (milkyway) controls. Look selects the render style (natural/iphone/deepsky);
 	// ForegroundFrame optionally overrides the auto-picked clean foreground source (a raw frame path);
@@ -241,7 +245,7 @@ func For(m Mode) Preset {
 			// brightness control overrides it (Darker 0.04 / Balanced 0.06 / Brighter 0.09). The dedicated
 			// recipe reads this via nightscape.Options.Brightness (data-driven auto-stretch). After the v3
 			// per-channel black-clip the sky is genuinely dark, so the targets are lower than v2's.
-			BackgroundLevel: 0.06,
+			BackgroundLevel: 0.05,
 			Previews:        true,
 			Look:            "natural", // dedicated nightscape recipe: foreground composite + faithful grade
 			Orientation:     "auto",
@@ -249,7 +253,7 @@ func For(m Mode) Preset {
 	case Planetary:
 		return Preset{
 			Mode:      Planetary,
-			Planetary: planetary.Options{BestPercent: 40, Sharpen: true, Formats: []string{"png", "tif"}},
+			Planetary: planetary.Options{BestPercent: 40, Sharpen: true, APAlign: true, Formats: []string{"png", "tif"}},
 			Curve:     []float64{0, 0, 0.5, 0.52, 1, 1},
 			Previews:  true, // lucky-imaging sharpens; no denoise/color-cal
 		}

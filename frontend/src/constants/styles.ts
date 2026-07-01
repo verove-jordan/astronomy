@@ -26,8 +26,15 @@ export const card =
 export const cardElevated =
   "rounded-lg border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-surface-elevated";
 
+// Form fields harmonize with the indigo brand (buttons are brand-600 #4f46e5): a faint indigo-tinted
+// surface + a soft indigo border at rest, brightening to a full brand ring on focus — instead of the
+// old blue-shifted slate-900 fill, which read as a different (blue) hue next to the indigo buttons.
 export const input =
-  "w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100";
+  "w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-brand-800/60 dark:bg-brand-900/20 dark:text-slate-100 dark:placeholder-slate-500";
+
+// checkbox tints native checkboxes/radios to the brand indigo (accent-color = brand-600 #4f46e5, the
+// button color), replacing the browser's default blue so they match the buttons and focus rings exactly.
+export const checkbox = "accent-brand-600";
 
 export const th =
   "cursor-pointer select-none whitespace-nowrap px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100";

@@ -54,7 +54,7 @@ func TestTypeFromDirs_Compound(t *testing.T) {
 		{"input/M27/darks/2019-08-30_00_02/x.fit", Dark},
 		{"input/sess/master_flats/x.fit", Flat},
 		{"input/sess/dark_flats/x.fit", DarkFlat},
-		{"input/sess/darkstar_nebula/L/x.fit", Unknown}, // "darkstar" is not the word "dark"
+		{"input/sess/darkstar_nebula/L/x.fit", Unknown},        // "darkstar" is not the word "dark"
 		{"input/M27/m27/data/2019-08-29_22_20/x.fit", Unknown}, // a light folder names no type
 	}
 	for _, tc := range cases {

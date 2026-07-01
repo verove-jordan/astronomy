@@ -1,6 +1,6 @@
 import { ref, onUnmounted } from "vue";
 import { eventsUrl } from "@/services/api";
-import type { LogLine } from "@/types";
+import type { LogLine, IterationRecord } from "@/types";
 
 interface JobEvent {
   job_id: number;
@@ -13,6 +13,7 @@ interface JobEvent {
   rss_bytes?: number; // live resident memory of the running step's subprocess
   cpu_percent?: number; // live CPU usage (100 == one core)
   peak_rss_bytes?: number; // peak resident memory seen this step
+  iteration?: IterationRecord; // one supervised-finish pass, streamed as it completes
   done?: boolean;
 }
 
@@ -43,6 +44,9 @@ export function useJobStream(jobId: number, onDone?: () => void) {
   const rssBytes = ref(0);
   const cpuPercent = ref(0);
   const peakRssBytes = ref(0);
+  // Supervised-finish iterations accumulated live (upsert by index, so the winner's re-emit with
+  // chosen=true updates its card in place). Empty for non-supervised runs.
+  const iterations = ref<IterationRecord[]>([]);
 
   function seed(initial: string[]) {
     lines.value = initial.filter((l) => l.length > 0).map(parseLogRow);
@@ -67,6 +71,13 @@ export function useJobStream(jobId: number, onDone?: () => void) {
       cpuPercent.value = e.cpu_percent ?? 0;
       peakRssBytes.value = e.peak_rss_bytes ?? e.rss_bytes;
     }
+    if (e.iteration) {
+      const at = iterations.value.findIndex(
+        (it) => it.index === e.iteration!.index,
+      );
+      if (at >= 0) iterations.value[at] = e.iteration;
+      else iterations.value.push(e.iteration);
+    }
     if (e.preview) preview.value = e.preview;
     if (e.done) {
       done.value = true;
@@ -90,6 +101,7 @@ export function useJobStream(jobId: number, onDone?: () => void) {
     rssBytes,
     cpuPercent,
     peakRssBytes,
+    iterations,
     seed,
   };
 }

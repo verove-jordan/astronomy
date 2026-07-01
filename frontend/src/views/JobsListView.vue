@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, computed } from "vue";
+import { onMounted, onBeforeUnmount, computed, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useJobsStore } from "@/stores/jobs";
@@ -8,7 +8,8 @@ import GenericTable, {
 } from "@/components/Common/GenericTable.vue";
 import StatusPill from "@/components/Common/StatusPill.vue";
 import Spinner from "@/components/Common/Spinner.vue";
-import { btnGhost } from "@/constants/styles";
+import { formatTimestamp, humanizeMs } from "@/utils/format";
+import { btnGhost, btnPrimary } from "@/constants/styles";
 
 const router = useRouter();
 const { t } = useI18n();
@@ -19,20 +20,31 @@ const ACTIVE = new Set(["queued", "running"]);
 const hasActive = computed(() =>
   jobsStore.jobs.some((j) => ACTIVE.has(j.status)),
 );
+const hasRunning = computed(() =>
+  jobsStore.jobs.some((j) => j.status === "running"),
+);
 const queuedCount = computed(
   () => jobsStore.jobs.filter((j) => j.status === "queued").length,
 );
 
+// Ticks once a second (only while a job is running) so the live Duration column advances between polls.
+const now = ref(Date.now());
+
 // Poll while anything is in flight so the sequential queue visibly auto-advances; idle otherwise.
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let nowTimer: ReturnType<typeof setInterval> | null = null;
 onMounted(async () => {
   await jobsStore.list();
   pollTimer = setInterval(() => {
     if (hasActive.value) jobsStore.list();
   }, 2500);
+  nowTimer = setInterval(() => {
+    if (hasRunning.value) now.value = Date.now();
+  }, 1000);
 });
 onBeforeUnmount(() => {
   if (pollTimer) clearInterval(pollTimer);
+  if (nowTimer) clearInterval(nowTimer);
 });
 
 type Row = Record<string, unknown>;
@@ -46,6 +58,9 @@ const rows = computed<Row[]>(() =>
       status: j.status,
       progress: j.progress,
       object: j.result?.input_dir?.split("/").pop() || "",
+      started: j.started_at_ms, // 0 while queued; numeric so the column sorts
+      finished_at_ms: j.finished_at_ms,
+      updated_at: j.updated_at,
     }))
     .sort((a, b) => {
       const aActive = ACTIVE.has(String(a.status)) ? 0 : 1;
@@ -79,8 +94,27 @@ const columns: Column<Row>[] = [
     format: (v) => `${v}%`,
     align: "right",
   },
+  { key: "started", label: t("fields.started"), sortable: true },
+  { key: "duration", label: t("fields.duration"), align: "right" },
   { key: "actions", label: "", align: "right" },
 ];
+
+// Started: the moment the job left the queue and began processing (0 while still queued → "—").
+function fmtStarted(row: Row): string {
+  const ms = Number(row.started) || 0;
+  return ms ? formatTimestamp(ms) : "—";
+}
+// Duration: elapsed processing time — live (to `now`) while running, else finished−started. Queued
+// jobs (never started) show "—".
+function fmtDuration(row: Row): string {
+  const start = Number(row.started) || 0;
+  if (!start) return "—";
+  const end =
+    row.status === "running"
+      ? now.value
+      : Number(row.finished_at_ms) || Number(row.updated_at) || start;
+  return humanizeMs(Math.max(0, end - start));
+}
 
 function open(id: unknown) {
   router.push({ name: "job", params: { id: String(id) } });
@@ -90,6 +124,19 @@ function open(id: unknown) {
 async function cancel(id: unknown) {
   await jobsStore.cancel(Number(id));
   await jobsStore.list();
+}
+
+// Restart re-runs a failed/cancelled job as a new job, then jumps to it.
+const restartingId = ref<number | null>(null);
+async function restart(id: unknown) {
+  const jid = Number(id);
+  restartingId.value = jid;
+  try {
+    const newId = await jobsStore.restart(jid);
+    router.push({ name: "job", params: { id: String(newId) } });
+  } catch {
+    restartingId.value = null;
+  }
 }
 </script>
 
@@ -126,6 +173,16 @@ async function cancel(id: unknown) {
       <template #cell-status="{ row }">
         <StatusPill :status="String(row.status)" />
       </template>
+      <template #cell-started="{ row }">
+        <span class="text-xs tabular-nums text-slate-500 dark:text-slate-400">{{
+          fmtStarted(row)
+        }}</span>
+      </template>
+      <template #cell-duration="{ row }">
+        <span class="text-xs tabular-nums text-slate-500 dark:text-slate-400">{{
+          fmtDuration(row)
+        }}</span>
+      </template>
       <template #cell-actions="{ row }">
         <button
           v-if="row.status === 'queued' || row.status === 'running'"
@@ -134,6 +191,15 @@ async function cancel(id: unknown) {
           @click="cancel(row.id)"
         >
           {{ row.status === "running" ? t("job.cancel") : t("job.remove") }}
+        </button>
+        <button
+          v-else-if="row.status === 'failed' || row.status === 'cancelled'"
+          :class="btnPrimary"
+          class="!px-2 !py-1 !text-xs"
+          :disabled="restartingId === row.id"
+          @click="restart(row.id)"
+        >
+          {{ restartingId === row.id ? t("job.restarting") : t("job.restart") }}
         </button>
       </template>
     </GenericTable>

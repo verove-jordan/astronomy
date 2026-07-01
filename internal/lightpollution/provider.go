@@ -4,7 +4,7 @@
 //
 // Sourcing is hybrid and soft-failing, so a value is ALWAYS produced (the score never fails to compute):
 //
-//	disk/memory cache → keyed online API (latest VIIRS) → offline atlas → static default
+//	disk/memory cache → keyed online API → offline atlas (djlorenz model) → keyless GIBS VIIRS → default
 //
 // The online API key is read from configuration (the environment) only — it is never logged and never
 // exposed to the browser; the browser reaches the upstream tiles through this server's proxy.
@@ -27,7 +27,7 @@ import (
 type SiteQuality struct {
 	SQM         float64 `json:"sqm"`          // zenith brightness, mag/arcsec² (higher = darker)
 	Bortle      int     `json:"bortle"`       // 1 (pristine) … 9 (inner city)
-	Source      string  `json:"source"`       // "api" | "atlas" | "default"
+	Source      string  `json:"source"`       // "api" | "atlas" | "viirs" | "default"
 	RetrievedMs int64   `json:"retrieved_ms"` // when this value was obtained
 }
 
@@ -40,10 +40,23 @@ type Provider struct {
 	defaultSQM float64
 	ttl        time.Duration
 	cacheDir   string
-	atlas      *atlas // nil when no offline atlas is installed
+	atlasPath  string // <dataDir>/lightpollution/atlas.bin — reloaded/rebuilt in place
+
+	atlasMu sync.RWMutex
+	atlas   *atlas // nil when no offline atlas is installed; hot-swapped by ReloadAtlas
+
+	builds buildTracker // single in-flight in-app rebuild + its progress
 
 	mu   sync.Mutex
 	memo map[string]SiteQuality // in-process cache keyed by rounded lat/lon
+}
+
+// currentAtlas returns the loaded atlas (or nil) under the read lock, so a concurrent ReloadAtlas swap is
+// safe for every reader (per-site At, the finder scan, and the tile renderer).
+func (p *Provider) currentAtlas() *atlas {
+	p.atlasMu.RLock()
+	defer p.atlasMu.RUnlock()
+	return p.atlas
 }
 
 // New builds a Provider, placing its on-disk cache under the work dir (falling back to the user cache).
@@ -77,6 +90,7 @@ func New(cfg *config.Config) *Provider {
 		defaultSQM: def,
 		ttl:        ttl,
 		cacheDir:   cache,
+		atlasPath:  atlasPath,
 		atlas:      loadAtlas(atlasPath),
 		memo:       map[string]SiteQuality{},
 	}
@@ -103,8 +117,8 @@ func (p *Provider) At(ctx context.Context, lat, lon float64) (SiteQuality, strin
 	}
 
 	// 3. Offline atlas (downloaded via `just update-light-pollution-data`).
-	if p.atlas != nil {
-		if sqm, ok := p.atlas.sampleSQM(lat, lon); ok {
+	if a := p.currentAtlas(); a != nil {
+		if sqm, ok := a.sampleSQM(lat, lon); ok {
 			sq := newSiteQuality(sqm, "atlas")
 			p.store(key, sq)
 			warn := ""

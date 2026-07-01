@@ -245,6 +245,75 @@ func PlanetaryStackScript(seq string, count int, rejected []int, outName string,
 	return b.String()
 }
 
+// StackPlanetaryChannelScript converts one channel's pre-aligned lucky-imaging frames (only the kept,
+// surface-registered frames were written, so all are included) into a sequence and stacks them with
+// brightness normalization + winsorized rejection into outName (a linear master). Run with CWD set to
+// the aligned-frames dir; `seq` is the convert target name (e.g. "al").
+func StackPlanetaryChannelScript(seq, outName string) string {
+	return scriptHeader +
+		fmt.Sprintf("convert %s -out=.\n", seq) +
+		fmt.Sprintf("stack %s rej winsorized 3 3 -norm=addscale -output_norm -out=%s\n", seq, outName)
+}
+
+// DeconvolveLuminanceScript sharpens a linear master IN PLACE by Richardson-Lucy deconvolution with a
+// Gaussian PSF — it recovers PSF-blurred (seeing/optics) surface detail with far less edge-overshoot
+// than an unsharp mask, so it sharpens without burning highlights. Run on LINEAR data before any
+// stretch (planetary lucky-imaging), on the luminance (L) or the single mono master. master is an
+// absolute base path (no extension); the file is reloaded and overwritten.
+func DeconvolveLuminanceScript(master string, fwhm float64, iters, alpha int) string {
+	var sb strings.Builder
+	sb.WriteString(scriptHeader)
+	fmt.Fprintf(&sb, "load %s\n", master)
+	fmt.Fprintf(&sb, "makepsf manual -gaussian -fwhm=%.1f\n", fwhm)
+	fmt.Fprintf(&sb, "rl -iters=%d -tv -alpha=%d\n", iters, alpha)
+	fmt.Fprintf(&sb, "save %s\n", master)
+	return sb.String()
+}
+
+// PlanetaryFinishScript composes the (already deconvolved-luminance) per-channel linear masters into the
+// final image and exports it. With r/g/b set it builds a colour image (l supplies the luminance via
+// `rgbcomp -lum=L`); otherwise it loads the single mono master. Then a highlight-safe generalized
+// hyperbolic stretch (`ght`, keeping [HP,1] linear so bright craters/highlands don't blow out), à-trous
+// wavelet sharpening (boost the mid-fine layers), gentle CLAHE for local relief, and — for colour — a
+// saturation boost. All paths absolute; outBase has no extension.
+func PlanetaryFinishScript(r, g, b, l, mono, outBase string, sharpen bool, formats []string) string {
+	var sb strings.Builder
+	sb.WriteString(scriptHeader)
+	color := false
+	switch {
+	case r != "" && g != "" && b != "" && l != "":
+		fmt.Fprintf(&sb, "rgbcomp %s %s %s -lum=%s -out=%s\n", r, g, b, l, outBase)
+		fmt.Fprintf(&sb, "load %s\n", outBase)
+		color = true
+	case r != "" && g != "" && b != "":
+		fmt.Fprintf(&sb, "rgbcomp %s %s %s -out=%s\n", r, g, b, outBase)
+		fmt.Fprintf(&sb, "load %s\n", outBase)
+		color = true
+	default:
+		fmt.Fprintf(&sb, "load %s\n", mono)
+	}
+	// Highlight-safe stretch: everything above HP stays linear, so the Moon's bright ray-craters and
+	// highlands keep their structure instead of clipping to white.
+	sb.WriteString("ght -D=0.6 -SP=0.18 -HP=0.85\n")
+	if sharpen {
+		// À-trous wavelet sharpen: boost the mid-fine detail layers (crater edges), leave coarse ≈1, then
+		// a gentle CLAHE for local relief. Deconvolution already recovered the fine detail, so no unsharp
+		// (which would only add halos on top).
+		sb.WriteString("wavelet 6 2\n")
+		sb.WriteString("wrecons 1 2.2 1.8 1.1 1 1\n")
+		sb.WriteString("clahe 1.2 12\n")
+	}
+	if color {
+		// The Moon's mineral colour (blue titanium maria, tan iron highlands) is real but faint at these
+		// exposures — boost saturation to reveal it (the classic "mineral Moon").
+		sb.WriteString("satu 0.8 0\n")
+	}
+	for _, f := range formats {
+		sb.WriteString(saveCmd(f, outBase) + "\n")
+	}
+	return sb.String()
+}
+
 func saveCmd(format, base string) string {
 	switch format {
 	case "png":

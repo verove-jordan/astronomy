@@ -19,7 +19,7 @@ import {
   entryBase,
   entrySelected,
 } from "@/constants/styles";
-import type { SkyEyepiece, LocationFavorite } from "@/types";
+import type { SkyEyepiece, LocationFavorite, EquipmentSetup } from "@/types";
 import { bortleColor } from "@/utils/bortle";
 
 const { t } = useI18n();
@@ -258,6 +258,57 @@ function commitRenameFav() {
   editingFavId.value = null;
 }
 
+// --- Equipment setups (named telescope + camera + eyepiece rigs) -----------------------------------
+const setupName = ref("");
+
+// Save the current gear (telescope + camera + eyepieces) under a name for one-click reuse later.
+function saveCurrentSetup() {
+  if (!setupName.value.trim()) return;
+  store.saveEquipmentSetup({
+    name: setupName.value,
+    focal_mm: num(form.focal_mm),
+    aperture_mm: num(form.aperture_mm),
+    barlow: num(form.barlow),
+    pixel_um: num(form.pixel_um),
+    sensor_w: num(form.sensor_w),
+    sensor_h: num(form.sensor_h),
+    eyepieces: epKit.value
+      .filter((e) => e.focal_mm > 0 && e.afov_deg > 0)
+      .map((e) => ({ ...e })),
+  });
+  setupName.value = "";
+}
+
+// Apply a saved setup: fill the gear fields (+ eyepiece kit if the setup has one), then re-score. The
+// camera/eyepiece mode is left as-is.
+function applySetup(s: EquipmentSetup) {
+  const str = (v?: number) => (v != null ? String(v) : "");
+  form.focal_mm = str(s.focal_mm);
+  form.aperture_mm = str(s.aperture_mm);
+  form.barlow = s.barlow != null && s.barlow > 1 ? String(s.barlow) : "";
+  form.pixel_um = str(s.pixel_um);
+  form.sensor_w = str(s.sensor_w);
+  form.sensor_h = str(s.sensor_h);
+  if (s.eyepieces.length) {
+    epKit.value = s.eyepieces.map((e) => ({ ...e }));
+    commitKit();
+  }
+  apply();
+}
+
+// Inline rename of a setup chip (double-click → edit; Enter/blur commits, Esc cancels).
+const editingSetupId = ref<string | null>(null);
+const setupDraft = ref("");
+function startRenameSetup(s: EquipmentSetup) {
+  editingSetupId.value = s.id;
+  setupDraft.value = s.name;
+}
+function commitRenameSetup() {
+  if (editingSetupId.value)
+    store.renameEquipmentSetup(editingSetupId.value, setupDraft.value);
+  editingSetupId.value = null;
+}
+
 defineExpose({ setLatLon });
 </script>
 
@@ -399,6 +450,66 @@ defineExpose({ setLatLon });
           >
             {{ t("tonight.equipment.title") }}
           </legend>
+
+          <!-- Saved rigs: click a chip to load it, ✕ to remove, double-click to rename -->
+          <div class="mb-2 flex flex-wrap items-center gap-1.5">
+            <span
+              class="text-[10px] font-semibold uppercase tracking-wide text-slate-400"
+            >
+              {{ t("tonight.equipment.setups.title") }}
+            </span>
+            <template v-for="s in store.equipmentSetups" :key="s.id">
+              <span v-if="editingSetupId === s.id" :class="entrySelected">
+                <input
+                  v-model="setupDraft"
+                  class="w-28 bg-transparent text-xs outline-none"
+                  :aria-label="t('tonight.equipment.setups.namePlaceholder')"
+                  :placeholder="t('tonight.equipment.setups.namePlaceholder')"
+                  @keyup.enter="commitRenameSetup"
+                  @keyup.esc="editingSetupId = null"
+                  @blur="commitRenameSetup"
+                />
+              </span>
+              <span v-else :class="entryBase">
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1"
+                  :title="t('tonight.equipment.setups.renameHint')"
+                  @click="applySetup(s)"
+                  @dblclick="startRenameSetup(s)"
+                >
+                  <IconEyepiece class="h-3 w-3 text-slate-400" />
+                  <span class="max-w-[10rem] truncate">{{ s.name }}</span>
+                </button>
+                <button
+                  type="button"
+                  class="-mr-0.5 text-slate-400 hover:text-danger-500"
+                  :aria-label="t('common.remove')"
+                  @click="store.removeEquipmentSetup(s.id)"
+                >
+                  <IconX class="h-3.5 w-3.5" />
+                </button>
+              </span>
+            </template>
+            <!-- Save the current gear as a new named rig (or overwrite one of the same name) -->
+            <span class="inline-flex items-center gap-1">
+              <input
+                v-model="setupName"
+                :class="input"
+                class="!w-32 !py-1 !text-xs"
+                :placeholder="t('tonight.equipment.setups.namePlaceholder')"
+                @keyup.enter="saveCurrentSetup"
+              />
+              <button
+                :class="btnGhost"
+                class="!px-2 !py-1 !text-xs"
+                :disabled="!setupName.trim()"
+                @click="saveCurrentSetup"
+              >
+                {{ t("tonight.equipment.setups.save") }}
+              </button>
+            </span>
+          </div>
 
           <!-- Camera vs eyepiece mode -->
           <div :class="[segWrap, 'mb-2 w-max']">

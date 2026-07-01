@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useBrowseStore } from "@/stores/browse";
 import { useJobsStore } from "@/stores/jobs";
+import { useS3Store, type TransferOp } from "@/stores/s3";
 import { useCaptureSummary } from "@/composables/useCaptureSummary";
 import { useChannelMapping } from "@/composables/useChannelMapping";
 import GenericTable, {
@@ -30,6 +31,7 @@ import {
   btnGhost,
   card,
   input,
+  checkbox,
   frameTypeAccentClass,
   frameTypeCardClass,
 } from "@/constants/styles";
@@ -40,6 +42,7 @@ const router = useRouter();
 const { t } = useI18n();
 const browseStore = useBrowseStore();
 const jobsStore = useJobsStore();
+const s3 = useS3Store();
 
 const selectedPaths = ref<string[]>([]);
 const rootPath = ref("");
@@ -64,6 +67,18 @@ const looks = ["natural", "iphone", "deepsky"];
 // Sky brightness target for the nightscape auto-levels (data-driven stretch); balanced is the default.
 const brightness = ref("balanced");
 const brightnesses = ["darker", "balanced", "brighter"];
+// Final display orientation. "auto" reads the phone's EXIF orientation tag (content heuristic as
+// fallback); the override is for the rare frame whose orientation still comes out wrong. "Mirror"
+// appends a horizontal flip. orientationValue folds the two into the backend token.
+const orientation = ref("auto");
+const orientations = ["auto", "none", "cw", "ccw", "180"];
+const mirror = ref(false);
+const orientationValue = computed(() => {
+  const base = orientation.value;
+  if (base === "auto") return "auto";
+  if (mirror.value) return base === "none" ? "flip" : base + "-flip";
+  return base;
+});
 // Optional calibration-frame folders (dark/flat/bias) applied before stacking; empty = none.
 const darkDir = ref("");
 const flatDir = ref("");
@@ -75,6 +90,7 @@ const supportsSupervise = computed(
 );
 
 onMounted(async () => {
+  s3.fetchStatus(); // learn whether S3 is configured (drives presence badges + transfer actions)
   await browseStore.browse();
   rootPath.value = browseStore.path;
   browseStore.loadProcessed(); // mark folders already used in a past processing
@@ -82,6 +98,45 @@ onMounted(async () => {
 
 async function openDir(path: string) {
   await browseStore.browse(path);
+}
+
+// --- S3 storage --------------------------------------------------------------------------------------
+// Changing the bucket/prefix re-browses so the presence badges reflect the new mirror.
+async function onBucket(e: Event) {
+  s3.setBucket((e.target as HTMLSelectElement).value);
+  await browseStore.browse(browseStore.path);
+}
+async function onPrefix(e: Event) {
+  s3.setPrefix((e.target as HTMLInputElement).value);
+  await browseStore.browse(browseStore.path);
+}
+
+// relToRoot maps a selected folder's absolute path to its path relative to the capture root (DataDir),
+// which is the transfer key. rootPath is the initial browse root (= DataDir).
+function relToRoot(p: string): string {
+  const root = rootPath.value;
+  if (root && p.startsWith(root))
+    return p.slice(root.length).replace(/^\/+/, "");
+  return baseName(p);
+}
+
+// onTransfer enqueues one S3 transfer job per selected folder; each shows a progress bar in Tasks.
+const transferToast = ref<{ n: number; op: TransferOp } | null>(null);
+async function onTransfer(op: TransferOp) {
+  const folders = browseStore.selected;
+  if (!folders.length) return;
+  let n = 0;
+  for (const f of folders) {
+    const rel = relToRoot(f.path);
+    if (!rel) continue;
+    try {
+      await s3.transfer(op, rel);
+      n++;
+    } catch {
+      // surfaced via the Tasks list if the job fails
+    }
+  }
+  transferToast.value = { n, op };
 }
 // Cross-session reuse: discovered prior data + the user's selection.
 const reusePreview = ref<ReusePreview | null>(null);
@@ -147,6 +202,7 @@ function rowsFor(types: string[]): Row[] {
       integration: s.total_integration_ms,
       gain: s.key.gain,
       offset: s.key.offset,
+      iso: s.key.iso || 0,
       temp: s.key.temp_bucket_c,
     }));
 }
@@ -155,6 +211,8 @@ const calibRows = computed(() => rowsFor(["DARK", "FLAT", "DARKFLAT", "BIAS"]));
 
 const ms = (v: unknown) => humanizeMs(Number(v));
 const degC = (v: unknown) => `${v}°C`;
+// ISO shows only for phone/DSLR raws; blank for cooled-camera sets (ISO 0).
+const isoFmt = (v: unknown) => (Number(v) > 0 ? String(Number(v)) : "");
 
 const lightColumns: Column<Row>[] = [
   {
@@ -186,6 +244,13 @@ const lightColumns: Column<Row>[] = [
   { key: "gain", label: t("fields.gain"), sortable: true, align: "right" },
   { key: "offset", label: t("fields.offset"), sortable: true, align: "right" },
   {
+    key: "iso",
+    label: t("fields.iso"),
+    sortable: true,
+    format: isoFmt,
+    align: "right",
+  },
+  {
     key: "temp",
     label: t("fields.temp"),
     sortable: true,
@@ -211,6 +276,13 @@ const calibColumns: Column<Row>[] = [
   { key: "gain", label: t("fields.gain"), sortable: true, align: "right" },
   { key: "offset", label: t("fields.offset"), sortable: true, align: "right" },
   {
+    key: "iso",
+    label: t("fields.iso"),
+    sortable: true,
+    format: isoFmt,
+    align: "right",
+  },
+  {
     key: "temp",
     label: t("fields.temp"),
     sortable: true,
@@ -227,6 +299,7 @@ const fileRows = computed<Row[]>(() =>
     type: f.type,
     filter: f.filter || "",
     exposure_ms: f.exposure_ms,
+    iso: f.iso || 0,
     dims: f.width && f.height ? `${f.width}×${f.height}` : "",
   })),
 );
@@ -244,6 +317,13 @@ const fileColumns: Column<Row>[] = [
     label: t("fields.exposure"),
     sortable: true,
     format: ms,
+  },
+  {
+    key: "iso",
+    label: t("fields.iso"),
+    sortable: true,
+    format: isoFmt,
+    align: "right",
   },
   { key: "dims", label: t("fields.dimensions") },
   { key: "view", label: "", align: "right" },
@@ -273,6 +353,7 @@ function runOpts(): CreateOpts {
     supervise: supportsSupervise.value && supervise.value,
     look: isMilkyway.value ? look.value : undefined,
     brightness: isMilkyway.value ? brightness.value : undefined,
+    orientation: isMilkyway.value ? orientationValue.value : undefined,
     darkDir: isMilkyway.value ? darkDir.value || undefined : undefined,
     flatDir: isMilkyway.value ? flatDir.value || undefined : undefined,
     biasDir: isMilkyway.value ? biasDir.value || undefined : undefined,
@@ -352,6 +433,58 @@ function histChip(exists: boolean): string {
     </div>
 
     <div :class="card">
+      <!-- S3 storage: pick a bucket/prefix to see cloud presence + enable per-folder transfers. -->
+      <div
+        v-if="s3.configured"
+        class="mb-3 flex flex-wrap items-center gap-2 text-xs"
+      >
+        <span class="font-medium text-slate-500 dark:text-slate-400">{{
+          t("s3.title")
+        }}</span>
+        <select
+          v-if="s3.buckets.length"
+          :value="s3.bucket"
+          :class="input"
+          class="!w-auto !py-1"
+          @change="onBucket"
+        >
+          <option value="">{{ t("s3.pickBucket") }}</option>
+          <option v-for="b in s3.buckets" :key="b" :value="b">{{ b }}</option>
+        </select>
+        <input
+          v-else
+          :value="s3.bucket"
+          :class="input"
+          class="!w-40 !py-1"
+          :placeholder="t('s3.bucket')"
+          @change="onBucket"
+        />
+        <input
+          :value="s3.prefix"
+          :class="input"
+          class="!w-40 !py-1"
+          :placeholder="t('s3.prefix')"
+          @change="onPrefix"
+        />
+        <button :class="btnGhost" class="!px-2 !py-1" @click="s3.fetchStatus()">
+          {{ t("s3.test") }}
+        </button>
+        <span
+          v-if="s3.reachable"
+          class="inline-flex items-center gap-1 text-success-600 dark:text-success-300"
+          >● {{ t("s3.connected") }}</span
+        >
+        <span v-else-if="s3.status?.error" class="text-danger">{{
+          s3.status.error
+        }}</span>
+      </div>
+      <p
+        v-else-if="s3.status"
+        class="mb-3 text-xs text-slate-400 dark:text-slate-500"
+      >
+        {{ t("s3.notConfigured") }}
+      </p>
+
       <FileBrowser
         :path="browseStore.path"
         :root="rootPath"
@@ -361,11 +494,25 @@ function histChip(exists: boolean): string {
         :error="browseStore.error"
         :fetch-children="browseStore.listDir"
         :processed="browseStore.processedByPath"
+        :s3-enabled="s3.active"
         @navigate="openDir"
         @inspect="inspectSelected"
         @toggle="browseStore.toggleSelected"
         @clear-selection="browseStore.clearSelected"
+        @transfer="onTransfer"
       />
+      <p
+        v-if="transferToast"
+        class="mt-2 text-xs text-success-600 dark:text-success-300"
+      >
+        {{ t("s3.queued", { n: transferToast.n }) }}
+        <router-link
+          :to="{ name: 'jobs' }"
+          class="font-medium underline hover:text-success-700 dark:hover:text-success-200"
+        >
+          {{ t("import.viewQueue") }}
+        </router-link>
+      </p>
     </div>
 
     <!-- Processing history: re-run a past folder-set (deleted folders shown crossed-out) -->
@@ -488,12 +635,29 @@ function histChip(exists: boolean): string {
             </option>
           </select>
         </label>
+        <label v-if="isMilkyway" class="text-sm">
+          <span class="mb-1 block text-xs font-medium text-slate-500">{{
+            t("run.orientation")
+          }}</span>
+          <select v-model="orientation" :class="input">
+            <option v-for="o in orientations" :key="o" :value="o">
+              {{ t("run.orientations." + o) }}
+            </option>
+          </select>
+          <span
+            v-if="orientation !== 'auto'"
+            class="mt-1 flex items-center gap-2 text-xs text-slate-500"
+          >
+            <input v-model="mirror" type="checkbox" :class="checkbox" />
+            {{ t("run.mirror") }}
+          </span>
+        </label>
         <div class="flex flex-col gap-1 text-sm">
           <label class="flex items-center gap-2">
             <input
               v-model="colorCalibration"
               type="checkbox"
-              class="accent-brand-500"
+              :class="checkbox"
               data-demo="opt-colorCalibration"
             />
             {{ t("run.colorCalibration") }}
@@ -502,7 +666,7 @@ function histChip(exists: boolean): string {
             <input
               v-model="denoise"
               type="checkbox"
-              class="accent-brand-500"
+              :class="checkbox"
               data-demo="opt-denoise"
             />
             {{ t("run.denoise") }}
@@ -511,7 +675,7 @@ function histChip(exists: boolean): string {
             <input
               v-model="haExcludeStars"
               type="checkbox"
-              class="accent-brand-500"
+              :class="checkbox"
               data-demo="opt-haExcludeStars"
             />
             {{ t("run.haExcludeStars") }}
@@ -520,7 +684,7 @@ function histChip(exists: boolean): string {
             <input
               v-model="dropWheelTransition"
               type="checkbox"
-              class="accent-brand-500"
+              :class="checkbox"
               data-demo="opt-dropWheelTransition"
             />
             {{ t("run.dropTransition") }}
@@ -533,7 +697,7 @@ function histChip(exists: boolean): string {
             <input
               v-model="supervise"
               type="checkbox"
-              class="accent-brand-500"
+              :class="checkbox"
               data-demo="opt-supervise"
             />
             {{ t("run.supervise") }}

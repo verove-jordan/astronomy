@@ -24,10 +24,39 @@ type atlasMeta struct {
 }
 
 // atlas is the offline light-pollution raster, read on demand (ReadAt of the four bilinear neighbours)
-// so a multi-hundred-MB grid never has to be held in RAM.
+// so a multi-hundred-MB grid never has to be held in RAM. ram is an optional fully-loaded copy: tile
+// rendering samples ~65k pixels per tile, so ReadAt-per-pixel would be far too many syscalls; ensureRAM
+// loads the whole grid once for a regional atlas (small), and cell() then reads from it.
 type atlas struct {
 	f    *os.File
 	meta atlasMeta
+	ram  []float32 // nil until ensureRAM loads it (only for grids below ramCellCap)
+}
+
+// ramCellCap bounds the fully-in-RAM copy to ~256 MB (a regional France/Europe atlas is ≤ ~12M cells;
+// only a whole-world atlas exceeds this and keeps using ReadAt).
+const ramCellCap = 64 << 20
+
+// ensureRAM loads the entire grid into memory once (for fast per-pixel tile rendering) when it fits under
+// ramCellCap. Returns whether an in-RAM copy is available.
+func (a *atlas) ensureRAM() bool {
+	if a.ram != nil {
+		return true
+	}
+	n := a.meta.Rows * a.meta.Cols
+	if n <= 0 || n > ramCellCap {
+		return false
+	}
+	buf := make([]byte, n*4)
+	if _, err := a.f.ReadAt(buf, 0); err != nil {
+		return false
+	}
+	grid := make([]float32, n)
+	for i := range grid {
+		grid[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
+	}
+	a.ram = grid
+	return true
 }
 
 // loadAtlas opens the atlas at binPath plus its `<name>.json` sidecar. It soft-fails to nil (no atlas)
@@ -92,14 +121,20 @@ func (a *atlas) sampleSQM(lat, lon float64) (float64, bool) {
 	return valueToSQM(sum/wsum, m.Unit), true
 }
 
-// cell reads one float32 grid cell, reporting ok=false on a read error or a nodata sentinel.
+// cell reads one float32 grid cell, reporting ok=false on a read error or a nodata sentinel. It reads from
+// the in-RAM copy when ensureRAM has loaded it, else from disk via ReadAt.
 func (a *atlas) cell(r, c int) (float32, bool) {
-	off := (int64(r)*int64(a.meta.Cols) + int64(c)) * 4
-	var buf [4]byte
-	if _, err := a.f.ReadAt(buf[:], off); err != nil {
-		return 0, false
+	var v float32
+	if a.ram != nil {
+		v = a.ram[r*a.meta.Cols+c]
+	} else {
+		off := (int64(r)*int64(a.meta.Cols) + int64(c)) * 4
+		var buf [4]byte
+		if _, err := a.f.ReadAt(buf[:], off); err != nil {
+			return 0, false
+		}
+		v = math.Float32frombits(binary.LittleEndian.Uint32(buf[:]))
 	}
-	v := math.Float32frombits(binary.LittleEndian.Uint32(buf[:]))
 	if math.IsNaN(float64(v)) || float64(v) == a.meta.NoData {
 		return 0, false
 	}

@@ -116,13 +116,13 @@ func scanFrames(ctx context.Context, root string, opts ScanOptions) (*Inventory,
 		}
 		processChannels(inv, chOpts)
 	}
-	// A one-shot-color raw directory (iPhone/DSLR) carries no FITS metadata; surface its stills as
-	// RGB lights so the inventory is non-empty and the UI can offer milkyway mode. Done only when the
-	// dir holds no FITS/video, so FITS capture sets (and stray jpg/png outputs) are unaffected.
+	// A one-shot-color raw directory (iPhone/DSLR) carries no FITS metadata; classify its stills so
+	// darks/bias/flats dropped alongside the lights are recognized as calibration (folder/filename
+	// tokens, else pixel statistics) instead of all being surfaced as lights, and read each frame's
+	// ISO/exposure. Done only when the dir holds no FITS/video, so FITS capture sets (and stray jpg/png
+	// outputs) are unaffected; an unresolved still defaults to an RGB light, as before.
 	if len(inv.Frames) == 0 && len(inv.Videos) == 0 && len(rawStills) > 0 {
-		for _, p := range rawStills {
-			inv.Frames = append(inv.Frames, &Frame{Path: p, Type: Light, Filter: "RGB", ClassSource: SourceExtension})
-		}
+		inv.Frames = append(inv.Frames, ClassifyRawStills(ctx, rawStills)...)
 	}
 	return inv, nil
 }

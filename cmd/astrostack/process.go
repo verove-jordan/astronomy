@@ -96,7 +96,7 @@ func runProcess(args []string) error {
 	// Optional local-AI-agent finish supervisor (opt-in via -supervise; nil → standard finish).
 	var superRunner *llm.Runner
 	if *supervise {
-		superRunner = llm.New(cfg.LLMBaseURL, cfg.LLMModel, cfg.LLMImageFormat)
+		superRunner = llm.New(cfg.LLMBaseURL, cfg.LLMModel, cfg.LLMImageFormat).WithTimeout(cfg.LLMTimeout)
 		preset.Supervise = true
 	}
 

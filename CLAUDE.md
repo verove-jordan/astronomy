@@ -44,6 +44,17 @@ apps that cannot run in a Linux container — the same reason the GIMP MCP runs 
 
 This deviation is intentional; keep it documented here and in the README.
 
+**Full-container mode (`stack` profile) coexists with the exception.** Because every tool path is a
+config env var, the engine also runs **entirely in Docker** with no Go changes — `just stack` builds an
+`engine` image (`docker/engine.Dockerfile`) that bakes in the **Linux** builds of Siril 1.4.x (AppImage,
+pinned for output parity) / GIMP 2.10 / GraXpert / ffmpeg, plus `frontend` + `db`. nginx templates its
+`/api` upstream (`API_UPSTREAM`, default host, `engine:8080` under `stack`). The finish-supervisor VLM is
+**decoupled/opt-in**: `stack` never pulls it; on Linux+GPU the `ai` profile (Ollama) serves it in a
+container, on macOS it stays native (`just run-ia-model`) since Docker has no Metal. Host-dev (above)
+stays the faster daily macOS path; `stack` is the portable/Linux-server/parity path. **StarNet++ is not
+baked in** (licence not redistributable) — mount it + set `STARNET_BIN`; it soft-fails to full stars.
+See `docs/architecture.md` → "Fully containerized mode".
+
 **Siril/GIMP integration.** Drive host `siril-cli` (default
 `/Applications/Siril.app/Contents/MacOS/siril-cli`, override via `SIRIL_BIN`) with generated `.ssf`
 scripts; parse its `progress:`/`log:`/`status:` lines for job progress. GIMP is reached via the
@@ -64,6 +75,22 @@ these — they are external binaries.
 **Persistence.** Postgres via `pgx/v5` + `sqlc`; versioned SQL migrations via `golang-migrate`.
 Per the house DB convention, `created_at`/`updated_at` are **int64 millisecond** timestamps; durations
 (exposure) are stored in ms and temperatures in milli-°C to stay integer-clean.
+
+**iPhone DNG calibration (milkyway).** Phone darks/bias/flats live in a **separate** library from the
+deep-sky Siril masters — table `phone_calib_masters` + `internal/calib/phone.go` (`PhoneMaster`,
+`MatchPhoneCalibration`), keyed by **ISO + exposure + sensor dimensions + camera model** (not
+gain/offset/bin) because they are applied **per-pixel in Go, in linear light** by the nightscape recipe,
+never by Siril `calibrate`. Kept apart so the deep-sky matcher (which ignores dimensions) can never pick
+a phone master. DNG metadata (ISO/exposure/model/dims/orientation) is read by `internal/rawmeta` — a pure-Go
+TIFF/EXIF IFD parser with an `mdls` fallback (macOS-only; Linux `stack` soft-fails to folder/filename
+classification). `inspect.ClassifyRawStills` auto-detects dark/flat/bias among raw stills (folder/filename
+tokens first, then a `sips`-downscaled pixel-stats pass reusing `classifyByStats`). Calibration runs in
+**sensor-native** space before orientation; masters are **dimension-guarded** (`matchOrDrop` +
+`sameSensor`) so a mismatched-resolution master is dropped, never applied. A milkyway run with cal frames
+auto-builds+persists masters (`nightscape/library.go`); later runs auto-reuse them by ISO/dims. NOTE: the
+optional **true-linear develop** (`LINEAR_RAW_BIN`, physically-exact subtraction) is **not** implemented —
+it needs a raw-develop binary validated against real ProRAW; today all DNGs develop via `sips` (lights and
+cal share the transform, so subtraction still cancels fixed-pattern/thermal signal).
 
 **`info.txt` sidecars + heterogeneous combine.** Older captures have bare filenames (no
 filter/gain/type); a hand-written `info.txt`/`info.txt.txt` next to them lists the capture order — one

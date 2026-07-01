@@ -66,4 +66,32 @@ binary keeps the moving parts minimal.
 
 Running the engine and Go tests on the host is an intentional exception to the house "everything in a
 container" rule, forced by the host-Siril/host-GIMP dependency (and the optional GraXpert/StarNet++
-CLIs, which run the same way). It is documented in `CLAUDE.md`.
+CLIs, which run the same way). It is the fastest path for daily macOS dev and is documented in
+`CLAUDE.md`.
+
+## Fully containerized mode (`stack`)
+
+For portability and Linux-server deploys, the same code also runs **entirely in Docker** — because the
+tool paths are all env vars, no Go changes are needed, only Linux builds of the tools baked into an
+`engine` image. One `compose.yaml` serves both modes via profiles:
+
+- `just stack` → `db` + **`engine`** (Go `serve` + Linux **Siril 1.4.x AppImage / GIMP 2.10 /
+  GraXpert / ffmpeg** baked in, `docker/engine.Dockerfile`) + `frontend`. The engine reaches Postgres
+  at `db:5432` and self-migrates. The engine persists **absolute** filesystem paths (in Postgres +
+  `run.json`), so the stack bind-mounts `input/` (read-only), `library/`, `output/` and `work/` at their
+  **same absolute host paths** and runs with the repo root as CWD (`working_dir: ${PWD}`) — pre-existing
+  Library/Runs/Tasks/reuse rows resolve unchanged and host-dev ⇄ stack stay interchangeable. nginx
+  templates its `/api` upstream (`API_UPSTREAM=engine:8080`).
+- The finish-supervisor **VLM is decoupled and opt-in** — `stack` never pulls it. On **Linux+GPU** the
+  `ai` profile (Ollama, `nvidia-container-toolkit`) serves it in-container (`ASTRO_LLM_URL=http://ai:11434/v1`);
+  on **macOS** Docker has no Metal, so the model stays native (`just run-ia-model`) and the container
+  points back at the host. The engine talks a stable OpenAI-compatible contract either way.
+
+Trade-offs: the engine image builds for the **host architecture** (arm64 on Apple Silicon, amd64 on
+Linux), so Siril/GIMP run **natively — no emulation**. Siril has no arm64 build, so the Dockerfile
+branches on `TARGETARCH`: amd64 gets the pinned **1.4.3 x86_64 AppImage** (extracted from its squashfs
+without executing the AppImage runtime), arm64 gets the **distro package (~1.2.x)**. The WCS/parity logic
+in `reuse_process.go` assumes 1.4.3, so prefer a native amd64 host (or host-dev on macOS) when exact
+multi-session parity matters. **StarNet++** is not baked in (licence not redistributable) — mount it +
+set `STARNET_BIN`; it soft-fails to full stars otherwise. The one thing that cannot run in a container on
+macOS is the **VLM** (no GPU/Metal) — keep it native there.

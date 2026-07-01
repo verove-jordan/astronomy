@@ -68,12 +68,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/inspect", s.inspect)
 	mux.HandleFunc("GET /api/browse", s.browse)
 	mux.HandleFunc("GET /api/masters", s.masters)
+	mux.HandleFunc("GET /api/phone-masters", s.phoneMasters)
 	mux.HandleFunc("POST /api/reuse/preview", s.reusePreview)
 	mux.HandleFunc("POST /api/calib/preview", s.calibPreview)
 	mux.HandleFunc("POST /api/jobs", s.createJob)
 	mux.HandleFunc("GET /api/jobs", s.listJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.getJob)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.cancelJob)
+	mux.HandleFunc("POST /api/jobs/{id}/restart", s.restartJob)
+	mux.HandleFunc("POST /api/jobs/{id}/refine", s.refineJob)
 	mux.HandleFunc("GET /api/jobs/{id}/events", s.jobEvents)
 	mux.HandleFunc("GET /api/runs", s.listRuns)
 	mux.HandleFunc("GET /api/processed", s.processed)
@@ -86,11 +89,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sky/polar", s.skyPolar)
 	mux.HandleFunc("GET /api/sky/align", s.skyAlign)
 	mux.HandleFunc("GET /api/sky/geocode", s.geocode)
+	mux.HandleFunc("GET /api/s3/status", s.s3Status)
+	mux.HandleFunc("POST /api/s3/transfer", s.s3Transfer)
 	mux.HandleFunc("GET /api/sky/lightpollution", s.lightPollution)
+	mux.HandleFunc("GET /api/sky/lightpollution/atlas", s.atlasStatus)
+	mux.HandleFunc("POST /api/sky/lightpollution/atlas", s.buildAtlas)
 	mux.HandleFunc("GET /api/sky/lightpollution/tiles/{z}/{x}/{y}", s.lightPollutionTile)
 	mux.HandleFunc("GET /api/sky/darksites", s.darkSites)
 	mux.HandleFunc("GET /api/sky/weather", s.skyWeather)
 	mux.HandleFunc("GET /api/sky/weather/grid", s.skyWeatherGrid)
+	mux.HandleFunc("GET /api/agent/status", s.agentStatus)
+	mux.HandleFunc("POST /api/agent/chat", s.agentChat)
 	return cors(mux)
 }
 
@@ -126,7 +135,8 @@ func (s *Server) inspect(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) browse(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Query().Get("path")
+	q := r.URL.Query()
+	path := q.Get("path")
 	if path == "" {
 		path = s.cfg.DataDir
 	}
@@ -140,34 +150,47 @@ func (s *Server) browse(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
-	type entry struct {
-		Name  string `json:"name"`
-		Path  string `json:"path"`
-		IsDir bool   `json:"is_dir"`
-	}
 	// Directories first, then files — each group already name-sorted by os.ReadDir. Files are listed
 	// (so the browser shows folder contents) but are not selectable for processing; dotfiles are hidden.
-	var dirs, files []entry
+	var dirs, files []browseEntry
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
-		it := entry{Name: e.Name(), Path: filepath.Join(abs, e.Name()), IsDir: e.IsDir()}
+		it := browseEntry{Name: e.Name(), Path: filepath.Join(abs, e.Name()), IsDir: e.IsDir(), Local: true}
 		if e.IsDir() {
 			dirs = append(dirs, it)
 		} else {
 			files = append(files, it)
 		}
 	}
+	// When a bucket is supplied and S3 is configured, fold in the mirror's folders so the browser can
+	// show local / cloud / both presence (and surface S3-only folders to download). Soft-fails to local.
+	if bucket := q.Get("bucket"); bucket != "" && s.s3Config().Configured() {
+		if merged, err := s.mergeRemoteDirs(r.Context(), abs, bucket, q.Get("prefix"), dirs); err == nil {
+			dirs = merged
+		}
+	}
 	out := append(dirs, files...)
 	if out == nil {
-		out = []entry{}
+		out = []browseEntry{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"path": abs, "entries": out})
 }
 
 func (s *Server) masters(w http.ResponseWriter, r *http.Request) {
 	masters, err := s.store.ListMasters(r.Context())
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"masters": masters})
+}
+
+// phoneMasters returns the reusable phone/DSLR calibration masters (iPhone DNG darks/bias/flats) built
+// by the milkyway path, keyed by ISO/exposure/dimensions.
+func (s *Server) phoneMasters(w http.ResponseWriter, r *http.Request) {
+	masters, err := s.store.ListPhoneMasters(r.Context())
 	if err != nil {
 		serverError(w, err)
 		return
@@ -284,6 +307,47 @@ func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"cancelled": s.mgr.Cancel(id)})
 }
 
+// restartJob re-runs a finished (failed/cancelled) job as a new job with the same parameters and returns
+// the new job id, so the UI can navigate to it. POST /api/jobs/{id}/restart
+func (s *Server) restartJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		badRequest(w, "invalid job id")
+		return
+	}
+	newID, err := s.mgr.Restart(r.Context(), id)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"id": newID})
+}
+
+// refineJob re-finishes a completed run under the AI supervisor (no re-stack) as a new job, and returns
+// the new job id so the UI can follow its live iteration stream. The optional body tunes the loop.
+// POST /api/jobs/{id}/refine  { "max_iters"?: int, "tier"?: "A"|"B"|"C", "allow_restack"?: bool }
+func (s *Server) refineJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		badRequest(w, "invalid job id")
+		return
+	}
+	var req job.RefineRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			badRequest(w, "invalid body")
+			return
+		}
+	}
+	req.RunDir = "" // never trust a client path; Refine resolves it from the source run
+	newID, err := s.mgr.Refine(r.Context(), id, req)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"id": newID})
+}
+
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	jobs, err := s.store.ListJobs(r.Context(), 100)
 	if err != nil {
@@ -357,6 +421,10 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "path must be inside the output directory")
 		return
 	}
+	// Result images live at STABLE paths (e.g. output/<obj>_stack.png), so a re-run overwrites the same
+	// URL. Force revalidation (ServeFile still answers 304 via Last-Modified when unchanged) so a fresh
+	// stack/render is never masked by a cached copy from the previous run.
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFile(w, r, abs)
 }
 

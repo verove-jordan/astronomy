@@ -13,14 +13,16 @@ import {
 } from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { apiGet } from "@/services/api";
+import { addDarkBaseMap } from "@/utils/basemap";
 import { useMapLayers } from "@/composables/useMapLayers";
 import { useWeatherStore } from "@/stores/weather";
+import { useLightPollutionStore } from "@/stores/lightpollution";
 import { createWeatherGridLayer } from "@/composables/useWeatherGridLayer";
 import { gridLayerById } from "@/utils/weather";
 import LightPollutionLegend from "@/components/Sky/LightPollutionLegend.vue";
 import WeatherTimeline from "@/components/Sky/WeatherTimeline.vue";
 import WeatherLegend from "@/components/Sky/WeatherLegend.vue";
-import { input } from "@/constants/styles";
+import { input, btnPrimary } from "@/constants/styles";
 import { CHART_ALT_FILL } from "@/constants/colors";
 import type { GeoResult } from "@/types";
 
@@ -35,6 +37,7 @@ const { t } = useI18n();
 // Modular overlay layers: light-pollution tiles + the animated weather grid layers, all toggled here.
 const { overlays, isEnabled, toggle, anyGridEnabled } = useMapLayers();
 const weather = useWeatherStore();
+const lpStore = useLightPollutionStore();
 
 const mapEl = ref<HTMLDivElement | null>(null);
 const search = ref("");
@@ -42,6 +45,13 @@ const results = ref<GeoResult[]>([]);
 const open = ref(false); // dropdown visible (input focused)
 const searching = ref(false);
 const searched = ref(false); // a search has completed for the current query
+
+// Light-pollution download-on-demand: whether the current view falls outside the installed offline atlas
+// (so we offer to download it), plus a per-session dismiss and a "status loaded" gate (avoids a flash
+// before we know what's installed).
+const lpUncovered = ref(false);
+const lpPromptDismissed = ref(false);
+const lpStatusReady = ref(false);
 
 let lmap: LMap | null = null;
 let marker: CircleMarker | null = null;
@@ -82,19 +92,22 @@ onMounted(() => {
   if (!el) return;
   // scrollWheelZoom off + zoomSnap 0 so trackpad gestures feel native (see the wheel handler below):
   // two-finger drag pans, pinch zooms — a two-finger scroll no longer zooms.
+  // Zoom 7 frames the observer's region (~500 km across) so the ±4° weather grid fully covers the view
+  // (at zoom 6 the wider view outran the overlay, leaving uncovered edge strips).
   lmap = createMap(el, { scrollWheelZoom: false, zoomSnap: 0 }).setView(
     [props.lat, props.lon],
-    6,
+    7,
   );
-  tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    attribution: "© OpenStreetMap contributors",
-    maxZoom: 19,
-  }).addTo(lmap);
+  addDarkBaseMap(lmap);
   // Overlay layers (kept above the base map; the marker, a vector layer, stays on top of both). Tile
   // overlays are XYZ proxies; grid overlays are canvas image-overlays painted from the weather cube.
   for (const o of overlays) {
     if (o.kind === "grid") {
       gridLayers[o.id] = createWeatherGridLayer(o.opacity);
+      continue;
+    }
+    if (o.id === "lightPollution") {
+      buildLpLayer(); // atlas-aware (cache-bust + full-zoom when covered); see below
       continue;
     }
     const layer = tileLayer(o.url ?? "", {
@@ -142,6 +155,14 @@ onMounted(() => {
 
   syncOverlays();
   maybeFetchWeather(); // load the weather cube if an animated layer was left enabled
+
+  // Light pollution: learn what the installed atlas covers, then re-check as the user pans so we can
+  // offer to download data for an uncovered area (and refetch full-zoom tiles once a new atlas lands).
+  lmap.on("moveend", recomputeLpCoverage);
+  lpStore.fetchStatus().then(() => {
+    lpStatusReady.value = true;
+    recomputeLpCoverage();
+  });
 });
 
 onBeforeUnmount(() => {
@@ -190,13 +211,115 @@ function maybeFetchWeather(force = false) {
   if (anyGridEnabled()) weather.fetch(force);
 }
 
+// --- Light-pollution offline atlas: atlas-aware rendering + download-on-demand for uncovered areas ---
+
+// David Lorenz propagation-model credit once an offline atlas is installed; else the NASA GIBS default.
+const DJLORENZ_ATTRIB =
+  'Light pollution model: © <a href="https://djlorenz.github.io/astronomy/lp/" target="_blank" rel="noopener">David Lorenz</a>';
+
+// buildLpLayer (re)creates the light-pollution tile layer atlas-aware: a build-timestamp cache-buster so
+// a freshly-downloaded atlas is refetched, full-zoom native tiles where an atlas covers the view (else the
+// GIBS z8 cap), and the matching attribution. Stored like any overlay so syncOverlays toggles it.
+function buildLpLayer() {
+  const o = overlays.find((l) => l.id === "lightPollution");
+  if (!o) return;
+  const layer = tileLayer(`${o.url ?? ""}&rev=${lpStore.builtAtMs}`, {
+    opacity: o.opacity,
+    attribution: lpStore.present ? DJLORENZ_ATTRIB : o.attribution,
+    maxZoom: 19,
+    maxNativeZoom: lpStore.present ? 19 : o.maxNativeZoom,
+  });
+  layer.on("tileerror", retryTile);
+  overlayLayers[o.id] = layer;
+}
+
+// refreshLpLayer swaps in a fresh LP layer (after a new atlas is installed) and re-adds it if it was on.
+function refreshLpLayer() {
+  if (!lmap) return;
+  const old = overlayLayers["lightPollution"];
+  if (old && lmap.hasLayer(old)) lmap.removeLayer(old);
+  buildLpLayer();
+  syncOverlays();
+  recomputeLpCoverage();
+}
+
+// recomputeLpCoverage flags whether the current view extends beyond the installed atlas's bbox (or no
+// atlas is installed), which drives the "download this area" prompt.
+function recomputeLpCoverage() {
+  if (!lmap || !isEnabled("lightPollution")) {
+    lpUncovered.value = false;
+    return;
+  }
+  const c = lpStore.coverage;
+  if (!c?.present) {
+    lpUncovered.value = true;
+    return;
+  }
+  const b = lmap.getBounds();
+  lpUncovered.value =
+    b.getSouth() < c.min_lat ||
+    b.getWest() < c.min_lon ||
+    b.getNorth() > c.max_lat ||
+    b.getEast() > c.max_lon;
+}
+
+// showLpPrompt: offer the download when the LP layer is on, the view isn't fully covered (or a build is
+// running), status has loaded, and the user hasn't dismissed it this session.
+const showLpPrompt = computed(
+  () =>
+    lpStatusReady.value &&
+    isEnabled("lightPollution") &&
+    !lpPromptDismissed.value &&
+    (lpUncovered.value || lpStore.building),
+);
+
+// downloadLpArea builds the offline atlas for the current view, UNIONed with any existing coverage so
+// downloads accumulate (downloading a new area never drops a region you already have).
+function downloadLpArea() {
+  if (!lmap) return;
+  const b = lmap.getBounds();
+  const clampLat = (v: number) => Math.max(-60, Math.min(75, v));
+  const clampLon = (v: number) => Math.max(-180, Math.min(180, v));
+  let minLat = clampLat(b.getSouth());
+  let minLon = clampLon(b.getWest());
+  let maxLat = clampLat(b.getNorth());
+  let maxLon = clampLon(b.getEast());
+  const c = lpStore.coverage;
+  if (c?.present) {
+    minLat = Math.min(minLat, c.min_lat);
+    minLon = Math.min(minLon, c.min_lon);
+    maxLat = Math.max(maxLat, c.max_lat);
+    maxLon = Math.max(maxLon, c.max_lon);
+  }
+  lpStore.build({
+    min_lat: minLat,
+    min_lon: minLon,
+    max_lat: maxLat,
+    max_lon: maxLon,
+  });
+}
+
+function dismissLpPrompt() {
+  lpPromptDismissed.value = true;
+}
+
 watch(
   () => overlays.map((o) => isEnabled(o.id)),
   () => {
     syncOverlays();
     maybeFetchWeather();
+    if (isEnabled("lightPollution")) lpPromptDismissed.value = false; // re-offer when toggled back on
+    recomputeLpCoverage();
   },
 );
+
+// Rebuild the LP overlay (full-zoom, fresh tiles) when a new atlas is installed.
+watch(
+  () => lpStore.builtAtMs,
+  () => refreshLpLayer(),
+);
+// Re-evaluate the download prompt when coverage changes (e.g. status just loaded).
+watch(() => lpStore.coverage, recomputeLpCoverage);
 
 // Repaint enabled grid overlays as the cube loads or the scrubber/playback advances the frame.
 watch(
@@ -291,11 +414,44 @@ function choose(r: GeoResult) {
       </ul>
     </div>
     <!-- z-0 confines Leaflet's internal z-indexes (panes/controls reach ~1000) below the dropdown. -->
-    <div
-      ref="mapEl"
-      class="relative z-0 mt-2 aspect-square w-full overflow-hidden rounded-md border border-slate-200 dark:border-slate-700"
-      :aria-label="t('tonight.location.map')"
-    />
+    <div class="relative mt-2">
+      <div
+        ref="mapEl"
+        class="relative z-0 aspect-square w-full overflow-hidden rounded-md border border-slate-200 dark:border-slate-700"
+        :aria-label="t('tonight.location.map')"
+      />
+      <!-- Download-on-demand: when the light-pollution overlay is on but the viewed area isn't in the
+           offline atlas, offer to download it (unioned with existing coverage). Overlaid on the map. -->
+      <div
+        v-if="showLpPrompt"
+        class="absolute inset-x-2 bottom-2 z-[500] flex items-center gap-2 rounded-md border border-brand-500/40 bg-surface-raised/95 px-3 py-2 text-xs text-slate-200 shadow-lg backdrop-blur-sm"
+      >
+        <span>{{
+          lpStore.building
+            ? t("tonight.lp.downloading", {
+                done: lpStore.state?.done ?? 0,
+                total: lpStore.state?.total ?? 0,
+              })
+            : t("tonight.lp.uncovered")
+        }}</span>
+        <button
+          v-if="!lpStore.building"
+          :class="btnPrimary"
+          class="ml-auto !px-2.5 !py-1 !text-xs"
+          @click="downloadLpArea"
+        >
+          {{ t("tonight.lp.download") }}
+        </button>
+        <button
+          v-if="!lpStore.building"
+          class="rounded p-1 text-slate-400 transition-colors hover:text-slate-200"
+          :aria-label="t('common.close')"
+          @click="dismissLpPrompt"
+        >
+          ✕
+        </button>
+      </div>
+    </div>
     <!-- Modular overlay toggles (light pollution now; weather/seeing later). -->
     <div
       v-if="overlays.length"

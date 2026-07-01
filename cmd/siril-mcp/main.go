@@ -301,7 +301,7 @@ func (a *app) refineFinish(ctx context.Context, args json.RawMessage) (string, e
 
 	var supervisor *llm.Runner
 	if a.cfg.LLMBaseURL != "" {
-		supervisor = llm.New(a.cfg.LLMBaseURL, a.cfg.LLMModel, a.cfg.LLMImageFormat)
+		supervisor = llm.New(a.cfg.LLMBaseURL, a.cfg.LLMModel, a.cfg.LLMImageFormat).WithTimeout(a.cfg.LLMTimeout)
 	}
 	solve := siril.SolveOptions{FocalMM: a.cfg.FocalLenMM, PixelUm: a.cfg.PixelSizeUm, Catalog: a.cfg.PlateSolveCatalog}
 	spcc := siril.SpccOptions{

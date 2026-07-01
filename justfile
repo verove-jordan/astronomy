@@ -34,6 +34,46 @@ tools:
 web-prod:
     docker compose --profile web up -d --build frontend
 
+# --- Full-container stack (everything in Docker; portable to a Linux server) -------------------------
+# The AI model is decoupled and opt-in: `stack` never pulls or runs it. Bring it up later with `ai-up`
+# (container, Linux+GPU) or `run-ia-model` (native mlx, macOS).
+
+# Build the engine + frontend images (no model — Ollama is a pulled image, not built).
+stack-build:
+    docker compose --profile stack build
+
+# Run the whole app in containers WITHOUT the model — db + engine + frontend (UI :${WEB_PORT_PROD:-8082}, API :${ENGINE_PORT:-8080}).
+stack:
+    API_UPSTREAM=engine:8080 docker compose --profile stack up -d --build
+
+# Run the whole app in containers WITH the model (Linux+GPU; needs nvidia-container-toolkit). Then: just ai-pull
+stack-ai:
+    API_UPSTREAM=engine:8080 docker compose --profile stack --profile ai up -d --build
+
+# Stop the containerized app services (engine + frontend + ai); leaves Postgres running.
+stack-down:
+    docker compose --profile stack --profile ai stop engine frontend ai
+
+# Tail the containerized engine logs.
+stack-logs:
+    docker compose --profile stack logs -f engine
+
+# Open a shell inside the running engine container.
+engine-sh:
+    docker compose --profile stack exec engine bash
+
+# Start ONLY the Ollama model container, decoupled from the stack (Linux+GPU). Then run `just ai-pull`.
+ai-up:
+    docker compose --profile ai up -d ai
+
+# Pull the vision-model weights into the running ai container (explicit, ~heavy). Uses ASTRO_LLM_MODEL.
+ai-pull:
+    docker compose --profile ai exec ai ollama pull "${ASTRO_LLM_MODEL:-qwen2.5vl:32b}"
+
+# Stop the model container.
+ai-down:
+    docker compose --profile ai stop ai
+
 # Stop the compose stack.
 down:
     docker compose down
@@ -70,9 +110,16 @@ ia-model-status:
 inspect DIR:
     go run ./cmd/astrostack inspect "{{DIR}}"
 
-# Download/refresh the offline light-pollution atlas (hybrid fallback) into the data dir. Configure a
-# source via ASTRO_LIGHTPOLLUTION_ATLAS_URL or ..._TIFF_URL in .env (see scripts/update-light-pollution.sh).
-update-light-pollution-data:
+# Build the OFFLINE light-pollution atlas from the David Lorenz model (accurate, propagation-modeled sky
+# brightness — rural France reads Bortle 2-3, not 4-5) into the data dir. Downloaded once; every per-site /
+# finder / map query is then fully offline. REGION: france (default) | europe | world (or use the CLI's
+# --bbox for a custom area). Power-user alternative (pre-gridded URL / Falchi GeoTIFF via gdal): the script.
+update-light-pollution-data REGION="france":
+    go run ./cmd/astrostack lightpollution-atlas --region "{{REGION}}"
+
+# Legacy/power-user offline atlas via a pre-gridded URL or a Falchi/VIIRS GeoTIFF (needs gdal+jq); configure
+# ASTRO_LIGHTPOLLUTION_ATLAS_URL or ..._TIFF_URL in .env. See scripts/update-light-pollution.sh.
+update-light-pollution-data-custom:
     @scripts/update-light-pollution.sh
 
 # Run the full auto pipeline (host). MODE: deepsky|nebula|milkyway|planetary  FORMAT: image|video|both

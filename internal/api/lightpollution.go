@@ -3,7 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"net/http"
@@ -61,6 +63,59 @@ func (s *Server) lightPollutionTile(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "public, max-age=604800")
 	http.ServeFile(w, r, path)
+}
+
+// atlasStatus reports the installed offline-atlas coverage and any in-progress rebuild (for the UI's
+// "offline light-pollution data" panel to render and poll). GET /api/sky/lightpollution/atlas
+func (s *Server) atlasStatus(w http.ResponseWriter, _ *http.Request) {
+	if s.lightpollution == nil {
+		writeJSON(w, http.StatusOK, lightpollution.BuildState{Status: "idle"})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.lightpollution.BuildStateNow())
+}
+
+// buildAtlas starts a background rebuild of the offline atlas for a chosen region (preset name) or explicit
+// bbox, then hot-reloads it. POST /api/sky/lightpollution/atlas
+func (s *Server) buildAtlas(w http.ResponseWriter, r *http.Request) {
+	if s.lightpollution == nil {
+		serverError(w, fmt.Errorf("light-pollution provider unavailable"))
+		return
+	}
+	var body struct {
+		Region string  `json:"region"`
+		MinLat float64 `json:"min_lat"`
+		MinLon float64 `json:"min_lon"`
+		MaxLat float64 `json:"max_lat"`
+		MaxLon float64 `json:"max_lon"`
+		Year   int     `json:"year"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		badRequest(w, "invalid body")
+		return
+	}
+
+	var b lightpollution.Bounds
+	if body.Region != "" {
+		bb, err := lightpollution.ResolveBounds(body.Region, "")
+		if err != nil {
+			badRequest(w, err.Error())
+			return
+		}
+		b = bb
+	} else {
+		b = lightpollution.Bounds{MinLat: body.MinLat, MinLon: body.MinLon, MaxLat: body.MaxLat, MaxLon: body.MaxLon}
+		if b.MaxLat <= b.MinLat || b.MaxLon <= b.MinLon {
+			badRequest(w, "bbox max must exceed min (or pass a region)")
+			return
+		}
+	}
+
+	if err := s.lightpollution.StartBuild(b, body.Year); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, s.lightpollution.BuildStateNow())
 }
 
 // siteAt resolves the site's light pollution, tolerating a nil provider (e.g. a partially-built Server

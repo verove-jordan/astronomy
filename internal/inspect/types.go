@@ -30,27 +30,30 @@ const (
 
 // Frame is one capture file plus the metadata extracted from it.
 type Frame struct {
-	Path        string    `json:"path"`
-	Type        FrameType `json:"type"`
-	Filter      string    `json:"filter,omitempty"`
-	ExposureMs  int64     `json:"exposure_ms"`
-	Gain        int64     `json:"gain"`
-	Offset      int64     `json:"offset"`
-	TempMilliC  int64     `json:"temp_milli_c"`
-	HasTemp     bool      `json:"has_temp"`
-	BinX        int       `json:"bin_x"`
-	BinY        int       `json:"bin_y"`
-	Width       int       `json:"width"`
-	Height      int       `json:"height"`
+	Path       string    `json:"path"`
+	Type       FrameType `json:"type"`
+	Filter     string    `json:"filter,omitempty"`
+	ExposureMs int64     `json:"exposure_ms"`
+	Gain       int64     `json:"gain"`
+	Offset     int64     `json:"offset"`
+	// ISO is the camera ISO speed for phone/DSLR raws (read from EXIF); 0 for cooled-camera FITS,
+	// which use Gain/Offset instead. It keys phone calibration masters the way gain does for the ZWO.
+	ISO        int64 `json:"iso,omitempty"`
+	TempMilliC int64 `json:"temp_milli_c"`
+	HasTemp    bool  `json:"has_temp"`
+	BinX       int   `json:"bin_x"`
+	BinY       int   `json:"bin_y"`
+	Width      int   `json:"width"`
+	Height     int   `json:"height"`
 	// Bayer is the colour-filter-array pattern (e.g. "GRBG") for one-shot-color frames; "" = monochrome.
 	// OSC frames must be debayered, so the mono per-filter pipeline excludes them.
-	Bayer string `json:"bayer,omitempty"`
-	Object      string    `json:"object,omitempty"`
-	Instrument  string    `json:"instrument,omitempty"`
-	Telescope   string    `json:"telescope,omitempty"`
-	DateObs     string    `json:"date_obs,omitempty"`
-	DateObsMs   int64     `json:"date_obs_ms,omitempty"`
-	ClassSource string    `json:"class_source"`
+	Bayer       string `json:"bayer,omitempty"`
+	Object      string `json:"object,omitempty"`
+	Instrument  string `json:"instrument,omitempty"`
+	Telescope   string `json:"telescope,omitempty"`
+	DateObs     string `json:"date_obs,omitempty"`
+	DateObsMs   int64  `json:"date_obs_ms,omitempty"`
+	ClassSource string `json:"class_source"`
 	// WheelSlot is the physical filter-wheel (EFW) position, 1-based; 0 = unknown. Read from the
 	// SharpCap sidecar or the filename; named to a filter via a legend (info.txt / default order).
 	WheelSlot int `json:"wheel_slot,omitempty"`
@@ -81,6 +84,7 @@ type SetKey struct {
 	ExposureMs int64     `json:"exposure_ms"`
 	Gain       int64     `json:"gain"`
 	Offset     int64     `json:"offset"`
+	ISO        int64     `json:"iso,omitempty"`
 	TempBucket int       `json:"temp_bucket_c"`
 	Bin        int       `json:"bin"`
 }

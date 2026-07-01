@@ -25,8 +25,8 @@ const OVERLAYS: MapOverlay[] = [
     kind: "tile",
     labelKey: "tonight.layers.lightPollution",
     // ?style busts stale browser-cached tiles when the rendering changes (the server ignores the query;
-    // bump it in lockstep with the backend coloredCacheVersion). v1 = the Bortle-gradient recolor.
-    url: `${BASE}/api/sky/lightpollution/tiles/{z}/{x}/{y}?style=bortle-v1`,
+    // bump it in lockstep with the backend coloredCacheVersion). v3 = tiles rendered from the offline atlas.
+    url: `${BASE}/api/sky/lightpollution/tiles/{z}/{x}/{y}?style=bortle-v3`,
     opacity: 0.6,
     attribution: "Light pollution: VIIRS (NASA/NOAA)",
     legend: "bortle",

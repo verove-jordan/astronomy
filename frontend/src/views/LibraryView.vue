@@ -59,6 +59,45 @@ const columns: Column<Row>[] = [
   },
   { key: "file", label: t("fields.file"), searchable: true },
 ];
+
+// Phone/DSLR calibration masters (iPhone DNG darks/bias/flats) — keyed by ISO / exposure / sensor
+// dimensions rather than gain/offset, so they get their own table.
+const phoneRows = computed<Row[]>(() =>
+  libraryStore.phoneMasters.map((m) => ({
+    type: m.type,
+    iso: m.iso,
+    exposure_ms: m.exposure_ms,
+    camera: m.camera_model || "",
+    dims: m.width && m.height ? `${m.width}×${m.height}` : "",
+    frame_count: m.frame_count,
+    file: baseName(m.path),
+  })),
+);
+
+const phoneColumns: Column<Row>[] = [
+  { key: "type", label: t("fields.type"), sortable: true, searchable: true },
+  { key: "iso", label: t("fields.iso"), sortable: true, align: "right" },
+  {
+    key: "exposure_ms",
+    label: t("fields.exposure"),
+    sortable: true,
+    format: (v) => humanizeMs(Number(v)),
+  },
+  {
+    key: "camera",
+    label: t("fields.camera"),
+    sortable: true,
+    searchable: true,
+  },
+  { key: "dims", label: t("fields.dimensions"), sortable: true },
+  {
+    key: "frame_count",
+    label: t("fields.frames"),
+    sortable: true,
+    align: "right",
+  },
+  { key: "file", label: t("fields.file"), searchable: true },
+];
 </script>
 
 <template>
@@ -72,12 +111,23 @@ const columns: Column<Row>[] = [
 
     <Spinner v-if="libraryStore.loading">{{ t("common.loading") }}</Spinner>
 
-    <p
-      v-if="!libraryStore.loading && rows.length === 0"
-      class="text-sm text-slate-400"
-    >
-      {{ t("library.empty") }}
-    </p>
-    <GenericTable v-else :columns="columns" :rows="rows" />
+    <template v-else>
+      <p
+        v-if="rows.length === 0 && phoneRows.length === 0"
+        class="text-sm text-slate-400"
+      >
+        {{ t("library.empty") }}
+      </p>
+
+      <div v-if="rows.length" class="space-y-2">
+        <h2 class="text-lg font-semibold">{{ t("library.deepskyTitle") }}</h2>
+        <GenericTable :columns="columns" :rows="rows" />
+      </div>
+
+      <div v-if="phoneRows.length" class="space-y-2">
+        <h2 class="text-lg font-semibold">{{ t("library.phoneTitle") }}</h2>
+        <GenericTable :columns="phoneColumns" :rows="phoneRows" />
+      </div>
+    </template>
   </div>
 </template>

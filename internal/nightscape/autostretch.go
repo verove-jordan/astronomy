@@ -19,7 +19,10 @@ const (
 	//                     PURE black while the orange bottom survived — unnatural. Kept gentle so the now-
 	//                     homogeneous sky lands as a natural dark grey everywhere; raised by the loop only as
 	//                     needed to reach the target (capped lower, 45, to not expose the ragged top drift edge).
-	autoWhitePct = 99.9 // global white point (high → only the very brightest core saturates, not blown)
+	autoWhitePct = 99.99 // global white point: near the max so the bright Milky-Way core keeps its
+	//                      dust-lane gradient. A lower 99.9 clipped the large core to a flat 1.0 that then
+	//                      read as a "burned"/detail-less blob; compressHighlights does the actual highlight
+	//                      rolloff (to the look's ceiling), which now has real gradient to roll off.
 )
 
 // autoStretch stretches the sky so its background sits at targetBg, in place, with a GLOBAL (linked)

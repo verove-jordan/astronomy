@@ -116,7 +116,7 @@ function display(col: Column<T>, row: T): string {
             }}</span>
           </th>
         </tr>
-        <tr v-if="anySearchable" class="bg-slate-50 dark:bg-slate-900/40">
+        <tr v-if="anySearchable" class="bg-slate-50 dark:bg-brand-900/10">
           <th v-for="col in columns" :key="col.key" class="px-2 py-1">
             <input
               v-if="col.searchable"

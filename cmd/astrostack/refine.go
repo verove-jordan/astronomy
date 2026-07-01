@@ -22,6 +22,8 @@ func runRefine(args []string) error {
 	fs := flag.NewFlagSet("refine", flag.ContinueOnError)
 	modeName := fs.String("mode", "deepsky", "finish preset: deepsky|nebula")
 	noAI := fs.Bool("no-ai", false, "skip GraXpert/StarNet (keep the supervisor + Siril/GIMP finish)")
+	tierCeiling := fs.String("tier", "B", "how far the agent may reach: A=composite, B=+finish prep, C=+re-stack")
+	iters := fs.Int("iters", 0, "max supervisor iterations (0 → engine default of 4, hard max 8)")
 	verbose := fs.Bool("v", false, "stream progress log lines")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -38,6 +40,8 @@ func runRefine(args []string) error {
 	}
 	preset := mode.For(m)
 	preset.Supervise = true // refine drives the agent (soft-falls to the standard finish if the server is down)
+	preset.SuperviseTier = *tierCeiling
+	preset.SuperviseMaxIters = *iters
 
 	cfg := config.Load()
 	ctx := context.Background()
@@ -54,7 +58,7 @@ func runRefine(args []string) error {
 		Gimp:       gimp.New(cfg.GimpBin, cfg.GimpHost, cfg.GimpPort),
 		Graxpert:   graxRunner,
 		Starnet:    starRunner,
-		Supervisor: llm.New(cfg.LLMBaseURL, cfg.LLMModel, cfg.LLMImageFormat),
+		Supervisor: llm.New(cfg.LLMBaseURL, cfg.LLMModel, cfg.LLMImageFormat).WithTimeout(cfg.LLMTimeout),
 		Preset:     &preset,
 		Solve:      siril.SolveOptions{FocalMM: cfg.FocalLenMM, PixelUm: cfg.PixelSizeUm, Catalog: cfg.PlateSolveCatalog},
 		Spcc: siril.SpccOptions{
@@ -80,8 +84,8 @@ func runRefine(args []string) error {
 			if it.Chosen {
 				mark = "★"
 			}
-			fmt.Printf("  %s iter %d  score %.1f (metrics %.1f, model %.1f)  %s\n",
-				mark, it.Index+1, it.CombinedScore, it.DetScore, it.ModelScore, it.Reasoning)
+			fmt.Printf("  %s iter %d [%s]  score %.1f (metrics %.1f, model %.1f)  %s\n",
+				mark, it.Index+1, it.Tier, it.CombinedScore, it.DetScore, it.ModelScore, it.Reasoning)
 		}
 	}
 	return nil

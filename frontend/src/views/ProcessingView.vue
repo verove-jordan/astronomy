@@ -47,5 +47,7 @@ function select(key: string) {
   <Teleport to="#page-tabs">
     <TabBar :tabs="tabs" :active="active" @select="select" />
   </Teleport>
-  <router-view />
+  <!-- Key by path (not fullPath, so query changes don't remount) so navigating between two job details
+       — e.g. after restarting a failed job — remounts JobView and re-opens the new job's event stream. -->
+  <router-view :key="route.path" />
 </template>

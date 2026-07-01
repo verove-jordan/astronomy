@@ -13,7 +13,44 @@
     "jobs": "Tâches",
     "runs": "Traitements",
     "library": "Bibliothèque de calibration",
-    "processing": "Traitement"
+    "processing": "Traitement",
+    "astroAgent": "AstroAgent"
+  },
+  "astroAgent": {
+    "title": "AstroAgent",
+    "subtitle": "Discutez avec le modèle de vision local — envoyez des invites et des images, et voyez ses réponses.",
+    "modelLabel": "Modèle",
+    "modelMissing": "Aucun modèle configuré. Définissez ASTRO_LLM_MODEL (ou choisissez-en un ci-dessus) pour discuter.",
+    "placeholder": "Posez une question au modèle, ou joignez une image et décrivez ce que vous voulez…",
+    "attach": "Joindre une image",
+    "removeImage": "Retirer l'image",
+    "send": "Envoyer",
+    "sending": "Envoi…",
+    "sendHint": "⌘/Ctrl + Entrée pour envoyer",
+    "thinking": "AstroAgent réfléchit…",
+    "clear": "Effacer",
+    "empty": "Aucun message pour l'instant. Posez une question ou joignez une image pour tester le modèle.",
+    "notRunning": "L'agent local n'est pas démarré.",
+    "notRunningHint": "Démarrez le serveur du modèle de vision local, puis cette page se reconnecte automatiquement :",
+    "newChat": "Nouvelle discussion",
+    "history": "Conversations",
+    "noChats": "Aucune conversation.",
+    "deleteChat": "Supprimer la conversation",
+    "copy": "Copier",
+    "copied": "Copié",
+    "stats": {
+      "title": "Statistiques mesurées",
+      "background": "Fond de ciel",
+      "cast": "Dominante",
+      "clipping": "Écrêtage (noir/blanc)",
+      "gradient": "Gradient",
+      "trail": "Traînée",
+      "neutral": "neutre",
+      "green": "verte",
+      "magenta": "magenta",
+      "detected": "détectée",
+      "none": "aucune"
+    }
   },
   "goto": {
     "title": "Assistant d'alignement GoTo",
@@ -118,6 +155,15 @@
       "balanced": "Équilibré",
       "brighter": "Plus clair"
     },
+    "orientation": "Orientation",
+    "orientations": {
+      "auto": "Auto (EXIF)",
+      "none": "Original",
+      "cw": "Rotation 90° droite",
+      "ccw": "Rotation 90° gauche",
+      "180": "Rotation 180°"
+    },
+    "mirror": "Miroir horizontal",
     "calibration": "Images de calibration (optionnel)",
     "calibPlaceholder": "/chemin/vers/dossier",
     "darks": "Darks",
@@ -138,6 +184,29 @@
     "subtitle": "Ces maîtres de votre bibliothèque correspondent à vos poses et seront appliqués. Décochez-en un pour l'ignorer.",
     "frames": "{n} images",
     "role": { "dark": "Dark", "flat": "Flat", "bias": "Bias" }
+  },
+  "s3": {
+    "title": "Stockage S3",
+    "bucket": "Bucket",
+    "prefix": "Préfixe (optionnel)",
+    "pickBucket": "Choisir un bucket…",
+    "test": "Actualiser",
+    "connected": "Connecté",
+    "notConfigured": "S3 n'est pas configuré — définissez ASTRO_S3_* dans l'environnement pour activer le stockage cloud.",
+    "queued": "{n} transfert(s) mis en file.",
+    "badge": {
+      "synced": "Sur S3 (synchronisé avec le local)",
+      "cloudOnly": "Uniquement sur S3 — téléchargez-le pour l'utiliser en local"
+    },
+    "action": {
+      "sync": "Synchroniser",
+      "syncHint": "Envoyer les fichiers absents de S3 (garde les copies locales)",
+      "download": "Télécharger",
+      "downloadHint": "Télécharger les dossiers sélectionnés depuis S3 vers le local",
+      "removeLocal": "Libérer le local",
+      "removeLocalHint": "Supprimer les copies locales — seulement après vérification sur S3",
+      "upload": "Envoyer"
+    }
   },
   "common": {
     "inspect": "Inspecter",
@@ -175,6 +244,7 @@
     "selectedCount": "{n} sélectionné·s",
     "nFolders": "{n} dossiers",
     "selectFolder": "Ajouter à la sélection",
+    "revealFolder": "Afficher dans l'explorateur · {path}",
     "noFolders": "Aucun sous-dossier ici.",
     "browseTitle": "Fichiers",
     "currentFolder": "Dossier courant",
@@ -234,15 +304,18 @@
     "integration": "Intégration",
     "gain": "Gain",
     "offset": "Offset",
+    "iso": "ISO",
     "temp": "Temp",
     "type": "Type",
     "frames": "Images",
     "file": "Fichier",
+    "camera": "Caméra",
     "dimensions": "Dimensions",
     "index": "#",
     "fwhm": "FWHM",
     "roundness": "Rondeur",
     "stars": "Étoiles",
+    "score": "Netteté",
     "status": "Statut",
     "reason": "Raison",
     "mode": "Mode",
@@ -251,7 +324,9 @@
     "input": "Entrée",
     "id": "ID",
     "kind": "Type",
-    "progress": "Progression"
+    "progress": "Progression",
+    "started": "Début",
+    "duration": "Durée"
   },
   "job": {
     "title": "Tâche",
@@ -283,15 +358,34 @@
     "cancel": "Annuler le traitement",
     "cancelling": "Annulation…",
     "stopFinalize": "Arrêter & finaliser",
+    "restart": "Relancer",
+    "restarting": "Relancement…",
     "remove": "Retirer",
     "queueBadge": "{n} en attente"
   },
   "supervisor": {
     "title": "Agent IA local — itérations de finition",
-    "hint": "Chaque passe re-rend la finition et est notée par le modèle de vision local ; la meilleure est conservée.",
+    "hint": "Chaque passe diagnostique l'image, la retraite au niveau le moins coûteux qui aide, et est notée par le modèle de vision local ; la meilleure est conservée.",
     "chosen": "Retenue",
     "iteration": "Itération {n}",
+    "tier": "Niveau {tier}",
+    "tierName": {
+      "A": "Composite seul",
+      "B": "Retraitement finition",
+      "C": "Ré-empilement complet"
+    },
     "scoreSplit": "métriques {det} · modèle {model}"
+  },
+  "refine": {
+    "title": "Améliorer ce run avec l'IA",
+    "hint": "Le modèle de vision local observe le résultat, diagnostique ses défauts et refait la finition — en itérant jusqu'à obtenir une image propre.",
+    "reach": "Portée",
+    "tierA": "Rendu composite",
+    "tierB": "Retraiter la finition",
+    "iters": "Passes max",
+    "itersAuto": "auto",
+    "run": "Améliorer avec l'IA",
+    "starting": "Démarrage…"
   },
   "log": { "empty": "Aucune sortie pour le moment." },
   "viewer": {
@@ -318,6 +412,8 @@
   },
   "library": {
     "title": "Bibliothèque de calibration",
+    "deepskyTitle": "Masters caméra (refroidie)",
+    "phoneTitle": "Masters téléphone / reflex (ISO)",
     "empty": "La bibliothèque est vide. Lancez un traitement avec des images de calibration pour la remplir."
   },
   "status": {
@@ -344,7 +440,21 @@
     "distance": "Distance",
     "locate": "Localiser",
     "useLocation": "Utiliser",
-    "noResults": "Aucun lieu correspondant — élargissez la zone ou augmentez le Bortle."
+    "noResults": "Aucun lieu correspondant — élargissez la zone ou augmentez le Bortle.",
+    "offline": {
+      "title": "Données hors-ligne",
+      "none": "Données en ligne approximatives — installez un atlas hors-ligne pour des valeurs de ciel sombre précises.",
+      "covers": "Hors-ligne : {area} · créé le {date}",
+      "download": "Télécharger",
+      "building": "Téléchargement… {done}/{total}",
+      "regions": {
+        "france": "France",
+        "europe": "Europe de l'Ouest",
+        "world": "Monde entier",
+        "custom": "Zone dessinée"
+      },
+      "hint": "Télécharge une fois le modèle de pollution lumineuse de David Lorenz pour la zone choisie ; toutes les valeurs sont ensuite calculées hors-ligne. © David Lorenz."
+    }
   },
   "tonight": {
     "title": "Cibles de ce soir",
@@ -384,6 +494,11 @@
       "clouds": "Nuages",
       "humidity": "Humidité",
       "precip": "Risque de pluie"
+    },
+    "lp": {
+      "uncovered": "Les données détaillées de pollution lumineuse ne sont pas téléchargées pour cette zone.",
+      "download": "Télécharger cette zone",
+      "downloading": "Téléchargement… {done}/{total}"
     },
     "weather": {
       "title": "Météo astro",
@@ -443,7 +558,13 @@
       "sensorWidth": "Largeur capteur (px)",
       "sensorHeight": "Hauteur capteur (px)",
       "fov": "Champ",
-      "scale": "Échelle"
+      "scale": "Échelle",
+      "setups": {
+        "title": "Configurations",
+        "save": "Enregistrer",
+        "namePlaceholder": "Nom de la configuration",
+        "renameHint": "Cliquer pour charger · double-clic pour renommer"
+      }
     },
     "mode": {
       "title": "Mode",

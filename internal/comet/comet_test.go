@@ -136,6 +136,44 @@ func TestAlignToReference_RecoversShift(t *testing.T) {
 	}
 }
 
+func TestParabola(t *testing.T) {
+	tests := []struct {
+		name                    string
+		cMinus, c0, cPlus, want float64
+	}{
+		{"symmetric peak → 0", 0.6, 1.0, 0.6, 0},
+		{"leans toward +", 0.6, 1.0, 0.8, 0.16667},
+		{"leans toward -", 0.8, 1.0, 0.6, -0.16667},
+		{"not concave → 0", 1.0, 0.5, 1.0, 0},
+		{"flat → 0", 1.0, 1.0, 1.0, 0},
+		{"clamped to -0.5", 1.0, 0.9, 0.0, -0.5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.InDelta(t, tt.want, parabola(tt.cMinus, tt.c0, tt.cPlus), 1e-4)
+		})
+	}
+}
+
+func TestAlignSeeded_AbsoluteSubPixel(t *testing.T) {
+	const w, h = 200, 160
+	ref := blobImage(w, h, 100, 80, 9)
+	// The target's blob is offset; the ABSOLUTE shift that registers target onto ref is (100-tx, 80-ty).
+	target := blobImage(w, h, 107.3, 75.6, 9)
+	wantDx, wantDy := 100-107.3, 80-75.6 // (-7.3, +4.4)
+
+	t.Run("unseeded recovers the absolute shift to <0.1px", func(t *testing.T) {
+		dx, dy := AlignSeeded(ref, target, Point{100, 80}, 40, 10, 0, 0, 0)
+		assert.InDelta(t, wantDx, dx, 0.1, "dx")
+		assert.InDelta(t, wantDy, dy, 0.1, "dy")
+	})
+	t.Run("seeded near truth agrees with a tiny search", func(t *testing.T) {
+		dx, dy := AlignSeeded(ref, target, Point{100, 80}, 40, 3, 0, -7, 4)
+		assert.InDelta(t, wantDx, dx, 0.1, "dx")
+		assert.InDelta(t, wantDy, dy, 0.1, "dy")
+	})
+}
+
 func TestDetect_FlatFieldNoComet(t *testing.T) {
 	im := fits.NewImage(64, 64, 1)
 	for i := range im.Pix[0] {

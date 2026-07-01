@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, computed } from "vue";
+import { onMounted, onBeforeUnmount, ref, computed, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   map as createMap,
@@ -9,21 +9,25 @@ import {
   latLngBounds,
   type Map as LMap,
   type Rectangle,
+  type TileLayer,
   type CircleMarker,
   type LeafletMouseEvent,
 } from "leaflet";
 import "leaflet/dist/leaflet.css";
+import { addDarkBaseMap } from "@/utils/basemap";
 import { useMapLayers } from "@/composables/useMapLayers";
 import { useDarkSkyStore } from "@/stores/darksky";
 import { useSkyStore } from "@/stores/sky";
+import { useLightPollutionStore } from "@/stores/lightpollution";
 import GenericTable, {
   type Column,
 } from "@/components/Common/GenericTable.vue";
 import LightPollutionLegend from "@/components/Sky/LightPollutionLegend.vue";
 import BortleScalePicker from "@/components/Sky/BortleScalePicker.vue";
-import { btnPrimary, btnGhost } from "@/constants/styles";
+import { btnPrimary, btnGhost, input } from "@/constants/styles";
 import { bortleColor } from "@/utils/bortle";
-import type { DarkSite } from "@/types";
+import { formatTimestamp } from "@/utils/format";
+import type { AtlasBuildRequest, DarkSite } from "@/types";
 
 // Find the darkest, most open observing sites in a drawn map area. The user draws a rectangle, picks a
 // max Bortle, and (optionally) evaluates horizon openness; results land as a ranked table + markers.
@@ -31,6 +35,7 @@ const emit = defineEmits<{ useLocation: [lat: number, lon: number] }>();
 const { t } = useI18n();
 const store = useDarkSkyStore();
 const sky = useSkyStore();
+const lpStore = useLightPollutionStore();
 const { overlays } = useMapLayers();
 
 const mapEl = ref<HTMLDivElement | null>(null);
@@ -38,8 +43,10 @@ const maxBortle = ref(4);
 const evalHorizon = ref(true);
 const drawing = ref(false);
 const hasArea = ref(false);
+const region = ref("france");
 
 let lmap: LMap | null = null;
+let lpLayer: TileLayer | null = null;
 let areaRect: Rectangle | null = null;
 let dragStart: { lat: number; lng: number } | null = null;
 const markers: CircleMarker[] = [];
@@ -52,20 +59,10 @@ onMounted(() => {
     [sky.query?.location.lat ?? 46.5, sky.query?.location.lon ?? 2.5],
     6,
   );
-  tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    attribution: "© OpenStreetMap contributors",
-    maxZoom: 19,
-  }).addTo(lmap);
+  addDarkBaseMap(lmap);
   // The finder is all about light pollution, so its overlay is always on (no toggle here).
-  const lp = overlays.find((o) => o.id === "lightPollution");
-  if (lp) {
-    tileLayer(lp.url ?? "", {
-      opacity: lp.opacity,
-      attribution: lp.attribution,
-      maxZoom: 19,
-      maxNativeZoom: lp.maxNativeZoom,
-    }).addTo(lmap);
-  }
+  addLpLayer();
+  lpStore.fetchStatus();
 
   // Area drawing: while active, a press-drag traces the search rectangle (map panning is suspended).
   lmap.on("mousedown", onMapMouseDown);
@@ -96,6 +93,64 @@ onBeforeUnmount(() => {
   detachWheel = null;
   lmap?.remove();
   lmap = null;
+});
+
+// The overlay is credited to David Lorenz once an offline atlas is installed (its propagation model), else
+// to the keyless NASA GIBS fallback.
+const lpAttribution = computed(() =>
+  lpStore.present
+    ? 'Light pollution model: © <a href="https://djlorenz.github.io/astronomy/lp/" target="_blank" rel="noopener">David Lorenz</a>'
+    : "Light pollution: VIIRS (NASA/NOAA)",
+);
+
+// addLpLayer (re)creates the light-pollution overlay, appending the atlas build timestamp as a cache-buster
+// so a freshly-built atlas is re-fetched instead of served stale from the browser cache.
+function addLpLayer() {
+  if (!lmap) return;
+  const o = overlays.find((l) => l.id === "lightPollution");
+  if (!o) return;
+  if (lpLayer) lmap.removeLayer(lpLayer);
+  const url = `${o.url ?? ""}&rev=${lpStore.builtAtMs}`;
+  lpLayer = tileLayer(url, {
+    opacity: o.opacity,
+    attribution: lpAttribution.value,
+    maxZoom: 19,
+    maxNativeZoom: lpStore.present ? 19 : o.maxNativeZoom, // the atlas renders any zoom; GIBS caps at 8
+  }).addTo(lmap);
+}
+
+// Rebuild the overlay when a new atlas is installed (builtAtMs changes).
+watch(
+  () => lpStore.builtAtMs,
+  () => addLpLayer(),
+);
+
+// Download / update the offline atlas for the chosen region, or the drawn rectangle when "custom".
+function downloadOfflineData() {
+  let req: AtlasBuildRequest;
+  if (region.value === "custom") {
+    const b = areaRect?.getBounds();
+    if (!b) return;
+    req = {
+      min_lat: b.getSouth(),
+      min_lon: b.getWest(),
+      max_lat: b.getNorth(),
+      max_lon: b.getEast(),
+    };
+  } else {
+    req = { region: region.value };
+  }
+  lpStore.build(req);
+}
+
+// One-line summary of the installed offline atlas (its bbox + build date), or a prompt to install one.
+const coverageLabel = computed(() => {
+  const c = lpStore.coverage;
+  if (!c?.present) return t("darksky.offline.none");
+  return t("darksky.offline.covers", {
+    area: `${c.min_lat.toFixed(0)}…${c.max_lat.toFixed(0)}°N, ${c.min_lon.toFixed(0)}…${c.max_lon.toFixed(0)}°E`,
+    date: formatTimestamp(c.built_at_ms).slice(0, 10),
+  });
 });
 
 // The map container's class must stay static: Leaflet adds its own runtime classes (leaflet-container,
@@ -287,6 +342,47 @@ const columns: Column<Row>[] = [
       :aria-label="t('darksky.mapLabel')"
     />
     <LightPollutionLegend />
+
+    <!-- Offline light-pollution data: pick a region and download it once; queries are then offline. -->
+    <div
+      class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-slate-200 px-3 py-2 text-xs dark:border-slate-700"
+    >
+      <span class="font-medium text-slate-600 dark:text-slate-300">{{
+        t("darksky.offline.title")
+      }}</span>
+      <span class="text-slate-500 dark:text-slate-400">{{
+        coverageLabel
+      }}</span>
+      <select v-model="region" :class="input" class="ml-auto !w-auto !py-1">
+        <option value="france">
+          {{ t("darksky.offline.regions.france") }}
+        </option>
+        <option value="europe">
+          {{ t("darksky.offline.regions.europe") }}
+        </option>
+        <option value="world">{{ t("darksky.offline.regions.world") }}</option>
+        <option value="custom" :disabled="!hasArea">
+          {{ t("darksky.offline.regions.custom") }}
+        </option>
+      </select>
+      <button
+        :class="btnPrimary"
+        class="!px-3 !py-1"
+        :disabled="lpStore.building || (region === 'custom' && !hasArea)"
+        @click="downloadOfflineData"
+      >
+        {{
+          lpStore.building
+            ? t("darksky.offline.building", {
+                done: lpStore.state?.done ?? 0,
+                total: lpStore.state?.total ?? 0,
+              })
+            : t("darksky.offline.download")
+        }}
+      </button>
+      <p class="w-full text-slate-400">{{ t("darksky.offline.hint") }}</p>
+      <p v-if="lpStore.error" class="w-full text-danger">{{ lpStore.error }}</p>
+    </div>
 
     <p v-if="store.error" class="text-sm text-danger">{{ store.error }}</p>
     <ul v-if="store.warnings.length" class="space-y-1">

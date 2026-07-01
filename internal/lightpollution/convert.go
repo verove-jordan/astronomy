@@ -41,6 +41,40 @@ func sqmToBortle(sqm float64) int {
 	}
 }
 
+// sqmToBortleF is the continuous analogue of sqmToBortle: a fractional Bortle in [1,9] obtained by
+// linearly interpolating between the same class thresholds (each threshold SQM is the k+0.5 boundary
+// between classes k and k+1). By construction round(sqmToBortleF(x)) == sqmToBortle(x). The map overlay
+// gradient colours pixels through THIS curve so a pixel lands in the same Bortle class the per-site badge
+// reports; a plain linear-in-SQM ramp instead painted Bortle-5 skies (SQM ~21.1) with a Bortle-2/3 blue,
+// because Bortle 1–4 occupy only the narrow 21.25–22 SQM band.
+func sqmToBortleF(sqm float64) float64 {
+	// (sqm, bortle) anchors, darkest→brightest sky. Interior anchors are the sqmToBortle thresholds,
+	// each mapped to the half-integer boundary between the two classes it separates.
+	anchors := [...]struct{ sqm, b float64 }{
+		{22.00, 1.0},
+		{21.99, 1.5},
+		{21.89, 2.5},
+		{21.69, 3.5},
+		{21.25, 4.5},
+		{20.49, 5.5},
+		{19.50, 6.5},
+		{18.94, 7.5},
+		{18.38, 8.5},
+		{17.00, 9.0},
+	}
+	if sqm >= anchors[0].sqm {
+		return anchors[0].b
+	}
+	for i := 1; i < len(anchors); i++ {
+		if sqm >= anchors[i].sqm {
+			hi, lo := anchors[i-1], anchors[i] // hi.sqm > lo.sqm (darker → brighter)
+			f := (sqm - lo.sqm) / (hi.sqm - lo.sqm)
+			return lo.b + (hi.b-lo.b)*f
+		}
+	}
+	return anchors[len(anchors)-1].b
+}
+
 // bortleToSQM returns a representative SQM for a Bortle class — the inverse used when a provider
 // reports Bortle rather than a brightness.
 func bortleToSQM(b int) float64 {

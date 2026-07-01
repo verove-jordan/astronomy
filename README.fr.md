@@ -17,10 +17,12 @@ vision** activable qui ajuste automatiquement la finition. Un **planificateur de
 complète le flux de travail. Conçu pour une configuration mono Takahashi FC-100 DF + ZWO ASI 1600MM
 Pro, mais le matériel est configurable.
 
-Siril et GIMP sont des applications macOS installées sur l'hôte ; le moteur Go **s'exécute donc sur
-l'hôte** et les pilote directement, tandis que Docker Compose fournit Postgres. C'est une exception
-délibérée à la règle habituelle du « tout-en-conteneur » — voir
-[docs/architecture.md](docs/architecture.md).
+Siril et GIMP sont des applications macOS installées sur l'hôte ; pour le développement quotidien sous
+macOS le moteur Go **s'exécute donc sur l'hôte** et les pilote directement, tandis que Docker Compose
+fournit Postgres. C'est une exception délibérée à la règle habituelle du « tout-en-conteneur ». Un mode
+entièrement **conteneurisé** est aussi fourni (`just stack`) pour des déploiements portables / serveur
+Linux — il embarque les builds Linux de Siril/GIMP/GraXpert dans l'image du moteur ; sur un hôte
+Linux+GPU, même le modèle IA tourne dans un conteneur. Voir [docs/architecture.md](docs/architecture.md).
 
 ---
 
@@ -45,13 +47,42 @@ just web                      # UI  sur http://localhost:5173
 Ouvrez <http://localhost:5173>, allez dans **Processing → Import**, pointez vers un dossier de captures
 et lancez un traitement.
 
+### Tout dans Docker (portable / serveur)
+
+Exécutez toute l'application — moteur + frontend + Postgres — en conteneurs, sans toolchain hôte.
+L'image du moteur embarque les Siril/GIMP/GraXpert Linux :
+
+```bash
+cp .env.example .env
+just stack                    # db + moteur + frontend, tout en Docker (sans modèle IA)
+# → UI web http://localhost:8082 · API moteur http://localhost:8080
+```
+
+Le modèle de vision du superviseur reste **activable et découplé** — `just stack` ne le télécharge
+jamais. Ajoutez-le quand vous le souhaitez :
+
+- **Linux + GPU NVIDIA :** `just stack-ai` (ou `just ai-up` plus tard) + `just ai-pull` — le modèle
+  tourne dans un conteneur. Mettez `ASTRO_LLM_URL=http://ai:11434/v1` et `ASTRO_LLM_MODEL=qwen2.5vl:32b`
+  dans `.env`.
+- **macOS :** Docker n'a pas de GPU, gardez donc le modèle **natif** — `just run-ia-model` (Metal) — et
+  laissez `ASTRO_LLM_URL` pointer vers l'hôte.
+
+> **Architecture :** l'image du moteur est construite pour **votre hôte** — arm64 sur Apple Silicon,
+> amd64 sur Linux — donc Siril/GIMP tournent nativement (sans émulation). Siril n'a pas de build arm64 :
+> sur arm64 il provient de la distribution (Siril ~1.2.x) au lieu de l'AppImage x86_64 1.4.3 utilisée sur
+> amd64 ; pour une parité multi-sessions exacte, préférez un hôte amd64 natif (ou le mode hôte sous macOS).
+
+Matrice complète par environnement, tables services/ports et variables d'env du stack :
+**[Docker & déploiement](#docker--déploiement)**.
+
 ---
 
 ## Prérequis
 
-Il s'agit d'un **outil macOS côté hôte** : le moteur invoque Siril/GIMP/ffmpeg installés sur l'hôte (et
-les outils IA optionnels), qui ne peuvent donc pas vivre dans un conteneur. Seul Postgres tourne dans
-Docker.
+Pour le **développement quotidien sous macOS**, le moteur invoque Siril/GIMP/ffmpeg installés sur l'hôte
+(et les outils IA optionnels), et seul Postgres tourne dans Docker — les prérequis ci-dessous couvrent ce
+chemin. Pour exécuter **tout en conteneurs** (portable / serveur Linux), ignorez la plupart d'entre eux —
+il ne faut que Docker + `just` — et allez à [Docker & déploiement](#docker--déploiement).
 
 ### Requis
 
@@ -105,6 +136,9 @@ restent avec votre propre installation.
 | `just stop-ia-model` / `just ia-model-status` | Arrête / vérifie l'état du serveur de modèle. |
 | `just mcp-siril` | Lance le serveur MCP Siril au premier plan (tests manuels). |
 | `just tools` | Démarre Adminer (UI de la base) sur `http://localhost:8081`. |
+| `just stack` / `just stack-down` | Lance / arrête toute l'app en Docker (moteur + frontend + db), **sans modèle IA**. |
+| `just stack-ai` | Idem, plus le VLM conteneurisé (Linux + GPU NVIDIA). |
+| `just ai-up` / `just ai-pull` / `just ai-down` | Démarre / télécharge les poids / arrête le conteneur du modèle, découplé du stack. |
 | `just check` | Lint + tests (la barrière de pre-push). |
 | `just clean` | Supprime conteneurs, volumes et artefacts de build (destructif ; demande confirmation). |
 
@@ -428,11 +462,108 @@ pour le détail.
 
 ---
 
-## Déploiement
+## Docker & déploiement
 
-C'est un outil mono-utilisateur, côté hôte : Compose fournit Postgres (et optionnellement une image
-frontend buildée sous le profil `web` / Adminer sous `tools`), tandis que le moteur Go tourne sur l'hôte
-pour pouvoir atteindre Siril et GIMP. Il n'y a pas de cible de déploiement distante.
+AstroStack fonctionne en **deux modes depuis un seul `compose.yaml`**, sélectionnés par les *profils*
+Compose. Le développement quotidien sous macOS garde le moteur sur l'hôte (l'exception hôte-moteur — les
+Siril/GIMP natifs sont les plus rapides) ; un stack entièrement **conteneurisé** embarque tout dans
+Docker pour des déploiements portables / serveur Linux, piloté par les recettes `just stack*`. Aucun
+changement de code ne bascule entre les deux — chaque chemin d'outil est une variable d'env.
+
+### Ce qui est conteneurisé
+
+| Service | Profil | Image | Contient | Port (hôte) |
+|---|---|---|---|---|
+| `db` | *(toujours)* | `postgres:16-alpine` | Postgres 16 (tâches · catalogue d'images · index des masters) | `5432` |
+| `engine` | `stack` | buildée · `docker/engine.Dockerfile` · **arch hôte** | Moteur Go (`serve`) + **Siril · GIMP 2.10 · GraXpert · ffmpeg · Python 3.12** | `8080` |
+| `frontend` | `web`, `stack` | buildée · `docker/frontend.Dockerfile` | Build Vue sur nginx ; relaie `/api` → moteur | `8082` |
+| `ai` | `ai` | `ollama/ollama` | Ollama servant un modèle de vision Qwen2.5-VL (GPU) | `11434` |
+| `adminer` | `tools` | `adminer:4` | UI web Postgres | `8081` |
+
+L'image `engine` est construite pour l'**architecture de l'hôte** (arm64 sur Apple Silicon, amd64 sur
+Linux) afin que les outils tournent nativement. Siril n'a pas de build arm64 : sur arm64 c'est le paquet
+de la distribution (Siril ~1.2.x) et sur amd64 l'**AppImage 1.4.3** épinglée — la version ne diffère que
+pour la parité multi-sessions (voir la table par environnement). **StarNet++ n'est pas embarqué** (licence
+non redistribuable) — montez votre installation et définissez `STARNET_BIN` pour l'activer ; sinon le
+pipeline garde les étoiles complètes. Le **VLM du superviseur n'est jamais embarqué** — c'est un service
+séparé et activable (ci-dessous).
+
+### Quel mode selon l'environnement
+
+| Environnement | Commande | Moteur + Siril/GIMP | Modèle IA (VLM) | À utiliser pour |
+|---|---|---|---|---|
+| **macOS — dev quotidien** | `just up` + `just dev` + `just web` | **natif sur l'hôte** (rapide) | mlx natif : `just run-ia-model` | tout — le flux normal |
+| **macOS — tout conteneur** | `just stack` | conteneur (**arm64 natif**) — Siril/GIMP tournent nativement (Siril ~1.2.x de la distrib) | mlx natif sur l'hôte | un stack local complet ; amd64 ou mode hôte pour la parité 1.4.3 exacte |
+| **Linux + GPU NVIDIA** | `just stack-ai` + `just ai-pull` | conteneur (**amd64 natif**) — traitement complet | conteneur (Ollama, GPU) | **100 % dockerisé**, VLM inclus |
+| **Linux — sans GPU** | `just stack` | conteneur (amd64 natif) — traitement complet | ignoré, ou pointez vers un serveur compatible OpenAI | traitement headless sans GPU |
+
+> **La seule limite macOS intrinsèque est le modèle IA :** Docker sous macOS est une VM Linux sans accès
+> GPU/Metal, donc le modèle de vision ne peut pas tourner en conteneur — gardez-le natif
+> (`just run-ia-model`). Le moteur et ses outils tournent nativement (arm64) ; la seule différence avec un
+> déploiement Linux amd64 est la version de Siril (~1.2.x de la distrib vs l'AppImage 1.4.3), qui ne
+> compte que pour la parité multi-sessions.
+
+### Le modèle IA est découplé et activable
+
+`just stack` ne télécharge ni ne démarre **jamais** le modèle de vision (~28 Go). Le moteur a seulement
+besoin d'un serveur **compatible OpenAI** à `ASTRO_LLM_URL` (il n'embarque rien) ; choisissez un backend :
+
+| Où | Backend | Mise en place |
+|---|---|---|
+| **macOS** | **mlx-vlm** natif (Metal) | `just run-ia-model` · `.env` : `ASTRO_LLM_URL=http://host.docker.internal:1234/v1`, `ASTRO_LLM_MODEL=mlx-community/Qwen2.5-VL-32B-Instruct-6bit` |
+| **Linux + GPU** | conteneur **Ollama** | `just stack-ai` (ou `just ai-up`) puis `just ai-pull` · `.env` : `ASTRO_LLM_URL=http://ai:11434/v1`, `ASTRO_LLM_MODEL=qwen2.5vl:32b` · nécessite `nvidia-container-toolkit` |
+| **partout** | tout serveur compatible OpenAI (LM Studio, vLLM…) | définissez `ASTRO_LLM_URL` + `ASTRO_LLM_MODEL` |
+
+Le superviseur est activable par traitement et tolérant aux pannes : sans modèle, le stack effectue quand
+même une finition normale.
+
+### Recettes du stack
+
+| Recette | Effet |
+|---|---|
+| `just stack-build` | Builde les images `engine` + `frontend` (sans modèle). |
+| `just stack` | Lance db + moteur + frontend en Docker, **sans modèle** — UI `:8082`, API `:8080`. |
+| `just stack-ai` | Idem **plus** le conteneur du modèle Ollama (Linux + GPU). |
+| `just stack-down` | Arrête moteur + frontend + ai (laisse Postgres actif). |
+| `just stack-logs` / `just engine-sh` | Suit les logs du moteur / ouvre un shell dans le conteneur moteur. |
+| `just ai-up` / `just ai-pull` / `just ai-down` | Démarre / télécharge les poids / arrête le conteneur du modèle, indépendamment du stack. |
+
+### Ports
+
+| Port | Service | Mode |
+|---|---|---|
+| `5432` | Postgres | tous |
+| `8080` | API moteur | hôte (`just dev`) **ou** conteneur (`just stack`) — un à la fois |
+| `8082` | frontend (nginx) | `stack` / `web` |
+| `11434` | VLM Ollama | `ai` (Linux + GPU) |
+| `1234` | VLM mlx natif | hôte macOS (`just run-ia-model`) |
+| `8081` | Adminer | `tools` |
+| `5173` | serveur de dev Vite | hôte (`just web`) |
+
+### Configuration du stack (`.env`)
+
+Au-delà des variables du mode hôte, le stack conteneurisé lit (les chemins d'outils hôte comme
+`SIRIL_BIN` sont **embarqués dans l'image du moteur** et ne s'appliquent pas ici) :
+
+| Variable | Défaut | Description |
+|---|---|---|
+| `API_UPSTREAM` | `host.docker.internal:8080` | Cible `/api` de nginx ; `just stack` la met à `engine:8080`. |
+| `ENGINE_PORT` | `8080` | Port hôte où l'API du moteur conteneurisé est publiée. |
+| `UID` / `GID` | *(non défini → 10001)* | Linux : exécuter le moteur avec l'UID/GID propriétaire des dossiers de données (`id -u`/`id -g`). |
+
+> **Vos données et traitements existants continuent de fonctionner.** Le moteur stocke des chemins
+> **absolus** dans Postgres + `run.json`, donc le stack monte vos `./input`, `./library`, `./output`,
+> `./work` à leurs **mêmes chemins hôte absolus** et s'exécute avec la racine du dépôt comme CWD. Les
+> **masters de la Bibliothèque, les Runs, les Tâches et la réutilisation inter-sessions** se résolvent
+> sans changement, et vous pouvez basculer librement entre le mode hôte et le stack. Gardez les captures
+> sous `./input` (ou liez-les par symlink) et lancez `just stack` depuis la racine du dépôt ; `input` est
+> monté en lecture seule.
+| `ASTRO_LLM_URL` / `ASTRO_LLM_MODEL` | mlx hôte / — | Endpoint + id du modèle VLM (voir la table IA ci-dessus). |
+| `OLLAMA_TAG` / `OLLAMA_PORT` | `0.6.8` / `11434` | Tag de l'image Ollama (vérifiez-en un pour votre pilote) + port. |
+
+Les données de capture vivent dans les montages `input/`/`library/`/`output/` ; le scratch est un volume
+`work` et le cache du modèle le volume `ollama`. Voir [docs/architecture.md](docs/architecture.md) →
+*Fully containerized mode* pour la conception et les compromis.
 
 ---
 

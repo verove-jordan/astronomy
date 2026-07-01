@@ -49,16 +49,28 @@ type Result struct {
 	Iterations []IterationRecord `json:"iterations,omitempty"`
 }
 
-// IterationRecord is one supervised finish render: its preview, the deterministic + model scores, the
-// model's one-line reasoning, the composite params used, and whether it was the chosen best.
-// Primitive fields only (no pipeline import) so package pipeline can populate it without a cycle.
+// Defect is one issue the vision model diagnosed in a rendered finish (a fixed Kind vocabulary, a
+// low|medium|high Severity, and an optional free-text Note). Primitive fields only (no pipeline
+// import) so it can be persisted and surfaced in the UI without a cycle.
+type Defect struct {
+	Kind     string `json:"kind"`
+	Severity string `json:"severity"`
+	Note     string `json:"note,omitempty"`
+}
+
+// IterationRecord is one supervised finish render: its preview, the pipeline re-entry Tier it used,
+// the deterministic + model scores, the model's diagnosed Defects and one-line reasoning, the params
+// used, and whether it was the chosen best. Primitive fields only (no pipeline import) so package
+// pipeline can populate it without a cycle.
 type IterationRecord struct {
 	Index         int                `json:"index"`
+	Tier          string             `json:"tier,omitempty"`
 	PngPath       string             `json:"png_path"`
 	DetScore      float64            `json:"det_score"`
 	ModelScore    float64            `json:"model_score"`
 	CombinedScore float64            `json:"combined_score"`
 	Reasoning     string             `json:"reasoning"`
+	Defects       []Defect           `json:"defects,omitempty"`
 	Chosen        bool               `json:"chosen"`
 	Params        map[string]float64 `json:"params,omitempty"`
 }

@@ -9,6 +9,7 @@ import type {
   SkyTargetsResponse,
   SiteQuality,
   LocationFavorite,
+  EquipmentSetup,
 } from "@/types";
 
 // SkyQuery holds the server-side scoring inputs the user can override; changing any triggers a
@@ -102,6 +103,17 @@ function loadLocationFavorites(): LocationFavorite[] {
   }
 }
 
+const SETUP_KEY = "astrostack.sky.equipmentSetups";
+
+function loadSetups(): EquipmentSetup[] {
+  try {
+    const raw = localStorage.getItem(SETUP_KEY);
+    return raw ? (JSON.parse(raw) as EquipmentSetup[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 function queryString(q: SkyQuery): string {
   const p = new URLSearchParams();
   for (const [k, v] of Object.entries(q)) {
@@ -124,6 +136,7 @@ export const useSkyStore = defineStore("sky", () => {
   const favorites = ref<Set<string>>(loadFavorites()); // object names, persisted locally
   const locationFavorites = ref<LocationFavorite[]>(loadLocationFavorites()); // saved sites, persisted
   const eyepieceKit = ref<SkyEyepiece[]>(loadKit()); // visual-mode kit, persisted locally
+  const equipmentSetups = ref<EquipmentSetup[]>(loadSetups()); // saved telescope/camera/eyepiece rigs
 
   let lastKey = "";
   let inflight: Promise<void> | null = null;
@@ -260,6 +273,43 @@ export const useSkyStore = defineStore("sky", () => {
     persistLocationFavorites();
   }
 
+  // --- Equipment setups (named telescope + camera + eyepiece rigs) -----------------------------------
+  function persistSetups() {
+    try {
+      localStorage.setItem(SETUP_KEY, JSON.stringify(equipmentSetups.value));
+    } catch {
+      // ignore quota / private-mode errors
+    }
+  }
+  // saveEquipmentSetup adds a named rig, or updates the one with the same (case-insensitive) name so
+  // re-saving after a tweak overwrites rather than duplicates. Returns its id.
+  function saveEquipmentSetup(setup: Omit<EquipmentSetup, "id">): string {
+    const name = setup.name.trim();
+    if (!name) return "";
+    const existing = equipmentSetups.value.find(
+      (s) => s.name.toLowerCase() === name.toLowerCase(),
+    );
+    if (existing) {
+      Object.assign(existing, setup, { name, id: existing.id });
+      persistSetups();
+      return existing.id;
+    }
+    const id = `eq${Date.now().toString(36)}`;
+    equipmentSetups.value.push({ ...setup, name, id });
+    persistSetups();
+    return id;
+  }
+  function removeEquipmentSetup(id: string) {
+    equipmentSetups.value = equipmentSetups.value.filter((s) => s.id !== id);
+    persistSetups();
+  }
+  function renameEquipmentSetup(id: string, name: string) {
+    const s = equipmentSetups.value.find((x) => x.id === id);
+    if (!s || !name.trim()) return;
+    s.name = name.trim();
+    persistSetups();
+  }
+
   return {
     targets,
     query,
@@ -287,5 +337,9 @@ export const useSkyStore = defineStore("sky", () => {
     eyepieceKit,
     setMode,
     setEyepieceKit,
+    equipmentSetups,
+    saveEquipmentSetup,
+    removeEquipmentSetup,
+    renameEquipmentSetup,
   };
 });

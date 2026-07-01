@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useJobsStore } from "@/stores/jobs";
 import { useJobStream } from "@/composables/useJobStream";
@@ -15,13 +16,19 @@ import CaptureSummary from "@/components/Capture/CaptureSummary.vue";
 import ChannelMappingList from "@/components/Capture/ChannelMappingList.vue";
 import RunResultPanels from "@/components/Common/RunResultPanels.vue";
 import SupervisorPanel from "@/components/Common/SupervisorPanel.vue";
-import { btnDanger, card } from "@/constants/styles";
+import { btnDanger, btnPrimary, card } from "@/constants/styles";
 import { baseName, formatBytes } from "@/utils/format";
 import type { Inventory } from "@/types";
 
 const props = defineProps<{ id: string }>();
 const { t } = useI18n();
+const router = useRouter();
 const jobsStore = useJobsStore();
+
+const TERMINAL = ["succeeded", "failed", "cancelled"];
+function isTerminal(s?: string): boolean {
+  return !!s && TERMINAL.includes(s);
+}
 
 const jobId = Number(props.id);
 const {
@@ -34,6 +41,7 @@ const {
   rssBytes,
   cpuPercent,
   peakRssBytes,
+  iterations,
   seed,
 } = useJobStream(jobId, () => jobsStore.get(jobId));
 
@@ -54,14 +62,57 @@ onMounted(async () => {
 
 const job = computed(() => jobsStore.current);
 const result = computed(() => job.value?.result);
-const liveStatus = computed(() =>
-  done.value ? (job.value?.status ?? status.value) : status.value,
-);
+// The persisted DB status is authoritative for a finished job: a row that is failed/cancelled/succeeded
+// can never still be running, so trust it over the SSE stream. This also un-sticks the case in the
+// screenshot — a terminally-failed job whose stream delivered no snapshot kept showing the stream's
+// seed status ("queued"), which lit up the processing UI (Cancel button, "loading…" bar) for a job that
+// had actually failed. Only fall back to the live stream status while the job is not yet terminal.
+const liveStatus = computed(() => {
+  const persisted = job.value?.status;
+  if (isTerminal(persisted)) return persisted;
+  return done.value ? (persisted ?? status.value) : status.value;
+});
 const running = computed(
   () => liveStatus.value === "running" || liveStatus.value === "queued",
 );
+// A failed or cancelled job can be re-run as a fresh job with the same parameters.
+const canRestart = computed(() => {
+  const s = job.value?.status;
+  return s === "failed" || s === "cancelled";
+});
+const restarting = ref(false);
 // Live-stacking jobs run until stopped; the "cancel" affordance is really "stop & finalize".
 const isLive = computed(() => job.value?.params?.mode === "livestack");
+
+// A completed deep-sky/nebula run can be re-finished by the AI supervisor (no re-stack unless the user
+// opts into Tier C). Needs a `final` (channel masters on disk to re-finish).
+const canRefine = computed(() => {
+  const mode = job.value?.params?.mode ?? "deepsky";
+  return (
+    job.value?.status === "succeeded" &&
+    (mode === "deepsky" || mode === "nebula") &&
+    !!result.value?.final
+  );
+});
+const refining = ref(false);
+// Refine re-finishes an existing run from its stacked masters, so it reaches Tier A (composite) or B
+// (reprocess the finish) — not Tier C (re-stack). Full autonomy incl. re-stack is the supervise
+// checkbox at run time (a fresh run keeps its raw frames wired for Tier C).
+const refineTier = ref<"A" | "B">("B");
+const refineIters = ref<number | null>(null);
+
+async function refineJob() {
+  refining.value = true;
+  try {
+    const newId = await jobsStore.refine(jobId, {
+      tier: refineTier.value,
+      maxIters: refineIters.value || undefined,
+    });
+    router.push({ name: "job", params: { id: String(newId) } });
+  } catch {
+    refining.value = false; // stay on the run so any error stays visible
+  }
+}
 
 // Processing timer: ticks each second while running, then freezes at the total once the job finishes.
 const now = ref(Date.now());
@@ -116,6 +167,18 @@ async function cancelJob() {
     cancelling.value = false;
   }
 }
+
+async function restartJob() {
+  restarting.value = true;
+  try {
+    const newId = await jobsStore.restart(jobId);
+    // Same route, different param — ProcessingView keys the router-view by path, so this remounts
+    // JobView and re-opens the new job's event stream.
+    router.push({ name: "job", params: { id: String(newId) } });
+  } catch {
+    restarting.value = false; // stay on the failed job so the error remains visible
+  }
+}
 </script>
 
 <template>
@@ -143,6 +206,14 @@ async function cancelJob() {
         @click="cancelJob"
       >
         {{ isLive ? t("job.stopFinalize") : t("job.cancel") }}
+      </button>
+      <button
+        v-else-if="canRestart"
+        :class="[btnPrimary, 'ml-auto']"
+        :disabled="restarting"
+        @click="restartJob"
+      >
+        {{ restarting ? t("job.restarting") : t("job.restart") }}
       </button>
     </div>
 
@@ -209,6 +280,9 @@ async function cancelJob() {
         />
       </section>
 
+      <!-- Supervised finish: stream the agent's iterations (preview + defects + scores) as they land. -->
+      <SupervisorPanel v-if="iterations.length" :live="iterations" />
+
       <LogConsole :lines="lines" />
     </template>
 
@@ -220,8 +294,53 @@ async function cancelJob() {
         (result.channels?.length || result.final || result.outputs?.length)
       "
     >
+      <!-- Ask the local AI agent to look at this result and re-finish it, iterating until it's clean. -->
+      <section v-if="canRefine" :class="card" data-demo="refine-panel">
+        <div class="flex flex-wrap items-end gap-4">
+          <div class="min-w-0 flex-1">
+            <h2 class="text-lg font-medium">{{ t("refine.title") }}</h2>
+            <p class="text-sm text-slate-500 dark:text-slate-400">
+              {{ t("refine.hint") }}
+            </p>
+          </div>
+          <label
+            class="flex flex-col gap-1 text-xs text-slate-500 dark:text-slate-400"
+          >
+            {{ t("refine.reach") }}
+            <select
+              v-model="refineTier"
+              class="rounded-md border border-slate-300 bg-white px-2 py-1 text-sm text-slate-800 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+            >
+              <option value="A">{{ t("refine.tierA") }}</option>
+              <option value="B">{{ t("refine.tierB") }}</option>
+            </select>
+          </label>
+          <label
+            class="flex flex-col gap-1 text-xs text-slate-500 dark:text-slate-400"
+          >
+            {{ t("refine.iters") }}
+            <input
+              v-model.number="refineIters"
+              type="number"
+              min="1"
+              max="8"
+              :placeholder="t('refine.itersAuto')"
+              class="w-24 rounded-md border border-slate-300 bg-white px-2 py-1 text-sm text-slate-800 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+            />
+          </label>
+          <button
+            :class="btnPrimary"
+            :disabled="refining"
+            data-demo="refine-run"
+            @click="refineJob"
+          >
+            {{ refining ? t("refine.starting") : t("refine.run") }}
+          </button>
+        </div>
+      </section>
+
       <RunResultPanels :result="result" />
-      <SupervisorPanel :result="result" />
+      <SupervisorPanel :result="result" :live="iterations" />
     </template>
   </div>
 </template>

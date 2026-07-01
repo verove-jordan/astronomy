@@ -49,6 +49,31 @@ const stackStats = computed(() => {
     : null;
 });
 
+// Planetary/lucky-imaging per-frame report: which frames were kept vs rejected, and their sharpness.
+const planetaryFrames = computed(() => props.result.frames ?? []);
+const planetaryFrameRows = computed<Row[]>(() =>
+  planetaryFrames.value.map((f) => ({
+    index: f.index,
+    file: f.file,
+    filter: f.filter || "",
+    score: f.score,
+    status: f.kept ? "kept" : "rejected",
+  })),
+);
+const planetaryFrameColumns: Column<Row>[] = [
+  { key: "index", label: t("fields.index"), sortable: true, align: "right" },
+  { key: "file", label: t("fields.file"), searchable: true },
+  { key: "filter", label: t("fields.filter"), sortable: true, searchable: true },
+  {
+    key: "score",
+    label: t("fields.score"),
+    sortable: true,
+    format: (v) => Number(v).toFixed(1),
+    align: "right",
+  },
+  { key: "status", label: t("fields.status"), sortable: true, searchable: true },
+];
+
 // Channel switcher: flip the preview between the final composite and each channel. Channel PNGs load
 // only when selected (deferred). Ordered by the canonical filter sequence (L, R, G, B, Ha, …).
 const FILTER_ORDER = ["L", "R", "G", "B", "Ha", "OIII", "SII"];
@@ -355,6 +380,25 @@ const rejectedClass = (r: Row) =>
           · {{ n }}
         </li>
       </ul>
+    </section>
+
+    <section v-if="planetaryFrames.length">
+      <h2 class="mb-2 text-lg font-medium">{{ t("job.frameReview") }}</h2>
+      <GenericTable
+        :columns="planetaryFrameColumns"
+        :rows="planetaryFrameRows"
+        :row-class="rejectedClass"
+      >
+        <template #cell-filter="{ value }">
+          <FilterChip v-if="value" :filter="String(value)" />
+          <span v-else class="text-slate-400">—</span>
+        </template>
+        <template #cell-status="{ value }">
+          <span :class="value === 'rejected' ? 'text-danger' : 'text-success'">
+            {{ value === "rejected" ? t("job.rejected") : t("job.kept") }}
+          </span>
+        </template>
+      </GenericTable>
     </section>
 
     <section v-if="channelRows.length">

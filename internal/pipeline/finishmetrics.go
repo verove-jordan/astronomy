@@ -94,18 +94,57 @@ func percentile(hist []uint64, n uint64, p float64) int {
 }
 
 // thumbnailJPEG decodes the finish PNG and returns a downscaled JPEG (long side ≤ maxDim) for the
-// vision model — a small payload keeps the request light and inference fast. Nearest-neighbour
-// downscale (pure stdlib) is sufficient for an aesthetic check.
+// vision model — a small payload keeps the request light and inference fast.
 func thumbnailJPEG(path string, maxDim, quality int) ([]byte, error) {
 	src, err := decodeImage(path)
 	if err != nil {
 		return nil, err
 	}
+	return thumbnailJPEGImage(src, maxDim, quality)
+}
+
+// thumbnailJPEGImage is the in-memory core: downscale an already-decoded image (long side ≤ maxDim,
+// nearest-neighbour — enough for an aesthetic check) and JPEG-encode it. Reused by the chat assistant.
+func thumbnailJPEGImage(src image.Image, maxDim, quality int) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, downscale(src, maxDim), &jpeg.Options{Quality: quality}); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// centerCropJPEG returns a JPEG of the central frac×frac region of the finish PNG at native
+// resolution (down to maxDim on the long side). The supervisor sends this alongside the full-frame
+// thumbnail so the model can judge noise, star tightness and colour at 100% — detail the downscaled
+// whole-frame view loses. frac in (0,1]; frac ≥ 1 crops nothing.
+func centerCropJPEG(path string, frac float64, maxDim, quality int) ([]byte, error) {
+	src, err := decodeImage(path)
+	if err != nil {
+		return nil, err
+	}
+	return centerCropJPEGImage(src, frac, maxDim, quality)
+}
+
+// centerCropJPEGImage is the in-memory core of centerCropJPEG (no file I/O), reused by the chat
+// assistant to crop an already-decoded upload without re-reading disk.
+func centerCropJPEGImage(src image.Image, frac float64, maxDim, quality int) ([]byte, error) {
+	b := src.Bounds()
+	if frac <= 0 || frac >= 1 {
+		frac = 1
+	}
+	cw, ch := int(float64(b.Dx())*frac), int(float64(b.Dy())*frac)
+	if cw < 1 || ch < 1 {
+		return thumbnailJPEGImage(src, maxDim, quality) // degenerate crop → fall back to the full frame
+	}
+	x0 := b.Min.X + (b.Dx()-cw)/2
+	y0 := b.Min.Y + (b.Dy()-ch)/2
+	crop := image.NewRGBA(image.Rect(0, 0, cw, ch))
+	for y := 0; y < ch; y++ {
+		for x := 0; x < cw; x++ {
+			crop.Set(x, y, src.At(x0+x, y0+y))
+		}
+	}
+	return thumbnailJPEGImage(crop, maxDim, quality)
 }
 
 func downscale(src image.Image, maxDim int) image.Image {

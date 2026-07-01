@@ -57,10 +57,10 @@ func TestClassifyByStats(t *testing.T) {
 		{
 			name: "16-bit integer LRGB session",
 			stats: []frameStat{
-				{exposureMs: 60000, peaks: 80, median: 1200, mad: 40},  // light: stars
-				{exposureMs: 1500, peaks: 0, median: 30000, mad: 300},  // flat: bright + uniform
-				{exposureMs: 0, peaks: 0, median: 300, mad: 5},         // bias: ~0 exposure at floor
-				{exposureMs: 60000, peaks: 2, median: 500, mad: 50},    // dark: long, dim, starless
+				{exposureMs: 60000, peaks: 80, median: 1200, mad: 40}, // light: stars
+				{exposureMs: 1500, peaks: 0, median: 30000, mad: 300}, // flat: bright + uniform
+				{exposureMs: 0, peaks: 0, median: 300, mad: 5},        // bias: ~0 exposure at floor
+				{exposureMs: 60000, peaks: 2, median: 500, mad: 50},   // dark: long, dim, starless
 			},
 			want: []FrameType{Light, Flat, Bias, Dark},
 		},
@@ -77,7 +77,7 @@ func TestClassifyByStats(t *testing.T) {
 		{
 			name: "nebulosity light with sparse stars caught by brightFrac",
 			stats: []frameStat{
-				{exposureMs: 300000, peaks: 3, brightFrac: 0.05, median: 900, mad: 30}, // faint Ha light
+				{exposureMs: 300000, peaks: 3, brightFrac: 0.05, median: 900, mad: 30},   // faint Ha light
 				{exposureMs: 300000, peaks: 1, brightFrac: 0.0002, median: 800, mad: 60}, // dark
 			},
 			want: []FrameType{Light, Dark},

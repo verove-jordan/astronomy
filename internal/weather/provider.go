@@ -195,8 +195,9 @@ func (p *Provider) getJSON(ctx context.Context, url string, v any) error {
 func siteKey(lat, lon float64) string { return fmt.Sprintf("%+.2f_%+.2f", lat, lon) }
 
 // gridCacheVersion namespaces the grid cache; bump it when a layer's semantics change (e.g. precip went
-// from rain amount in mm to chance of precipitation in %) so stale cached cubes are ignored.
-const gridCacheVersion = 2
+// from rain amount in mm to chance of precipitation in %) or the grid resolution changes, so stale
+// cached cubes are ignored. v3 = default grid size 16→22.
+const gridCacheVersion = 3
 
 func gridKey(lat, lon float64, layers []string) string {
 	s := fmt.Sprintf("v%d_%+.1f_%+.1f", gridCacheVersion, lat, lon)

@@ -40,7 +40,7 @@ func Load(ctx context.Context, path string, maxEdge int) (*Preview, error) {
 	if maxEdge <= 0 {
 		maxEdge = DefaultMaxEdge
 	}
-	src, err := decodeSource(ctx, path)
+	src, err := decodeSource(ctx, path, maxEdge)
 	if err != nil {
 		return nil, err
 	}

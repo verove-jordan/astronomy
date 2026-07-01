@@ -2,18 +2,25 @@
 //
 // Apple's iPhone DNG/HEIC (and other lossy/linear camera raws) are frequently undecodable by the
 // libraw build bundled with Siril — `convert` writes its plan file but produces no FITS. We sidestep
-// libraw entirely by transcoding those frames to 16-bit RGB TIFF with the macOS `sips` tool (always
-// present on the host, alongside the host-installed Siril/GIMP), which Siril imports natively.
-// Stills already in a Siril-native format (TIFF/PNG/JPEG) are symlinked through unchanged.
+// libraw-in-Siril by developing those frames to a 16-bit RGB TIFF Siril imports natively, using whichever
+// raw developer the platform provides: macOS `sips` on the host, or LibRaw's `dcraw_emu` (the `libraw-bin`
+// package) in the Linux container — both produce an equivalent developed image. Stills already in a
+// Siril-native format (TIFF/PNG/JPEG) are symlinked through unchanged.
 package rawconv
 
 import (
 	"context"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	xdraw "golang.org/x/image/draw"
+	"golang.org/x/image/tiff"
 
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 )
@@ -25,13 +32,14 @@ var sirilNative = map[string]bool{".tif": true, ".tiff": true, ".png": true, ".j
 type Progress func(index, total int, name string)
 
 // PrepareTIFF lays each still in srcs into dstDir as a numbered frame Siril can convert, preserving
-// the order of srcs (acquisition order). Camera raws are transcoded to 16-bit RGB TIFF via `sips`;
-// native stills are symlinked. It returns the prepared paths plus a per-frame warning for any frame
-// that could not be prepared, and errors only if dstDir is unusable or every frame failed.
+// the order of srcs (acquisition order). Camera raws are developed to a 16-bit RGB TIFF (sips or
+// dcraw_emu); native stills are symlinked. It returns the prepared paths plus a per-frame warning for any
+// frame that could not be prepared, and errors only if dstDir is unusable or every frame failed.
 func PrepareTIFF(ctx context.Context, srcs []string, dstDir string, onProgress Progress) (out []string, warnings []string, err error) {
 	if err := fsutil.EnsureDir(dstDir); err != nil {
 		return nil, nil, fmt.Errorf("create seq dir %s: %w", dstDir, err)
 	}
+	transcode, terr := rawTranscoder() // resolved once; a raw frame surfaces terr as its own warning
 	total := len(srcs)
 	for i, src := range srcs {
 		if cerr := ctx.Err(); cerr != nil {
@@ -42,13 +50,16 @@ func PrepareTIFF(ctx context.Context, srcs []string, dstDir string, onProgress P
 
 		var dst string
 		var perr error
-		if sirilNative[ext] {
+		switch {
+		case sirilNative[ext]:
 			dst = filepath.Join(dstDir, name+ext)
 			_ = os.Remove(dst) // idempotent re-runs
 			perr = os.Symlink(src, dst)
-		} else {
+		case terr != nil:
+			perr = terr // no raw developer on this platform
+		default:
 			dst = filepath.Join(dstDir, name+".tif")
-			perr = transcodeSips(ctx, src, dst)
+			perr = transcode(ctx, src, dst)
 		}
 		if perr != nil {
 			warnings = append(warnings, fmt.Sprintf("%s: %v", filepath.Base(src), perr))
@@ -65,13 +76,157 @@ func PrepareTIFF(ctx context.Context, srcs []string, dstDir string, onProgress P
 	return out, warnings, nil
 }
 
-// transcodeSips converts one image to a 16-bit RGB TIFF with the macOS `sips` tool.
+// rawTranscoder returns the platform's raw→TIFF developer: macOS `sips` when present (the host), else
+// LibRaw's `dcraw_emu` (the Linux container). It errors when neither is available so a raw frame reports a
+// clear cause instead of a silent "no frames".
+func rawTranscoder() (func(context.Context, string, string) error, error) {
+	if _, err := exec.LookPath(sipsBin()); err == nil {
+		return transcodeSips, nil
+	}
+	if _, err := exec.LookPath(dcrawBin()); err == nil {
+		return transcodeDcraw, nil
+	}
+	return nil, fmt.Errorf("no raw developer found: install `sips` (macOS) or `dcraw_emu` from libraw-bin (Linux), or set DCRAW_BIN")
+}
+
+func sipsBin() string {
+	if b := os.Getenv("SIPS_BIN"); b != "" {
+		return b
+	}
+	return "sips"
+}
+
+func dcrawBin() string {
+	if b := os.Getenv("DCRAW_BIN"); b != "" {
+		return b
+	}
+	return "dcraw_emu"
+}
+
+// transcodeSips develops one raw to a 16-bit RGB TIFF with the macOS `sips` tool.
 func transcodeSips(ctx context.Context, src, dst string) error {
-	cmd := exec.CommandContext(ctx, "sips", "-s", "format", "tiff", src, "--out", dst)
+	cmd := exec.CommandContext(ctx, sipsBin(), "-s", "format", "tiff", src, "--out", dst)
 	if out, cerr := cmd.CombinedOutput(); cerr != nil {
 		return fmt.Errorf("sips transcode: %w (%s)", cerr, lastLine(string(out)))
 	}
 	return nil
+}
+
+// transcodeDcraw develops one raw to a 16-bit RGB TIFF with LibRaw's `dcraw_emu` (the Linux path).
+func transcodeDcraw(ctx context.Context, src, dst string) error {
+	return dcrawDevelop(ctx, src, dst, "-6", "-w")
+}
+
+// dcrawDevelop runs dcraw_emu with the given options. dcraw_emu writes `<input>.tiff` beside its input and
+// has no output-path flag — and the capture volume is read-only — so we point it at a symlink in the
+// (writable) destination dir and rename the result to dst. `-T` forces TIFF output.
+func dcrawDevelop(ctx context.Context, src, dst string, opts ...string) error {
+	link := dst + strings.ToLower(filepath.Ext(src)) // e.g. frame_00001.tif.dng, in the writable dstDir
+	_ = os.Remove(link)
+	if err := os.Symlink(src, link); err != nil {
+		if cerr := fsutil.CopyFile(src, link); cerr != nil { // symlinks disabled / cross-device → copy
+			return fmt.Errorf("stage raw %s: %w", filepath.Base(src), cerr)
+		}
+	}
+	defer os.Remove(link)
+	produced := link + ".tiff"
+	defer os.Remove(produced)
+
+	args := append([]string{"-T"}, opts...)
+	args = append(args, link)
+	cmd := exec.CommandContext(ctx, dcrawBin(), args...)
+	if out, cerr := cmd.CombinedOutput(); cerr != nil {
+		return fmt.Errorf("dcraw_emu transcode: %w (%s)", cerr, lastLine(string(out)))
+	}
+	if err := os.Rename(produced, dst); err != nil {
+		return fmt.Errorf("rename transcoded tiff %s: %w", filepath.Base(dst), err)
+	}
+	return nil
+}
+
+// Thumbnail develops one camera raw (or any raw-developer-readable still) to a DOWNSCALED 8-bit PNG at dst,
+// bounding the longer edge to maxEdge (maxEdge <= 0 = full size). It is the fast path for previews and for
+// pixel-stat classification. sips downsamples during the decode (`-Z`); dcraw_emu develops half-size
+// (`-h`) then Go downscales. PNG (not TIFF) because sips emits a JPEG-COMPRESSED TIFF when downscaling
+// which the Go image stack can't decode — PNG stays decodable by image.Decode.
+func Thumbnail(ctx context.Context, src, dst string, maxEdge int) error {
+	if _, err := exec.LookPath(sipsBin()); err == nil {
+		return thumbnailSips(ctx, src, dst, maxEdge)
+	}
+	if _, err := exec.LookPath(dcrawBin()); err == nil {
+		return thumbnailDcraw(ctx, src, dst, maxEdge)
+	}
+	return fmt.Errorf("no raw developer found: install `sips` (macOS) or `dcraw_emu` from libraw-bin (Linux), or set DCRAW_BIN")
+}
+
+func thumbnailSips(ctx context.Context, src, dst string, maxEdge int) error {
+	args := []string{"-s", "format", "png"}
+	if maxEdge > 0 {
+		args = append([]string{"-Z", strconv.Itoa(maxEdge)}, args...)
+	}
+	args = append(args, src, "--out", dst)
+	cmd := exec.CommandContext(ctx, sipsBin(), args...)
+	if out, cerr := cmd.CombinedOutput(); cerr != nil {
+		return fmt.Errorf("sips thumbnail: %w (%s)", cerr, lastLine(string(out)))
+	}
+	return nil
+}
+
+// thumbnailDcraw develops the raw to a temporary TIFF (half-size when downscaling, for speed) then
+// re-encodes it as a PNG at dst so the caller's image.Decode (PNG/JPEG only) can read it.
+func thumbnailDcraw(ctx context.Context, src, dst string, maxEdge int) error {
+	tmpTif := dst + ".dcraw.tif"
+	opts := []string{"-6", "-w"}
+	if maxEdge > 0 {
+		opts = append(opts, "-h") // half-size decode: fast; Go bounds it to maxEdge below
+	}
+	if err := dcrawDevelop(ctx, src, tmpTif, opts...); err != nil {
+		return err
+	}
+	defer os.Remove(tmpTif)
+	return tiffToPNG(tmpTif, dst, maxEdge)
+}
+
+// tiffToPNG decodes a TIFF and writes it as a PNG at pngPath, bounding the longer edge to maxEdge (<=0 =
+// no downscale) with a Catmull-Rom resize.
+func tiffToPNG(tifPath, pngPath string, maxEdge int) error {
+	f, err := os.Open(tifPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	img, err := tiff.Decode(f)
+	if err != nil {
+		return fmt.Errorf("decode dcraw tiff: %w", err)
+	}
+	img = boundLongEdge(img, maxEdge)
+	out, err := os.Create(pngPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if err := png.Encode(out, img); err != nil {
+		return fmt.Errorf("encode png %s: %w", filepath.Base(pngPath), err)
+	}
+	return nil
+}
+
+// boundLongEdge returns img scaled so its longer edge is at most maxEdge (maxEdge <= 0 or already-smaller
+// returns img unchanged), using a Catmull-Rom filter.
+func boundLongEdge(img image.Image, maxEdge int) image.Image {
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if maxEdge <= 0 || (w <= maxEdge && h <= maxEdge) {
+		return img
+	}
+	long := w
+	if h > long {
+		long = h
+	}
+	nw, nh := w*maxEdge/long, h*maxEdge/long
+	dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
+	xdraw.CatmullRom.Scale(dst, dst.Bounds(), img, b, xdraw.Over, nil)
+	return dst
 }
 
 func lastLine(s string) string {

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/graxpert"
@@ -45,7 +46,7 @@ var looks = map[string]Look{
 	"natural": {
 		Name: "natural", AsinhIntensityFG: 6, Saturation: 1.10, GreenRemoval: 0.25,
 		MaskPercentile: 45, MaskDilation: 15, MaskBlur: 12, SkyPercentile: 55, NormPercentile: 99.9,
-		ToneStrength: 0, NeutralizePercentile: 2.0, HighlightKnee: 0.30, HighlightCeiling: 0.42, TargetBg: 0.06,
+		ToneStrength: 0, NeutralizePercentile: 2.0, HighlightKnee: 0.30, HighlightCeiling: 0.38, TargetBg: 0.05,
 	},
 	"iphone": {
 		Name: "iphone", AsinhIntensityFG: 7, Saturation: 1.12, GreenRemoval: 0.3,
@@ -103,6 +104,15 @@ type Options struct {
 	// DarkDir/FlatDir/BiasDir are optional calibration-frame folders (#4); empty keeps the proven
 	// uncalibrated single-pass path. Offset == bias.
 	DarkDir, FlatDir, BiasDir string
+	// DarkFrames/FlatFrames/BiasFrames are calibration raws auto-detected among the input stills
+	// (classified by inspect) and unioned with the *Dir folders. Frames captured this run are also
+	// persisted to the reusable library (PhoneCalib) keyed by ISO/exposure/dimensions.
+	DarkFrames, FlatFrames, BiasFrames []string
+	// PhoneCalib is the persistent phone-calibration-master library: matched masters are reused when no
+	// cal frames are supplied this run, and freshly-built masters are saved to it. nil → no persistence
+	// (build-from-frames only). LibraryDir is where the master FITS are written.
+	PhoneCalib calib.PhoneCalibStore
+	LibraryDir string
 
 	ForegroundFrame string // optional raw frame used as the clean foreground (and registration ref)
 	Orientation     string // auto|none|cw|ccw|180 (+ -flip)
@@ -167,15 +177,17 @@ func Process(ctx context.Context, o Options) (*Result, error) {
 	}
 
 	const hdr = "requires 1.2.0\nsetext fits\n"
-	if hasCalibration(o) {
+	plan := planCalibration(ctx, o)
+	if plan.active {
 		// Opt-in calibration: convert lights to FITS, dark/flat/bias-correct them in Go (linear light),
-		// then register the calibrated frames. Soft-fail — a bad cal set just warns and proceeds.
+		// then register the calibrated frames. Masters come from this run's cal frames (also saved to the
+		// library) or a reused library master. Soft-fail — a bad cal set just warns and proceeds.
 		if _, err := o.Siril.Run(ctx, seqDir, hdr+"convert light -out=.\n", o.OnProgress); err != nil {
 			return nil, fmt.Errorf("convert: %w", err)
 		}
 		lights, _ := filepath.Glob(filepath.Join(seqDir, "light_*.fit*"))
 		sort.Strings(lights)
-		res.note(calibrateLights(ctx, o, seqDir, lights))
+		res.note(calibrateLights(ctx, o, plan, seqDir, lights))
 		if _, err := o.Siril.Run(ctx, seqDir, hdr+fmt.Sprintf("setref light %d\nregister light -2pass\nseqapplyreg light\n", refIndex), o.OnProgress); err != nil {
 			return nil, fmt.Errorf("register: %w", err)
 		}
@@ -283,8 +295,19 @@ func compose(ctx context.Context, o Options, aligned []string, fgPath string, re
 	removeGreenCast(fg, look.GreenRemoval)
 
 	targetBg := o.Brightness
+	ceilScale := 1.0
 	if targetBg <= 0 {
 		targetBg = look.TargetBg
+	} else if look.TargetBg > 0 {
+		// Give the Darker/Balanced/Brighter control authority over the bright core, not just the faint
+		// background: scale the highlight ceiling with the chosen background target so "darker" also dims
+		// the Milky-Way core and "brighter" lifts it (clamped so the shoulder stays well-defined).
+		ceilScale = targetBg / look.TargetBg
+		if ceilScale < 0.7 {
+			ceilScale = 0.7
+		} else if ceilScale > 1.35 {
+			ceilScale = 1.35
+		}
 	}
 	autoStretch(sky, targetBg, alpha)
 	asinhStretch(fg, look.AsinhIntensityFG, look.NormPercentile, 0, false)
@@ -295,9 +318,12 @@ func compose(ctx context.Context, o Options, aligned []string, fgPath string, re
 	}
 	boostSaturation(composite, look.Saturation)
 	splitTone(composite, look.ShadowTint, look.HighlightTint, look.ToneStrength, 0.85)
-	compressHighlights(composite, look.HighlightKnee, look.HighlightCeiling)
+	compressHighlights(composite, look.HighlightKnee, look.HighlightCeiling*ceilScale)
 
-	composite = orient(composite, o.Orientation)
+	// Restore the intended display orientation: an explicit user override wins; else the phone's real EXIF
+	// orientation (robust, handles mirroring); else the content heuristic. See resolveOrientation.
+	orientMode := resolveOrientation(o)
+	composite = orient(composite, orientMode)
 	res.Width, res.Height = composite.W, composite.H
 
 	// Export: display PNG (primary) + a downscaled preview + linear intermediates for inspection.
@@ -312,9 +338,9 @@ func compose(ctx context.Context, o Options, aligned []string, fgPath string, re
 	res.CompositeFITS = filepath.Join(outDir, "composite.fits")
 	_ = composite.WriteFITS(res.CompositeFITS)
 	res.SkyFITS = filepath.Join(outDir, "stacked_sky.fits")
-	_ = orient(sky, o.Orientation).WriteFITS(res.SkyFITS)
+	_ = orient(sky, orientMode).WriteFITS(res.SkyFITS)
 	res.ForegroundFITS = filepath.Join(outDir, "foreground_reference.fits")
-	_ = orient(fg, o.Orientation).WriteFITS(res.ForegroundFITS)
+	_ = orient(fg, orientMode).WriteFITS(res.ForegroundFITS)
 	return res, nil
 }
 

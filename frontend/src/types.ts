@@ -7,6 +7,7 @@ export interface Frame {
   exposure_ms: number;
   gain: number;
   offset: number;
+  iso?: number;
   temp_milli_c: number;
   has_temp: boolean;
   width: number;
@@ -24,6 +25,7 @@ export interface SetKey {
   exposure_ms: number;
   gain: number;
   offset: number;
+  iso?: number;
   temp_bucket_c: number;
   bin: number;
 }
@@ -83,6 +85,19 @@ export interface Master {
   path: string;
 }
 
+// PhoneMaster is a reusable phone/DSLR calibration master (iPhone DNG darks/bias/flats), keyed by
+// ISO / exposure / sensor dimensions rather than gain/offset/bin.
+export interface PhoneMaster {
+  type: string;
+  iso: number;
+  exposure_ms: number;
+  camera_model?: string;
+  width: number;
+  height: number;
+  frame_count: number;
+  path: string;
+}
+
 export interface GradeMetric {
   index: number;
   path: string;
@@ -138,14 +153,23 @@ export interface ChannelResult {
   error?: string;
 }
 
+// Defect is one issue the vision model diagnosed in a supervised render.
+export interface Defect {
+  kind: string;
+  severity: string; // low | medium | high
+  note?: string;
+}
+
 // IterationRecord is one pass of the optional local-AI-agent finish supervisor.
 export interface IterationRecord {
   index: number;
+  tier?: string; // pipeline re-entry tier used: A (composite) | B (finish prep) | C (re-stack)
   png_path: string;
   det_score: number;
   model_score: number;
   combined_score: number;
   reasoning: string;
+  defects?: Defect[];
   chosen: boolean;
   params?: Record<string, number>;
 }
@@ -175,6 +199,16 @@ export interface RunResult {
   source?: string;
   frame_count?: number;
   stacked_frames?: number;
+  frames?: PlanetaryFrame[];
+}
+
+// PlanetaryFrame is one lucky-imaging frame's quality record (kept/rejected + sharpness score).
+export interface PlanetaryFrame {
+  index: number;
+  file: string;
+  filter?: string;
+  score: number;
+  kept: boolean;
 }
 
 // JobParams mirrors the POST /api/jobs body (also returned in Job.params).
@@ -200,6 +234,8 @@ export interface Job {
   params?: JobParams;
   log_tail?: string;
   result: RunResult;
+  started_at_ms: number; // 0 until the job leaves the queue and starts processing
+  finished_at_ms: number; // 0 until the job reaches a terminal state
   created_at: number;
   updated_at: number;
 }
@@ -208,6 +244,18 @@ export interface BrowseEntry {
   name: string;
   path: string;
   is_dir: boolean;
+  local?: boolean; // present on local disk (only set when browsing with an S3 bucket)
+  remote?: boolean; // present on the S3 mirror
+}
+
+// S3 connection status (GET /api/s3/status). configured = credentials present in the env; reachable +
+// buckets are filled when a connection test succeeds.
+export interface S3Status {
+  configured: boolean;
+  endpoint?: string;
+  reachable?: boolean;
+  buckets?: string[];
+  error?: string;
 }
 
 // One capture folder of a past processing, with whether it still exists on disk (GET /api/processed).
@@ -513,6 +561,20 @@ export interface LocationFavorite {
   elevation_m?: number;
 }
 
+// A named, reusable telescope + camera + eyepiece rig the user can save and pick from later (persisted
+// locally, like LocationFavorite). Numeric fields are optional so a partially-filled rig can still be saved.
+export interface EquipmentSetup {
+  id: string;
+  name: string;
+  focal_mm?: number;
+  aperture_mm?: number;
+  barlow?: number;
+  pixel_um?: number;
+  sensor_w?: number;
+  sensor_h?: number;
+  eyepieces: SkyEyepiece[];
+}
+
 // Dark-sky finder (GET /api/sky/darksites): a ranked candidate observing site.
 export interface DarkSiteHorizon {
   elevation_m: number;
@@ -535,6 +597,36 @@ export interface DarkSitesResult {
   cells_scanned: number;
   candidates: DarkSite[];
   warnings: string[];
+}
+
+// --- Offline light-pollution atlas (GET/POST /api/sky/lightpollution/atlas) ---
+
+export interface AtlasCoverage {
+  present: boolean;
+  min_lat: number;
+  min_lon: number;
+  max_lat: number;
+  max_lon: number;
+  rows: number;
+  cols: number;
+  unit: string;
+  built_at_ms: number;
+}
+
+export interface AtlasBuildState {
+  status: "idle" | "building" | "done" | "error";
+  done: number;
+  total: number;
+  error?: string;
+  coverage: AtlasCoverage;
+}
+
+export interface AtlasBuildRequest {
+  region?: string; // "france" | "europe" | "world"
+  min_lat?: number;
+  min_lon?: number;
+  max_lat?: number;
+  max_lon?: number;
 }
 
 // --- Sky calendar (GET /api/sky/events) ---

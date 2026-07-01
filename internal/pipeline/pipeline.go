@@ -50,12 +50,21 @@ type Options struct {
 	Supervisor  *llm.Runner          // nil → no local-AI-agent finish supervision (opt-in; see supervise.go)
 	Library     calib.MasterStore    // nil → no reuse; masters built into scratch
 	LibraryDir  string               // persistent master library dir (when Library is set)
-	OnProgress  func(Progress)
+	// PhoneCalib is the reusable phone/DSLR calibration-master library for the milkyway path (nil → no
+	// persistence/reuse; masters are built per run). Its masters are written under LibraryDir.
+	PhoneCalib calib.PhoneCalibStore
+	OnProgress func(Progress)
 
 	// JobID ties persisted finish-supervisor iterations to a job row; 0 for non-job runs (CLI/MCP),
 	// which skip iteration persistence. FinishIterStore is the sink (nil → no persistence).
 	JobID           int64
 	FinishIterStore FinishIterStore
+
+	// Reprocess re-runs the stack stages (calibrate → register → grade → stack) from the raw frames
+	// with a modified preset and returns fresh aligned-channel masters. It is the Tier-C re-entry the
+	// supervised finish uses for structural fixes; nil (a pure refine with no raws) disables Tier C, so
+	// the supervisor caps at re-running the finish prep. Set by Process/ProcessOSC.
+	Reprocess func(ctx context.Context, preset *mode.Preset) (map[string]string, error)
 
 	// Catalog records the scanned inventory (frames + target) so future runs can reuse this data.
 	// nil → the run is not persisted and no cross-session reuse is possible.
@@ -107,7 +116,7 @@ type Catalog interface {
 // FinishIterStore persists the supervisor's per-iteration finish decisions. An interface keeps
 // pipeline free of a DB dependency (implemented by package store).
 type FinishIterStore interface {
-	CreateFinishIteration(ctx context.Context, jobID int64, iter int, params, metrics []byte, detScore, modelScore, combined float64, reasoning string) (int64, error)
+	CreateFinishIteration(ctx context.Context, jobID int64, iter int, tier string, params, metrics, defects []byte, detScore, modelScore, combined float64, reasoning string) (int64, error)
 	MarkFinishIterationChosen(ctx context.Context, id int64) error
 }
 
@@ -129,6 +138,9 @@ type Progress struct {
 	Line    string         `json:"line,omitempty"`
 	Preview string         `json:"preview,omitempty"` // a preview PNG path, emitted as it is produced
 	Sample  *sysmon.Sample `json:"-"`                 // live CPU/RAM of the step's subprocess; not serialized
+	// Iteration carries one completed supervised-finish pass as it happens, so the UI can stream the
+	// agent's iterations (preview + defects + scores) live instead of only after the job finishes.
+	Iteration *postprocess.IterationRecord `json:"iteration,omitempty"`
 }
 
 // ChannelResult is the stacked output for one light channel (filter).
@@ -319,6 +331,16 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
+	// Tier-C re-entry for the supervised finish: re-grade + re-stack every channel from the raw frames
+	// with a model-tuned preset, then co-register, returning fresh aligned masters. Captures the run's
+	// inventory/plan/masters/dirs so a re-stack reuses everything up to the light frames. nil when the
+	// agent is off, so the ordinary run pays nothing.
+	if superviseEnabled(ctx, opts) {
+		opts.Reprocess = func(rctx context.Context, rp *mode.Preset) (map[string]string, error) {
+			return reStack(rctx, opts, rp, inv, plan, masters, flats, parity, workRun, outDir, object)
+		}
+	}
+
 	combine(ctx, opts, res, workRun, outDir, progress("aligning channels + combining"))
 	if res.Final != nil {
 		for _, o := range res.Final.Outputs {
@@ -345,17 +367,15 @@ func writeRunJSON(outDir string, res *Result) {
 // filterOrder is the canonical channel order (L first so it is the alignment reference).
 var filterOrder = []string{"L", "R", "G", "B", "Ha", "OIII", "SII"}
 
-// combine co-registers the successful per-channel masters, then assembles the final image.
-func combine(ctx context.Context, opts Options, res *Result, workRun, outDir string, onProgress func(siril.Progress)) {
+// channelMastersMap builds the filter→master-path map from a run's successful channels (the
+// master_<tag>.fits written next to the run), applying the OIII-as-blue substitution when there is no B
+// filter. Shared by combine() and the supervisor's Tier-C re-stack so both co-register the same set.
+func channelMastersMap(res *Result, outDir string) map[string]string {
 	masters := map[string]string{} // filter -> absolute master path
 	for _, ch := range res.Channels {
 		if ch.Err == "" && ch.OutputPath != "" && ch.Filter != "" {
 			masters[ch.Filter] = filepath.Join(outDir, "master_"+filterTag(ch.Filter)+".fits")
 		}
-	}
-	if len(masters) == 0 {
-		res.Warnings = append(res.Warnings, "no channels available to combine")
-		return
 	}
 	// No blue filter but OIII present (e.g. an LRG+Ha+OIII narrowband-broadband set): use OIII as the
 	// blue channel. OIII (~500 nm) is blue-green, so the broadband L/R/G keep natural star colour while
@@ -367,9 +387,55 @@ func combine(ctx context.Context, opts Options, res *Result, workRun, outDir str
 			res.Warnings = append(res.Warnings, "OIII used as the blue channel (no B filter)")
 		}
 	}
+	return masters
+}
 
+// combine co-registers the successful per-channel masters, then assembles the final image.
+func combine(ctx context.Context, opts Options, res *Result, workRun, outDir string, onProgress func(siril.Progress)) {
+	masters := channelMastersMap(res, outDir)
+	if len(masters) == 0 {
+		res.Warnings = append(res.Warnings, "no channels available to combine")
+		return
+	}
 	channels := alignChannels(ctx, opts.Runner, masters, filepath.Join(workRun, "04_aligned"), outDir, res)
 	finishAligned(ctx, opts, channels, res, workRun, outDir, onProgress)
+}
+
+// reStack re-grades and re-stacks every planned channel from the raw frames with a model-tuned preset
+// (new frame-rejection thresholds / trail mask / denoise / background), overwriting master_<tag>.fits,
+// then co-registers into fresh aligned_<tag>.fits and returns the aligned-channel map. It is the
+// Tier-C re-entry the supervised finish calls for structural fixes; it reuses the run's inventory,
+// reuse plan, calibration masters and caches, so only the light-frame stages re-run. It intentionally
+// mirrors Process's channel loop (with a plain "re-stack" progress) rather than the step-counted one.
+func reStack(ctx context.Context, opts Options, preset *mode.Preset, inv *inspect.Inventory, plan *ReusePlan,
+	masters []calib.Master, flats *flatCache, parity *parityCache, workRun, outDir, object string) (map[string]string, error) {
+	ro := opts
+	ro.Preset = preset
+	g := preset.Grade
+	ro.Grade = &g
+	prog := func(p siril.Progress) { opts.report(Progress{Step: "re-stack", Line: p.Line, Sample: p.Sample}) }
+
+	rres := &Result{InputDir: opts.InputDir, OutputDir: outDir, Object: object}
+	for _, filter := range orderedPlanFilters(plan) {
+		groups := plan.byFilter[filter]
+		var ch ChannelResult
+		if len(groups) == 1 && groups[0].Current {
+			set := inspect.Set{Key: groups[0].Key, Frames: groups[0].Frames, Count: len(groups[0].Frames)}
+			ch = processChannel(ctx, ro, set, masters, workRun, outDir, g, prog)
+		} else {
+			ch = processChannelGroups(ctx, ro, object, filter, groups, masters, flats, parity, workRun, outDir, g, prog)
+		}
+		rres.Channels = append(rres.Channels, ch)
+	}
+	channels := channelMastersMap(rres, outDir)
+	if len(channels) == 0 {
+		return nil, fmt.Errorf("re-stack produced no channel masters")
+	}
+	aligned := alignChannels(ctx, ro.Runner, channels, filepath.Join(workRun, "04_aligned"), outDir, rres)
+	if len(aligned) == 0 {
+		return nil, fmt.Errorf("re-stack alignment produced no channels")
+	}
+	return aligned, nil
 }
 
 // finishAligned assembles the final image from co-registered channel masters: the optional local-AI-

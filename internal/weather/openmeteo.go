@@ -106,10 +106,13 @@ func gridSeries(h omHourly, layer string) []float64 {
 
 func ftoa(f float64) string { return strconv.FormatFloat(f, 'f', 4, 64) }
 
+// joinFloats renders the grid's coordinate lists for the single bulk Open-Meteo GET. It uses 3 decimals
+// (~110 m) — far finer than a weather cell — rather than ftoa's 4, so a denser grid (nx·ny coordinates
+// comma-joined in the URL) stays well under the ~8 KB request-line limit.
 func joinFloats(fs []float64) string {
 	parts := make([]string, len(fs))
 	for i, f := range fs {
-		parts[i] = ftoa(f)
+		parts[i] = strconv.FormatFloat(f, 'f', 3, 64)
 	}
 	return strings.Join(parts, ",")
 }

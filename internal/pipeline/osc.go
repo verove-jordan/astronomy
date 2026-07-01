@@ -196,6 +196,11 @@ func finishOSC(ctx context.Context, opts Options, res *Result, masterPath, workR
 // its result onto the standard Result/run.json contract so the UI and durable record are unchanged.
 func processNightscape(ctx context.Context, opts Options, res *Result, frames []string, workRun, outDir string) (*Result, error) {
 	opts.report(Progress{Step: "nightscape: register + composite", Index: 1, Total: 1})
+	// Separate lights from any dark/flat/bias DNGs mixed into the input (auto-classified) so cal frames
+	// calibrate the stack rather than being stacked as sky.
+	lights, darkFrames, flatFrames, biasFrames := splitCalibrationFrames(ctx, frames)
+	workAbs, _ := filepath.Abs(opts.WorkDir)
+	libDir, _ := libraryDir(opts, workAbs)
 	// GraXpert gradient removal + chroma denoise on the sky stack, honouring the preset toggle (and
 	// --no-ai, which nils the runner). nil → the auto-levels still balance the sky without it.
 	var grax *graxpert.Runner
@@ -205,7 +210,7 @@ func processNightscape(ctx context.Context, opts Options, res *Result, frames []
 	nopts := nightscape.Options{
 		Siril:            opts.Runner,
 		Graxpert:         grax,
-		Frames:           frames,
+		Frames:           lights,
 		WorkDir:          workRun,
 		OutDir:           outDir,
 		Look:             nightscape.LookByName(opts.Preset.Look),
@@ -213,10 +218,15 @@ func processNightscape(ctx context.Context, opts Options, res *Result, frames []
 		ColorCalibration: opts.Preset.ColorCalibration,
 		Solve:            opts.Solve,
 		Spcc:             opts.Spcc,
-		Focal35mm:        nightscape.ReadFocal35mm(frames),
+		Focal35mm:        nightscape.ReadFocal35mm(lights),
 		DarkDir:          opts.DarkDir,
 		FlatDir:          opts.FlatDir,
 		BiasDir:          opts.BiasDir,
+		DarkFrames:       darkFrames,
+		FlatFrames:       flatFrames,
+		BiasFrames:       biasFrames,
+		PhoneCalib:       opts.PhoneCalib,
+		LibraryDir:       libDir,
 		ForegroundFrame:  opts.Preset.ForegroundFrame,
 		Orientation:      opts.Preset.Orientation,
 		OnProgress:       opts.sirilLines("nightscape: register + composite"),
@@ -240,4 +250,27 @@ func processNightscape(ctx context.Context, opts Options, res *Result, frames []
 	}
 	writeRunJSON(outDir, res)
 	return res, nil
+}
+
+// splitCalibrationFrames classifies raw stills and separates lights from auto-detected dark/flat/bias
+// calibration frames, so cal DNGs mixed into the input dir calibrate the stack instead of being stacked
+// as sky. If classification would leave no lights (e.g. everything mislabeled), it treats every frame
+// as a light — the proven behavior — rather than starving the stack.
+func splitCalibrationFrames(ctx context.Context, frames []string) (lights, darks, flats, bias []string) {
+	for _, fr := range inspect.ClassifyRawStills(ctx, frames) {
+		switch fr.Type {
+		case inspect.Dark:
+			darks = append(darks, fr.Path)
+		case inspect.Flat:
+			flats = append(flats, fr.Path)
+		case inspect.Bias, inspect.DarkFlat:
+			bias = append(bias, fr.Path)
+		default:
+			lights = append(lights, fr.Path)
+		}
+	}
+	if len(lights) == 0 {
+		return frames, nil, nil, nil
+	}
+	return lights, darks, flats, bias
 }

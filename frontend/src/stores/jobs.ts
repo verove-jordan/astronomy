@@ -19,6 +19,7 @@ export interface CreateOpts {
   sequential?: boolean; // queue into the single-worker sequential lane (chained "Add to queue")
   look?: string; // milkyway render style: natural | iphone | deepsky
   brightness?: string; // milkyway sky brightness: darker | balanced | brighter
+  orientation?: string; // milkyway final orientation override: auto | none | cw | ccw | 180 (+ "-flip")
   darkDir?: string; // milkyway: optional dark calibration frames folder
   flatDir?: string; // milkyway: optional flat calibration frames folder
   biasDir?: string; // milkyway: optional bias/offset calibration frames folder
@@ -38,6 +39,13 @@ export interface CreateOpts {
     prefix?: string;
     exposureSec?: number;
   };
+}
+
+// RefineOpts tunes an AI-supervised re-finish of a completed run (POST /api/jobs/{id}/refine).
+export interface RefineOpts {
+  maxIters?: number;
+  tier?: "A" | "B" | "C"; // how far the agent may reach: composite | +finish prep | +re-stack
+  allowRestack?: boolean; // permit Tier-C re-stack from the original raw frames
 }
 
 // Runs gallery page size (paginated so a large output dir loads fast).
@@ -98,6 +106,7 @@ export const useJobsStore = defineStore("jobs", () => {
     if (opts.sequential) body.sequential = true;
     if (opts.look) body.look = opts.look;
     if (opts.brightness) body.brightness = opts.brightness;
+    if (opts.orientation) body.orientation = opts.orientation;
     if (opts.darkDir) body.dark_dir = opts.darkDir;
     if (opts.flatDir) body.flat_dir = opts.flatDir;
     if (opts.biasDir) body.bias_dir = opts.biasDir;
@@ -159,6 +168,24 @@ export const useJobsStore = defineStore("jobs", () => {
     return data.cancelled;
   }
 
+  // restart re-runs a finished (failed/cancelled) job as a brand-new job with the same parameters,
+  // returning the new job id so the caller can navigate to it.
+  async function restart(id: number): Promise<number> {
+    const data = await apiPost<{ id: number }>(`/api/jobs/${id}/restart`);
+    return data.id;
+  }
+
+  // refine re-finishes a completed run under the AI supervisor (no re-stack unless allowRestack) as a
+  // new job, returning its id so the caller can navigate to the live iteration stream.
+  async function refine(id: number, opts: RefineOpts = {}): Promise<number> {
+    const body: Record<string, unknown> = {};
+    if (opts.maxIters) body.max_iters = opts.maxIters;
+    if (opts.tier) body.tier = opts.tier;
+    if (opts.allowRestack) body.allow_restack = true;
+    const data = await apiPost<{ id: number }>(`/api/jobs/${id}/refine`, body);
+    return data.id;
+  }
+
   // Durable on-disk run records (independent of the DB) for the Runs gallery, paginated so a large
   // output dir stays fast. listRuns(true) loads the first page; listRuns(false) appends the next.
   const runsTotal = ref(0);
@@ -205,6 +232,8 @@ export const useJobsStore = defineStore("jobs", () => {
     captureFor,
     inspectCapture,
     cancel,
+    restart,
+    refine,
     listRuns,
   };
 });

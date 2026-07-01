@@ -1,0 +1,28 @@
+# nginx site for the Vue web UI. This is a TEMPLATE: the official nginx image runs envsubst over
+# /etc/nginx/templates/*.template at startup and writes the result to /etc/nginx/conf.d/. Only
+# ${API_UPSTREAM} is substituted (NGINX_ENVSUBST_FILTER pins it) so nginx's own $uri/$host survive.
+#
+#   API_UPSTREAM=host.docker.internal:8080  -> proxy to the HOST-run Go engine (dev / `web` profile)
+#   API_UPSTREAM=engine:8080                 -> proxy to the containerized engine (`stack` profile)
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # SPA fallback.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Proxy API calls to the Go engine (host-run or containerized, per API_UPSTREAM).
+    location /api/ {
+        proxy_pass http://${API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+        # SSE: don't buffer the job progress stream.
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+    }
+}

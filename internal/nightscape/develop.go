@@ -2,7 +2,10 @@ package nightscape
 
 import (
 	"context"
+	"encoding/binary"
+	"io"
 	"math"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -162,4 +165,135 @@ func flipH(in *fits.Image) *fits.Image {
 		}
 	}
 	return out
+}
+
+// resolveOrientation picks the final display transform for the composite. An explicit user Orientation
+// (cw|ccw|180|…, optionally +"-flip") wins; "auto"/"" first tries the source frame's REAL EXIF orientation
+// — robust and, unlike the content heuristic, able to undo front-camera/portrait mirroring — and only
+// falls back to the content heuristic (orientAuto, via the "auto" token) when that tag is unreadable.
+func resolveOrientation(o Options) string {
+	mode := strings.ToLower(strings.TrimSpace(o.Orientation))
+	if mode != "" && mode != "auto" {
+		return mode
+	}
+	if src := orientationSource(o); src != "" {
+		if tok, ok := exifOrientationToken(src); ok {
+			return tok
+		}
+	}
+	return "auto"
+}
+
+// orientationSource is the frame whose EXIF orientation stands for the session (all frames share the
+// camera pose): the explicit foreground override if set, else the first captured frame.
+func orientationSource(o Options) string {
+	if o.ForegroundFrame != "" {
+		return o.ForegroundFrame
+	}
+	if len(o.Frames) > 0 {
+		return o.Frames[0]
+	}
+	return ""
+}
+
+// exifOrientationToken reads path's EXIF orientation and maps it to an orient() token. Phone captures are
+// stored in the sensor's native landscape with an orientation tag that the `sips` TIFF transcode drops
+// (so the recipe would otherwise have to guess); reading it here restores the intended orientation
+// exactly. It parses the TIFF Orientation tag directly — the reliable path for DNG/TIFF raws, where
+// `sips -g orientation` reports <nil> — and falls back to sips for non-TIFF containers. ok=false when
+// unreadable (no tag, non-macOS + non-TIFF, etc.).
+func exifOrientationToken(path string) (string, bool) {
+	code := tiffOrientation(path)
+	if code == 0 {
+		code = sipsOrientation(path)
+	}
+	return exifTokenFromCode(code)
+}
+
+// tiffOrientation reads the EXIF Orientation tag (0x0112) from IFD0 of a TIFF-based file (DNG, TIFF, and
+// most camera raws), returning 1..8 or 0 if absent/unreadable. It reads only the 8-byte header and the
+// first IFD (a bounded ReadAt), so it stays cheap even on a multi-MB raw. `sips -g orientation` returns
+// <nil> for DNG, so this direct parse is the reliable path for phone ProRAW.
+func tiffOrientation(path string) int {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	head := make([]byte, 8)
+	if _, err := io.ReadFull(f, head); err != nil {
+		return 0
+	}
+	var bo binary.ByteOrder
+	switch {
+	case head[0] == 'I' && head[1] == 'I':
+		bo = binary.LittleEndian
+	case head[0] == 'M' && head[1] == 'M':
+		bo = binary.BigEndian
+	default:
+		return 0 // not a TIFF container
+	}
+	ifd := int64(bo.Uint32(head[4:8]))
+	cnt := make([]byte, 2)
+	if _, err := f.ReadAt(cnt, ifd); err != nil {
+		return 0
+	}
+	n := int(bo.Uint16(cnt))
+	if n <= 0 || n > 4096 {
+		return 0
+	}
+	entries := make([]byte, n*12)
+	if _, err := f.ReadAt(entries, ifd+2); err != nil {
+		return 0
+	}
+	for i := 0; i < n; i++ {
+		e := entries[i*12 : i*12+12]
+		if bo.Uint16(e[0:2]) == 0x0112 { // Orientation tag; value is a SHORT in the entry's value field
+			return int(bo.Uint16(e[8:10]))
+		}
+	}
+	return 0
+}
+
+// sipsOrientation returns path's EXIF orientation code (1..8), or 0 on any failure.
+func sipsOrientation(path string) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "sips", "-g", "orientation", path).Output()
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "orientation:"); ok {
+			if code, cerr := strconv.Atoi(strings.TrimSpace(v)); cerr == nil {
+				return code
+			}
+		}
+	}
+	return 0
+}
+
+// exifTokenFromCode maps an EXIF orientation code (1..8) to the orient() token (a rotation, then an
+// optional horizontal mirror) that displays the stored pixels upright. Codes 5 and 7 are the mirrored
+// diagonals (transpose/transverse); 2 and 4 are pure mirrors. Anything outside 1..8 → not ok.
+func exifTokenFromCode(code int) (string, bool) {
+	switch code {
+	case 1:
+		return "none", true
+	case 2:
+		return "flip", true
+	case 3:
+		return "180", true
+	case 4:
+		return "180-flip", true
+	case 5:
+		return "cw-flip", true
+	case 6:
+		return "cw", true
+	case 7:
+		return "ccw-flip", true
+	case 8:
+		return "ccw", true
+	}
+	return "", false
 }

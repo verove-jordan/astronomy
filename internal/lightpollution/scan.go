@@ -54,8 +54,8 @@ func (p *Provider) ScanArea(ctx context.Context, bbox Bbox, nx, ny int) []Cell {
 // scanSQM resolves SQM for one grid cell: the offline atlas first, else a pixel from the (decode-once)
 // night-lights tile covering the point.
 func (p *Provider) scanSQM(ctx context.Context, lat, lon float64, tiles map[[2]int]image.Image) (float64, bool) {
-	if p.atlas != nil {
-		if sqm, ok := p.atlas.sampleSQM(lat, lon); ok {
+	if a := p.currentAtlas(); a != nil {
+		if sqm, ok := a.sampleSQM(lat, lon); ok {
 			return sqm, true
 		}
 	}

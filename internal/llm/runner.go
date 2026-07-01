@@ -28,12 +28,17 @@ const (
 	ImageFormatMLXVLM = "mlxvlm"
 )
 
+// defaultCompleteTimeout bounds a single completion when the caller doesn't set one via WithTimeout.
+// Generous because a vision generation over a large image can take minutes; WithTimeout(0) disables it.
+const defaultCompleteTimeout = 30 * time.Minute
+
 // Runner is a client for an OpenAI-compatible chat/completions endpoint with optional vision.
 type Runner struct {
-	baseURL     string
-	model       string
-	imageFormat string
-	http        *http.Client
+	baseURL         string
+	model           string
+	imageFormat     string
+	completeTimeout time.Duration
+	http            *http.Client
 }
 
 // New returns a Runner for the given OpenAI-compatible base URL (e.g. http://127.0.0.1:1234/v1),
@@ -44,11 +49,22 @@ func New(baseURL, model, imageFormat string) *Runner {
 		imageFormat = ImageFormatOpenAI
 	}
 	return &Runner{
-		baseURL:     strings.TrimRight(baseURL, "/"),
-		model:       model,
-		imageFormat: imageFormat,
-		http:        &http.Client{Timeout: 120 * time.Second},
+		baseURL:         strings.TrimRight(baseURL, "/"),
+		model:           model,
+		imageFormat:     imageFormat,
+		completeTimeout: defaultCompleteTimeout,
+		// No client-wide Timeout: Available/Models bound themselves with a short context, and Complete
+		// applies completeTimeout via context — so a slow but healthy vision generation is never cut
+		// mid-flight (a fixed http.Client.Timeout aborts it "while awaiting headers" no matter what).
+		http: &http.Client{},
 	}
+}
+
+// WithTimeout sets the maximum wall-clock for a single Complete call (0 or negative → no limit, bounded
+// only by the caller's context). Returns the runner for chaining.
+func (r *Runner) WithTimeout(d time.Duration) *Runner {
+	r.completeTimeout = d
+	return r
 }
 
 // Available reports whether the model server answers. It is a soft check: callers log the error and
@@ -74,13 +90,60 @@ func (r *Runner) Available(ctx context.Context) error {
 	return nil
 }
 
-// Message is one chat message. When Image is set it is attached to the turn as an inline data-URL
-// image (vision models only).
+// Models lists the model ids the server advertises (OpenAI-compatible GET /models, served by both
+// mlx-vlm and Ollama). It doubles as a liveness probe — a non-nil error means the server is not
+// reachable — and feeds the AstroAgent model picker.
+func (r *Runner) Models(ctx context.Context) ([]string, error) {
+	if r == nil || r.baseURL == "" {
+		return nil, fmt.Errorf("llm base URL is empty (set ASTRO_LLM_URL)")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.baseURL+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := r.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("llm server %s unreachable: %w", r.baseURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("llm server %s returned %s", r.baseURL, resp.Status)
+	}
+	var out struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode models: %w", err)
+	}
+	ids := make([]string, 0, len(out.Data))
+	for _, m := range out.Data {
+		if m.ID != "" {
+			ids = append(ids, m.ID)
+		}
+	}
+	return ids, nil
+}
+
+// InlineImage is one image attached to a chat turn (vision models only). Data is the raw bytes; Mime
+// is e.g. "image/png" and defaults to image/jpeg when empty.
+type InlineImage struct {
+	Data []byte
+	Mime string
+}
+
+// Message is one chat message. When Image and/or Images are set they are attached to the turn as
+// inline data-URL images (vision models only). Image is the legacy single-image field kept for
+// existing callers; Images carries any number of additional images for a multi-image turn.
 type Message struct {
 	Role      string // "system" | "user" | "assistant"
 	Text      string
-	Image     []byte // optional inline image bytes
+	Image     []byte // optional single inline image (rendered before Images)
 	ImageMime string // e.g. "image/jpeg"; defaults to image/jpeg when Image is set
+	Images    []InlineImage
 }
 
 // CompleteOptions tune a single completion.
@@ -92,6 +155,11 @@ type CompleteOptions struct {
 
 // Complete sends the messages and returns the assistant's reply text.
 func (r *Runner) Complete(ctx context.Context, msgs []Message, opts CompleteOptions) (string, error) {
+	if r.completeTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, r.completeTimeout)
+		defer cancel()
+	}
 	if err := r.Available(ctx); err != nil {
 		return "", err
 	}
@@ -152,7 +220,7 @@ func (r *Runner) chatRequest(msgs []Message, opts CompleteOptions) map[string]an
 func chatMessages(msgs []Message, imageFormat string) []map[string]any {
 	out := make([]map[string]any, 0, len(msgs))
 	for _, m := range msgs {
-		if len(m.Image) == 0 {
+		if len(m.Image) == 0 && len(m.Images) == 0 {
 			out = append(out, map[string]any{"role": m.Role, "content": m.Text})
 			continue
 		}
@@ -161,18 +229,29 @@ func chatMessages(msgs []Message, imageFormat string) []map[string]any {
 	return out
 }
 
-// imageContent renders a vision turn's content blocks in the wire shape the server expects: the
+// imageContent renders a vision turn's content blocks: a leading text block, then the legacy single
+// Image (if set) followed by each of Images, all in the configured wire-format.
+func imageContent(m Message, imageFormat string) []map[string]any {
+	blocks := []map[string]any{{"type": "text", "text": m.Text}}
+	if len(m.Image) > 0 {
+		blocks = append(blocks, imageBlock(m.Image, m.ImageMime, imageFormat))
+	}
+	for _, img := range m.Images {
+		blocks = append(blocks, imageBlock(img.Data, img.Mime, imageFormat))
+	}
+	return blocks
+}
+
+// imageBlock renders one inline image as a content block in the wire shape the server expects: the
 // OpenAI Chat form ({"type":"image_url","image_url":{"url":<data-url>}}) or mlx-vlm's Responses form
 // ({"type":"input_image","image_url":<data-url>}).
-func imageContent(m Message, imageFormat string) []map[string]any {
-	mime := m.ImageMime
+func imageBlock(data []byte, mime, imageFormat string) map[string]any {
 	if mime == "" {
 		mime = "image/jpeg"
 	}
-	dataURL := "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(m.Image)
-	text := map[string]any{"type": "text", "text": m.Text}
+	dataURL := "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
 	if imageFormat == ImageFormatMLXVLM {
-		return []map[string]any{text, {"type": "input_image", "image_url": dataURL}}
+		return map[string]any{"type": "input_image", "image_url": dataURL}
 	}
-	return []map[string]any{text, {"type": "image_url", "image_url": map[string]string{"url": dataURL}}}
+	return map[string]any{"type": "image_url", "image_url": map[string]string{"url": dataURL}}
 }

@@ -16,12 +16,13 @@ import (
 
 // coloredCacheVersion namespaces the recolored-tile cache. Bump it whenever bortlePalette, the gradient
 // mapping, blackMarbleToSQM or sqmToBortle change, so stale colored tiles are ignored (served from a new
-// tiles_bortle_v{N} directory) rather than reused.
-const coloredCacheVersion = 1
+// tiles_bortle_v{N} directory) rather than reused. v2 = gradient follows the Bortle class boundaries
+// (sqmToBortleF). v3 = tiles are rendered from the offline atlas where it covers the pixel (GIBS only
+// outside coverage), so the map matches the accurate per-site badge.
+const coloredCacheVersion = 3
 
-// minGradientSQM is the bright end of the gradient. blackMarbleToSQM bottoms out at 17.0 (22 − 5·√1), so
-// a fully-lit pixel maps to the brightest palette colour and a dark pixel to the darkest.
-const minGradientSQM = 17.0
+// tileSize is the XYZ overlay tile edge in pixels (Leaflet + GIBS Black Marble are 256).
+const tileSize = 256
 
 // bortlePalette mirrors frontend/src/utils/bortle.ts BORTLE_COLORS: index 0 = Bortle 1 (darkest) …
 // index 8 = Bortle 9 (brightest). A unit test pins these values so the overlay and the legend can't drift.
@@ -46,7 +47,10 @@ func buildGradientLUT() [256]color.NRGBA {
 	var lut [256]color.NRGBA
 	for l := 0; l < 256; l++ {
 		sqm := blackMarbleToSQM(float64(l))
-		t := clampf((pristineSQM-sqm)/(pristineSQM-minGradientSQM), 0, 1) // 0 = darkest … 1 = brightest
+		// Map through the Bortle scale (not linearly over SQM) so the palette position equals the pixel's
+		// Bortle class: t=0 → Bortle 1 (darkest), t=1 → Bortle 9 (brightest). A linear SQM ramp diverged
+		// from the discrete sqmToBortle badge — painting Bortle-5 skies a Bortle-2/3 blue.
+		t := clampf((sqmToBortleF(sqm)-1)/8, 0, 1)
 		lut[l] = gradientColor(t)
 	}
 	return lut
@@ -91,15 +95,28 @@ func recolorTile(src image.Image) *image.NRGBA {
 	return dst
 }
 
-// ColoredTile returns a local path to the Bortle-recolored overlay tile at z/x/y. It reuses the raw tile
-// (and its disk cache) via FetchTile, recolors once, and caches the result under tiles_bortle_v{N}/. The
-// raw tiles/ cache and the per-site At() sampler are untouched.
+// ColoredTile returns a local path to the Bortle-recolored overlay tile at z/x/y, caching the result under
+// tiles_bortle_v{N}/. When the offline atlas covers (part of) the tile it renders each pixel from the
+// atlas's accurate SQM — so the map matches the per-site badge; pixels outside coverage fall back to the
+// coarse GIBS Black Marble recolor. With no atlas installed it is the plain GIBS recolor as before.
 func (p *Provider) ColoredTile(ctx context.Context, z, x, y int) (string, error) {
 	out := filepath.Join(p.cacheDir, fmt.Sprintf("tiles_bortle_v%d", coloredCacheVersion),
 		strconv.Itoa(z), strconv.Itoa(x), strconv.Itoa(y)+".png")
 	if _, err := os.Stat(out); err == nil {
 		return out, nil
 	}
+
+	if a := p.currentAtlas(); a != nil && tileIntersectsAtlas(z, x, y, a.meta) {
+		img, err := p.renderAtlasTile(ctx, a, z, x, y)
+		if err != nil {
+			return "", err
+		}
+		if err := writePNGAtomic(out, img); err != nil {
+			return "", err
+		}
+		return out, nil
+	}
+
 	rawPath, err := p.FetchTile(ctx, z, x, y)
 	if err != nil {
 		return "", err
@@ -112,6 +129,79 @@ func (p *Provider) ColoredTile(ctx context.Context, z, x, y int) (string, error)
 		return "", err
 	}
 	return out, nil
+}
+
+// renderAtlasTile paints a 256×256 tile from the atlas SQM (via the same sqmToBortleF gradient as the
+// badge). Pixels the atlas does not cover fall back to the GIBS luminance recolor when a raw GIBS tile is
+// available (fetched only when the tile is not wholly inside coverage), else to the darkest palette colour.
+func (p *Provider) renderAtlasTile(ctx context.Context, a *atlas, z, x, y int) (*image.NRGBA, error) {
+	a.ensureRAM() // fast per-pixel sampling; no-op (keeps ReadAt) for a too-large grid
+
+	var gibs image.Image
+	if !tileInsideAtlas(z, x, y, a.meta) && p.tileURL != "" {
+		if rawPath, err := p.FetchTile(ctx, z, x, y); err == nil {
+			gibs, _ = decodePNG(rawPath) // best-effort; nil → darkest fallback below
+		}
+	}
+
+	dst := image.NewNRGBA(image.Rect(0, 0, tileSize, tileSize))
+	for py := 0; py < tileSize; py++ {
+		for px := 0; px < tileSize; px++ {
+			lat, lon := pixelToLatLon(z, x, y, px, py)
+			if sqm, ok := a.sampleSQM(lat, lon); ok {
+				t := clampf((sqmToBortleF(sqm)-1)/8, 0, 1)
+				dst.SetNRGBA(px, py, gradientColor(t))
+				continue
+			}
+			dst.SetNRGBA(px, py, gibsFallback(gibs, px, py))
+		}
+	}
+	return dst, nil
+}
+
+// gibsFallback recolors one out-of-atlas pixel from the GIBS tile luminance, or the darkest palette colour
+// when no GIBS tile is available.
+func gibsFallback(gibs image.Image, px, py int) color.NRGBA {
+	if gibs == nil {
+		return bortlePalette[0]
+	}
+	b := gibs.Bounds()
+	if px >= b.Dx() || py >= b.Dy() {
+		return bortlePalette[0]
+	}
+	r, g, bl, _ := gibs.At(b.Min.X+px, b.Min.Y+py).RGBA()
+	lum := (0.299*float64(r) + 0.587*float64(g) + 0.114*float64(bl)) / 257.0
+	return gradientLUT[clampInt(int(lum+0.5), 0, 255)]
+}
+
+// pixelToLatLon inverts the Web-Mercator (XYZ) tiling: the centre-less top-left mapping of a pixel (px,py)
+// within tile z/x/y to geographic degrees. Inverse of mercatorTilePixel (sample.go).
+func pixelToLatLon(z, x, y, px, py int) (lat, lon float64) {
+	n := math.Exp2(float64(z))
+	xf := (float64(x) + float64(px)/tileSize) / n
+	yf := (float64(y) + float64(py)/tileSize) / n
+	lon = xf*360.0 - 180.0
+	lat = math.Atan(math.Sinh(math.Pi*(1-2*yf))) * 180.0 / math.Pi
+	return lat, lon
+}
+
+// tileLatLonBounds returns the geographic bbox a tile covers (north/south/west/east degrees).
+func tileLatLonBounds(z, x, y int) (n, s, w, e float64) {
+	n, w = pixelToLatLon(z, x, y, 0, 0)
+	s, e = pixelToLatLon(z, x, y, tileSize, tileSize)
+	return n, s, w, e
+}
+
+// tileIntersectsAtlas reports whether the tile overlaps the atlas coverage at all (worth rendering from it).
+func tileIntersectsAtlas(z, x, y int, m atlasMeta) bool {
+	n, s, w, e := tileLatLonBounds(z, x, y)
+	return s <= m.LatMax && n >= m.LatMin && w <= m.LonMax && e >= m.LonMin
+}
+
+// tileInsideAtlas reports whether the whole tile is within coverage (so no GIBS fallback fetch is needed).
+func tileInsideAtlas(z, x, y int, m atlasMeta) bool {
+	n, s, w, e := tileLatLonBounds(z, x, y)
+	return s >= m.LatMin && n <= m.LatMax && w >= m.LonMin && e <= m.LonMax
 }
 
 func decodePNG(path string) (image.Image, error) {

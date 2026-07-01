@@ -64,6 +64,17 @@ func RefineExistingRun(ctx context.Context, opts Options, runDir string) (*postp
 	return prior.Final, nil
 }
 
+// ReadRunResult loads a run's record (run.json) from runDir, so a caller (e.g. the job manager after
+// a refine) can surface the full updated run — channels, masters, and the refreshed final + supervised
+// iterations — as the job result.
+func ReadRunResult(runDir string) (*Result, error) {
+	dir, err := filepath.Abs(runDir)
+	if err != nil {
+		return nil, err
+	}
+	return readRunJSON(dir)
+}
+
 // readRunJSON loads a prior run's record from outDir/run.json.
 func readRunJSON(outDir string) (*Result, error) {
 	b, err := os.ReadFile(filepath.Join(outDir, "run.json"))

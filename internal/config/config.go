@@ -38,9 +38,13 @@ type Config struct {
 	// Optional local LLM "supervisor" (opt-in via the run request / --supervise). The engine drives a
 	// host-run, OpenAI-compatible model server (LM Studio / mlx-vlm) over HTTP to auto-tune the finish.
 	// An empty URL or an unreachable server → the run uses the normal single-pass finish.
-	LLMBaseURL     string // OpenAI-compatible base, e.g. http://127.0.0.1:1234/v1
-	LLMModel       string // chat/vision model id served there
-	LLMImageFormat string // vision wire-format: "openai" (default) or "mlxvlm"
+	LLMBaseURL     string        // OpenAI-compatible base, e.g. http://127.0.0.1:1234/v1
+	LLMModel       string        // chat/vision model id served there
+	LLMImageFormat string        // vision wire-format: "openai" (default) or "mlxvlm"
+	LLMTimeout     time.Duration // max wall-clock for one chat/vision completion; 0 → no limit
+	// LLMAssistPromptExtra is appended to the AstroAgent chat system prompt (tone/policy tweaks without
+	// recompiling); the grounding rules + knob menu stay fixed in code.
+	LLMAssistPromptExtra string
 
 	// Resource limits keep a heavy stack from freezing the host (Siril defaults to all cores and
 	// 90% of RAM, which thrashes swap). MaxCPUs caps Siril's threads (setcpu); SirilMemRatio caps
@@ -183,9 +187,11 @@ func Load() *Config {
 		GraxpertBin: env("GRAXPERT_BIN", "graxpert"),
 		StarnetBin:  env("STARNET_BIN", "starnet++"),
 
-		LLMBaseURL:     env("ASTRO_LLM_URL", "http://127.0.0.1:1234/v1"),
-		LLMModel:       env("ASTRO_LLM_MODEL", ""),
-		LLMImageFormat: env("ASTRO_LLM_IMAGE_FORMAT", "openai"),
+		LLMBaseURL:           env("ASTRO_LLM_URL", "http://127.0.0.1:1234/v1"),
+		LLMModel:             env("ASTRO_LLM_MODEL", ""),
+		LLMImageFormat:       env("ASTRO_LLM_IMAGE_FORMAT", "openai"),
+		LLMTimeout:           time.Duration(envInt("ASTRO_LLM_TIMEOUT_SEC", 3600)) * time.Second,
+		LLMAssistPromptExtra: env("ASTRO_LLM_ASSIST_PROMPT_EXTRA", ""),
 
 		MaxCPUs:       envInt("ASTRO_MAX_CPUS", 10),
 		SirilMemRatio: envFloat("ASTRO_SIRIL_MEM_RATIO", 0.5),
@@ -258,9 +264,11 @@ func Load() *Config {
 		WeatherSevenTimerURL: env("ASTRO_WEATHER_SEVENTIMER_URL", "https://www.7timer.info/bin/api.pl"),
 		WeatherSWPCURL:       env("ASTRO_WEATHER_SWPC_URL", "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"),
 		WeatherGridRadiusDeg: envFloat("ASTRO_WEATHER_GRID_RADIUS_DEG", 4),
-		WeatherGridSize:      envInt("ASTRO_WEATHER_GRID_SIZE", 16),
-		WeatherCacheTTLMin:   envInt("ASTRO_WEATHER_CACHE_TTL_MIN", 30),
-		WeatherMeteoblueKey:  env("ASTRO_WEATHER_METEOBLUE_KEY", ""),
+		// 22×22 over the 8° box ≈ 3.1 cells/° — sharp enough to read as a weather map (was 16). Grid
+		// coords are trimmed to 3 decimals (see joinFloats) so the single bulk Open-Meteo GET stays ~7KB.
+		WeatherGridSize:     envInt("ASTRO_WEATHER_GRID_SIZE", 22),
+		WeatherCacheTTLMin:  envInt("ASTRO_WEATHER_CACHE_TTL_MIN", 30),
+		WeatherMeteoblueKey: env("ASTRO_WEATHER_METEOBLUE_KEY", ""),
 	}
 }
 

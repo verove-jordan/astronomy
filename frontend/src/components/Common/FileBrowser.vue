@@ -7,6 +7,8 @@ import IconFolder from "@/components/Icons/IconFolder.vue";
 import IconFile from "@/components/Icons/IconFile.vue";
 import IconChevronRight from "@/components/Icons/IconChevronRight.vue";
 import IconArrowUp from "@/components/Icons/IconArrowUp.vue";
+import IconDownload from "@/components/Icons/IconDownload.vue";
+import IconCloud from "@/components/Icons/IconCloud.vue";
 import IconX from "@/components/Icons/IconX.vue";
 import { usePathBreadcrumb } from "@/composables/usePathBreadcrumb";
 import { btnGhost, btnPrimary, entrySelected, input } from "@/constants/styles";
@@ -28,6 +30,8 @@ const props = withDefaults(
     // processed maps a folder path → its past-processing info (a coloured dot; folders processed
     // together share a colour). Omitted by the single-folder picker (live stacking).
     processed?: Map<string, ProcessedFolder>;
+    // s3Enabled turns on the S3 presence badges + per-selection transfer actions (Import view only).
+    s3Enabled?: boolean;
   }>(),
   { selected: () => [], multiSelect: true },
 );
@@ -37,6 +41,7 @@ const emit = defineEmits<{
   (e: "inspect", paths: string[]): void;
   (e: "toggle", entry: BrowseEntry): void;
   (e: "clearSelection"): void;
+  (e: "transfer", op: "upload" | "sync" | "download" | "removeLocal"): void;
 }>();
 
 const { t } = useI18n();
@@ -244,13 +249,16 @@ function up() {
       <span class="text-xs font-medium text-slate-500">{{
         t("import.selectedCount", { n: selected.length })
       }}</span>
-      <span
-        v-for="s in selected"
-        :key="s.path"
-        :class="entrySelected"
-        :title="s.path"
-      >
-        <span class="max-w-[12rem] truncate">{{ s.name }}</span>
+      <span v-for="s in selected" :key="s.path" :class="entrySelected">
+        <!-- Click the name to reveal that folder in the columns (it may live in another location). -->
+        <button
+          type="button"
+          class="max-w-[12rem] cursor-pointer truncate hover:underline"
+          :title="t('import.revealFolder', { path: s.path })"
+          @click="emit('navigate', s.path)"
+        >
+          {{ s.name }}
+        </button>
         <button
           class="-mr-0.5 ml-0.5 rounded-sm text-brand-500 hover:text-brand-700 dark:text-brand-300 dark:hover:text-brand-100"
           :aria-label="t('common.remove')"
@@ -266,6 +274,37 @@ function up() {
       >
         {{ t("common.clear") }}
       </button>
+
+      <!-- S3 transfer actions for the selected folders (each becomes a job with a progress bar). -->
+      <span
+        v-if="s3Enabled"
+        class="ml-auto inline-flex items-center gap-1 border-l border-slate-200 pl-2 dark:border-slate-700"
+      >
+        <button
+          :class="btnGhost"
+          class="inline-flex items-center gap-1 !px-2 !py-1 !text-xs"
+          :title="t('s3.action.syncHint')"
+          @click="emit('transfer', 'sync')"
+        >
+          <IconArrowUp class="h-3 w-3" /> {{ t("s3.action.sync") }}
+        </button>
+        <button
+          :class="btnGhost"
+          class="inline-flex items-center gap-1 !px-2 !py-1 !text-xs"
+          :title="t('s3.action.downloadHint')"
+          @click="emit('transfer', 'download')"
+        >
+          <IconDownload class="h-3 w-3" /> {{ t("s3.action.download") }}
+        </button>
+        <button
+          :class="btnGhost"
+          class="inline-flex items-center gap-1 !px-2 !py-1 !text-xs text-danger"
+          :title="t('s3.action.removeLocalHint')"
+          @click="emit('transfer', 'removeLocal')"
+        >
+          <IconX class="h-3 w-3" /> {{ t("s3.action.removeLocal") }}
+        </button>
+      </span>
     </div>
 
     <!-- macOS-style cascading columns: each directory's subfolders sit in their own column; clicking a
@@ -347,7 +386,22 @@ function up() {
               @dblclick="onRowDblclick(e)"
             >
               <IconFolder class="shrink-0 text-brand-500 dark:text-brand-300" />
-              <span class="min-w-0 grow truncate">{{ e.name }}</span>
+              <span
+                class="min-w-0 grow truncate"
+                :class="
+                  s3Enabled && e.remote && !e.local ? 'italic opacity-70' : ''
+                "
+                >{{ e.name }}</span
+              >
+              <!-- S3 presence: cloud = on S3; emerald when also local (synced), sky when only on S3. -->
+              <IconCloud
+                v-if="s3Enabled && e.remote"
+                class="h-3.5 w-3.5 shrink-0"
+                :class="e.local ? 'text-emerald-500' : 'text-sky-500'"
+                :title="
+                  e.local ? t('s3.badge.synced') : t('s3.badge.cloudOnly')
+                "
+              />
               <span
                 v-if="proc(e.path)"
                 class="h-2.5 w-2.5 shrink-0 rounded-full ring-1 ring-black/10 dark:ring-white/20"

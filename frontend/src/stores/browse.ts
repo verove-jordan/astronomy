@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { apiGet, apiPost, previewUrl } from "@/services/api";
 import { PROCESSED_GROUP_COLORS } from "@/constants/colors";
 import { baseName } from "@/utils/format";
+import { useS3Store } from "@/stores/s3";
 import type {
   BrowseEntry,
   Inventory,
@@ -126,13 +127,26 @@ export const useBrowseStore = defineStore("browse", () => {
     }));
   }
 
+  // browseQuery builds the /api/browse query string, folding in the chosen S3 bucket/prefix when S3 is
+  // active so the backend returns local/cloud/both presence for each folder.
+  function browseQuery(p?: string): string {
+    const params = new URLSearchParams();
+    if (p) params.set("path", p);
+    const s3 = useS3Store();
+    if (s3.active) {
+      params.set("bucket", s3.bucket);
+      params.set("prefix", s3.prefix);
+    }
+    const qs = params.toString();
+    return qs ? `?${qs}` : "";
+  }
+
   async function browse(p?: string) {
     loading.value = true;
     error.value = "";
     try {
-      const query = p ? `?path=${encodeURIComponent(p)}` : "";
       const data = await apiGet<{ path: string; entries: BrowseEntry[] }>(
-        `/api/browse${query}`,
+        `/api/browse${browseQuery(p)}`,
       );
       path.value = data.path;
       entries.value = data.entries || [];
@@ -147,7 +161,7 @@ export const useBrowseStore = defineStore("browse", () => {
   // column (Miller) view uses it to fill the ancestor columns to the left of the active folder.
   async function listDir(p: string): Promise<BrowseEntry[]> {
     const data = await apiGet<{ path: string; entries: BrowseEntry[] }>(
-      `/api/browse?path=${encodeURIComponent(p)}`,
+      `/api/browse${browseQuery(p)}`,
     );
     return data.entries || [];
   }

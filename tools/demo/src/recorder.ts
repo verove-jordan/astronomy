@@ -88,7 +88,26 @@ export async function record(
   await ctx.addInitScript((lang) => localStorage.setItem("locale", lang), meta.lang);
   await ctx.addInitScript(demoRuntime, { accent: ACCENT });
 
+  // Pin the frontend's API calls to meta.baseApi via request routing — so the demo always reaches the
+  // intended engine even when the running web server was built against a different API base/port (e.g. a
+  // stale duplicate on another port). No-op when the frontend already targets the right port.
+  const apiBase = new URL(meta.baseApi);
+  await ctx.route("**/api/**", async (route) => {
+    const u = new URL(route.request().url());
+    if (u.hostname === apiBase.hostname && u.port !== apiBase.port) {
+      u.protocol = apiBase.protocol;
+      u.port = apiBase.port;
+      await route.continue({ url: u.toString() }).catch(() => route.continue());
+    } else {
+      await route.continue();
+    }
+  });
+
   const page = await ctx.newPage();
+  // Cap the default action timeout so a step that targets a missing/disabled element fails fast (and the
+  // per-step safety net moves on) instead of hanging on Playwright's 30s default and inflating the video.
+  // Steps that legitimately wait longer (search results) pass their own explicit timeout.
+  page.setDefaultTimeout(7000);
   const video = page.video();
   const t0 = Date.now();
   const now = () => Date.now() - t0;
@@ -96,7 +115,14 @@ export async function record(
 
   const steps = buildSteps(scenario);
   for (const step of steps) {
-    await runStep(page, meta.baseWeb, step, now, spans);
+    // A single flaky interaction shouldn't abort a multi-minute render — log and continue. The timeline
+    // stays contiguous because postprocess rebuilds span boundaries.
+    try {
+      await runStep(page, meta.baseWeb, step, now, spans);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message.split("\n")[0] : String(err);
+      console.warn(`  ! step "${step.name ?? "?"}" failed (continuing): ${msg}`);
+    }
   }
 
   await a.clearCaption(page).catch(() => {});
@@ -170,9 +196,25 @@ async function runStep(
     return;
   }
 
-  if (step.click) await a.click(page, a.resolve(page, step.click));
-  if (step.hover) await a.hover(page, a.resolve(page, step.hover));
+  // Reveal first (scroll/zoom), then act (click/draw/select/hover/external) — so a tour brings content
+  // into view before the cursor moves to it.
   if (step.scrollTo) await a.scrollTo(page, a.resolve(page, step.scrollTo));
+  if (step.scroll) await a.scrollPage(page, step.scroll);
+  if (step.mapZoom) await a.mapZoom(page, a.resolve(page, step.mapZoom.on), step.mapZoom);
+  if (step.click) await a.click(page, a.resolve(page, step.click));
+  if (step.drawRect)
+    await a.drawRect(
+      page,
+      a.resolve(page, step.drawRect.on),
+      step.drawRect.from,
+      step.drawRect.to,
+      step.drawRect.ms,
+    );
+  if (step.select)
+    await a.selectOption(page, a.resolve(page, step.select.into), step.select.value, step.select.label);
+  if (step.hover) await a.hover(page, a.resolve(page, step.hover));
+  if (step.external) await a.clickExternalTab(page, a.resolve(page, step.external));
+  if (step.waitFor) await a.waitForVisible(page, a.resolve(page, step.waitFor));
   if (step.highlight) await a.spotlight(page, a.resolve(page, step.highlight));
   if (step.waitForJob) await a.waitForJob(page, step.waitForJob);
 

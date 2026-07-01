@@ -68,6 +68,11 @@ func weightedCentroid(v []float32, w, h, px, py, window int, bg float64) Point {
 	return Point{X: sx / sw, Y: sy / sw}
 }
 
+// BoxBlur returns a separable box-blurred copy of a single-channel plane (one horizontal then one
+// vertical pass of radius r). Exported so callers (e.g. planetary AP alignment) can pre-blur a frame
+// once and run many windowed correlations on it.
+func BoxBlur(src []float32, w, h, r int) []float32 { return boxBlur(src, w, h, r) }
+
 // boxBlur returns a separable box-blurred copy of a single-channel plane (one horizontal then one
 // vertical pass of radius r). Edges average only the in-bounds neighbors.
 func boxBlur(src []float32, w, h, r int) []float32 {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { useRoute } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { setLocale } from "@/i18n";
@@ -8,12 +8,22 @@ import AppLogo from "@/components/Common/AppLogo.vue";
 import NightSky from "@/components/Common/NightSky.vue";
 import FileViewer from "@/components/Common/FileViewer.vue";
 import { useViewerStore } from "@/stores/viewer";
+import { useAgentStore } from "@/stores/agent";
+import { useAutoRefresh } from "@/composables/useAutoRefresh";
 
 // AstroStack is always dark (night-sky tool); the dark class is forced in index.html.
 const { t, locale } = useI18n();
 // One app-wide file viewer (opened from any file table / the inspector via the viewer store).
 const viewer = useViewerStore();
 const route = useRoute();
+
+// Poll local-agent availability app-wide so the "AstroAgent" nav link (and page) show only while the
+// local vision model server is running.
+const agent = useAgentStore();
+const { enabled: agentPoll } = useAutoRefresh(
+  () => agent.refreshStatus(),
+  10_000,
+);
 
 function toggleLocale() {
   setLocale(locale.value === "en" ? "fr" : "en");
@@ -25,14 +35,19 @@ const linkActive =
   "rounded-md px-3 py-2 text-sm font-medium bg-brand-600 text-white";
 const navClass = (active: boolean) => (active ? linkActive : linkBase);
 
-// Three top-level destinations. "Processing" stays highlighted for any /processing/* route (its nested
-// Import/Live/Tasks/Runs/Library tabs, plus the old-path redirects that land there).
-const links = [
-  { to: "/tonight", key: "nav.tonight" },
-  { to: "/goto", key: "nav.goto" },
-  { to: "/calendar", key: "nav.calendar" },
-  { to: "/processing", key: "nav.processing", prefix: "/processing" },
-];
+// Top-level destinations. "Processing" stays highlighted for any /processing/* route (its nested
+// Import/Live/Tasks/Runs/Library tabs, plus the old-path redirects that land there). The AstroAgent
+// link is appended only while the local model server is up.
+const links = computed(() => {
+  const base: { to: string; key: string; prefix?: string }[] = [
+    { to: "/tonight", key: "nav.tonight" },
+    { to: "/goto", key: "nav.goto" },
+    { to: "/calendar", key: "nav.calendar" },
+    { to: "/processing", key: "nav.processing", prefix: "/processing" },
+  ];
+  if (agent.available) base.push({ to: "/astroagent", key: "nav.astroAgent" });
+  return base;
+});
 function linkIsActive(l: { to: string; prefix?: string }): boolean {
   return l.prefix ? route.path.startsWith(l.prefix) : route.path === l.to;
 }
@@ -50,6 +65,8 @@ onMounted(() => {
   syncTopbarHeight();
   ro = new ResizeObserver(syncTopbarHeight);
   if (headerEl.value) ro.observe(headerEl.value);
+  void agent.refreshStatus(); // immediate check so the link appears without waiting a full interval
+  agentPoll.value = true;
 });
 onBeforeUnmount(() => {
   ro?.disconnect();

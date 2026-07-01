@@ -13,7 +13,44 @@
     "jobs": "Jobs",
     "runs": "Runs",
     "library": "Calibration library",
-    "processing": "Processing"
+    "processing": "Processing",
+    "astroAgent": "AstroAgent"
+  },
+  "astroAgent": {
+    "title": "AstroAgent",
+    "subtitle": "Chat with the local vision model — send prompts and images, see its replies.",
+    "modelLabel": "Model",
+    "modelMissing": "No model configured. Set ASTRO_LLM_MODEL (or pick one above) to chat.",
+    "placeholder": "Ask the model something, or attach an image and describe what you want…",
+    "attach": "Attach image",
+    "removeImage": "Remove image",
+    "send": "Send",
+    "sending": "Sending…",
+    "sendHint": "⌘/Ctrl + Enter to send",
+    "thinking": "AstroAgent is thinking…",
+    "clear": "Clear",
+    "empty": "No messages yet. Ask a question or attach an image to test the model.",
+    "notRunning": "The local agent is not running.",
+    "notRunningHint": "Start the local vision model server, then this page reconnects automatically:",
+    "newChat": "New chat",
+    "history": "Conversations",
+    "noChats": "No conversations yet.",
+    "deleteChat": "Delete conversation",
+    "copy": "Copy",
+    "copied": "Copied",
+    "stats": {
+      "title": "Measured stats",
+      "background": "Background",
+      "cast": "Colour cast",
+      "clipping": "Clipping (black/white)",
+      "gradient": "Gradient",
+      "trail": "Trail",
+      "neutral": "neutral",
+      "green": "green",
+      "magenta": "magenta",
+      "detected": "detected",
+      "none": "none"
+    }
   },
   "goto": {
     "title": "GoTo alignment assistant",
@@ -118,6 +155,15 @@
       "balanced": "Balanced",
       "brighter": "Brighter"
     },
+    "orientation": "Orientation",
+    "orientations": {
+      "auto": "Auto (EXIF)",
+      "none": "Original",
+      "cw": "Rotate 90° right",
+      "ccw": "Rotate 90° left",
+      "180": "Rotate 180°"
+    },
+    "mirror": "Mirror horizontally",
     "calibration": "Calibration frames (optional)",
     "calibPlaceholder": "/path/to/folder",
     "darks": "Darks",
@@ -138,6 +184,29 @@
     "subtitle": "These library masters match your lights and will be applied. Uncheck any to skip it.",
     "frames": "{n} frames",
     "role": { "dark": "Dark", "flat": "Flat", "bias": "Bias" }
+  },
+  "s3": {
+    "title": "S3 storage",
+    "bucket": "Bucket",
+    "prefix": "Prefix (optional)",
+    "pickBucket": "Choose a bucket…",
+    "test": "Refresh",
+    "connected": "Connected",
+    "notConfigured": "S3 is not configured — set ASTRO_S3_* in the environment to enable cloud storage.",
+    "queued": "Queued {n} transfer(s).",
+    "badge": {
+      "synced": "On S3 (synced with local)",
+      "cloudOnly": "Only on S3 — download to use it locally"
+    },
+    "action": {
+      "sync": "Sync",
+      "syncHint": "Upload files missing on S3 (keeps local copies)",
+      "download": "Download",
+      "downloadHint": "Download the selected folders from S3 to local",
+      "removeLocal": "Free local",
+      "removeLocalHint": "Delete local copies — only after verifying every file is on S3",
+      "upload": "Upload"
+    }
   },
   "common": {
     "inspect": "Inspect",
@@ -175,6 +244,7 @@
     "selectedCount": "{n} selected",
     "nFolders": "{n} folders",
     "selectFolder": "Add to selection",
+    "revealFolder": "Show in the browser · {path}",
     "noFolders": "No subfolders here.",
     "browseTitle": "Files",
     "currentFolder": "Current folder",
@@ -234,15 +304,18 @@
     "integration": "Integration",
     "gain": "Gain",
     "offset": "Offset",
+    "iso": "ISO",
     "temp": "Temp",
     "type": "Type",
     "frames": "Frames",
     "file": "File",
+    "camera": "Camera",
     "dimensions": "Dimensions",
     "index": "#",
     "fwhm": "FWHM",
     "roundness": "Roundness",
     "stars": "Stars",
+    "score": "Sharpness",
     "status": "Status",
     "reason": "Reason",
     "mode": "Mode",
@@ -251,7 +324,9 @@
     "input": "Input",
     "id": "ID",
     "kind": "Kind",
-    "progress": "Progress"
+    "progress": "Progress",
+    "started": "Started",
+    "duration": "Duration"
   },
   "job": {
     "title": "Job",
@@ -283,15 +358,34 @@
     "cancel": "Cancel run",
     "cancelling": "Cancelling…",
     "stopFinalize": "Stop & finalize",
+    "restart": "Restart",
+    "restarting": "Restarting…",
     "remove": "Remove",
     "queueBadge": "{n} queued"
   },
   "supervisor": {
     "title": "Local AI agent — finish iterations",
-    "hint": "Each pass re-renders the finish and is scored by the local vision model; the best is kept.",
+    "hint": "Each pass diagnoses the image, re-processes at the cheapest tier that helps, and is scored by the local vision model; the best is kept.",
     "chosen": "Chosen",
     "iteration": "Iteration {n}",
+    "tier": "Tier {tier}",
+    "tierName": {
+      "A": "Composite only",
+      "B": "Finish reprocessing",
+      "C": "Full re-stack"
+    },
     "scoreSplit": "metrics {det} · model {model}"
+  },
+  "refine": {
+    "title": "Improve this run with AI",
+    "hint": "The local vision model looks at the result, diagnoses its defects, and re-finishes it — iterating until it's clean.",
+    "reach": "How far",
+    "tierA": "Composite look",
+    "tierB": "Reprocess finish",
+    "iters": "Max passes",
+    "itersAuto": "auto",
+    "run": "Improve with AI",
+    "starting": "Starting…"
   },
   "log": { "empty": "No log output yet." },
   "viewer": {
@@ -318,6 +412,8 @@
   },
   "library": {
     "title": "Calibration library",
+    "deepskyTitle": "Camera masters (cooled)",
+    "phoneTitle": "Phone / DSLR masters (ISO)",
     "empty": "The library is empty. Run a pipeline with calibration frames to populate it."
   },
   "status": {
@@ -344,7 +440,21 @@
     "distance": "Distance",
     "locate": "Locate",
     "useLocation": "Use",
-    "noResults": "No matching locations — try a larger area or a higher Bortle."
+    "noResults": "No matching locations — try a larger area or a higher Bortle.",
+    "offline": {
+      "title": "Offline data",
+      "none": "Using coarse online data — install an offline atlas for accurate dark-sky values.",
+      "covers": "Offline: {area} · built {date}",
+      "download": "Download",
+      "building": "Downloading… {done}/{total}",
+      "regions": {
+        "france": "France",
+        "europe": "Western Europe",
+        "world": "Whole world",
+        "custom": "Drawn area"
+      },
+      "hint": "Downloads the David Lorenz light-pollution model once for the chosen area; all values are then computed offline. © David Lorenz."
+    }
   },
   "tonight": {
     "title": "Tonight's targets",
@@ -384,6 +494,11 @@
       "clouds": "Clouds",
       "humidity": "Humidity",
       "precip": "Rain chance"
+    },
+    "lp": {
+      "uncovered": "Detailed light-pollution data isn't downloaded for this area.",
+      "download": "Download this area",
+      "downloading": "Downloading… {done}/{total}"
     },
     "weather": {
       "title": "Astronomy weather",
@@ -443,7 +558,13 @@
       "sensorWidth": "Sensor width (px)",
       "sensorHeight": "Sensor height (px)",
       "fov": "Field of view",
-      "scale": "Image scale"
+      "scale": "Image scale",
+      "setups": {
+        "title": "Setups",
+        "save": "Save",
+        "namePlaceholder": "Setup name",
+        "renameHint": "Click to load · double-click to rename"
+      }
     },
     "mode": {
       "title": "Mode",

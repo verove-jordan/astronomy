@@ -39,7 +39,7 @@ func buildSets(frames []*Frame) []Set {
 // setKeyFor builds the grouping key for a frame, including only the fields that matter for
 // its type (e.g. bias ignores exposure, filter and temperature).
 func setKeyFor(fr *Frame) SetKey {
-	key := SetKey{Type: fr.Type, Gain: fr.Gain, Offset: fr.Offset, Bin: fr.BinX}
+	key := SetKey{Type: fr.Type, Gain: fr.Gain, Offset: fr.Offset, ISO: fr.ISO, Bin: fr.BinX}
 	if fr.HasTemp && fr.Type != Bias {
 		// Bucket to the nearest 5 °C so minor drift (e.g. -19.5/-20.0/-20.5) doesn't split a
 		// light stack, while still separating genuinely different dark temperatures.
