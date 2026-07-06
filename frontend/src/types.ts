@@ -231,6 +231,7 @@ export interface PlanetaryFrame {
 // JobParams mirrors the POST /api/jobs body (also returned in Job.params).
 export interface JobParams {
   path?: string;
+  paths?: string[];
   mode?: string;
   format?: string;
   filter_map?: Record<string, string>;

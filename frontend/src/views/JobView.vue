@@ -69,11 +69,18 @@ onMounted(async () => {
   await jobsStore.get(jobId);
   const jb = jobsStore.current;
   if (jb?.log_tail) seed(jb.log_tail.split("\n"));
-  // If the create-time inventory was lost (hard reload) and the job is still running, re-inspect.
+  // If the create-time inventory was lost (a restarted job, or a hard reload) and the job is still
+  // running, re-inspect. Pass the FULL folder selection (params.paths ?? [params.path]) so a
+  // multi-folder run whose primary path is a calibration folder still finds the light frames.
   const stillRunning =
     jb && (jb.status === "running" || jb.status === "queued");
-  if (stillRunning && !jobsStore.captureFor(jobId) && jb?.params?.path) {
-    reInv.value = await jobsStore.inspectCapture(jb.params.path);
+  const folders = jb?.params?.paths?.length
+    ? jb.params.paths
+    : jb?.params?.path
+      ? [jb.params.path]
+      : [];
+  if (stillRunning && !jobsStore.captureFor(jobId) && folders.length) {
+    reInv.value = await jobsStore.inspectCapture(folders);
   }
 });
 

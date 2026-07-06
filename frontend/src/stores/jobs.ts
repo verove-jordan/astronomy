@@ -212,9 +212,19 @@ export const useJobsStore = defineStore("jobs", () => {
 
   // inspectCapture re-scans a path so a hard-reloaded running job can still show its capture summary
   // (when the create-time inventory was lost). Returns null on failure rather than throwing.
-  async function inspectCapture(path: string): Promise<Inventory | null> {
+  // inspectCapture rescans a job's capture folder(s) to rebuild the "selected capture" summary when
+  // the create-time inventory is gone (a restarted job, or a hard reload). It accepts the full
+  // multi-folder selection so a multi-select run — whose PRIMARY path may be a darks/flats folder
+  // with no lights — still resolves the real pose count from the light folders.
+  async function inspectCapture(
+    paths: string | string[],
+  ): Promise<Inventory | null> {
+    const list = Array.isArray(paths) ? paths.filter(Boolean) : [paths];
+    if (list.length === 0) return null;
     try {
-      return await apiPost<Inventory>("/api/inspect", { path });
+      const body =
+        list.length > 1 ? { paths: list } : { path: list[0] };
+      return await apiPost<Inventory>("/api/inspect", body);
     } catch {
       return null;
     }
@@ -230,7 +240,15 @@ export const useJobsStore = defineStore("jobs", () => {
   // restart re-runs a finished (failed/cancelled) job as a brand-new job with the same parameters,
   // returning the new job id so the caller can navigate to it.
   async function restart(id: number): Promise<number> {
-    const data = await apiPost<{ id: number }>(`/api/jobs/${id}/restart`);
+    const data = await apiPost<{ id: number; turn_id?: string }>(
+      `/api/jobs/${id}/restart`,
+    );
+    // Carry the source job's stashed capture inventory onto the new id so its "selected capture"
+    // panel shows the real pose count / integration immediately (a running job has no result yet),
+    // and bind the live AI-finish panel when the restarted job is supervised.
+    const inv = captureByJob.value[id];
+    if (inv) captureByJob.value[data.id] = inv;
+    if (data.turn_id) turnByJob.value[data.id] = data.turn_id;
     return data.id;
   }
 

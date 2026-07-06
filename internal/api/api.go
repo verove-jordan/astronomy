@@ -406,7 +406,9 @@ func (s *Server) restartJob(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"id": newID})
+	// turn_id is set when the restarted job is supervised, so its live AI-finish panel binds to the
+	// NEW job's turn (Restart replays the stored request, which may carry Supervise). Empty otherwise.
+	writeJSON(w, http.StatusAccepted, map[string]any{"id": newID, "turn_id": s.mgr.TurnFor(newID)})
 }
 
 // refineJob re-finishes a completed run under the AI supervisor (no re-stack) as a new job, and returns

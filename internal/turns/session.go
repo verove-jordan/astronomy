@@ -8,6 +8,7 @@ package turns
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -148,18 +149,32 @@ const reapGrace = 60 * time.Second
 // Sessions is the hub of live turns, keyed by turn id. It mirrors job.Manager's subscribe/publish so the
 // SSE transport and the client stream match the existing job-events pattern.
 type Sessions struct {
-	mu  sync.Mutex
-	m   map[string]*session
-	seq int64
+	mu    sync.Mutex
+	m     map[string]*session
+	seq   int64
+	epoch string // per-process nonce so turn ids never collide across a server restart
 }
 
-// NewSessions returns an empty turn hub.
-func NewSessions() *Sessions { return &Sessions{m: map[string]*session{}} }
+// NewSessions returns an empty turn hub. Its epoch is a per-process nonce mixed into every turn id:
+// the sequence counter alone restarts at 1 on every server boot (air hot-reload, crash recovery,
+// deploy), so a fresh process would re-mint "t1", "t2", … and the frontend — which persists agent
+// conversations in IndexedDB keyed by turn id — would bind a NEW job's live panel to a PREVIOUS
+// run's stale conversation. The epoch makes each boot's ids unique (t<epoch>-<n>).
+func NewSessions() *Sessions {
+	return &Sessions{m: map[string]*session{}, epoch: newEpoch()}
+}
 
-// Start mints a new turn id and creates its session. The caller runs the turn's loop, streaming steps
-// via Publish and blocking on Await for confirmations.
+// newEpoch returns a short, monotonic-ish, collision-resistant per-process token. It avoids adding a
+// dependency (this is a stdlib-only leaf package) by base-36 encoding the boot nanotime — distinct
+// per process start, and never re-used because the counter is appended.
+func newEpoch() string {
+	return strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+// Start mints a new (process-unique) turn id and creates its session. The caller runs the turn's
+// loop, streaming steps via Publish and blocking on Await for confirmations.
 func (h *Sessions) Start() string {
-	id := fmt.Sprintf("t%d", atomic.AddInt64(&h.seq, 1))
+	id := fmt.Sprintf("t%s-%d", h.epoch, atomic.AddInt64(&h.seq, 1))
 	s := newSession()
 	h.mu.Lock()
 	h.m[id] = s
