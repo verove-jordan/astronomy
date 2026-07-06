@@ -3,6 +3,7 @@ package postprocess
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,18 +20,25 @@ const spccTimeout = 4 * time.Minute
 type ColorCalOptions struct {
 	Enabled     bool
 	RemoveGreen bool
+	StarField   bool // enable the star-field gain fallback between SPCC and neutralization
+	StarCal     StarCalOptions
 	Solve       siril.SolveOptions
 	Spcc        siril.SpccOptions
 }
 
-// ColorCalibrate calibrates the named linear image in dir, overwriting it. It first tries
-// plate-solve + SPCC (natural color, neutral background); if that fails — no catalog, offline, or
-// an unsolvable field — it falls back to SCNR green removal (background gradients are assumed
-// already extracted upstream). It returns a human-readable note describing which path ran and
-// spccApplied=true ONLY when photometric SPCC actually calibrated (false for every fallback), so the
-// caller can decide whether a channel balance is trustworthy (e.g. linked vs unlinked stretch). Only a
-// hard Siril failure of the fallback returns an error, so a calibration miss never aborts the run.
-func ColorCalibrate(ctx context.Context, runner *siril.Runner, dir, base string, opts ColorCalOptions) (note string, spccApplied bool, err error) {
+// ColorCalibrate calibrates the named linear image in dir, overwriting it. The ladder:
+//
+//  1. plate-solve + SPCC — true photometric color (natural star/nebulosity hues);
+//  2. star-field gain calibration (StarField) — per-channel GAINS estimated from the field's own
+//     stars, so results stay neutral-natural even fully offline (the neutralization fallback below
+//     only equalizes the sky pedestal and leaves a red-strong rig's signal systematically warm);
+//  3. SCNR green removal over a degree-1 background neutralization — the last resort.
+//
+// It returns a human-readable note describing which path ran and calibrated=true when a TRUSTWORTHY
+// channel balance was established (SPCC or star-field — both are worth preserving with a linked
+// stretch); false for the neutralization fallback. Only a hard Siril failure of the last-resort
+// fallback returns an error, so a calibration miss never aborts the run.
+func ColorCalibrate(ctx context.Context, runner *siril.Runner, dir, base string, opts ColorCalOptions) (note string, calibrated bool, err error) {
 	if opts.Enabled {
 		sctx, cancel := context.WithTimeout(ctx, spccTimeout)
 		res, err := runner.Run(sctx, dir, siril.ColorCalibrateScript(base, base, opts.Solve, opts.Spcc), nil)
@@ -39,9 +47,19 @@ func ColorCalibrate(ctx context.Context, runner *siril.Runner, dir, base string,
 			return "SPCC color calibration applied", true, nil
 		}
 	}
+	if opts.Enabled && opts.StarField {
+		fitsPath := filepath.Join(dir, base+".fits")
+		if r, serr := StarFieldCalibrate(fitsPath, opts.StarCal); serr == nil && r.Applied {
+			return fmt.Sprintf("SPCC unavailable — star-field photometric fallback (gains R=%.2f B=%.2f from %d stars)",
+				r.GainR, r.GainB, r.Stars), true, nil
+		} else if serr != nil {
+			// Soft-fail into neutralization; the note keeps the miss visible.
+			note = "star-field fallback failed (" + serr.Error() + "); "
+		}
+	}
 	if !opts.RemoveGreen {
 		if opts.Enabled {
-			return "plate-solve/SPCC unavailable — left color uncalibrated", false, nil
+			return note + "plate-solve/SPCC unavailable — left color uncalibrated", false, nil
 		}
 		return "", false, nil
 	}
@@ -52,7 +70,7 @@ func ColorCalibrate(ctx context.Context, runner *siril.Runner, dir, base string,
 		return "", false, fmt.Errorf("color neutralization: %w", err)
 	}
 	if opts.Enabled {
-		return "plate-solve/SPCC unavailable — used background-neutralization fallback", false, nil
+		return note + "plate-solve/SPCC unavailable — used background-neutralization fallback", false, nil
 	}
 	return "background-neutralization color balance", false, nil
 }

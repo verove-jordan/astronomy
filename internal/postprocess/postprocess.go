@@ -47,6 +47,22 @@ type Result struct {
 	// Iterations records each pass of the optional local-AI-agent finish supervisor (empty for a
 	// normal finish). It feeds the UI's supervisor panel directly from the run result.
 	Iterations []IterationRecord `json:"iterations,omitempty"`
+	// Quality is the objective post-render snapshot measured from the exported finish PNG on EVERY
+	// run (not only supervised ones) — the deterministic colour/clipping guardrails, persisted so a
+	// warm or clipped result is flagged in the run record instead of discovered by eye.
+	Quality *FinishQuality `json:"finish_quality,omitempty"`
+}
+
+// FinishQuality mirrors the supervisor's finish metrics for the run record (primitive fields only —
+// the measuring code lives in internal/pipeline, which imports this package).
+type FinishQuality struct {
+	BlackClip  [3]float64 `json:"black_clip"`  // fraction of pixels at 0, per channel R,G,B
+	WhiteClip  [3]float64 `json:"white_clip"`  // fraction of pixels at 255, per channel R,G,B
+	Median     [3]float64 `json:"median"`      // per-channel median, 0..1
+	Background float64    `json:"background"`  // sky level estimate (10th-percentile luma), 0..1
+	GreenCast  float64    `json:"green_cast"`  // medianG − mean(medianR, medianB); >0 → green cast
+	WarmCast   float64    `json:"warm_cast"`   // sky red-excess on the 10th-pct background; >0 → warm
+	SignalCast float64    `json:"signal_cast"` // bright-signal green balance; <0 → magenta/pink
 }
 
 // Defect is one issue the vision model diagnosed in a rendered finish (a fixed Kind vocabulary, a
@@ -103,7 +119,7 @@ func Combine(ctx context.Context, runner *siril.Runner, dir string, channels map
 	// Stage 2 — color calibration (color modes only), SPCC with a neutralization fallback.
 	if isColor(res.Mode) {
 		note, _, err := ColorCalibrate(ctx, runner, dir, "combined", ColorCalOptions{
-			Enabled: opts.ColorCalibration, RemoveGreen: opts.RemoveGreen, Solve: opts.Solve, Spcc: opts.Spcc,
+			Enabled: opts.ColorCalibration, RemoveGreen: opts.RemoveGreen, StarField: true, Solve: opts.Solve, Spcc: opts.Spcc,
 		})
 		if err != nil {
 			return nil, err

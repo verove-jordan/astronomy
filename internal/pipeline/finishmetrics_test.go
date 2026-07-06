@@ -76,8 +76,8 @@ func TestMetricsFromImage_SignalCast(t *testing.T) {
 		over[i] = magenta
 	}
 	m := metricsFromImage(fill(10, 10, black, over))
-	assert.Less(t, m.SignalCast, -0.2)                  // bright signal reads magenta (green deficit)
-	assert.InDelta(t, 0.0, m.GreenCast, 1e-9)           // sky median stays neutral — the reason we need SignalCast
+	assert.Less(t, m.SignalCast, -0.2)        // bright signal reads magenta (green deficit)
+	assert.InDelta(t, 0.0, m.GreenCast, 1e-9) // sky median stays neutral — the reason we need SignalCast
 }
 
 func TestPercentile(t *testing.T) {

@@ -237,12 +237,12 @@ func scoreFinish(m finishMetrics, targetBg float64) float64 {
 		s -= 60 * maxf(0, bc-0.01) // crushed shadows beyond 1% of pixels
 	}
 	for _, wc := range m.WhiteClip {
-		s -= 25 * maxf(0, wc-0.01) // blown highlights beyond 1% — the highlight cap rolls star cores below white, so residual clipping is a real defect (stars burning)
+		s -= 25 * maxf(0, wc-whiteClipMax) // blown highlights — the highlight cap rolls star cores below white, so residual clipping is a real defect (stars burning)
 	}
-	s -= 12 * absf(m.GreenCast)          // green/magenta cast (per-channel median spread)
-	s -= 20 * maxf(0, m.WarmCast-0.015)  // warm/orange SKY cast — one-sided: push a warm sky toward neutral without over-cooling to blue
-	s -= 15 * absf(m.SignalCast)         // magenta/pink (or green) cast in the BRIGHT galaxy/star signal — the median misses it (M31 pink)
-	s -= 8 * absf(m.Background-targetBg) // sky off the autostretch target
+	s -= 12 * absf(m.GreenCast)               // green/magenta cast (per-channel median spread)
+	s -= 20 * maxf(0, m.WarmCast-warmCastMax) // warm/orange SKY cast — one-sided: push a warm sky toward neutral without over-cooling to blue (threshold shared with the every-run warnings)
+	s -= 15 * absf(m.SignalCast)              // magenta/pink (or green) cast in the BRIGHT galaxy/star signal — the median misses it (M31 pink)
+	s -= 8 * absf(m.Background-targetBg)      // sky off the autostretch target
 	return clampf(s, 0, 10)
 }
 

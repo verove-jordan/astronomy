@@ -462,6 +462,9 @@ func reStack(ctx context.Context, opts Options, preset *mode.Preset, inv *inspec
 // agent supervised finish (opt-in), else the layered GIMP composite, else the Siril rgbcomp fallback.
 // It sets res.Final. Shared by combine() (a fresh run) and RefineExistingRun (re-tune an existing run).
 func finishAligned(ctx context.Context, opts Options, channels map[string]string, res *Result, workRun, outDir string, onProgress func(siril.Progress)) {
+	// Every finish path (supervised early-return, GIMP, Siril fallback) gets the objective quality
+	// snapshot + threshold warnings stamped on its way out.
+	defer stampFinishQuality(res)
 	// Optional: local-AI-agent supervised finish (opt-in; GIMP composite path only). Soft-fall to the
 	// standard finish on any error so a run never fails because of the agent.
 	if superviseEnabled(ctx, opts) {
@@ -514,7 +517,8 @@ func finishWithGimp(ctx context.Context, opts Options, channels map[string]strin
 	}
 	deg := backgroundDegree(ctx, opts) // 0 when GraXpert already extracted the background
 	cc := postprocess.ColorCalOptions{
-		Enabled: opts.Preset.ColorCalibration, RemoveGreen: true, Solve: opts.Solve, Spcc: opts.Spcc,
+		Enabled: opts.Preset.ColorCalibration, RemoveGreen: true, StarField: true,
+		Solve: opts.Solve, Spcc: opts.Spcc,
 	}
 	in, notes, err := prepGimpInputs(ctx, opts, opts.Runner, channels, outDir, stretchDir, deg, cc, opts.Preset.BackgroundLevel, opts.Preset.LinkedStretch)
 	if err != nil {
@@ -604,19 +608,21 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 				notes = append(notes, "colour "+n)
 			}
 		}
-		note, spccApplied, err := postprocess.ColorCalibrate(ctx, runner, outDir, "rgb_base", cc)
+		note, calibrated, err := postprocess.ColorCalibrate(ctx, runner, outDir, "rgb_base", cc)
 		if err != nil {
 			return gimp.Inputs{}, nil, err
 		}
 		if note != "" {
 			notes = append(notes, note)
 		}
-		// Only a real SPCC pass gives a channel balance worth preserving with a LINKED stretch. When SPCC
-		// fell back to neutralization, a linked stretch would lock in the raw channel imbalance of the
-		// uncalibrated masters (typically green-weak → a magenta cast); an UNLINKED stretch normalizes each
-		// channel independently → a neutral result — and makes the final match the (unlinked) milestone
+		// Only a trustworthy channel balance (SPCC, or the star-field gain fallback) is worth
+		// preserving with a LINKED stretch. When calibration fell back to plain neutralization, a
+		// linked stretch would lock in the raw channel imbalance of the uncalibrated masters
+		// (typically green-weak → a magenta cast); an UNLINKED stretch normalizes each channel
+		// independently → a neutral result — and makes the final match the (unlinked) milestone
 		// previews instead of diverging into magenta.
-		linked = linked && spccApplied
+		linked = linked && calibrated
+		in.CalibratedColor = calibrated // a calibrated balance also disables the GIMP green trim
 		// Milestone: the colour-calibrated (SPCC + gradient-removed) linear RGB, before the stretch.
 		capturePreview(ctx, opts, outDir, ordColorCal, stageColorCal, "", filepath.Join(outDir, "rgb_base.fits"), true)
 		// SCNR (rmgreen, average-neutral) after SPCC removes the residual green star/sky cast SPCC alone
@@ -645,7 +651,15 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 	}
 	if has("Ha") {
 		ha := filepath.Join(stretchDir, "ha")
-		fmt.Fprintf(&b, "load %s\n%s%s\nsavetif %s\n", channels["Ha"], siril.SubskyCmd(deg), siril.AutostretchCmd(false, haBg), ha)
+		// The Ha layer is screened as PURE RED over the whole frame, so any residual large-scale
+		// gradient in it becomes a red wash/blotch across the sky — a degree-1 polynomial cannot
+		// model an asymmetric amp-glow gradient, so Ha gets the RBF subsky (preset.HaRBF, default on)
+		// instead of the gentle plane the other layers use.
+		haSub := siril.SubskyCmd(deg)
+		if opts.Preset == nil || opts.Preset.HaRBF {
+			haSub = siril.SubskyRBFCmd()
+		}
+		fmt.Fprintf(&b, "load %s\n%s%s\nsavetif %s\n", channels["Ha"], haSub, siril.AutostretchCmd(false, haBg), ha)
 		in.Ha = ha + ".tif"
 		wrote = true
 	}

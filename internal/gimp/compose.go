@@ -43,6 +43,10 @@ type Inputs struct {
 	// HaExcludeStars median-filters the Ha layer before it is screened, so point-like stars drop out
 	// and the red screen lifts only extended HII nebulosity (not star halos). Default off → Ha on all.
 	HaExcludeStars bool
+	// CalibratedColor marks the base as photometrically colour-calibrated (SPCC or the star-field
+	// gain fallback). When set, the compose SKIPS its gentle green-saturation trim: the calibrated
+	// balance is correct by construction, and trimming green on top of it tips the image magenta.
+	CalibratedColor bool
 	// CropFrac trims this fraction off each edge of the exported TIFF/PNG to drop the ragged
 	// stacking-edge bands (dithered frame borders). 0 → no crop. The layered .xcf keeps the full frame.
 	CropFrac float64
@@ -117,10 +121,13 @@ func composeScript(in Inputs, curve []float64, haScreen, saturation float64, res
 	}
 	if in.Color {
 		// A GENTLE green-saturation trim (light SCNR top-up) for a natural background — kept small (-12,
-		// was -35). SCNR `rmgreen` already removed EXCESS green one-sided upstream; an aggressive
-		// unconditional green cut over-removes the only channel that balances R+B and tips a neutral or
-		// green-weak image toward a MAGENTA/pink cast (the M31 pink-galaxy/purple-star failure).
-		b.WriteString("    (gimp-drawable-hue-saturation d HUE-RANGE-GREEN 0 0 -12 0)\n")
+		// was -35), and ONLY when the colour was never photometrically calibrated. SCNR `rmgreen`
+		// already removed EXCESS green one-sided upstream; cutting green on top of an SPCC/star-field
+		// calibrated balance over-removes the only channel that balances R+B and tips a neutral image
+		// toward a MAGENTA/pink cast (the M31 pink-galaxy/purple-star failure).
+		if !in.CalibratedColor {
+			b.WriteString("    (gimp-drawable-hue-saturation d HUE-RANGE-GREEN 0 0 -12 0)\n")
+		}
 		if saturation > 0 {
 			fmt.Fprintf(&b, "    (gimp-drawable-hue-saturation d HUE-RANGE-ALL 0 0 %.0f 0)\n", clamp(saturation*100, 0, 100))
 		}

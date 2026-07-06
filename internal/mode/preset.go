@@ -130,6 +130,11 @@ type Preset struct {
 	// wash over the whole frame (the brown sky). ~0.12 zeroes the background while keeping bright HII
 	// knots. 0 → no clip (legacy behavior). Only meaningful when HaScreen > 0.
 	HaBlackPoint float64
+	// HaRBF flattens the Ha layer with Siril's RBF subsky instead of the gentle degree-limited
+	// polynomial before it is red-screened. A residual ASYMMETRIC gradient (amp-glow, low horizon
+	// glow) in the Ha layer becomes a red blotch across half the frame after the screen — an RBF
+	// model removes it where a degree-1 plane cannot. Default true for the Ha-compositing modes.
+	HaRBF bool
 
 	// ChromaBlur denoises colour in the GIMP LRGB finish: it blurs the (thin, noisy) RGB base this
 	// many px while the L luminance keeps all detail — erasing the "pink" chroma noise of short colour
@@ -238,6 +243,7 @@ func For(m Mode) Preset {
 			LinkedStretch:             true,
 			BackgroundLevel:           0.09, // a touch brighter than deepsky to keep faint nebulosity visible
 			HaBlackPoint:              0.07, // lighter clip: Ha is the subject here, only zero the sky pedestal
+			HaRBF:                     true, // RBF-flatten the Ha layer so its screen can't paint a red gradient
 			Previews:                  true,
 		}
 	case Milkyway:
@@ -313,6 +319,7 @@ func For(m Mode) Preset {
 			LinkedStretch:             true,
 			BackgroundLevel:           0.06, // dark, natural sky (vs Siril's washed-out 0.25 default)
 			HaBlackPoint:              0.12, // clip Ha background to black so its red screen lifts only HII knots
+			HaRBF:                     true, // RBF-flatten the Ha layer so its screen can't paint a red gradient
 			Previews:                  true,
 		}
 	}

@@ -77,7 +77,7 @@ func (r *reentry) restack(ctx context.Context, o Options, p mode.Preset) error {
 // stretch) for the working preset and caches the resulting GIMP inputs.
 func (r *reentry) buildBase(ctx context.Context, o Options, p mode.Preset) error {
 	deg := backgroundDegree(ctx, o)
-	cc := postprocess.ColorCalOptions{Enabled: p.ColorCalibration, RemoveGreen: true, Solve: o.Solve, Spcc: o.Spcc}
+	cc := postprocess.ColorCalOptions{Enabled: p.ColorCalibration, RemoveGreen: true, StarField: true, Solve: o.Solve, Spcc: o.Spcc}
 	base, notes, err := prepGimpInputs(ctx, o, o.Runner, r.channels, r.outDir, r.stretchDir, deg, cc, p.BackgroundLevel, p.LinkedStretch)
 	if err != nil {
 		return err

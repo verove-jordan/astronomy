@@ -83,3 +83,13 @@ func TestClamp(t *testing.T) {
 	assert.Equal(t, 1.0, clamp01(2))
 	assert.Equal(t, 0.5, clamp01(0.5))
 }
+
+func TestComposeScript_GreenTrimOnlyWhenUncalibrated(t *testing.T) {
+	res := &Result{Xcf: "o.xcf", Tif: "o.tif", Png: "o.png"}
+	uncal := composeScript(Inputs{Base: "b.tif", Color: true}, nil, 0, 0.1, res)
+	assert.Contains(t, uncal, "HUE-RANGE-GREEN", "uncalibrated colour keeps the gentle green trim")
+
+	cal := composeScript(Inputs{Base: "b.tif", Color: true, CalibratedColor: true}, nil, 0, 0.1, res)
+	assert.NotContains(t, cal, "HUE-RANGE-GREEN", "a photometrically calibrated balance must not be green-trimmed (magenta tip)")
+	assert.Contains(t, cal, "HUE-RANGE-ALL", "global saturation still applies to calibrated colour")
+}
