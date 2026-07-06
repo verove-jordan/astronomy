@@ -12,6 +12,14 @@ import (
 // Point is a pixel coordinate (x to the right, y downward — matching fits.Image row order).
 type Point struct{ X, Y float64 }
 
+// Tracker places the comet at any time t and derives the translation that pins it to a reference
+// point — implemented by the linear Track and the quadratic QuadTrack (long sessions where the
+// projected sky motion visibly curves).
+type Tracker interface {
+	At(t int64) Point
+	Shift(t int64, ref Point) (dx, dy float64)
+}
+
 // Track is a comet's apparent motion across one session, modeled as linear between two observed
 // positions. Over a single session (hours) the sky motion projects to a near-linear pixel drift once the
 // frames are star-aligned, so two anchor points plus per-frame timestamps place the comet in every frame.

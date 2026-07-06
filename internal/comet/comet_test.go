@@ -40,15 +40,16 @@ func TestFitTrack_RobustToOutliers(t *testing.T) {
 	obs[18].P = Point{X: 0, Y: 0}
 	obs[25].P = Point{X: 1200, Y: 50}
 
-	tr, ok := FitTrack(obs)
+	tr, kept, ok := FitTrack(obs)
 	require.True(t, ok)
+	assert.GreaterOrEqual(t, kept, 27, "the three corrupted detections must be rejected, the rest kept")
 	p := tr.At(1_500_000) // true position there is (1600, 800)
 	assert.InDelta(t, 1600.0, p.X, 2.0)
 	assert.InDelta(t, 800.0, p.Y, 2.0)
 }
 
 func TestFitTrack_TooFew(t *testing.T) {
-	_, ok := FitTrack([]Obs{{T: 0, P: Point{1, 1}}})
+	_, _, ok := FitTrack([]Obs{{T: 0, P: Point{1, 1}}})
 	assert.False(t, ok)
 }
 
@@ -184,4 +185,49 @@ func TestDetect_FlatFieldNoComet(t *testing.T) {
 	}
 	_, ok := Detect(im, 12, 20)
 	assert.False(t, ok, "no comet in a flat field")
+}
+
+func TestFitBestTrack_PrefersQuadraticOnCurvedLongSession(t *testing.T) {
+	// A 4-hour session with visibly curved motion: x accelerates, y is linear.
+	var obs []Obs
+	for i := 0; i < 24; i++ {
+		tm := int64(i) * 10 * 60 * 1000 // every 10 min over 4 h
+		th := float64(tm) / 3.6e6       // hours
+		obs = append(obs, Obs{T: tm, P: Point{X: 100 + 40*th + 6*th*th, Y: 50 + 20*th}})
+	}
+	tr, kept, ok := FitBestTrack(obs)
+	require.True(t, ok)
+	assert.GreaterOrEqual(t, kept, 20)
+	_, isQuad := tr.(QuadTrack)
+	assert.True(t, isQuad, "a curved long session should select the quadratic model")
+	// The model must reproduce a mid-session position closely.
+	p := tr.At(2 * 60 * 60 * 1000) // t = 2 h → x = 100+80+24 = 204, y = 90
+	assert.InDelta(t, 204.0, p.X, 0.5)
+	assert.InDelta(t, 90.0, p.Y, 0.5)
+}
+
+func TestFitBestTrack_KeepsLinearOnShortOrStraightSessions(t *testing.T) {
+	// Straight motion over 4 h → linear must win (no noise-chasing the extra term).
+	var straight []Obs
+	for i := 0; i < 24; i++ {
+		tm := int64(i) * 10 * 60 * 1000
+		th := float64(tm) / 3.6e6
+		straight = append(straight, Obs{T: tm, P: Point{X: 100 + 40*th, Y: 50 + 20*th}})
+	}
+	tr, _, ok := FitBestTrack(straight)
+	require.True(t, ok)
+	_, isQuad := tr.(QuadTrack)
+	assert.False(t, isQuad, "straight motion must stay linear")
+
+	// A short (1 h) curved session → still linear (curvature not testable in-span).
+	var short []Obs
+	for i := 0; i < 12; i++ {
+		tm := int64(i) * 5 * 60 * 1000
+		th := float64(tm) / 3.6e6
+		short = append(short, Obs{T: tm, P: Point{X: 100 + 40*th + 6*th*th, Y: 50 + 20*th}})
+	}
+	tr2, _, ok2 := FitBestTrack(short)
+	require.True(t, ok2)
+	_, isQuad2 := tr2.(QuadTrack)
+	assert.False(t, isQuad2, "sessions under the span threshold stay linear")
 }

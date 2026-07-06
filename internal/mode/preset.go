@@ -135,6 +135,11 @@ type Preset struct {
 	// glow) in the Ha layer becomes a red blotch across half the frame after the screen — an RBF
 	// model removes it where a degree-1 plane cannot. Default true for the Ha-compositing modes.
 	HaRBF bool
+	// CometPerFrameStarnet de-stars EVERY comet-aligned frame before the comet stack (comet mode
+	// only) — the cleanest comet layer possible, zero trail residuals, at the cost of one StarNet
+	// pass per frame (minutes on a long session). Off by default; the asymmetric comet-stack
+	// rejection already removes the trails on the normal path.
+	CometPerFrameStarnet bool
 
 	// ChromaBlur denoises colour in the GIMP LRGB finish: it blurs the (thin, noisy) RGB base this
 	// many px while the L luminance keeps all detail — erasing the "pink" chroma noise of short colour

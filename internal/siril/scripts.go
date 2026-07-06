@@ -162,6 +162,19 @@ func StackAlignedScript(seq, outName string) string {
 	return b.String()
 }
 
+// StackCometScript stacks COMET-ALIGNED frames with ASYMMETRIC Winsorized rejection: the coma is
+// consistent frame-to-frame (a tight high clip never touches it), while the star trails marching
+// through are bright one-or-two-frame HIGH outliers at any given pixel — σ-high 1.8 rejects them
+// where the symmetric 3/3 left residual streaks. σ-low stays loose (4) so the faint tail's noisy
+// low samples are never clipped away.
+func StackCometScript(seq, outName string) string {
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	fmt.Fprintf(&b, "link %s -out=.\n", seq)
+	fmt.Fprintf(&b, "stack %s rej winsorized 4 1.8 -norm=addscale -output_norm -out=%s\n", seq, outName)
+	return b.String()
+}
+
 // PixelMathScript evaluates a Siril pixel-math expression and saves the result as outName. Image operands
 // are referenced as $name$ — a FITS file in the work dir, without extension (e.g. "$stars$ - $starless$"
 // to isolate the comet star layer, or "max($comet$, $stars$)" to screen the stars back over the starless

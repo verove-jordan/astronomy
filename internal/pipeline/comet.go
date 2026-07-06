@@ -3,8 +3,10 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/verove-jordan/astronomy/internal/calib"
@@ -229,7 +231,7 @@ const cometMaxDetect = 40
 // it auto-detects the coma centroid in many time-spread registered frames and **robustly fits** the motion
 // line. A single diffuse coma is too noisy to centroid reliably, so a 2-point track misregisters the comet
 // per channel (the visible R/G/B colour separation) — averaging many detections is what fixes it.
-func cometTrack(opts Options, mergedDir string, mframes []*inspect.Frame, metrics []grade.Metric, res *Result) (comet.Track, bool) {
+func cometTrack(opts Options, mergedDir string, mframes []*inspect.Frame, metrics []grade.Metric, res *Result) (comet.Tracker, bool) {
 	order := survivorsByTime(mergedDir, mframes, metrics)
 	if len(order) < 2 {
 		res.Warnings = append(res.Warnings, "comet: no timestamped registered frames — comet alignment skipped")
@@ -239,12 +241,26 @@ func cometTrack(opts Options, mergedDir string, mframes []*inspect.Frame, metric
 		return tr, true
 	}
 	obs := detectComet(mergedDir, mframes, order)
-	tr, ok := comet.FitTrack(obs)
+	tr, kept, ok := comet.FitBestTrack(obs)
 	if !ok {
 		res.Warnings = append(res.Warnings, "comet: could not detect the comet in enough frames (provide a manual position) — comet alignment skipped")
 		return comet.Track{}, false
 	}
-	res.Warnings = append(res.Warnings, fmt.Sprintf("comet: motion track fitted from %d/%d detections", len(obs), len(order)))
+	// Consistency acceptance: the detection threshold is deliberately permissive (4σ picks up a
+	// faint coma), so a track is trusted only when the per-frame detections AGREE — at least 4
+	// survivors AND two-thirds of the detections on the fitted motion. A "track" through scattered
+	// noise hits would smear the comet stack worse than star-aligned-only.
+	if kept < 4 || kept*3 < len(obs)*2 {
+		res.Warnings = append(res.Warnings, fmt.Sprintf(
+			"comet: detections too inconsistent for a trustworthy track (%d/%d on the fit) — comet alignment skipped (provide a manual position)",
+			kept, len(obs)))
+		return comet.Track{}, false
+	}
+	if _, quad := tr.(comet.QuadTrack); quad {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("comet: curved (quadratic) motion track fitted from %d/%d detections", kept, len(obs)))
+	} else {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("comet: motion track fitted from %d/%d detections", kept, len(obs)))
+	}
 	return tr, true
 }
 
@@ -271,7 +287,8 @@ func detectComet(mergedDir string, mframes []*inspect.Frame, order []int) []come
 	var obs []comet.Obs
 	for k := 0; k < len(order); k += step {
 		i := order[k]
-		if p, ok, err := comet.DetectFile(regCometPath(mergedDir, i), comet.DefaultBlurRadius, comet.DefaultWindow); err == nil && ok {
+		// blurRadius 0 → multi-scale detection (compact bright coma AND large diffuse coma both lock).
+		if p, ok, err := comet.DetectFile(regCometPath(mergedDir, i), 0, comet.DefaultWindow); err == nil && ok {
 			obs = append(obs, comet.Obs{T: mframes[i].DateObsMs, P: p})
 		}
 	}
@@ -294,7 +311,7 @@ func manualTrack(opts Options, mframes []*inspect.Frame, order []int) (comet.Tra
 // stackChannelsDual produces, per filter, a star-aligned master and (when a comet track is available) a
 // comet-aligned master. Returns filter→basename maps (basenames live in outDir).
 func stackChannelsDual(ctx context.Context, opts Options, mergedDir string, mframes []*inspect.Frame,
-	metrics []grade.Metric, track comet.Track, pMid comet.Point, haveTrack bool, workRun, outDir string, res *Result) (map[string]string, map[string]string) {
+	metrics []grade.Metric, track comet.Tracker, pMid comet.Point, haveTrack bool, workRun, outDir string, res *Result) (map[string]string, map[string]string) {
 	byFilter := map[string][]int{}
 	for i := range mframes {
 		if metrics[i].Rejected || mframes[i].Filter == "" || !fileExists(regCometPath(mergedDir, i)) {
@@ -320,16 +337,67 @@ func stackChannelsDual(ctx context.Context, opts Options, mergedDir string, mfra
 			res.Warnings = append(res.Warnings, "comet: translate "+filter+": "+err.Error())
 			continue
 		}
+		// Opt-in maximum-cleanliness path: de-star every comet-aligned frame BEFORE the stack (no
+		// trail residuals at all, at one StarNet pass per frame). Soft-fail to the normal stack.
+		if opts.Preset != nil && opts.Preset.CometPerFrameStarnet && opts.Starnet != nil && opts.Starnet.Available(ctx) == nil {
+			if err := starlessCometFrames(ctx, opts, cometDir); err != nil {
+				res.Warnings = append(res.Warnings, "comet: per-frame star removal failed ("+err.Error()+") — stacking with stars")
+			} else {
+				res.Warnings = append(res.Warnings, "comet: per-frame StarNet star removal before the "+filter+" comet stack")
+			}
+		}
 		cometBase := "comet_master_" + filterTag(filter)
-		if stackAlignedDir(ctx, opts, cometDir, filepath.Join(outDir, cometBase), res, "comet "+filter) {
+		// The comet-aligned stack uses ASYMMETRIC rejection: the coma is consistent frame-to-frame
+		// (a tight high clip never rejects it) while the trailing stars are bright one-or-two-frame
+		// HIGH outliers at any pixel — σ-high 1.8 erases them; σ-low 4 protects the faint tail.
+		if stackAlignedDirScript(ctx, opts, cometDir, siril.StackCometScript("s", filepath.Join(outDir, cometBase)), res, "comet "+filter) {
 			cometMasters[filter] = cometBase
 		}
 	}
 	return starMasters, cometMasters
 }
 
+// starlessCometFrames removes the stars from every comet-aligned frame in cometDir in place — the
+// cleanest possible comet layer (nothing left for the stack's rejection to miss). Two batched Siril
+// scripts do the FITS↔TIFF conversion around one StarNet pass per frame.
+func starlessCometFrames(ctx context.Context, opts Options, cometDir string) error {
+	frames, err := filepath.Glob(filepath.Join(cometDir, "c_*.fits"))
+	if err != nil || len(frames) == 0 {
+		return fmt.Errorf("no comet frames to de-star")
+	}
+	sort.Strings(frames)
+	var toTif strings.Builder
+	toTif.WriteString(cometHdr)
+	for _, f := range frames {
+		base := strings.TrimSuffix(filepath.Base(f), ".fits")
+		fmt.Fprintf(&toTif, "load %s\nsavetif %s_t\n", base, base)
+	}
+	if _, err := opts.Runner.Run(ctx, cometDir, toTif.String(), nil); err != nil {
+		return fmt.Errorf("frames to tif: %w", err)
+	}
+	var back strings.Builder
+	back.WriteString(cometHdr)
+	for _, f := range frames {
+		base := strings.TrimSuffix(filepath.Base(f), ".fits")
+		if err := opts.Starnet.RemoveStars(ctx, filepath.Join(cometDir, base+"_t.tif"),
+			filepath.Join(cometDir, base+"_s.tif"), starnet.Options{}, nil); err != nil {
+			return fmt.Errorf("starnet %s: %w", base, err)
+		}
+		fmt.Fprintf(&back, "load %s_s\nsave %s\n", base, base)
+	}
+	if _, err := opts.Runner.Run(ctx, cometDir, back.String(), nil); err != nil {
+		return fmt.Errorf("starless back to fits: %w", err)
+	}
+	for _, f := range frames { // scratch TIFFs are per-frame-sized; don't leave GBs behind
+		base := strings.TrimSuffix(f, ".fits")
+		_ = os.Remove(base + "_t.tif")
+		_ = os.Remove(base + "_s.tif")
+	}
+	return nil
+}
+
 // translateChannel writes each registered frame, shifted so the comet lands at pMid, into cometDir.
-func translateChannel(cometDir, mergedDir string, idxs []int, mframes []*inspect.Frame, track comet.Track, pMid comet.Point) error {
+func translateChannel(cometDir, mergedDir string, idxs []int, mframes []*inspect.Frame, track comet.Tracker, pMid comet.Point) error {
 	if err := fsutil.EnsureDir(cometDir); err != nil {
 		return err
 	}
@@ -351,7 +419,11 @@ func stackAligned(ctx context.Context, opts Options, paths []string, seqDir, out
 }
 
 func stackAlignedDir(ctx context.Context, opts Options, seqDir, outBase string, res *Result, label string) bool {
-	if _, err := opts.Runner.Run(ctx, seqDir, siril.StackAlignedScript("s", outBase), nil); err != nil {
+	return stackAlignedDirScript(ctx, opts, seqDir, siril.StackAlignedScript("s", outBase), res, label)
+}
+
+func stackAlignedDirScript(ctx context.Context, opts Options, seqDir, script string, res *Result, label string) bool {
+	if _, err := opts.Runner.Run(ctx, seqDir, script, nil); err != nil {
 		res.Warnings = append(res.Warnings, "comet: stack "+label+": "+err.Error())
 		return false
 	}
@@ -416,7 +488,9 @@ func compositeWithStarnet(ctx context.Context, opts Options, outDir, finalBase s
 		res.Warnings = append(res.Warnings, "comet: star-layer extraction failed: "+err.Error())
 		return cometExport(ctx, opts, outDir, "comet_starless", "comet-aligned, starless", res)
 	}
-	if _, err := opts.Runner.Run(ctx, outDir, siril.PixelMathScript("max($comet_starless$, $star_layer$)", finalBase), nil); err != nil {
+	// ADD (clipped), not max(): the star layer is stars-over-≈0 after the subtraction, so adding
+	// preserves the faint tail UNDER star halos where max() would replace it with the star pixel.
+	if _, err := opts.Runner.Run(ctx, outDir, siril.PixelMathScript("min(1, $comet_starless$ + $star_layer$)", finalBase), nil); err != nil {
 		res.Warnings = append(res.Warnings, "comet: composite failed: "+err.Error())
 		return cometExport(ctx, opts, outDir, "comet_starless", "comet-aligned, starless", res)
 	}
