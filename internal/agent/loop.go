@@ -73,25 +73,28 @@ func (rn *Runner) RunTurn(ctx context.Context, model string, seed []llm.Message,
 			return final, nil
 		}
 
-		observation, cancelled := rn.act(ctx, step, st, report, confirm, &callSeq)
+		observation, obsImages, cancelled := rn.act(ctx, step, st, report, confirm, &callSeq)
 		if cancelled {
 			return "", ctx.Err()
 		}
-		msgs = append(msgs, assistantMsg(reply), userMsg("Observation:\n"+observation))
+		obsMsg := userMsg("Observation:\n" + observation)
+		obsMsg.Images = obsImages // vision-in-the-loop: image-returning tools attach what the model must SEE
+		msgs = append(msgs, assistantMsg(reply), obsMsg)
 	}
 	return rn.finalize(ctx, client, msgs, report)
 }
 
 // act runs the step's tool or handles its ask, returning the observation to feed back. cancelled=true
 // means the turn's context was cancelled while awaiting a confirmation.
-func (rn *Runner) act(ctx context.Context, step int, st step, report func(Event), confirm ConfirmFn, callSeq *int) (string, bool) {
+func (rn *Runner) act(ctx context.Context, step int, st step, report func(Event), confirm ConfirmFn, callSeq *int) (string, []llm.InlineImage, bool) {
 	switch {
 	case st.Ask != nil && strings.TrimSpace(st.Ask.Question) != "":
-		return rn.ask(ctx, step, st.Ask, report, confirm, callSeq)
+		obs, cancelled := rn.ask(ctx, step, st.Ask, report, confirm, callSeq)
+		return obs, nil, cancelled
 	case strings.TrimSpace(st.Tool) != "":
 		return rn.runTool(ctx, step, st, report, confirm, callSeq)
 	default:
-		return "Empty step: call a tool, ask the user, or give a final answer.", false
+		return "Empty step: call a tool, ask the user, or give a final answer.", nil, false
 	}
 }
 
@@ -112,11 +115,11 @@ func (rn *Runner) ask(ctx context.Context, step int, a *askUser, report func(Eve
 
 // runTool executes one tool, gating a mutating tool behind a user confirmation first. Tool errors
 // become observations (the model can recover); only a cancelled context returns cancelled=true.
-func (rn *Runner) runTool(ctx context.Context, step int, st step, report func(Event), confirm ConfirmFn, callSeq *int) (string, bool) {
+func (rn *Runner) runTool(ctx context.Context, step int, st step, report func(Event), confirm ConfirmFn, callSeq *int) (string, []llm.InlineImage, bool) {
 	tool, ok := rn.reg.Get(st.Tool)
 	if !ok {
 		report(Event{Kind: "tool_result", Step: step, Tool: st.Tool, IsError: true, Output: "unknown tool"})
-		return fmt.Sprintf("Error: unknown tool %q. Pick a tool from the menu.", st.Tool), false
+		return fmt.Sprintf("Error: unknown tool %q. Pick a tool from the menu.", st.Tool), nil, false
 	}
 	report(Event{Kind: "tool_call", Step: step, Tool: tool.Name, Args: string(st.Args), Mutating: tool.Mutating})
 	if tool.Mutating {
@@ -126,21 +129,28 @@ func (rn *Runner) runTool(ctx context.Context, step int, st step, report func(Ev
 			Mutating: true, Question: tool.Description})
 		approve, _, ok := confirm(ctx, callID, Event{Kind: "confirm", Tool: tool.Name})
 		if !ok {
-			return "", true
+			return "", nil, true
 		}
 		if !approve {
 			report(Event{Kind: "tool_result", Step: step, Tool: tool.Name, Output: "user declined the action"})
-			return "The user declined this action. Do not retry it; adapt or ask what they'd prefer instead.", false
+			return "The user declined this action. Do not retry it; adapt or ask what they'd prefer instead.", nil, false
 		}
 	}
-	out, err := tool.Handler(ctx, st.Args)
+	var out string
+	var imgs []llm.InlineImage
+	var err error
+	if tool.ImageHandler != nil {
+		out, imgs, err = tool.ImageHandler(ctx, st.Args)
+	} else {
+		out, err = tool.Handler(ctx, st.Args)
+	}
 	if err != nil {
 		report(Event{Kind: "tool_result", Step: step, Tool: tool.Name, IsError: true, Output: err.Error()})
-		return fmt.Sprintf("Error from %s: %s", tool.Name, err.Error()), false
+		return fmt.Sprintf("Error from %s: %s", tool.Name, err.Error()), nil, false
 	}
 	out = truncate(out, maxObservation)
 	report(Event{Kind: "tool_result", Step: step, Tool: tool.Name, Output: out})
-	return out, false
+	return out, imgs, false
 }
 
 // finalize asks the model for its best final answer once the step cap is hit, so a long investigation

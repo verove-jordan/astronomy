@@ -62,14 +62,26 @@ func TestIntegration_UploadSyncDownloadRemove(t *testing.T) {
 	assert.Equal(t, 0, sy.Files)
 	assert.Equal(t, 2, sy.Skipped)
 
-	// 3) Remove-local → verified on S3, so local files are deleted.
+	// 3) Corrupt the mirror: overwrite one object with SAME-SIZE different bytes and no MD5 metadata
+	// (PutBytes doesn't record it). Size-only verification would be fooled; the strong check (single-part
+	// ETag == content MD5 here) must refuse and delete nothing.
+	require.NoError(t, client.PutBytes(ctx, bucket, prefix+"/M101/a.fits", []byte("XXXXX")))
+	_, err = Run(ctx, client, with(req, OpRemoveLocal), nil)
+	require.Error(t, err, "remove-local must refuse a same-size different-content mirror")
+	assert.FileExists(t, filepath.Join(folder, "a.fits"))
+	assert.FileExists(t, filepath.Join(folder, "lights", "b.fits"), "abort-all: nothing deleted")
+
+	// 4) Re-upload properly (records MD5 metadata) → remove-local verifies strongly and deletes.
+	_, err = Run(ctx, client, with(req, OpUpload), nil)
+	require.NoError(t, err)
 	rm, err := Run(ctx, client, with(req, OpRemoveLocal), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 2, rm.Files)
+	assert.Empty(t, rm.Warnings, "fresh uploads carry MD5 metadata — no size-only fallback")
 	assert.NoFileExists(t, filepath.Join(folder, "a.fits"))
 	assert.NoFileExists(t, filepath.Join(folder, "lights", "b.fits"))
 
-	// 4) Download → files come back with identical content.
+	// 5) Download → files come back with identical content.
 	dn, err := Run(ctx, client, with(req, OpDownload), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 2, dn.Files)

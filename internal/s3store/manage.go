@@ -40,6 +40,12 @@ func (c *Client) CreateFolder(ctx context.Context, bucket, key string) error {
 
 // RemovePrefix deletes every object under prefix (recursively, including folder markers) — the explorer's
 // "delete folder". A recursive list feeds minio's bulk RemoveObjects.
+//
+// NOTE(scale): this streams one listing into one RemoveObjects call — fine for explorer-sized folders
+// (thousands of objects), but a prefix with millions of objects would hold a single slow request open
+// with no progress reporting or partial-failure resume. If that ever becomes a real use, batch the
+// listing into pages and surface progress like the transfer jobs do. Also note list errors are skipped
+// (continue) so a truncated listing deletes what it saw — acceptable for "empty this folder" semantics.
 func (c *Client) RemovePrefix(ctx context.Context, bucket, prefix string) error {
 	objectsCh := make(chan minio.ObjectInfo)
 	go func() {

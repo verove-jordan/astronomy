@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"mime"
 	"net/http"
 	"path"
 	"strconv"
@@ -391,12 +392,21 @@ func (s *Server) manageDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = rc.Close() }()
+	writeAttachmentHeaders(w, key, size)
+	_, _ = io.Copy(w, rc)
+}
+
+// writeAttachmentHeaders sets the download headers for streaming an object to the browser. The
+// Content-Disposition is built with mime.FormatMediaType, which emits the RFC 6266/2231 extended form
+// (filename*=utf-8”…, percent-encoded) for non-ASCII names — a hand-built quoted string would ship raw
+// UTF-8 bytes (or let a crafted name break out of the quotes).
+func writeAttachmentHeaders(w http.ResponseWriter, key string, size int64) {
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+path.Base(key)+`"`)
+	w.Header().Set("Content-Disposition",
+		mime.FormatMediaType("attachment", map[string]string{"filename": path.Base(key)}))
 	if size >= 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	}
-	_, _ = io.Copy(w, rc)
 }
 
 // manageUpload streams the request body (the raw file) to an object. POST /api/s3/manage/upload?conn=&bucket=&key=

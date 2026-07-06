@@ -134,11 +134,13 @@ func (p *Provider) Forecast(ctx context.Context, lat, lon float64) (SiteForecast
 	return f, ""
 }
 
-// Grid returns the regional cloud cube for the animated map overlay (one Open-Meteo multi-point call).
+// Grid returns the regional cloud cube for the animated map overlay (chunked Open-Meteo multi-point
+// GETs, see fetchOpenMeteoGrid).
 func (p *Provider) Grid(ctx context.Context, lat, lon, radiusDeg float64, layers []string) (Grid, string) {
 	if len(layers) == 0 {
 		layers = []string{"clouds"}
 	}
+	layers = expandGridLayers(layers)
 	radius := p.gridRadiusFor(radiusDeg)
 	key := gridKey(lat, lon, radius, layers)
 	if g, ok := p.cachedGrid(key); ok {
@@ -155,6 +157,30 @@ func (p *Provider) Grid(ctx context.Context, lat, lon, radiusDeg float64, layers
 	g := assembleGrid(resp, nx, ny, bbox, layers)
 	p.storeGrid(key, g)
 	return g, ""
+}
+
+// expandGridLayers expands composite layer names into every concrete layer the cube must carry:
+// "clouds" also yields its per-altitude bands ("clouds_low"/"clouds_mid"/"clouds_high"), which the map
+// composites into an intensity-true cloud raster. Deduplicated and order-stable, so the expanded list
+// doubles as a deterministic cache key.
+func expandGridLayers(layers []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(layers)+3)
+	add := func(l string) {
+		if !seen[l] {
+			seen[l] = true
+			out = append(out, l)
+		}
+	}
+	for _, l := range layers {
+		add(l)
+		if l == "clouds" {
+			add("clouds_low")
+			add("clouds_mid")
+			add("clouds_high")
+		}
+	}
+	return out
 }
 
 // gridPoints builds the lat/lon sample grid (row-major, north→south, west→east) and its bounding box.
@@ -211,8 +237,9 @@ func siteKey(lat, lon float64) string { return fmt.Sprintf("%+.2f_%+.2f", lat, l
 
 // gridCacheVersion namespaces the grid cache; bump it when a layer's semantics change (e.g. precip went
 // from rain amount in mm to chance of precipitation in %) or the grid geometry changes, so stale cached
-// cubes are ignored. v3 = default grid size 16→22; v4 = per-viewport radius in the key.
-const gridCacheVersion = 4
+// cubes are ignored. v3 = default grid size 16→22; v4 = per-viewport radius in the key; v5 = cloud
+// bands + denser chunked grid.
+const gridCacheVersion = 5
 
 func gridKey(lat, lon, radius float64, layers []string) string {
 	s := fmt.Sprintf("v%d_%+.1f_%+.1f_r%.1f", gridCacheVersion, lat, lon, radius)

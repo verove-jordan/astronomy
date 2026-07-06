@@ -33,6 +33,7 @@ type Deps struct {
 func NewToolset(d Deps) *Registry {
 	r := NewRegistry()
 	registerJobTools(r, d)
+	registerParamTools(r, d)
 	registerSetupTools(r, d)
 	registerSkyTools(r, d)
 	registerConditionTools(r, d)

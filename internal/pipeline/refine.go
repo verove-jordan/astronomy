@@ -34,6 +34,9 @@ func RefineExistingRun(ctx context.Context, opts Options, runDir string) (*postp
 	if err != nil {
 		return nil, err
 	}
+	if opts.PriorObject == "" { // run dirs are output/<object>/<runID> — the warm-start memory key
+		opts.PriorObject = filepath.Base(filepath.Dir(outDir))
+	}
 
 	// Non-deepsky modes re-finish from their own persisted intermediates in outDir (no channel masters):
 	// milkyway re-grades the linear composite, comet re-combines the star/comet masters, planetary re-runs

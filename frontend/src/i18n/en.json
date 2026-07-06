@@ -638,6 +638,9 @@
       "legendBright": "Brighter",
       "bortle": "Bortle",
       "clouds": "Clouds",
+      "cloudLow": "Low clouds",
+      "cloudMid": "Mid clouds",
+      "cloudHigh": "High clouds",
       "humidity": "Humidity",
       "precip": "Rain chance"
     },

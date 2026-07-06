@@ -5,6 +5,7 @@ import {
   apiPost,
   S3_BUCKET_KEY as BUCKET_KEY,
   S3_PREFIX_KEY as PREFIX_KEY,
+  S3_CONN_KEY as CONN_KEY,
 } from "@/services/api";
 import type { S3Status, BrowseEntry } from "@/types";
 
@@ -38,6 +39,14 @@ export const useS3Store = defineStore("s3", () => {
     loading.value = true;
     try {
       status.value = await apiGet<S3Status>("/api/s3/status");
+      // Persist the backend connection id next to the bucket/prefix so every S3-tagged URL (previews,
+      // runs, processed…) carries the connection the pair was chosen under — even if the user later
+      // switches the default connection. Cleared when the backend runs on env credentials (no id).
+      if (status.value.conn_id != null) {
+        localStorage.setItem(CONN_KEY, String(status.value.conn_id));
+      } else {
+        localStorage.removeItem(CONN_KEY);
+      }
       // Default the bucket to the only one if none is chosen yet.
       if (!bucket.value && (status.value.buckets?.length ?? 0) === 1) {
         setBucket(status.value.buckets![0]);
@@ -75,13 +84,17 @@ export const useS3Store = defineStore("s3", () => {
     return data.id;
   }
 
-  // s3Query builds the /api/s3/browse query for the current bucket/prefix at a sub-path.
+  // s3Query builds the /api/s3/browse query for the current bucket/prefix at a sub-path, tagged with the
+  // connection the pair was chosen under (backend falls back to the default connection without it).
   function s3Query(rel: string): string {
-    return new URLSearchParams({
+    const params = new URLSearchParams({
       bucket: bucket.value,
       prefix: prefix.value,
       rel,
-    }).toString();
+    });
+    const conn = localStorage.getItem(CONN_KEY) || "";
+    if (conn) params.set("conn", conn);
+    return params.toString();
   }
 
   // s3Browse lists the real bucket at <prefix>/<rel> (default connection) into s3Rel/s3Entries.

@@ -90,6 +90,17 @@ func (svc *Service) ClientFor(ctx context.Context, id int64) (*s3store.Client, e
 	return s3store.New(cfg)
 }
 
+// DefaultID returns the default connection's id, ok=false when none is set — no decryption. The status
+// endpoint reports it so the frontend can tag bucket/prefix-carrying URLs with the connection they were
+// chosen under (keeping the pair consistent even if the default changes later).
+func (svc *Service) DefaultID(ctx context.Context) (id int64, ok bool, err error) {
+	c, ok, err := svc.store.GetDefaultS3Connection(ctx)
+	if err != nil || !ok {
+		return 0, false, err
+	}
+	return c.ID, true, nil
+}
+
 // DefaultConfig returns the default connection's decrypted config, ok=false when none is set. This is what
 // makes a UI connection drive the pipeline: the S3-config resolution falls back to env only when ok=false.
 func (svc *Service) DefaultConfig(ctx context.Context) (cfg s3store.Config, ok bool, err error) {

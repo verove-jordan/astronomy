@@ -15,7 +15,7 @@ const emitEvery = 1 << 20 // 1 MiB
 
 // runUpload pushes the folder to S3. When syncOnly, it first lists the mirror and skips files already
 // present at the same size.
-func runUpload(ctx context.Context, client *s3store.Client, req Request, syncOnly bool, onProgress func(Progress)) (Result, error) {
+func runUpload(ctx context.Context, client s3API, req Request, syncOnly bool, onProgress func(Progress)) (Result, error) {
 	files, _, err := walkLocalFiles(req.folderDir())
 	if err != nil {
 		return Result{}, fmt.Errorf("scan %s: %w", req.folderDir(), err)
@@ -46,6 +46,9 @@ func runUpload(ctx context.Context, client *s3store.Client, req Request, syncOnl
 			return Result{}, err
 		}
 		if syncOnly {
+			// Size-only skip BY DESIGN: captures are immutable once written, so an equal-size object is
+			// the same file — the worst case is keeping a stale copy, never losing data (remove-local is
+			// where strong verification matters; see verifyMirrored).
 			if sz, ok := remote[key]; ok && sz == f.size {
 				skipped++
 				continue
@@ -56,26 +59,32 @@ func runUpload(ctx context.Context, client *s3store.Client, req Request, syncOnl
 	}
 
 	prog := &progressEmitter{total: totalBytes, totalFiles: len(todo), onProgress: onProgress}
-	var bytes int64
+	var base int64 // bytes of fully transferred files — advanced only on success
 	for i, it := range todo {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
 		}
 		name, _ := filepath.Rel(req.folderDir(), it.f.path)
-		prog.file(i, name, bytes)
-		if err := client.Upload(ctx, req.Bucket, it.key, it.f.path, func(d int64) {
-			bytes += d
-			prog.bytes(i, name, bytes)
-		}); err != nil {
+		prog.file(i, name, base)
+		var fileBytes int64
+		err := retryFile(ctx, func() error {
+			fileBytes = 0 // a retried attempt restreams the file from zero — never double-count progress
+			return client.Upload(ctx, req.Bucket, it.key, it.f.path, func(d int64) {
+				fileBytes += d
+				prog.bytes(i, name, base+fileBytes)
+			})
+		})
+		if err != nil {
 			return Result{}, err
 		}
+		base += it.f.size
 	}
-	prog.done(len(todo), bytes)
-	return Result{Op: req.Op, Files: len(todo), Bytes: bytes, Skipped: skipped}, nil
+	prog.done(len(todo), base)
+	return Result{Op: req.Op, Files: len(todo), Bytes: base, Skipped: skipped}, nil
 }
 
 // runDownload pulls the folder from S3, skipping objects already present locally at the same size.
-func runDownload(ctx context.Context, client *s3store.Client, req Request, onProgress func(Progress)) (Result, error) {
+func runDownload(ctx context.Context, client s3API, req Request, onProgress func(Progress)) (Result, error) {
 	objs, err := client.List(ctx, req.Bucket, req.baseKey())
 	if err != nil {
 		return Result{}, err
@@ -91,6 +100,9 @@ func runDownload(ctx context.Context, client *s3store.Client, req Request, onPro
 		if err != nil {
 			continue // skip a key that escapes the folder
 		}
+		// Size-only skip BY DESIGN (mirrors the sync skip above): immutable captures make an equal-size
+		// local file the same file; the risk is a stale copy, not data loss, and hashing every present
+		// file would make re-downloads as slow as downloads.
 		if fi, err := os.Stat(local); err == nil && fi.Size() == o.Size {
 			continue // already have an identical local copy
 		}
@@ -99,71 +111,28 @@ func runDownload(ctx context.Context, client *s3store.Client, req Request, onPro
 	}
 
 	prog := &progressEmitter{total: totalBytes, totalFiles: len(todo), onProgress: onProgress}
-	var bytes int64
+	var base int64 // bytes of fully transferred files — advanced only on success
 	for i, it := range todo {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
 		}
 		name, _ := filepath.Rel(req.folderDir(), it.local)
-		prog.file(i, name, bytes)
-		if err := client.Download(ctx, req.Bucket, it.obj.Key, it.local, func(d int64) {
-			bytes += d
-			prog.bytes(i, name, bytes)
-		}); err != nil {
-			return Result{}, err
-		}
-	}
-	prog.done(len(todo), bytes)
-	return Result{Op: req.Op, Files: len(todo), Bytes: bytes}, nil
-}
-
-// runRemoveLocal deletes the folder's local files, but ONLY after verifying every one is present on S3 at
-// the same size — so nothing is lost. If any file is not verified, it deletes nothing and returns an error.
-func runRemoveLocal(ctx context.Context, client *s3store.Client, req Request) (Result, error) {
-	files, _, err := walkLocalFiles(req.folderDir())
-	if err != nil {
-		return Result{}, err
-	}
-	for _, f := range files {
-		key, err := req.keyFor(f.path)
+		prog.file(i, name, base)
+		var fileBytes int64
+		err := retryFile(ctx, func() error {
+			fileBytes = 0 // a retried attempt restreams the file from zero — never double-count progress
+			return client.Download(ctx, req.Bucket, it.obj.Key, it.local, func(d int64) {
+				fileBytes += d
+				prog.bytes(i, name, base+fileBytes)
+			})
+		})
 		if err != nil {
 			return Result{}, err
 		}
-		obj, ok, err := client.Stat(ctx, req.Bucket, key)
-		if err != nil {
-			return Result{}, err
-		}
-		if !ok || obj.Size != f.size {
-			rel, _ := filepath.Rel(req.folderDir(), f.path)
-			return Result{}, fmt.Errorf("remove-local aborted — %s is not backed up on S3 (nothing deleted)", rel)
-		}
+		base += it.obj.Size
 	}
-	for _, f := range files {
-		if err := os.Remove(f.path); err != nil {
-			return Result{}, fmt.Errorf("remove %s: %w", f.path, err)
-		}
-	}
-	removeEmptyDirs(req.folderDir())
-	return Result{Op: req.Op, Files: len(files)}, nil
-}
-
-// removeEmptyDirs prunes now-empty directories under root (deepest first), leaving root itself.
-func removeEmptyDirs(root string) {
-	var dirs []string
-	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err == nil && d.IsDir() {
-			dirs = append(dirs, p)
-		}
-		return nil
-	})
-	for i := len(dirs) - 1; i >= 0; i-- {
-		if dirs[i] == root {
-			continue
-		}
-		if entries, err := os.ReadDir(dirs[i]); err == nil && len(entries) == 0 {
-			_ = os.Remove(dirs[i])
-		}
-	}
+	prog.done(len(todo), base)
+	return Result{Op: req.Op, Files: len(todo), Bytes: base}, nil
 }
 
 // progressEmitter throttles Progress callbacks (one per file boundary + at most one per emitEvery bytes).

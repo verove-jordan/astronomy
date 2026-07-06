@@ -51,17 +51,22 @@ func registerJobTools(r *Registry, d Deps) {
 			"id":        intProp("the source job id"),
 			"tier":      strProp("A|B|C ceiling (default B)"),
 			"max_iters": intProp("max supervisor passes (0 = default)"),
+			"params":    map[string]any{"type": "object", "description": "fine knob overrides applied before the loop (see get_mode_params)"},
 		}),
 		Handler: func(ctx context.Context, args json.RawMessage) (string, error) { return refineJob(ctx, d, args) },
 	})
 	r.Add(Tool{
 		Name: "start_run", Category: "tasks", Mutating: true,
-		Description: "Start a new processing run over a capture folder. Use browse_files/inspect_captures first to find and confirm the folder.",
+		Description: "Start a new processing run over a capture folder — optionally with CHOSEN fine parameters (get_mode_params lists each mode's tunable knobs) and a quality goal the supervisor pursues. Use browse_files/inspect_captures first to find and confirm the folder.",
 		Schema: objectSchema([]string{"path"}, map[string]any{
 			"path":      strProp("capture folder (inside the data directory)"),
 			"mode":      strProp("deepsky|nebula|milkyway|planetary|comet (default deepsky)"),
 			"format":    strProp("image|video|both (default image)"),
 			"supervise": boolProp("drive the local AI agent to auto-tune the finish"),
+			"params":    map[string]any{"type": "object", "description": "fine knob overrides for the mode (see get_mode_params); clamped to safe ranges"},
+			"goal":      strProp("free-text quality objective the supervisor optimizes for"),
+			"tier":      strProp("supervisor re-entry ceiling A|B|C (default: mode default)"),
+			"max_iters": intProp("max supervisor passes (0 = default)"),
 		}),
 		Handler: func(ctx context.Context, args json.RawMessage) (string, error) { return startRun(ctx, d, args) },
 	})
@@ -210,9 +215,10 @@ func restartJob(ctx context.Context, d Deps, args json.RawMessage) (string, erro
 
 func refineJob(ctx context.Context, d Deps, args json.RawMessage) (string, error) {
 	var in struct {
-		ID       int64  `json:"id"`
-		Tier     string `json:"tier"`
-		MaxIters int    `json:"max_iters"`
+		ID       int64           `json:"id"`
+		Tier     string          `json:"tier"`
+		MaxIters int             `json:"max_iters"`
+		Params   json.RawMessage `json:"params"`
 	}
 	if err := decodeArgs(args, &in); err != nil {
 		return "", err
@@ -223,7 +229,7 @@ func refineJob(ctx context.Context, d Deps, args json.RawMessage) (string, error
 	if in.Tier == "" {
 		in.Tier = "B"
 	}
-	newID, err := d.Mgr.Refine(ctx, in.ID, job.RefineRequest{Tier: in.Tier, MaxIters: in.MaxIters})
+	newID, err := d.Mgr.Refine(ctx, in.ID, job.RefineRequest{Tier: in.Tier, MaxIters: in.MaxIters, Params: in.Params})
 	if err != nil {
 		return "", err
 	}
@@ -232,10 +238,14 @@ func refineJob(ctx context.Context, d Deps, args json.RawMessage) (string, error
 
 func startRun(ctx context.Context, d Deps, args json.RawMessage) (string, error) {
 	var in struct {
-		Path      string `json:"path"`
-		Mode      string `json:"mode"`
-		Format    string `json:"format"`
-		Supervise bool   `json:"supervise"`
+		Path      string          `json:"path"`
+		Mode      string          `json:"mode"`
+		Format    string          `json:"format"`
+		Supervise bool            `json:"supervise"`
+		Params    json.RawMessage `json:"params"`
+		Goal      string          `json:"goal"`
+		Tier      string          `json:"tier"`
+		MaxIters  int             `json:"max_iters"`
 	}
 	if err := decodeArgs(args, &in); err != nil {
 		return "", err
@@ -244,12 +254,18 @@ func startRun(ctx context.Context, d Deps, args json.RawMessage) (string, error)
 	if err != nil {
 		return "", err
 	}
-	req := job.RunRequest{Path: path, Mode: in.Mode, Format: in.Format, Supervise: in.Supervise}
+	req := job.RunRequest{
+		Path: path, Mode: in.Mode, Format: in.Format, Supervise: in.Supervise,
+		Params: in.Params, Goal: in.Goal, Tier: in.Tier, MaxIters: in.MaxIters,
+	}
 	if req.Mode == "" {
 		req.Mode = "deepsky"
 	}
 	if req.Format == "" {
 		req.Format = "image"
+	}
+	if req.Goal != "" { // a goal implies the supervisor pursues it
+		req.Supervise = true
 	}
 	newID, err := d.Mgr.Enqueue(ctx, req)
 	if err != nil {

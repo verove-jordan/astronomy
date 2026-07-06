@@ -21,6 +21,20 @@ type finishMetrics struct {
 	GreenCast  float64    `json:"green_cast"`  // medianG - mean(medianR, medianB); >0 → green cast
 	WarmCast   float64    `json:"warm_cast"`   // sky red-excess: bgR - mean(bgG,bgB) on the per-channel 10th-pct background; >0 → warm/orange cast
 	SignalCast float64    `json:"signal_cast"` // bright-signal (galaxy/star) green balance: 90th-pct G - mean(90th-pct R,B); <0 → magenta/pink signal, >0 → green
+
+	// StarWarmFrac is the fraction of the brightest cores (≥99.5th-pct luma) that read warm
+	// (red-dominant) — a UNIFORMLY warm star field is a calibration/finish failure the sky-median
+	// metrics can't see ("all stars orange"). StarColorSpread is the spread (stddev of the r−b
+	// balance) of those cores: real fields mix blue/white/orange stars, so a near-zero spread with a
+	// high warm fraction means the finish painted them one colour.
+	StarWarmFrac    float64 `json:"star_warm_frac"`
+	StarColorSpread float64 `json:"star_color_spread"`
+	// DetailIndex is the Laplacian variance of the sampled luma — an acutance proxy scored RELATIVE
+	// to the run's first pass (absolute values are scene-dependent). Drives the planetary bonus.
+	DetailIndex float64 `json:"detail_index"`
+	// FgLumaMean is the mean luma of the bottom 20% rows — the milkyway foreground-balance guard
+	// (crushed-to-black or lifted-HDR landscapes both read unnatural).
+	FgLumaMean float64 `json:"fg_luma_mean"`
 }
 
 // measureFinish decodes a rendered PNG and computes per-channel clipping, medians, a background
@@ -56,7 +70,17 @@ func metricsFromImage(img image.Image) finishMetrics {
 	var hist [3][256]uint64
 	var lumHist [256]uint64
 	var n uint64
+	// The strided walk also builds a decimated luma grid (for the Laplacian detail index) and the
+	// bottom-rows foreground mean, so the extra metrics cost no extra image pass.
+	gw := (b.Dx() + step - 1) / step
+	gh := (b.Dy() + step - 1) / step
+	lumGrid := make([]float64, gw*gh)
+	fgY := b.Min.Y + b.Dy()*4/5 // bottom 20% rows
+	var fgSum float64
+	var fgN uint64
+	gy := 0
 	for y := b.Min.Y; y < b.Max.Y; y += step {
+		gx := 0
 		for x := b.Min.X; x < b.Max.X; x += step {
 			r, g, bl, _ := img.At(x, y).RGBA() // 16-bit per channel
 			r8, g8, b8 := r>>8, g>>8, bl>>8
@@ -65,13 +89,27 @@ func metricsFromImage(img image.Image) finishMetrics {
 			hist[2][b8]++
 			lum := (299*r8 + 587*g8 + 114*b8) / 1000 // Rec.601 luma
 			lumHist[uint8(lum)]++
+			if gy < gh && gx < gw {
+				lumGrid[gy*gw+gx] = float64(lum) / 255
+			}
+			if y >= fgY {
+				fgSum += float64(lum) / 255
+				fgN++
+			}
 			n++
+			gx++
 		}
+		gy++
 	}
 	var m finishMetrics
 	if n == 0 {
 		return m
 	}
+	m.DetailIndex = laplacianVar(lumGrid, gw, gh)
+	if fgN > 0 {
+		m.FgLumaMean = fgSum / float64(fgN)
+	}
+	m.StarWarmFrac, m.StarColorSpread = starCoreColor(img, b, step, lumHist[:], n)
 	for c := 0; c < 3; c++ {
 		m.BlackClip[c] = float64(hist[c][0]) / float64(n)
 		m.WhiteClip[c] = float64(hist[c][255]) / float64(n)
@@ -178,4 +216,70 @@ func downscale(src image.Image, maxDim int) image.Image {
 		}
 	}
 	return dst
+}
+
+// laplacianVar is the 4-neighbour Laplacian variance of a luma grid — the acutance proxy behind
+// DetailIndex. Deterministic and cheap (the grid is the strided sample, ≤ ~2M cells).
+func laplacianVar(grid []float64, w, h int) float64 {
+	if w < 3 || h < 3 {
+		return 0
+	}
+	var sum, sum2 float64
+	n := 0
+	for y := 1; y < h-1; y++ {
+		row := y * w
+		for x := 1; x < w-1; x++ {
+			lap := 4*grid[row+x] - grid[row+x-1] - grid[row+x+1] - grid[row-w+x] - grid[row+w+x]
+			sum += lap
+			sum2 += lap * lap
+			n++
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	mean := sum / float64(n)
+	return sum2/float64(n) - mean*mean
+}
+
+// starCoreColor samples the brightest cores (≥99.5th-pct luma) and reports how many read warm
+// (red-dominant) plus the spread of their red−blue balance. A capped second strided pass.
+func starCoreColor(img image.Image, b image.Rectangle, step int, lumHist []uint64, n uint64) (warmFrac, spread float64) {
+	thr := uint32(percentile(lumHist, n, 0.995))
+	if thr < 32 {
+		return 0, 0 // a near-black frame has no meaningful "bright cores"
+	}
+	const maxSamples = 50_000
+	var balances []float64
+	warm := 0
+	for y := b.Min.Y; y < b.Max.Y && len(balances) < maxSamples; y += step {
+		for x := b.Min.X; x < b.Max.X && len(balances) < maxSamples; x += step {
+			r, g, bl, _ := img.At(x, y).RGBA()
+			r8, g8, b8 := r>>8, g>>8, bl>>8
+			lum := (299*r8 + 587*g8 + 114*b8) / 1000
+			if lum < thr {
+				continue
+			}
+			bal := (float64(r8) - float64(b8)) / 255
+			balances = append(balances, bal)
+			if bal > 0.08 && r8 > g8 {
+				warm++
+			}
+		}
+	}
+	if len(balances) < 20 {
+		return 0, 0
+	}
+	warmFrac = float64(warm) / float64(len(balances))
+	var mean float64
+	for _, v := range balances {
+		mean += v
+	}
+	mean /= float64(len(balances))
+	var varr float64
+	for _, v := range balances {
+		varr += (v - mean) * (v - mean)
+	}
+	spread = math.Sqrt(varr / float64(len(balances)))
+	return warmFrac, spread
 }

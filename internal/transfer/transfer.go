@@ -50,6 +50,9 @@ type Result struct {
 	Files   int   `json:"files"`
 	Bytes   int64 `json:"bytes"`
 	Skipped int   `json:"skipped,omitempty"` // sync: files already up to date
+	// Warnings surface non-fatal caveats to the job result — today only remove-local's "verified by
+	// size only (legacy upload): <rel>" for pre-MD5-metadata multipart objects.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Run executes req against client, reporting progress (onProgress may be nil).

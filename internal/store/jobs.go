@@ -30,6 +30,7 @@ type Job struct {
 	Result       json.RawMessage `json:"result" db:"result"`
 	StartedAtMs  int64           `json:"started_at_ms" db:"started_at_ms"`
 	FinishedAtMs int64           `json:"finished_at_ms" db:"finished_at_ms"`
+	SeriesID     int64           `json:"series_id" db:"series_id"` // agent improvement series (0 = none)
 	CreatedAt    int64           `json:"created_at" db:"created_at"`
 	UpdatedAt    int64           `json:"updated_at" db:"updated_at"`
 }
@@ -146,4 +147,4 @@ func (s *Store) CountJobs(ctx context.Context) (int, error) {
 }
 
 const jobSelect = `SELECT id, session_id, kind, status, progress, current_step, log_tail, error,
-	params, result, started_at_ms, finished_at_ms, created_at, updated_at FROM jobs`
+	params, result, started_at_ms, finished_at_ms, series_id, created_at, updated_at FROM jobs`

@@ -49,15 +49,17 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": id})
 }
 
-// listBackups returns the manifests of every backup under <prefix>/backup/, newest first. GET /api/backup
+// listBackups returns the manifests of every backup under <prefix>/backup/, newest first. Honors ?conn=
+// (s3ConfigForRequest) so the listing reads the connection the bucket was chosen under. GET /api/backup
 func (s *Server) listBackups(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	bucket := q.Get("bucket")
-	if bucket == "" || !s.s3Config(r.Context()).Configured() {
+	cfg, cfgErr := s.s3ConfigForRequest(r)
+	if bucket == "" || cfgErr != nil || !cfg.Configured() {
 		writeJSON(w, http.StatusOK, map[string]any{"backups": []backup.Manifest{}})
 		return
 	}
-	client, err := s3store.New(s.s3Config(r.Context()))
+	client, err := s3store.New(cfg)
 	if err != nil {
 		serverError(w, err)
 		return
@@ -115,11 +117,12 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 func (s *Server) backupAppState(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	bucket, stamp := q.Get("bucket"), q.Get("stamp")
-	if bucket == "" || stamp == "" || !s.s3Config(r.Context()).Configured() {
+	cfg, cfgErr := s.s3ConfigForRequest(r) // honors ?conn= like listBackups
+	if bucket == "" || stamp == "" || cfgErr != nil || !cfg.Configured() {
 		badRequest(w, "bucket and stamp are required")
 		return
 	}
-	client, err := s3store.New(s.s3Config(r.Context()))
+	client, err := s3store.New(cfg)
 	if err != nil {
 		serverError(w, err)
 		return

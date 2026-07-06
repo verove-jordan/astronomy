@@ -263,13 +263,15 @@ export interface BrowseEntry {
 }
 
 // S3 connection status (GET /api/s3/status). configured = credentials present in the env; reachable +
-// buckets are filled when a connection test succeeds.
+// buckets are filled when a connection test succeeds. conn_id names the default UI-managed connection
+// (absent when the backend runs on env credentials) so the store can persist it beside bucket/prefix.
 export interface S3Status {
   configured: boolean;
   endpoint?: string;
   reachable?: boolean;
   buckets?: string[];
   error?: string;
+  conn_id?: number;
 }
 
 // One capture folder of a past processing, with whether it still exists on disk (GET /api/processed).

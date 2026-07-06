@@ -172,6 +172,14 @@ type Preset struct {
 	// "A" = GIMP composite only, "B" = also the linear finish prep, "C"/"" = also re-stack from the
 	// raw frames (full autonomy). Empty → full. Tier C additionally needs raw frames (Options.Reprocess).
 	SuperviseTier string
+	// SuperviseTargetScore is the deterministic-score floor (0..10) the render must clear before the
+	// agent may declare itself done (0 → the engine default, 7.0). Raising it makes the loop keep
+	// pushing; it is also the series continue/stop threshold.
+	SuperviseTargetScore float64
+	// SuperviseConfirmRestack asks the user before a Tier-C re-stack (the old default). The default
+	// is now FALSE — the loop runs autonomously within its per-tier budgets, per the product
+	// decision "autonomous with caps, no mid-run confirmations".
+	SuperviseConfirmRestack bool
 
 	// Nightscape (milkyway) controls. Look selects the render style (natural/iphone/deepsky);
 	// ForegroundFrame optionally overrides the auto-picked clean foreground source (a raw frame path);
@@ -257,8 +265,10 @@ func For(m Mode) Preset {
 			Color:            OSC,
 			Grade:            grade.Options{RoundnessFloor: 0.45, RoundnessSigma: 3.5, FWHMSigma: 3.5, BackgroundSigma: 3.5, StarCountFrac: 0.3, RejectTrails: false},
 			BackgroundDegree: 3, // strong light-pollution gradients from a phone
-			Saturation:       0.10,
-			Curve:            []float64{0, 0, 0.3, 0.30, 0.6, 0.62, 1, 1}, // near-linear, preserve star colors
+			// For milkyway, Saturation is a SCALE on the chosen Look's own saturation (1 = as the look
+			// was designed) — the nightscape grade owns the absolute value; this knob tames/boosts it.
+			Saturation: 1.0,
+			Curve:      []float64{0, 0, 0.3, 0.30, 0.6, 0.62, 1, 1}, // near-linear, preserve star colors
 
 			DenoiseChroma: 0.60, DenoiseVST: true, DenoiseDA3D: true,
 			BackgroundAI:     true, // strong phone light-pollution gradients

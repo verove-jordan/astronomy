@@ -65,6 +65,7 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 	res := &Result{InputDir: opts.InputDir, OutputDir: outDir, Object: object, RunID: runID}
+	opts.PriorObject = object // key for the supervisor's cross-run memory (warm start)
 
 	// Milky-Way nightscapes use the dedicated foreground-composite recipe (star-aligned sky stack +
 	// single clean foreground), not the generic OSC stack. Bayer-FITS OSC captures (no raws to
@@ -211,28 +212,30 @@ func processNightscape(ctx context.Context, opts Options, res *Result, frames []
 		grax = opts.Graxpert
 	}
 	nopts := nightscape.Options{
-		Siril:            opts.Runner,
-		Graxpert:         grax,
-		Frames:           lights,
-		WorkDir:          workRun,
-		OutDir:           outDir,
-		Look:             nightscape.LookByName(opts.Preset.Look),
-		Brightness:       opts.Preset.BackgroundLevel,
-		ColorCalibration: opts.Preset.ColorCalibration,
-		Solve:            opts.Solve,
-		Spcc:             opts.Spcc,
-		Focal35mm:        nightscape.ReadFocal35mm(lights),
-		DarkDir:          opts.DarkDir,
-		FlatDir:          opts.FlatDir,
-		BiasDir:          opts.BiasDir,
-		DarkFrames:       darkFrames,
-		FlatFrames:       flatFrames,
-		BiasFrames:       biasFrames,
-		PhoneCalib:       opts.PhoneCalib,
-		LibraryDir:       libDir,
-		ForegroundFrame:  opts.Preset.ForegroundFrame,
-		Orientation:      opts.Preset.Orientation,
-		OnProgress:       opts.sirilLines("nightscape: register + composite"),
+		Siril:                 opts.Runner,
+		Graxpert:              grax,
+		Frames:                lights,
+		WorkDir:               workRun,
+		OutDir:                outDir,
+		Look:                  nightscape.LookByName(opts.Preset.Look),
+		Brightness:            opts.Preset.BackgroundLevel,
+		SaturationScale:       opts.Preset.Saturation,
+		HighlightCeilOverride: opts.Preset.HighlightCeil,
+		ColorCalibration:      opts.Preset.ColorCalibration,
+		Solve:                 opts.Solve,
+		Spcc:                  opts.Spcc,
+		Focal35mm:             nightscape.ReadFocal35mm(lights),
+		DarkDir:               opts.DarkDir,
+		FlatDir:               opts.FlatDir,
+		BiasDir:               opts.BiasDir,
+		DarkFrames:            darkFrames,
+		FlatFrames:            flatFrames,
+		BiasFrames:            biasFrames,
+		PhoneCalib:            opts.PhoneCalib,
+		LibraryDir:            libDir,
+		ForegroundFrame:       opts.Preset.ForegroundFrame,
+		Orientation:           opts.Preset.Orientation,
+		OnProgress:            opts.sirilLines("nightscape: register + composite"),
 	}
 	nres, err := nightscape.Process(ctx, nopts)
 	if err != nil {

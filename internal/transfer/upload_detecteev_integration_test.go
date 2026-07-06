@@ -37,16 +37,22 @@ import (
 // NOTE: dotfiles, dot-directories and *.part files are skipped (walkLocalFiles), matching the app's
 // normal upload behavior — this uploads the whole visible tree, not OS-hidden junk.
 func TestIntegration_UploadAstroToScaleway(t *testing.T) {
+	if !truthyEnv("ASTRO_UPLOAD_RUN") {
+		t.Skip("set ASTRO_UPLOAD_RUN=1 (+ ASTRO_S3_ACCESS_KEY_ID/ASTRO_S3_SECRET_ACCESS_KEY) to run the Scaleway upload")
+	}
 
-	accessKey := "SCW45R1RT39EETCNM955"                 //os.Getenv("ASTRO_S3_ACCESS_KEY_ID")
-	secretKey := "516eb6e9-cfc9-44dd-b4cf-1027ab147f0d" //os.Getenv("ASTRO_S3_SECRET_ACCESS_KEY")
+	accessKey := os.Getenv("ASTRO_S3_ACCESS_KEY_ID")
+	secretKey := os.Getenv("ASTRO_S3_SECRET_ACCESS_KEY")
 	if accessKey == "" || secretKey == "" {
 		t.Fatal("ASTRO_UPLOAD_RUN is set but ASTRO_S3_ACCESS_KEY_ID / ASTRO_S3_SECRET_ACCESS_KEY are missing")
 	}
 
+	// The source lives on an external drive — skip (like the env-gated tests above) when it is unplugged.
 	src := envOr("ASTRO_UPLOAD_SRC", "/Volumes/Elements/Pictures/astro")
 	info, err := os.Stat(src)
-	require.NoErrorf(t, err, "source directory %q must exist and be readable", src)
+	if err != nil {
+		t.Skipf("source directory %q not available (drive unplugged?): %v", src, err)
+	}
 	require.Truef(t, info.IsDir(), "source %q is not a directory", src)
 
 	bucket := envOr("ASTRO_S3_BUCKET", "astrophoto")

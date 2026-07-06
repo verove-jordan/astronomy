@@ -48,20 +48,24 @@ export const apiDelete = <T>(path: string) => request<T>("DELETE", path);
 // file/preview/thumb URL builders and the list endpoints can tag every request with the active
 // bucket/prefix — giving transparent S3 fallback for previews and results everywhere — without importing
 // the store (which would cycle). Credentials never appear here; they live only in the backend env.
+// The connection id is the backend connection the bucket/prefix were chosen under (persisted from
+// /api/s3/status), so the pair can never silently drift onto a different default connection.
 export const S3_BUCKET_KEY = "astrostack.s3.bucket";
 export const S3_PREFIX_KEY = "astrostack.s3.prefix";
+export const S3_CONN_KEY = "astrostack.s3.conn";
 
-// s3Suffix returns "&bucket=…&prefix=…" for the active S3 selection (empty when none), for URLs that
-// already carry a "?path=". The backend serves local-first and only falls back to the S3 mirror when the
-// local file was freed, so tagging every URL is harmless (and free) when the file is still on disk.
+// s3Suffix returns "&bucket=…&prefix=…&conn=…" for the active S3 selection (empty when none), for URLs
+// that already carry a "?path=". The backend serves local-first and only falls back to the S3 mirror when
+// the local file was freed, so tagging every URL is harmless (and free) when the file is still on disk.
 export function s3Suffix(): string {
   try {
     const bucket = localStorage.getItem(S3_BUCKET_KEY) || "";
     if (!bucket) return "";
     const prefix = localStorage.getItem(S3_PREFIX_KEY) || "";
+    const conn = localStorage.getItem(S3_CONN_KEY) || "";
     return `&bucket=${encodeURIComponent(bucket)}${
       prefix ? `&prefix=${encodeURIComponent(prefix)}` : ""
-    }`;
+    }${conn ? `&conn=${encodeURIComponent(conn)}` : ""}`;
   } catch {
     return "";
   }

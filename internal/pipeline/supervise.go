@@ -79,15 +79,31 @@ func superviseFinish(ctx context.Context, opts Options, r candidateRenderer, out
 	iters := superviseIters(opts.Preset)
 
 	working := *opts.Preset
-	budgetB, budgetC := superviseBudgetTierB, superviseBudgetTierC
+	budgetB, budgetC := superviseBudgets(working.Mode)
 	renderTier := r.firstTier()
+	target := working.SuperviseTargetScore
+	if target <= 0 {
+		target = superviseQualityTarget
+	}
+
+	// Cross-run memory: seed the working preset from the best prior pass of this target (clamped
+	// through the shared param brain) and tell the model where that seed already scored.
+	warmNote := ""
+	if superviseHistoryOn() {
+		warmNote = warmStart(ctx, opts, &working)
+		if warmNote != "" {
+			opts.report(Progress{Step: "supervise", Line: warmNote})
+		}
+	}
 
 	var best *superviseIter
 	bestIdx := -1
 	var records []postprocess.IterationRecord
 	var history []string
+	var outcomes []iterOutcome
 	var iterIDs []int64
-	var guidance string // user nudge drained between iterations, folded into the NEXT critique
+	guidance := strings.TrimSpace(opts.Goal) // the user's run goal steers the FIRST critique
+	noImprove := 0                           // consecutive passes that failed to beat the best (plateau stop)
 
 	for i := 0; i < iters; i++ {
 		if ctx.Err() != nil {
@@ -110,9 +126,20 @@ func superviseFinish(ctx context.Context, opts Options, r candidateRenderer, out
 		}
 		opts.report(Progress{Step: fmt.Sprintf("supervise %d/%d", i+1, iters), Preview: g.Png})
 
-		det := scoreFinish(m, working.BackgroundLevel)
-		steered := guidance != "" // this pass's critique is guided by the user's last nudge
-		dec := critique(ctx, opts.Supervisor, r.prompt(working, ceiling), m, g.Png, guidance)
+		det := scoreFinishMode(working.Mode, m, working.BackgroundLevel, iterZeroMetrics(outcomes, m))
+		steered := guidance != "" // this pass's critique is guided by the user's last nudge/goal
+		hist := ""
+		if superviseHistoryOn() {
+			hist = historyBlock(outcomes, bestIdx)
+			if warmNote != "" {
+				hist = strings.TrimSpace(warmNote + "\n" + hist)
+			}
+		}
+		bestPng := ""
+		if best != nil {
+			bestPng = best.result.Png
+		}
+		dec := critique(ctx, opts.Supervisor, r.prompt(working, ceiling), m, g.Png, guidance, hist, bestPng)
 		guidance = "" // consumed by this pass
 		modelScore := clampf(dec.Score, 0, 10)
 		// Deterministic metrics dominate the model's aesthetic vote, so a clipped or cast render can
@@ -127,13 +154,24 @@ func superviseFinish(ctx context.Context, opts Options, r candidateRenderer, out
 		}
 		records = append(records, rec)
 		reportIteration(opts, rec)
-		iterIDs = append(iterIDs, persistIteration(ctx, opts, rec, m))
+		iterIDs = append(iterIDs, persistIteration(ctx, opts, rec, m, working))
 		history = append(history, fmt.Sprintf("iter %d [%s] score %.1f (metrics %.1f, model %.1f) — %s",
 			i+1, renderTier, combined, det, dec.Score, reason))
 		opts.report(Progress{Step: "supervise", Line: history[len(history)-1]})
+		outcomes = append(outcomes, iterOutcome{
+			index: i, tier: renderTier.String(), params: ParamsFor(working),
+			det: det, model: modelScore, combined: combined, detail: m.DetailIndex,
+			defects: dec.Defects, note: reason,
+		})
 
+		improved := best == nil || combined > best.score+0.1 // a real step forward, not a jitter tie
 		if best == nil || combined > best.score {
 			best, bestIdx = &superviseIter{preset: working, result: g, notes: notes, score: combined}, i
+		}
+		if improved {
+			noImprove = 0
+		} else {
+			noImprove++
 		}
 
 		// User steering: drain nudges/stop emitted while this pass rendered (after it's recorded so the
@@ -148,7 +186,13 @@ func superviseFinish(ctx context.Context, opts Options, r candidateRenderer, out
 		}
 
 		// Stop policy: honour the model's "done" only when the user isn't actively steering.
-		if guidance == "" && !steered && dec.Done && det >= superviseQualityTarget {
+		if guidance == "" && !steered && dec.Done && det >= target {
+			break
+		}
+		// Plateau: after three passes, two consecutive non-improving renders mean the loop is circling —
+		// keep the best instead of burning budget re-rolling.
+		if guidance == "" && i >= 2 && noImprove >= 2 {
+			opts.report(Progress{Step: "supervise", Line: "supervise: plateau — keeping the best pass"})
 			break
 		}
 		if dec.Action == nil || len(dec.Action.Patch) == 0 {
@@ -167,8 +211,9 @@ func superviseFinish(ctx context.Context, opts Options, r candidateRenderer, out
 			}
 			break // no effective change we can afford → converged
 		}
-		// Ask the user before the most expensive step (deep-sky Tier-C re-stack); on decline, cap to Tier B.
-		if nextTier == tierC && opts.Confirm != nil {
+		// The re-stack confirmation gate is OPT-IN (preset.SuperviseConfirmRestack): the default is the
+		// autonomous loop the budgets already bound; on decline, cap the change to Tier B.
+		if nextTier == tierC && opts.Confirm != nil && working.SuperviseConfirmRestack {
 			if choice, ok := opts.Confirm(ctx, superviseRestackQuestion, superviseRestackOptions()); ok && choice != superviseRestackProceed {
 				next, nextTier, changed = r.applyPatch(working, dec.Action.Patch, tierB)
 				if !changed {
@@ -253,9 +298,10 @@ func reportIteration(opts Options, rec postprocess.IterationRecord) {
 	opts.report(Progress{Step: "supervise", Iteration: &r})
 }
 
-// persistIteration best-effort writes one supervised iteration to the store, but only for a job run
+// persistIteration best-effort writes one supervised iteration to the store — including the full
+// working preset (the warm-start memory) and the render's PNG path — but only for a job run
 // (JobID != 0 with a store). Returns the row id (0 when skipped or on failure); never fatal.
-func persistIteration(ctx context.Context, opts Options, rec postprocess.IterationRecord, m finishMetrics) int64 {
+func persistIteration(ctx context.Context, opts Options, rec postprocess.IterationRecord, m finishMetrics, working mode.Preset) int64 {
 	if opts.FinishIterStore == nil || opts.JobID == 0 {
 		return 0
 	}
@@ -263,7 +309,8 @@ func persistIteration(ctx context.Context, opts Options, rec postprocess.Iterati
 	metrics, _ := json.Marshal(m)
 	defects, _ := json.Marshal(rec.Defects)
 	id, err := opts.FinishIterStore.CreateFinishIteration(ctx, opts.JobID, rec.Index, rec.Tier,
-		params, metrics, defects, rec.DetScore, rec.ModelScore, rec.CombinedScore, rec.Reasoning)
+		params, metrics, defects, rec.DetScore, rec.ModelScore, rec.CombinedScore, rec.Reasoning,
+		rec.PngPath, presetBlob(working))
 	if err != nil {
 		opts.report(Progress{Step: "supervise", Line: "warn: persist iteration failed: " + err.Error()})
 		return 0

@@ -97,6 +97,8 @@ func (s *S3Source) Fetch(ctx context.Context, o Object) (string, error) {
 	if !strings.HasPrefix(local, filepath.Clean(s.downloadDir)+string(os.PathSeparator)) {
 		return "", fmt.Errorf("s3 fetch: key %q escapes download dir", o.Key)
 	}
+	// Size-only reuse BY DESIGN (matches internal/transfer's sync/download skips): captures are immutable
+	// once written, so an equal-size local file is the same frame — worst case a stale copy, never data loss.
 	if info, err := os.Stat(local); err == nil && info.Size() == o.Size {
 		return local, nil
 	}

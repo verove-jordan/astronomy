@@ -32,11 +32,16 @@ type Config struct {
 // Configured reports whether credentials are present (so callers can offer S3 features or not).
 func (c Config) Configured() bool { return c.AccessKeyID != "" && c.SecretKey != "" }
 
-// Object is one S3 object's cheap metadata.
+// Object is one S3 object's cheap metadata. ETag is the S3 entity tag without quotes (for a single-part,
+// non-SSE-C/KMS upload it equals the content MD5; a multipart ETag contains "-"). MD5 is the content MD5
+// our own uploads record as user metadata (see Upload) — both feed remove-local's strong verification.
+// List responses carry the ETag only; MD5 requires a Stat.
 type Object struct {
 	Key     string `json:"key"`
 	Size    int64  `json:"size"`
 	ModTime int64  `json:"mod_time_ms"`
+	ETag    string `json:"etag,omitempty"`
+	MD5     string `json:"md5,omitempty"`
 }
 
 // Client is a reusable, concurrency-safe S3 client (minio.Client is safe for concurrent use).
@@ -65,55 +70,102 @@ func New(cfg Config) (*Client, error) {
 }
 
 // ListDir returns the immediate sub-folders (common prefixes) and files directly under prefix, using the
-// "/" delimiter — the S3 analogue of os.ReadDir. Folder names include their trailing "/".
+// "/" delimiter — the S3 analogue of os.ReadDir. Folder names include their trailing "/". A transient
+// failure re-runs the whole scan (the listing channel is consumed per attempt).
 func (c *Client) ListDir(ctx context.Context, bucket, prefix string) (folders []string, files []Object, err error) {
 	p := prefix
 	if p != "" && !strings.HasSuffix(p, "/") {
 		p += "/"
 	}
-	for obj := range c.mc.ListObjects(ctx, bucket, minio.ListObjectsOptions{Prefix: p, Recursive: false}) {
-		if obj.Err != nil {
-			return nil, nil, fmt.Errorf("s3 list %s/%s: %w", bucket, p, obj.Err)
+	err = withRetry(ctx, "list", func() error {
+		folders, files = nil, nil // a retried attempt restarts the scan from scratch
+		for obj := range c.mc.ListObjects(ctx, bucket, minio.ListObjectsOptions{Prefix: p, Recursive: false}) {
+			if obj.Err != nil {
+				return obj.Err
+			}
+			if strings.HasSuffix(obj.Key, "/") {
+				folders = append(folders, obj.Key)
+				continue
+			}
+			files = append(files, objectFrom(obj))
 		}
-		if strings.HasSuffix(obj.Key, "/") {
-			folders = append(folders, obj.Key)
-			continue
-		}
-		files = append(files, objectFrom(obj))
+		return nil
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("s3 list %s/%s: %w", bucket, p, err)
 	}
 	return folders, files, nil
 }
 
-// List returns every object under prefix (recursive) — for sync diffs and backups.
+// List returns every object under prefix (recursive) — for sync diffs and backups. A transient failure
+// re-runs the whole scan (the listing channel is consumed per attempt).
 func (c *Client) List(ctx context.Context, bucket, prefix string) ([]Object, error) {
 	var out []Object
-	for obj := range c.mc.ListObjects(ctx, bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true}) {
-		if obj.Err != nil {
-			return nil, fmt.Errorf("s3 list %s/%s: %w", bucket, prefix, obj.Err)
+	err := withRetry(ctx, "list", func() error {
+		out = nil // a retried attempt restarts the scan from scratch
+		for obj := range c.mc.ListObjects(ctx, bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true}) {
+			if obj.Err != nil {
+				return obj.Err
+			}
+			if strings.HasSuffix(obj.Key, "/") {
+				continue
+			}
+			out = append(out, objectFrom(obj))
 		}
-		if strings.HasSuffix(obj.Key, "/") {
-			continue
-		}
-		out = append(out, objectFrom(obj))
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("s3 list %s/%s: %w", bucket, prefix, err)
 	}
 	return out, nil
 }
 
 // Stat returns the object's metadata and whether it exists (a missing key is ok=false, not an error).
+// Unlike a List entry, a Stat also carries the content MD5 recorded by Upload (user metadata).
 func (c *Client) Stat(ctx context.Context, bucket, key string) (obj Object, ok bool, err error) {
-	info, serr := c.mc.StatObject(ctx, bucket, key, minio.StatObjectOptions{})
+	var info minio.ObjectInfo
+	serr := withRetry(ctx, "stat", func() error {
+		var e error
+		info, e = c.mc.StatObject(ctx, bucket, key, minio.StatObjectOptions{})
+		return e
+	})
 	if serr != nil {
 		if minio.ToErrorResponse(serr).StatusCode == 404 {
 			return Object{}, false, nil
 		}
 		return Object{}, false, fmt.Errorf("s3 stat %s: %w", key, serr)
 	}
-	return Object{Key: key, Size: info.Size, ModTime: info.LastModified.UnixMilli()}, true, nil
+	return Object{
+		Key:     key,
+		Size:    info.Size,
+		ModTime: info.LastModified.UnixMilli(),
+		ETag:    strings.Trim(info.ETag, `"`),
+		MD5:     userMD5(info),
+	}, true, nil
+}
+
+// userMD5 extracts the content MD5 Upload records as user metadata. minio-go canonicalizes metadata keys
+// to MIME-header casing ("Astro-Md5"); scan case-insensitively anyway for gateways that don't.
+func userMD5(info minio.ObjectInfo) string {
+	if v, ok := info.UserMetadata[userMD5Key]; ok {
+		return v
+	}
+	for k, v := range info.UserMetadata {
+		if strings.EqualFold(k, userMD5Key) {
+			return v
+		}
+	}
+	return ""
 }
 
 // BucketExists reports whether the bucket exists and is reachable (also validates credentials).
 func (c *Client) BucketExists(ctx context.Context, bucket string) (bool, error) {
-	ok, err := c.mc.BucketExists(ctx, bucket)
+	var ok bool
+	err := withRetry(ctx, "bucket-exists", func() error {
+		var e error
+		ok, e = c.mc.BucketExists(ctx, bucket)
+		return e
+	})
 	if err != nil {
 		return false, fmt.Errorf("s3 bucket exists %s: %w", bucket, err)
 	}
@@ -149,13 +201,23 @@ func (c *Client) ListBuckets(ctx context.Context) ([]string, error) {
 }
 
 func objectFrom(o minio.ObjectInfo) Object {
-	return Object{Key: o.Key, Size: o.Size, ModTime: o.LastModified.UnixMilli()}
+	return Object{Key: o.Key, Size: o.Size, ModTime: o.LastModified.UnixMilli(), ETag: strings.Trim(o.ETag, `"`)}
 }
 
 // normalizeEndpoint reduces a user-entered endpoint to the bare host[:port] minio-go requires: it strips a
 // scheme (http/https — the UseSSL flag, not the scheme, controls TLS) and any trailing path/query, so
 // pasting a console URL like "https://s3.fr-par.scw.cloud/" works instead of erroring with
 // "Endpoint url cannot have fully qualified paths".
+//
+// Why the heuristics exist: users paste whatever their provider's console shows — a browsable https URL,
+// a bucket-scoped virtual-hosted host, or a bare region host — and the UI has a single "endpoint" field.
+// The transforms below make all three spellings work without asking the user to know the difference.
+//
+// When to bypass: enter the exact host[:port] with no scheme and it passes through untouched — the only
+// rewrite that can still fire is the virtual-hosted bucket-label strip, which skips anything that does not
+// embed a ".s3." label (so "minio:9000", "s3.example.com", "storage.googleapis.com" are never rewritten).
+// A provider whose real service host legitimately contains ".s3." after a non-bucket label (none known)
+// would need the config to carry the host verbatim — revisit here if that ever shows up.
 func normalizeEndpoint(ep string) string {
 	ep = strings.TrimSpace(ep)
 	ep = strings.TrimPrefix(ep, "https://")

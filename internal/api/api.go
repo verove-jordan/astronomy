@@ -26,6 +26,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/preview"
 	"github.com/verove-jordan/astronomy/internal/routing"
 	"github.com/verove-jordan/astronomy/internal/s3conn"
+	"github.com/verove-jordan/astronomy/internal/s3store"
 	"github.com/verove-jordan/astronomy/internal/secret"
 	"github.com/verove-jordan/astronomy/internal/skyevents"
 	"github.com/verove-jordan/astronomy/internal/skyplan"
@@ -119,6 +120,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/refine", s.refineJob)
 	mux.HandleFunc("GET /api/jobs/{id}/iterations", s.jobIterations)
 	mux.HandleFunc("GET /api/jobs/{id}/events", s.jobEvents)
+	mux.HandleFunc("POST /api/series", s.createSeries)
+	mux.HandleFunc("GET /api/series", s.listSeries)
+	mux.HandleFunc("GET /api/series/{id}", s.getSeries)
+	mux.HandleFunc("POST /api/series/{id}/continue", s.setSeriesStatus("active"))
+	mux.HandleFunc("POST /api/series/{id}/stop", s.setSeriesStatus("stopped"))
 	mux.HandleFunc("GET /api/runs", s.listRuns)
 	mux.HandleFunc("GET /api/processed", s.processed)
 	mux.HandleFunc("GET /api/file", s.serveFile)
@@ -240,9 +246,12 @@ func (s *Server) browse(w http.ResponseWriter, r *http.Request) {
 	}
 	// When a bucket is supplied and S3 is configured, fold in the mirror's folders so the browser can
 	// show local / cloud / both presence (and surface S3-only folders to download). Soft-fails to local.
-	if bucket := q.Get("bucket"); bucket != "" && s.s3Config(r.Context()).Configured() {
-		if merged, err := s.mergeRemoteDirs(r.Context(), abs, bucket, q.Get("prefix"), dirs); err == nil {
-			dirs = merged
+	// The config honors ?conn= so the mirror listing targets the connection the bucket was chosen under.
+	if bucket := q.Get("bucket"); bucket != "" {
+		if cfg, err := s.s3ConfigForRequest(r); err == nil && cfg.Configured() {
+			if merged, err := s.mergeRemoteDirs(r.Context(), cfg, abs, bucket, q.Get("prefix"), dirs); err == nil {
+				dirs = merged
+			}
 		}
 	}
 	out := append(dirs, files...)
@@ -653,14 +662,19 @@ func (s *Server) listRuns(w http.ResponseWriter, r *http.Request) {
 
 	// S3 fallback: fold in runs whose local output tree was freed (present only on the S3 mirror). Their
 	// run.json is read from S3 on demand for the requested page only. Requires a chosen bucket; soft-fails.
+	// The config honors ?conn= so the mirror is read from the connection the bucket was chosen under.
 	q := r.URL.Query()
-	if bucket := q.Get("bucket"); bucket != "" && s.s3Config(r.Context()).Configured() {
-		for _, ref := range s.s3OutputRuns(r.Context(), bucket, q.Get("prefix"), outAbs) {
-			if seen[ref.path] {
-				continue
+	var s3cfg s3store.Config
+	if bucket := q.Get("bucket"); bucket != "" {
+		if cfg, err := s.s3ConfigForRequest(r); err == nil && cfg.Configured() {
+			s3cfg = cfg
+			for _, ref := range s.s3OutputRuns(r.Context(), cfg, bucket, q.Get("prefix"), outAbs) {
+				if seen[ref.path] {
+					continue
+				}
+				seen[ref.path] = true
+				files = append(files, ref)
 			}
-			seen[ref.path] = true
-			files = append(files, ref)
 		}
 	}
 
@@ -677,7 +691,7 @@ func (s *Server) listRuns(w http.ResponseWriter, r *http.Request) {
 	runs := make([]runSummary, 0, end-offset)
 	for _, f := range files[offset:end] {
 		if f.s3Key != "" {
-			runs = append(runs, s.summarizeS3Run(r.Context(), q.Get("bucket"), f.s3Key, f.path, f.mtime))
+			runs = append(runs, s.summarizeS3Run(r.Context(), s3cfg, q.Get("bucket"), f.s3Key, f.path, f.mtime))
 		} else {
 			runs = append(runs, summarizeRun(f.path)) // ReadFile only for the page
 		}

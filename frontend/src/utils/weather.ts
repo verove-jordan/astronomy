@@ -134,14 +134,27 @@ export const WEATHER_METRICS: WeatherMetric[] = [
 
 export type RGBA = [number, number, number, number]; // r,g,b in 0..255, a in 0..1
 
+// GridBandDef is one altitude band of a composite layer (see GridLayerDef.bands).
+export interface GridBandDef {
+  metric: string; // backend grid layer key for this band
+  labelKey: string;
+  color: (v: number) => RGBA;
+  gradient: string[]; // legend gradient stops for this band's legend row
+}
+
 export interface GridLayerDef {
   id: string; // overlay id in the map-layer registry
-  metric: string; // backend grid layer key
+  metric: string; // backend grid layer key (the total: timeline value + raster fallback)
   labelKey: string;
-  // color maps a cell value (cloud %, humidity %, precip mm) to an RGBA the canvas paints.
+  // color maps a cell value (cloud %, humidity %, precip %) to an RGBA the canvas paints.
   color: (v: number) => RGBA;
   // legend gradient stops (left → right) for the map legend.
   gradient: string[];
+  // Optional altitude bands, in paint order (index 0 composited first = bottom). When present and the
+  // cube carries every band metric, the map source-over composites these instead of painting `color` —
+  // low/mid/high clouds are physically different things (a dense blanket vs a thin cirrus veil) and
+  // should read that way. Older cubes without the band layers fall back to `color`.
+  bands?: GridBandDef[];
 }
 
 // rampRGBA interpolates a value through colour stops (sorted by `at`) so the weather rasters vary in HUE
@@ -167,26 +180,61 @@ function rampRGBA(value: number, stops: { at: number; rgba: RGBA }[]): RGBA {
   return last.rgba;
 }
 
+// bandColor builds an altitude band's colour ramp: a fixed body colour whose opacity follows the cover
+// % through a perceptual gamma (>1 keeps scattered cover airy while full cover still bites), so painted
+// intensity tracks the actual cloud amount instead of saturating early.
+function bandColor(
+  rgb: [number, number, number],
+  maxAlpha: number,
+  gamma: number,
+): (pct: number) => RGBA {
+  return (pct) => [
+    rgb[0],
+    rgb[1],
+    rgb[2],
+    maxAlpha * Math.pow(clamp01(pct / 100), gamma),
+  ];
+}
+
 export const GRID_LAYERS: GridLayerDef[] = [
   {
-    // Cloud cover: a faint cool haze at low cover deepening to bright white overcast. A multi-stop ramp
-    // (with alpha rising steeply through the low band) reads as depth, and the bilinear-upsampled canvas
-    // renders it as smooth cloud fields rather than flat blocks.
+    // Cloud cover, painted from the low/mid/high altitude bands composited bottom→top as high → mid →
+    // low: a thin cool cirrus veil under a blue-grey mid deck under a dense warm-white low blanket, each
+    // with a perceptual (gamma) alpha so intensity is true to the actual cover. `color` is the
+    // total-cover fallback for cubes that don't carry the bands: the same perceptual curve, luminance
+    // rising 210→250 so heavier cover also reads brighter, not just more opaque.
     id: "clouds",
     metric: "clouds",
     labelKey: "tonight.layers.clouds",
-    color: (pct) =>
-      rampRGBA(pct, [
-        { at: 0, rgba: [210, 224, 240, 0] },
-        { at: 12, rgba: [206, 219, 236, 0.16] },
-        { at: 35, rgba: [216, 226, 240, 0.42] },
-        { at: 65, rgba: [232, 238, 246, 0.66] },
-        { at: 100, rgba: [248, 250, 253, 0.9] },
-      ]),
+    color: (pct) => {
+      const t = Math.pow(clamp01(pct / 100), 1.35);
+      const lum = Math.round(210 + 40 * t);
+      return [lum, lum, lum, 0.9 * t];
+    },
     gradient: [
-      "rgba(206,219,236,0)",
-      "rgba(216,226,240,0.42)",
-      "rgba(248,250,253,0.9)",
+      "rgba(210,210,210,0)",
+      "rgba(230,230,230,0.45)",
+      "rgba(250,250,250,0.9)",
+    ],
+    bands: [
+      {
+        metric: "clouds_high",
+        labelKey: "tonight.layers.cloudHigh",
+        color: bandColor([190, 215, 235], 0.35, 1.3),
+        gradient: ["rgba(190,215,235,0)", "rgba(190,215,235,0.35)"],
+      },
+      {
+        metric: "clouds_mid",
+        labelKey: "tonight.layers.cloudMid",
+        color: bandColor([205, 215, 228], 0.55, 1.25),
+        gradient: ["rgba(205,215,228,0)", "rgba(205,215,228,0.55)"],
+      },
+      {
+        metric: "clouds_low",
+        labelKey: "tonight.layers.cloudLow",
+        color: bandColor([236, 240, 246], 0.85, 1.2),
+        gradient: ["rgba(236,240,246,0)", "rgba(236,240,246,0.85)"],
+      },
     ],
   },
   {
@@ -199,26 +247,27 @@ export const GRID_LAYERS: GridLayerDef[] = [
       rampRGBA(rh, [
         { at: 50, rgba: [80, 190, 120, 0.25] },
         { at: 70, rgba: [150, 205, 80, 0.42] },
-        { at: 85, rgba: [240, 195, 60, 0.58] },
-        { at: 93, rgba: [240, 130, 55, 0.72] },
-        { at: 100, rgba: [232, 70, 70, 0.82] },
+        { at: 85, rgba: [240, 195, 60, 0.55] },
+        { at: 93, rgba: [240, 130, 55, 0.64] },
+        { at: 100, rgba: [232, 70, 70, 0.72] },
       ]),
     gradient: [
       "rgba(80,190,120,0.35)",
-      "rgba(240,195,60,0.6)",
-      "rgba(232,70,70,0.85)",
+      "rgba(240,195,60,0.55)",
+      "rgba(232,70,70,0.72)",
     ],
   },
   {
-    // Rain chance (precipitation probability %): blue → violet, visible from a low chance — the rain
-    // amount in mm is ~0 almost everywhere and never showed.
+    // Rain chance (precipitation probability %): blue → violet, visible from a modest chance — the rain
+    // amount in mm is ~0 almost everywhere and never showed. Alpha onset at 12% so a background drizzle
+    // probability doesn't wash the whole map blue.
     id: "precip",
     metric: "precip",
     labelKey: "tonight.layers.precip",
     color: (prob) =>
       rampRGBA(prob, [
         { at: 0, rgba: [60, 170, 230, 0] },
-        { at: 8, rgba: [60, 170, 230, 0.35] },
+        { at: 12, rgba: [60, 170, 230, 0.35] },
         { at: 40, rgba: [45, 115, 230, 0.62] },
         { at: 70, rgba: [80, 70, 220, 0.8] },
         { at: 100, rgba: [125, 45, 200, 0.9] },

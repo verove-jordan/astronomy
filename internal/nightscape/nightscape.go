@@ -90,6 +90,11 @@ type Options struct {
 	// Brightness overrides the auto-levels target sky-background (the "Darker/Balanced/Brighter"
 	// control); 0 → the Look's own TargetBg. See autoStretch.
 	Brightness float64
+	// SaturationScale scales the Look's own saturation (1 or 0 = as designed; <1 tames neon colour,
+	// up to 2 boosts) and HighlightCeilOverride replaces the Look's core highlight ceiling
+	// (0 = keep; lower = dimmer, flatter Milky-Way core). Both are supervisor/params knobs.
+	SaturationScale       float64
+	HighlightCeilOverride float64
 
 	// ColorCalibration enables plate-solve + SPCC on the sky stack for natural star colour; it engages
 	// only when an OSC sensor is also configured (Spcc.OSCSensor) — a phone sensor is rarely in Siril's
@@ -338,9 +343,17 @@ func gradeCompose(o Options, sky, fg *fits.Image, alpha []float32, orientMode st
 	if err != nil {
 		return nil, err
 	}
-	boostSaturation(composite, look.Saturation)
+	satScale := o.SaturationScale
+	if satScale <= 0 {
+		satScale = 1
+	}
+	boostSaturation(composite, look.Saturation*satScale)
 	splitTone(composite, look.ShadowTint, look.HighlightTint, look.ToneStrength, 0.85)
-	compressHighlights(composite, look.HighlightKnee, look.HighlightCeiling*ceilScale)
+	ceil := look.HighlightCeiling
+	if o.HighlightCeilOverride > 0 {
+		ceil = o.HighlightCeilOverride
+	}
+	compressHighlights(composite, look.HighlightKnee, ceil*ceilScale)
 
 	// Restore the intended display orientation (resolved by the caller: user override / EXIF / heuristic).
 	composite = orient(composite, orientMode)

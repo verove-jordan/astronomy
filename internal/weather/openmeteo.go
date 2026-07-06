@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -52,9 +53,68 @@ func (p *Provider) fetchOpenMeteoPoint(ctx context.Context, lat, lon float64) (o
 	return resp, nil
 }
 
-// fetchOpenMeteoGrid pulls one multi-location forecast for the cloud cube. Open-Meteo returns a JSON
-// array (one object per coordinate, in request order) when many coordinates are passed.
+// Open-Meteo's multi-location endpoint is GET-only and request lines top out around 8 KB, so a dense
+// grid cannot ride in one URL: the coordinate list is fetched in chunked GETs, a few in flight at once.
+const (
+	gridChunkMaxPoints = 400 // ≤400 lat+lon pairs at 3 decimals ≈ 7 KB of URL — safely under the cap
+	gridChunkParallel  = 4   // concurrent chunk GETs in flight
+)
+
+// fetchOpenMeteoGrid pulls the multi-location forecast for the cloud cube. Open-Meteo returns a JSON
+// array (one object per coordinate, in request order) when many coordinates are passed; the coordinates
+// are fetched in concurrent chunks (see gridChunkMaxPoints) and reassembled in row-major request order.
+// Any chunk failing fails the whole fetch — Grid's stale-cache soft-fail takes over from there.
 func (p *Provider) fetchOpenMeteoGrid(ctx context.Context, lats, lons []float64, vars []string) ([]omResponse, error) {
+	out := make([]omResponse, len(lats))
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Independent GETs → same WaitGroup + first-error fan-out as Forecast (x/sync's errgroup is not a
+	// direct dependency); a semaphore keeps at most gridChunkParallel requests in flight.
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		firstErr error
+	)
+	fail := func(err error) {
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		mu.Unlock()
+		cancel() // the fetch is already lost — abort the other in-flight chunks
+	}
+	sem := make(chan struct{}, gridChunkParallel)
+	for _, c := range gridChunks(len(lats), gridChunkMaxPoints) {
+		wg.Add(1)
+		go func(start, end int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if cctx.Err() != nil {
+				return
+			}
+			chunk, err := p.fetchOpenMeteoGridChunk(cctx, lats[start:end], lons[start:end], vars)
+			if err != nil {
+				fail(fmt.Errorf("grid chunk %d..%d: %w", start, end, err))
+				return
+			}
+			if len(chunk) != end-start {
+				fail(fmt.Errorf("grid chunk %d..%d: got %d responses for %d coordinates", start, end, len(chunk), end-start))
+				return
+			}
+			copy(out[start:end], chunk)
+		}(c.start, c.end)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return out, nil
+}
+
+// fetchOpenMeteoGridChunk is one bulk GET for a slice of the grid's coordinate list.
+func (p *Provider) fetchOpenMeteoGridChunk(ctx context.Context, lats, lons []float64, vars []string) ([]omResponse, error) {
 	url := fmt.Sprintf("%s?latitude=%s&longitude=%s&hourly=%s&past_days=1&forecast_days=1&timezone=UTC",
 		p.openMeteoURL, joinFloats(lats), joinFloats(lons), strings.Join(vars, ","))
 	var resp []omResponse
@@ -62,6 +122,28 @@ func (p *Provider) fetchOpenMeteoGrid(ctx context.Context, lats, lons []float64,
 		return nil, err
 	}
 	return resp, nil
+}
+
+// gridChunk is a half-open [start, end) run of the row-major coordinate list.
+type gridChunk struct{ start, end int }
+
+// gridChunks slices n coordinates into runs of at most size. A trailing run of exactly one point is
+// folded into the previous chunk (making it size+1): Open-Meteo answers a single-coordinate request
+// with a bare JSON object instead of a one-element array, which would break the chunk decode.
+func gridChunks(n, size int) []gridChunk {
+	if n <= 0 {
+		return nil
+	}
+	var out []gridChunk
+	for start := 0; start < n; start += size {
+		out = append(out, gridChunk{start, min(start+size, n)})
+	}
+	last := len(out) - 1
+	if last >= 1 && out[last].end-out[last].start == 1 {
+		out[last-1].end = out[last].end
+		out = out[:last]
+	}
+	return out
 }
 
 // omGridVars maps overlay layer names to the Open-Meteo hourly variables the grid needs (deduplicated).
@@ -82,8 +164,20 @@ func omGridVars(layers []string) []string {
 			// Probability (not mm): rain amount is ~0 almost everywhere, so it never shows; the chance of
 			// precipitation varies meaningfully across the region and is what the observer cares about.
 			add("precipitation_probability")
+		case "clouds_low":
+			add("cloud_cover_low")
+		case "clouds_mid":
+			add("cloud_cover_mid")
+		case "clouds_high":
+			add("cloud_cover_high")
 		default:
+			// "clouds" (and any unknown layer) carries total cover, and also pulls the per-altitude bands:
+			// the map composites low/mid/high into an intensity-true raster (expandGridLayers requests the
+			// band layers explicitly, but a bare "clouds" must stay self-sufficient).
 			add("cloud_cover")
+			add("cloud_cover_low")
+			add("cloud_cover_mid")
+			add("cloud_cover_high")
 		}
 	}
 	if len(vars) == 0 {
@@ -99,6 +193,12 @@ func gridSeries(h omHourly, layer string) []float64 {
 		return h.RelativeHumidity2m
 	case "precip":
 		return h.PrecipitationProbability // chance of precipitation (%), see omGridVars
+	case "clouds_low":
+		return h.CloudCoverLow
+	case "clouds_mid":
+		return h.CloudCoverMid
+	case "clouds_high":
+		return h.CloudCoverHigh
 	default:
 		return h.CloudCover
 	}

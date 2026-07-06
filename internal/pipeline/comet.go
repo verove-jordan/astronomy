@@ -61,6 +61,7 @@ func ProcessComet(ctx context.Context, opts Options) (*Result, error) {
 		InputDir: opts.InputDir, OutputDir: outDir, Object: object, RunID: runID,
 		Inventory: inv, Detection: inv.ChannelDetection,
 	}
+	opts.PriorObject = object // key for the supervisor's cross-run memory (warm start)
 	res.Warnings = append(res.Warnings, inv.Warnings...)
 	res.Warnings = append(res.Warnings, aiToolWarnings(ctx, opts)...)
 

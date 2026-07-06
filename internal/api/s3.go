@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,9 +29,10 @@ type browseEntry struct {
 
 // mergeRemoteDirs folds the S3 mirror's sub-folders (under <prefix>/data/<relToDataDir>) into the local
 // dir list: a folder present on both is tagged Remote; a folder only on S3 is appended (Local=false) so
-// the user can see and download it. Returns the name-sorted union.
-func (s *Server) mergeRemoteDirs(ctx context.Context, abs, bucket, userPrefix string, dirs []browseEntry) ([]browseEntry, error) {
-	client, err := s3store.New(s.s3Config(ctx))
+// the user can see and download it. Returns the name-sorted union. cfg is the request-resolved S3 config
+// (see s3ConfigForRequest) so the listing targets the connection the bucket was chosen under.
+func (s *Server) mergeRemoteDirs(ctx context.Context, cfg s3store.Config, abs, bucket, userPrefix string, dirs []browseEntry) ([]browseEntry, error) {
+	client, err := s3store.New(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -84,11 +87,38 @@ func (s *Server) s3Config(ctx context.Context) s3store.Config {
 	}
 }
 
+// s3ConfigForRequest resolves the S3 config for one HTTP request. When the request names a saved
+// connection (?conn=<id> — the frontend tags it alongside bucket/prefix so the pair can never drift
+// apart), that connection's config is used; a present-but-unresolvable id is an error rather than
+// silently serving another connection's bucket. Without a valid numeric conn param it falls back to
+// s3Config (default connection → env), so pre-existing URLs behave exactly as before.
+func (s *Server) s3ConfigForRequest(r *http.Request) (s3store.Config, error) {
+	raw := r.URL.Query().Get("conn")
+	if raw == "" || s.s3conn == nil {
+		return s.s3Config(r.Context()), nil
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return s.s3Config(r.Context()), nil // not a connection id — behave as before
+	}
+	cfg, err := s.s3conn.ConfigFor(r.Context(), id)
+	if err != nil {
+		return s3store.Config{}, fmt.Errorf("resolve s3 connection %d: %w", id, err)
+	}
+	return cfg, nil
+}
+
 // s3Status reports whether S3 is configured (env credentials present) and, if so, the reachable buckets —
-// so the UI can offer S3 features and a bucket picker. GET /api/s3/status
+// so the UI can offer S3 features and a bucket picker. conn_id names the default connection (when one is
+// set) so the frontend can persist it next to the bucket/prefix it picks. GET /api/s3/status
 func (s *Server) s3Status(w http.ResponseWriter, r *http.Request) {
 	cfg := s.s3Config(r.Context())
 	resp := map[string]any{"configured": cfg.Configured(), "endpoint": cfg.Endpoint}
+	if s.s3conn != nil {
+		if id, ok, err := s.s3conn.DefaultID(r.Context()); err == nil && ok {
+			resp["conn_id"] = id
+		}
+	}
 	if !cfg.Configured() {
 		writeJSON(w, http.StatusOK, resp)
 		return
@@ -187,10 +217,10 @@ type s3BrowseEntry struct {
 	Remote bool   `json:"remote"`
 }
 
-// s3Browse lists one level of the real bucket at <prefix>/<rel> using the default (pipeline) S3
-// connection — unlike /api/s3/manage/objects it is not connection-scoped. Feeds the Import "S3 Storage"
-// tab so a user can pick their own bucket folders, which need not follow the AstroStack <prefix>/data
-// mirror. GET /api/s3/browse?bucket=&prefix=&rel=
+// s3Browse lists one level of the real bucket at <prefix>/<rel> using the request's S3 connection
+// (?conn=, default connection otherwise) — unlike /api/s3/manage/objects the conn tag is optional. Feeds
+// the Import "S3 Storage" tab so a user can pick their own bucket folders, which need not follow the
+// AstroStack <prefix>/data mirror. GET /api/s3/browse?bucket=&prefix=&rel=&conn=
 func (s *Server) s3Browse(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	bucket := q.Get("bucket")
@@ -198,7 +228,11 @@ func (s *Server) s3Browse(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "bucket is required")
 		return
 	}
-	cfg := s.s3Config(r.Context())
+	cfg, err := s.s3ConfigForRequest(r)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
 	if !cfg.Configured() {
 		badRequest(w, "S3 is not configured")
 		return
@@ -289,7 +323,11 @@ func (s *Server) ensureServable(ctx context.Context, r *http.Request, abs, root,
 	}
 	q := r.URL.Query()
 	bucket := q.Get("bucket")
-	if bucket == "" || !s.s3Config(ctx).Configured() {
+	if bucket == "" {
+		return "", false
+	}
+	cfg, cfgErr := s.s3ConfigForRequest(r) // honor ?conn= so the fallback reads the bucket's own connection
+	if cfgErr != nil || !cfg.Configured() {
 		return "", false
 	}
 	rootAbs, err := filepath.Abs(root)
@@ -305,7 +343,7 @@ func (s *Server) ensureServable(ctx context.Context, r *http.Request, abs, root,
 	if _, err := os.Stat(cachePath); err == nil {
 		return cachePath, true // already fetched this file into the cache
 	}
-	client, err := s3store.New(s.s3Config(ctx))
+	client, err := s3store.New(cfg)
 	if err != nil {
 		return "", false
 	}
@@ -318,9 +356,10 @@ func (s *Server) ensureServable(ctx context.Context, r *http.Request, abs, root,
 
 // s3OutputRuns lists run.json objects under <prefix>/output/ and maps each to the absolute local path it
 // mirrors, so listRuns can surface runs whose local output tree was freed. s3Key is set on every ref (they
-// live only on S3). Returns nil on any error or when nothing matches (soft-fail to local-only).
-func (s *Server) s3OutputRuns(ctx context.Context, bucket, userPrefix, outAbs string) []runFileRef {
-	client, err := s3store.New(s.s3Config(ctx))
+// live only on S3). cfg is the request-resolved S3 config (s3ConfigForRequest). Returns nil on any error
+// or when nothing matches (soft-fail to local-only).
+func (s *Server) s3OutputRuns(ctx context.Context, cfg s3store.Config, bucket, userPrefix, outAbs string) []runFileRef {
+	client, err := s3store.New(cfg)
 	if err != nil {
 		return nil
 	}
@@ -349,9 +388,10 @@ func (s *Server) s3OutputRuns(ctx context.Context, bucket, userPrefix, outAbs st
 
 // summarizeS3Run reads one run.json straight from the S3 mirror (its local copy was freed) and summarizes
 // it against the local path it mirrors, so the run's output previews resolve through the same
-// local-first/S3-fallback serving. Falls back to a bare summary if the object can't be read.
-func (s *Server) summarizeS3Run(ctx context.Context, bucket, key, localRunJSON string, mtimeMs int64) runSummary {
-	client, err := s3store.New(s.s3Config(ctx))
+// local-first/S3-fallback serving. cfg is the request-resolved S3 config (s3ConfigForRequest). Falls back
+// to a bare summary if the object can't be read.
+func (s *Server) summarizeS3Run(ctx context.Context, cfg s3store.Config, bucket, key, localRunJSON string, mtimeMs int64) runSummary {
+	client, err := s3store.New(cfg)
 	if err != nil {
 		return summarizeRunBytes(nil, localRunJSON, mtimeMs)
 	}

@@ -77,20 +77,17 @@ func (c *cometRenderer) prompt(working mode.Preset, _ tier) supervisePrompt {
 	}
 }
 
-func (c *cometRenderer) applyPatch(working mode.Preset, raw json.RawMessage, _ tier) (mode.Preset, tier, bool) {
-	var patch cometPatch
-	if err := json.Unmarshal(raw, &patch); err != nil {
-		return working, tierA, false
+func (c *cometRenderer) applyPatch(working mode.Preset, raw json.RawMessage, affordable tier) (mode.Preset, tier, bool) {
+	next, t, changed := applyCometParamPatch(working, raw)
+	if t > affordable {
+		// Revert the unaffordable re-stack fields so the working preset never drifts from the render.
+		next.Grade, next.TrailMaskK, next.CometPerFrameStarnet = working.Grade, working.TrailMaskK, working.CometPerFrameStarnet
+		t = tierA
+		changed = floatChanged(working.BackgroundLevel, next.BackgroundLevel) ||
+			working.BackgroundDegree != next.BackgroundDegree ||
+			floatChanged(working.Saturation, next.Saturation)
 	}
-	next := working
-	setF(&next.BackgroundLevel, patch.BackgroundLevel)
-	setI(&next.BackgroundDegree, patch.BackgroundDegree)
-	setF(&next.Saturation, patch.Saturation)
-	next = clampComet(next)
-	changed := floatChanged(working.BackgroundLevel, next.BackgroundLevel) ||
-		working.BackgroundDegree != next.BackgroundDegree ||
-		floatChanged(working.Saturation, next.Saturation)
-	return next, tierA, changed
+	return next, t, changed
 }
 
 func (c *cometRenderer) params(p mode.Preset) map[string]float64 {
@@ -115,11 +112,20 @@ func (c *cometRenderer) finalize(ctx context.Context, opts Options, best *superv
 	return out, nil
 }
 
-// cometPatch is the model's proposed change to the comet colour finish (all optional).
+// cometPatch is the model's proposed change to the comet finish: the colour-combine knobs (tierA)
+// plus the re-stack knobs (tierC — honoured when a re-stack path is available).
 type cometPatch struct {
 	BackgroundLevel  *float64 `json:"background_level,omitempty"`
 	BackgroundDegree *int     `json:"background_degree,omitempty"`
 	Saturation       *float64 `json:"saturation,omitempty"`
+
+	// Tier C — re-stack from the calibrated frames.
+	RoundnessFloor  *float64 `json:"roundness_floor,omitempty"`
+	FWHMSigma       *float64 `json:"fwhm_sigma,omitempty"`
+	BackgroundSigma *float64 `json:"background_sigma,omitempty"`
+	StarCountFrac   *float64 `json:"star_count_frac,omitempty"`
+	TrailMaskK      *float64 `json:"trail_mask_k,omitempty"`
+	PerFrameStarnet *bool    `json:"per_frame_starnet,omitempty"`
 }
 
 func clampComet(p mode.Preset) mode.Preset {

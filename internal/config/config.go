@@ -347,9 +347,10 @@ func Load() *Config {
 		WeatherSevenTimerURL: env("ASTRO_WEATHER_SEVENTIMER_URL", "https://www.7timer.info/bin/api.pl"),
 		WeatherSWPCURL:       env("ASTRO_WEATHER_SWPC_URL", "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"),
 		WeatherGridRadiusDeg: envFloat("ASTRO_WEATHER_GRID_RADIUS_DEG", 4),
-		// 22×22 over the 8° box ≈ 3.1 cells/° — sharp enough to read as a weather map (was 16). Grid
-		// coords are trimmed to 3 decimals (see joinFloats) so the single bulk Open-Meteo GET stays ~7KB.
-		WeatherGridSize:     envInt("ASTRO_WEATHER_GRID_SIZE", 22),
+		// 32×32 = 1024 pts over the default 8° box ≈ 0.25°/cell ≈ 27 km — about the forecast model's own
+		// resolution, so the overlay is as sharp as the data allows (was 22). Fetched as 3 chunked
+		// Open-Meteo GETs of ≤400 coords each, trimmed to 3 decimals (see fetchOpenMeteoGrid/joinFloats).
+		WeatherGridSize:     envInt("ASTRO_WEATHER_GRID_SIZE", 32),
 		WeatherCacheTTLMin:  envInt("ASTRO_WEATHER_CACHE_TTL_MIN", 30),
 		WeatherMeteoblueKey: env("ASTRO_WEATHER_METEOBLUE_KEY", ""),
 	}

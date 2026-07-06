@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/verove-jordan/astronomy/internal/llm"
 )
 
 // Tool is one capability the agent can invoke. Handler executes it and returns a compact text/JSON
@@ -25,6 +27,10 @@ type Tool struct {
 	Mutating    bool           // true → gated behind a user confirmation before Handler runs
 	Schema      map[string]any // JSON-Schema object describing the args (rendered into the prompt)
 	Handler     func(ctx context.Context, args json.RawMessage) (string, error)
+	// ImageHandler, when set, is used instead of Handler: it additionally returns inline images that
+	// are ATTACHED to the observation message — vision-in-the-loop (the model SEES a run's result and
+	// decides parameters from it, not from a text description).
+	ImageHandler func(ctx context.Context, args json.RawMessage) (string, []llm.InlineImage, error)
 }
 
 // Registry holds the agent's tools, indexed by name.

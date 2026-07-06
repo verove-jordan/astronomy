@@ -100,7 +100,7 @@ func TestModeRenderers_ParamsAndTiers(t *testing.T) {
 
 	night := &nightscapeRenderer{}
 	assert.Equal(t, tierA, night.firstTier())
-	assert.Contains(t, night.params(mode.Preset{BackgroundLevel: 0.05}), "background_level")
+	assert.Contains(t, night.params(mode.Preset{BackgroundLevel: 0.05}), "brightness")
 
 	plan := &planetaryRenderer{}
 	assert.Equal(t, tierA, plan.firstTier())

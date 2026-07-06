@@ -3,6 +3,8 @@ package s3store
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"mime"
@@ -13,9 +15,19 @@ import (
 	"github.com/minio/minio-go/v7"
 )
 
-// Upload streams localPath to bucket/key. onBytes (optional) is called with the delta of bytes sent on
-// each read, so the caller can drive a progress bar.
+// userMD5Key is the user-metadata key Upload records the file's content MD5 under (header
+// "x-amz-meta-astro-md5" on the wire; minio-go canonicalizes it back to this casing on Stat). It gives
+// remove-local a strong equality check even for multipart uploads, whose ETag is not a content MD5.
+const userMD5Key = "Astro-Md5"
+
+// Upload streams localPath to bucket/key, recording the file's content MD5 as user metadata (one extra
+// disk pass — cheap next to the network transfer). onBytes (optional) is called with the delta of bytes
+// sent on each read, so the caller can drive a progress bar.
 func (c *Client) Upload(ctx context.Context, bucket, key, localPath string, onBytes func(delta int64)) error {
+	sum, err := MD5File(localPath)
+	if err != nil {
+		return err
+	}
 	f, err := os.Open(localPath)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", localPath, err)
@@ -26,11 +38,29 @@ func (c *Client) Upload(ctx context.Context, bucket, key, localPath string, onBy
 		return fmt.Errorf("stat %s: %w", localPath, err)
 	}
 	r := &countReader{r: f, onBytes: onBytes}
-	_, err = c.mc.PutObject(ctx, bucket, key, r, fi.Size(), minio.PutObjectOptions{ContentType: contentType(localPath)})
+	_, err = c.mc.PutObject(ctx, bucket, key, r, fi.Size(), minio.PutObjectOptions{
+		ContentType:  contentType(localPath),
+		UserMetadata: map[string]string{userMD5Key: sum},
+	})
 	if err != nil {
 		return fmt.Errorf("s3 put %s: %w", key, err)
 	}
 	return nil
+}
+
+// MD5File stream-computes the hex content MD5 of a local file — what Upload records as user metadata and
+// what remove-local compares against the mirror before deleting anything.
+func MD5File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+	h := md5.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("md5 %s: %w", path, err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Download writes bucket/key to localPath (via a temp file + atomic rename, creating parent dirs). onBytes
@@ -63,23 +93,32 @@ func (c *Client) Download(ctx context.Context, bucket, key, localPath string, on
 
 // GetBytes reads a whole (small) object into memory — for run.json summaries, backup manifests, appstate
 // snapshots, etc. Not for large captures/results (use Download, which streams to a file with progress).
+// A transient failure re-runs the whole read.
 func (c *Client) GetBytes(ctx context.Context, bucket, key string) ([]byte, error) {
-	obj, err := c.mc.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
+	var data []byte
+	err := withRetry(ctx, "get", func() error {
+		obj, err := c.mc.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
+		if err != nil {
+			return err
+		}
+		defer func() { _ = obj.Close() }()
+		data, err = io.ReadAll(obj)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("s3 get %s: %w", key, err)
-	}
-	defer func() { _ = obj.Close() }()
-	data, err := io.ReadAll(obj)
-	if err != nil {
-		return nil, fmt.Errorf("s3 read %s: %w", key, err)
 	}
 	return data, nil
 }
 
 // PutBytes uploads an in-memory blob (backup manifests, appstate snapshots, …). For large files use Upload.
+// Each retry attempt restarts from a fresh reader over data.
 func (c *Client) PutBytes(ctx context.Context, bucket, key string, data []byte) error {
-	_, err := c.mc.PutObject(ctx, bucket, key, bytes.NewReader(data), int64(len(data)),
-		minio.PutObjectOptions{ContentType: contentType(key)})
+	err := withRetry(ctx, "put", func() error {
+		_, perr := c.mc.PutObject(ctx, bucket, key, bytes.NewReader(data), int64(len(data)),
+			minio.PutObjectOptions{ContentType: contentType(key)})
+		return perr
+	})
 	if err != nil {
 		return fmt.Errorf("s3 put %s: %w", key, err)
 	}
@@ -88,7 +127,10 @@ func (c *Client) PutBytes(ctx context.Context, bucket, key string, data []byte) 
 
 // Delete removes one object. A missing key is not an error.
 func (c *Client) Delete(ctx context.Context, bucket, key string) error {
-	if err := c.mc.RemoveObject(ctx, bucket, key, minio.RemoveObjectOptions{}); err != nil {
+	err := withRetry(ctx, "delete", func() error {
+		return c.mc.RemoveObject(ctx, bucket, key, minio.RemoveObjectOptions{})
+	})
+	if err != nil {
 		return fmt.Errorf("s3 delete %s: %w", key, err)
 	}
 	return nil

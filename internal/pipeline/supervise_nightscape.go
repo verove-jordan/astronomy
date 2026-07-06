@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"strings"
 
 	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/nightscape"
@@ -47,9 +46,11 @@ func (n *nightscapeRenderer) maxTier(Options) tier { return tierA }
 // gradeOpts maps the working preset onto a nightscape grade: the chosen look + the sky-brightness target.
 func (n *nightscapeRenderer) gradeOpts(p mode.Preset) nightscape.Options {
 	return nightscape.Options{
-		Look:        nightscape.LookByName(p.Look),
-		Brightness:  p.BackgroundLevel,
-		Orientation: n.orient,
+		Look:                  nightscape.LookByName(p.Look),
+		Brightness:            p.BackgroundLevel,
+		SaturationScale:       p.Saturation,
+		HighlightCeilOverride: p.HighlightCeil,
+		Orientation:           n.orient,
 	}
 }
 
@@ -69,32 +70,23 @@ func (n *nightscapeRenderer) prompt(working mode.Preset, _ tier) supervisePrompt
 		system:    nightscapeSystemPrompt,
 		objective: nightscapeObjective(&n.orig),
 		state: map[string]any{
-			"look":             working.Look,
-			"background_level": working.BackgroundLevel,
+			"look":              working.Look,
+			"brightness":        working.BackgroundLevel,
+			"saturation_scale":  working.Saturation,
+			"highlight_ceiling": working.HighlightCeil,
 		},
 		tiered: false,
 	}
 }
 
 func (n *nightscapeRenderer) applyPatch(working mode.Preset, raw json.RawMessage, _ tier) (mode.Preset, tier, bool) {
-	var patch nightscapePatch
-	if err := json.Unmarshal(raw, &patch); err != nil {
-		return working, tierA, false
-	}
-	next := working
-	if patch.Look != nil {
-		if l := strings.ToLower(strings.TrimSpace(*patch.Look)); isLookName(l) {
-			next.Look = l
-		}
-	}
-	setF(&next.BackgroundLevel, patch.Brightness)
-	next.BackgroundLevel = clampf(next.BackgroundLevel, 0.03, 0.2)
-	changed := next.Look != working.Look || floatChanged(next.BackgroundLevel, working.BackgroundLevel)
-	return next, tierA, changed
+	return applyNightscapeParamPatch(working, raw)
 }
 
 func (n *nightscapeRenderer) params(p mode.Preset) map[string]float64 {
-	return map[string]float64{"background_level": p.BackgroundLevel}
+	return map[string]float64{
+		"brightness": p.BackgroundLevel, "saturation_scale": p.Saturation, "highlight_ceiling": p.HighlightCeil,
+	}
 }
 
 // finalize re-renders the winning grade directly into the run output dir (full exports), so final.png +
@@ -117,10 +109,14 @@ func (n *nightscapeRenderer) finalize(ctx context.Context, _ Options, best *supe
 	}, nil
 }
 
-// nightscapePatch is the model's proposed change to the milkyway grade (both optional).
+// nightscapePatch is the model's proposed change to the milkyway grade (all optional).
 type nightscapePatch struct {
 	Look       *string  `json:"look,omitempty"`       // natural | iphone | deepsky
 	Brightness *float64 `json:"brightness,omitempty"` // → BackgroundLevel target (0.03..0.2)
+	// SaturationScale scales the chosen look's own saturation (1 = as designed, 0 = grayscale-ish,
+	// up to 2); HighlightCeiling overrides the look's core ceiling (0.3..0.95, lower = dimmer core).
+	SaturationScale  *float64 `json:"saturation_scale,omitempty"`
+	HighlightCeiling *float64 `json:"highlight_ceiling,omitempty"`
 }
 
 func isLookName(name string) bool {
@@ -147,6 +143,8 @@ const nightscapeIntro = `You are an expert astrophotography image-processing ass
 
 const nightscapeKnobMenu = `You may tune these grade controls (each re-renders in seconds):
 - look ("natural" | "iphone" | "deepsky"): the render style. "natural" is faithful and soft; "iphone" is a touch warmer and punchier with a deeper sky; "deepsky" is bold and dramatic with high saturation.
-- brightness (0.03..0.2): the target sky-background level (lower = darker sky; higher lifts the Milky-Way core).`
+- brightness (0.03..0.2): the target sky-background level (lower = darker sky; higher lifts the Milky-Way core).
+- saturation_scale (0..2): scales the look's own colour saturation (1 = as designed; below 1 tames neon colour).
+- highlight_ceiling (0.3..0.95): the Milky-Way core's brightness ceiling (lower = dimmer, better-protected core; 0 keeps the look's own).`
 
 const nightscapeSystemPrompt = nightscapeIntro + nightscapeKnobMenu + supervisorDefectRules

@@ -60,6 +60,15 @@ type Options struct {
 	// which skip iteration persistence. FinishIterStore is the sink (nil → no persistence).
 	JobID           int64
 	FinishIterStore FinishIterStore
+	// FinishPriors reads the best prior iterations for the SAME target across jobs — the supervised
+	// loop's cross-run memory: it warm-starts the working preset from the best prior pass and tells
+	// the model what already scored well. nil → every supervised run starts cold from the preset.
+	// PriorObject is the target key (the run's object name); set by the mode entries once known.
+	FinishPriors FinishPriorStore
+	PriorObject  string
+	// Goal is the user's free-text objective for this run (from the run request), folded into the
+	// supervisor's FIRST critique as guidance so the agent optimizes for what was actually asked.
+	Goal string
 
 	// Reprocess re-runs the stack stages (calibrate → register → grade → stack) from the raw frames
 	// with a modified preset and returns fresh aligned-channel masters. It is the Tier-C re-entry the
@@ -126,8 +135,26 @@ type Catalog interface {
 // FinishIterStore persists the supervisor's per-iteration finish decisions. An interface keeps
 // pipeline free of a DB dependency (implemented by package store).
 type FinishIterStore interface {
-	CreateFinishIteration(ctx context.Context, jobID int64, iter int, tier string, params, metrics, defects []byte, detScore, modelScore, combined float64, reasoning string) (int64, error)
+	CreateFinishIteration(ctx context.Context, jobID int64, iter int, tier string, params, metrics, defects []byte, detScore, modelScore, combined float64, reasoning, pngPath string, preset []byte) (int64, error)
 	MarkFinishIterationChosen(ctx context.Context, id int64) error
+}
+
+// PriorIteration is one prior supervised pass for a target — the cross-run memory record. DB-free
+// (the job manager adapts the store rows); Preset is the versioned full working preset JSON.
+type PriorIteration struct {
+	JobID     int64
+	Tier      string
+	Combined  float64
+	Det       float64
+	Reasoning string
+	PngPath   string
+	Preset    json.RawMessage
+}
+
+// FinishPriorStore reads the best prior supervised iterations for a target across all jobs (the
+// warm-start memory), best combined score first.
+type FinishPriorStore interface {
+	BestFinishIterations(ctx context.Context, object, kind string, minDet float64, limit int) ([]PriorIteration, error)
 }
 
 // libraryDir resolves the persistent master-library directory (absolute), defaulting under workAbs.
@@ -250,6 +277,7 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 		InputDir: opts.InputDir, OutputDir: outDir, Object: object, RunID: runID,
 		Inventory: inv, Detection: inv.ChannelDetection,
 	}
+	opts.PriorObject = object // key for the supervisor's cross-run memory (warm start)
 	res.Warnings = append(res.Warnings, inv.Warnings...)
 	// Surface preset-enabled AI steps whose binary is unreachable up front, so a silent fallback
 	// (which leaves the gradient/noise/color uncorrected) is visible rather than looking like a no-op.

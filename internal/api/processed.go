@@ -41,11 +41,14 @@ func (s *Server) processed(w http.ResponseWriter, r *http.Request) {
 
 	// A folder freed locally after an S3 push must not read as "deleted": when a bucket is supplied, treat
 	// a folder present on the S3 data mirror as still existing. Memoized (one ListDir per unique folder).
+	// The config honors ?conn= so the mirror is checked on the connection the bucket was chosen under.
 	q := r.URL.Query()
 	var s3c *s3store.Client
 	bucket, userPrefix := q.Get("bucket"), q.Get("prefix")
-	if bucket != "" && s.s3Config(r.Context()).Configured() {
-		s3c, _ = s3store.New(s.s3Config(r.Context()))
+	if bucket != "" {
+		if cfg, err := s.s3ConfigForRequest(r); err == nil && cfg.Configured() {
+			s3c, _ = s3store.New(cfg)
+		}
 	}
 	remoteSeen := make(map[string]bool)
 	remoteExists := func(p string) bool {

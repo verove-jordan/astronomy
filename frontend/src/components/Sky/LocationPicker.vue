@@ -194,6 +194,15 @@ function syncOverlays() {
   }
 }
 
+// overlayTargetPx sizes the rendered weather raster from the on-screen map (longest side, ≥512 so it
+// stays crisp, capped at 1024 for paint cost) so Leaflet never CSS-upscales a small canvas into blur.
+function overlayTargetPx(): number {
+  if (!lmap) return 512;
+  const size = lmap.getSize();
+  return Math.min(1024, Math.max(512, Math.max(size.x, size.y)));
+}
+let lastPaintedPx = 0; // overlay resolution last painted — repaint when the viewport bucket changes
+
 // syncGridOverlay adds/removes one weather grid layer, painting the current frame when it is enabled.
 function syncGridOverlay(id: string) {
   const wrapper = gridLayers[id];
@@ -201,7 +210,9 @@ function syncGridOverlay(id: string) {
   if (isEnabled(id) && weather.grid) {
     const def = gridLayerById(id);
     if (!def) return;
-    const layer = wrapper.update(weather.grid, weather.frameIndex, def);
+    const px = overlayTargetPx();
+    const layer = wrapper.update(weather.grid, weather.frameIndex, def, px);
+    lastPaintedPx = px;
     if (!lmap.hasLayer(layer)) layer.addTo(lmap);
   } else if (wrapper.layer && lmap.hasLayer(wrapper.layer)) {
     lmap.removeLayer(wrapper.layer);
@@ -225,7 +236,14 @@ let gridMoveTimer: ReturnType<typeof setTimeout> | null = null;
 function onMapMovedForGrid() {
   if (!anyGridEnabled()) return;
   if (gridMoveTimer) clearTimeout(gridMoveTimer);
-  gridMoveTimer = setTimeout(() => maybeFetchWeather(), 450);
+  gridMoveTimer = setTimeout(() => {
+    maybeFetchWeather();
+    // A same-viewport fetch is a store cache hit (the grid ref doesn't change, so the repaint watcher
+    // never fires); if the view now wants a different overlay resolution, repaint at the new size.
+    if (overlayTargetPx() !== lastPaintedPx) {
+      for (const o of enabledGridLayers.value) syncGridOverlay(o.id);
+    }
+  }, 450);
 }
 
 // --- Light-pollution offline atlas: atlas-aware rendering + download-on-demand for uncovered areas ---

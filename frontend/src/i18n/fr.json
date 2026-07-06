@@ -638,6 +638,9 @@
       "legendBright": "Plus clair",
       "bortle": "Bortle",
       "clouds": "Nuages",
+      "cloudLow": "Nuages bas",
+      "cloudMid": "Nuages moyens",
+      "cloudHigh": "Nuages élevés",
       "humidity": "Humidité",
       "precip": "Risque de pluie"
     },

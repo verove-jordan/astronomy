@@ -137,8 +137,7 @@ type Manager struct {
 
 	confirmSeq int64 // monotonic counter for unique expensive-step confirmation call ids
 
-	pathMu    sync.Mutex
-	pathLocks map[string]*sync.Mutex // serializes jobs sharing an input dir (shared library/output)
+	locker *pathLocker // serializes jobs whose input roots overlap (shared library/output)
 }
 
 // RunRequest is the user-supplied job configuration (also persisted as the job's params JSON).
@@ -189,6 +188,20 @@ type RunRequest struct {
 	// Supervise opts this run into the local-AI-agent finish (auto-tune the GIMP composite with a host
 	// vision model). Default false → the standard single-pass finish. Requires ASTRO_LLM_URL reachable.
 	Supervise bool `json:"supervise,omitempty"`
+
+	// Params is an optional JSON object of fine tunable-knob overrides — the same whitelist and clamps
+	// the in-run supervisor uses (pipeline.ApplyParamPatch), so the AI agent (or an advanced user) can
+	// START a run with chosen parameters, not only coarse mode toggles. Validated at Enqueue (a
+	// malformed body is rejected before any work); unknown keys are ignored with a job log line.
+	Params json.RawMessage `json:"params,omitempty"`
+	// Tier caps the supervised loop's re-entry ceiling ("A"|"B"|"C"; "" → mode default) and MaxIters
+	// caps its iterations (0 → default). Goal is a free-text objective the agent carries for the run
+	// (recorded on the job; folded into the supervisor's first critique as user guidance).
+	Tier     string `json:"tier,omitempty"`
+	MaxIters int    `json:"max_iters,omitempty"`
+	Goal     string `json:"goal,omitempty"`
+	// SeriesID links this job to an agent improvement series (0 = none). See internal/store series.
+	SeriesID int64 `json:"series_id,omitempty"`
 
 	// Refine, when set, makes this job re-finish an already-completed run (no re-stack) under the AI
 	// supervisor instead of processing from scratch. Built by Manager.Refine from a source job; the
@@ -274,6 +287,9 @@ type RefineRequest struct {
 	MaxIters     int    `json:"max_iters,omitempty"`     // 0 → engine default (4, hard max 8)
 	Tier         string `json:"tier,omitempty"`          // ceiling "A"|"B"|"C"; "" → full (C when raws available)
 	AllowRestack bool   `json:"allow_restack,omitempty"` // permit Tier-C re-stack from the source input dir
+	// Params are fine knob overrides seeded onto the preset BEFORE the supervised loop (the same
+	// whitelist/clamps as RunRequest.Params) — "retry this run with these parameters".
+	Params json.RawMessage `json:"params,omitempty"`
 }
 
 // inputRoots returns the capture folders this run scans: the multi-select Paths when set, else just
@@ -313,7 +329,7 @@ func NewManager(st *store.Store, runner *siril.Runner, cfg *config.Config, hub T
 		subs:      map[int64][]chan Event{},
 		cancels:   map[int64]context.CancelFunc{},
 		jobTurns:  map[int64]string{},
-		pathLocks: map[string]*sync.Mutex{},
+		locker:    newPathLocker(),
 	}
 }
 
@@ -330,17 +346,10 @@ func newS3ConnService(st *store.Store, cfg *config.Config) *s3conn.Service {
 // lockTarget serializes jobs that share an input directory so a new run cannot race a still-running one
 // on the shared calibration library and output directory. Jobs over different inputs run concurrently.
 // It blocks until the lock is free and returns the unlock function.
-func (m *Manager) lockTarget(path string) func() {
-	key := filepath.Clean(path)
-	m.pathMu.Lock()
-	mu := m.pathLocks[key]
-	if mu == nil {
-		mu = &sync.Mutex{}
-		m.pathLocks[key] = mu
-	}
-	m.pathMu.Unlock()
-	mu.Lock()
-	return mu.Unlock
+// lockTarget serializes this run against any other job whose input roots overlap (equal or nested
+// paths). Kept as a named seam; the real logic lives in pathLocker.
+func (m *Manager) lockTarget(paths ...string) func() {
+	return m.locker.Acquire(paths)
 }
 
 // Start launches n parallel worker goroutines (draining the main queue) plus one dedicated worker for
@@ -366,6 +375,16 @@ func (m *Manager) Start(ctx context.Context, n int) {
 
 // Enqueue creates a session and a queued job (kind = mode), then schedules it. Returns the job id.
 func (m *Manager) Enqueue(ctx context.Context, req RunRequest) (int64, error) {
+	// Validate fine-knob overrides up front on a scratch preset — a malformed params body must fail
+	// the REQUEST, not the worker mid-run. execute() re-applies onto the real preset and logs it.
+	if len(req.Params) > 0 && req.Transfer == nil && req.Backup == nil && req.Restore == nil {
+		if mo, merr := mode.ParseMode(req.Mode); merr == nil {
+			scratch := mode.For(mo)
+			if _, perr := pipeline.ApplyParamPatch(&scratch, req.Params); perr != nil {
+				return 0, fmt.Errorf("invalid params: %w", perr)
+			}
+		}
+	}
 	sessionID, err := m.store.CreateSession(ctx, req.Path, "")
 	if err != nil {
 		return 0, err
@@ -375,6 +394,7 @@ func (m *Manager) Enqueue(ctx context.Context, req RunRequest) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	m.linkSeries(ctx, id, req.SeriesID)
 	// Supervised (and refine) jobs surface as a live conversation: mint the turn now, before the job can
 	// be dequeued, so the worker always finds it (and the API can hand the turn id straight back). Look it
 	// up with TurnFor. Non-supervised jobs — and headless mode (m.turns nil) — get none.
@@ -415,6 +435,44 @@ func (m *Manager) Restart(ctx context.Context, id int64) (int64, error) {
 	var req RunRequest
 	if err := json.Unmarshal(j.Params, &req); err != nil {
 		return 0, fmt.Errorf("job %d has invalid params: %w", id, err)
+	}
+	return m.Enqueue(ctx, req)
+}
+
+// RetryTuned re-runs a finished job from scratch (full re-process, including the stack) with tuned
+// fine parameters and an optional goal, under the AI supervisor. The new run warm-starts from the
+// target's best prior iteration (cross-run memory), so it CONTINUES the improvement trajectory —
+// this is the agent's structural-change lever for every mode (frame selection, grading, deconvolution).
+func (m *Manager) RetryTuned(ctx context.Context, id int64, params json.RawMessage, goal string, maxIters int) (int64, error) {
+	j, err := m.store.GetJob(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	if j.Status == store.JobQueued || j.Status == store.JobRunning {
+		return 0, fmt.Errorf("job %d is still %s", id, j.Status)
+	}
+	var req RunRequest
+	if err := json.Unmarshal(j.Params, &req); err != nil {
+		return 0, fmt.Errorf("job %d has invalid params: %w", id, err)
+	}
+	req.Refine, req.Live = nil, nil
+	req.Sequential = false
+	req.Supervise = true
+	req.Params = params
+	req.Goal = goal
+	req.MaxIters = maxIters
+	// A goal-driven retry with no series opens one: the durable improvement campaign the UI shows as
+	// an attempt timeline and the auto-continue policy operates on.
+	if req.SeriesID == 0 && goal != "" {
+		var res struct {
+			Object string `json:"object"`
+		}
+		_ = json.Unmarshal(j.Result, &res)
+		if sid, serr := m.CreateSeries(ctx, store.AgentSeries{
+			Object: res.Object, Kind: req.Mode, InputPath: req.Path, Goal: goal,
+		}); serr == nil {
+			req.SeriesID = sid
+		}
 	}
 	return m.Enqueue(ctx, req)
 }
@@ -565,9 +623,10 @@ func (m *Manager) run(ctx context.Context, id int64) {
 		return
 	}
 
-	// Serialize against any other run over the same input dir (the user's "careful about other running
-	// runner"): block here until that run releases the shared library/output before we touch them.
-	unlock := m.lockTarget(p.Path)
+	// Serialize against any other job whose input roots overlap — ALL of them, not only the primary
+	// (a transfer/free over a secondary multi-select folder must not race the stack), and
+	// prefix-aware (a parent-folder transfer conflicts with a child-folder run).
+	unlock := m.lockTarget(p.inputRoots()...)
 	defer unlock()
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -619,6 +678,7 @@ func (m *Manager) run(ctx context.Context, id int64) {
 	_ = m.store.FinishJob(context.Background(), id, store.JobSucceeded, result, "")
 	m.publish(Event{JobID: id, Status: store.JobSucceeded, Progress: 100, Step: "done", Done: true})
 	m.closeTurn(id, store.JobSucceeded, "Finished — kept the best pass as the final image.")
+	m.maybeContinueSeries(id, p) // agent series: record the attempt + maybe launch the next one
 }
 
 func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p RunRequest) (any, error) {
@@ -672,9 +732,30 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 	if p.Supervise {
 		preset.Supervise = true
 	}
+	if p.Tier != "" {
+		preset.SuperviseTier = p.Tier
+	}
+	if p.MaxIters > 0 {
+		preset.SuperviseMaxIters = p.MaxIters
+	}
 	if p.CometX1 > 0 && p.CometY1 > 0 && p.CometX2 > 0 && p.CometY2 > 0 {
 		preset.CometX1, preset.CometY1 = p.CometX1, p.CometY1
 		preset.CometX2, preset.CometY2 = p.CometX2, p.CometY2
+	}
+	// Fine tunable-knob overrides — the agent's (or an advanced user's) chosen parameters, applied
+	// through the SAME clamp table the in-run supervisor uses, so no request can push processing
+	// outside known-good ranges. What changed (and what was ignored) lands in the job stream.
+	if len(p.Params) > 0 {
+		pr, err := pipeline.ApplyParamPatch(&preset, p.Params)
+		if err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		if len(pr.Changed) > 0 {
+			m.publish(Event{JobID: id, Line: "params: set " + strings.Join(pr.Changed, ", ") + " (tier " + pr.Tier + ")"})
+		}
+		if len(pr.Ignored) > 0 {
+			m.publish(Event{JobID: id, Line: "params: ignored unknown knobs " + strings.Join(pr.Ignored, ", ")})
+		}
 	}
 	solve, spcc := postprocess.SolveSpccFromConfig(m.cfg)
 	gclient := gimp.New(m.cfg.GimpBin, m.cfg.GimpHost, m.cfg.GimpPort)
@@ -784,7 +865,7 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 		r, err := pipeline.ProcessPlanetary(ctx, pipeline.Options{
 			InputDir: p.Path, OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
 			FfmpegBin: m.cfg.FfmpegBin, Preset: &preset,
-			Supervisor: superRunner, JobID: id, FinishIterStore: m.store, // opt-in local-AI-agent finish
+			Supervisor: superRunner, JobID: id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal, // opt-in local-AI-agent finish
 			OnProgress: pipeProg, Steer: steer, Confirm: confirm,
 		})
 		if err != nil {
@@ -797,7 +878,7 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 		r, err := pipeline.ProcessOSC(ctx, pipeline.Options{
 			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
 			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
-			Supervisor: superRunner, JobID: id, FinishIterStore: m.store, // opt-in local-AI-agent finish
+			Supervisor: superRunner, JobID: id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal, // opt-in local-AI-agent finish
 			Solve: solve, Spcc: spcc, DarkDir: p.DarkDir, FlatDir: p.FlatDir, BiasDir: p.BiasDir,
 			PhoneCalib: m.store, LibraryDir: m.cfg.LibraryDir,
 			CatalogDir: m.cfg.SirilCatalogDir, OnProgress: pipeProg, Steer: steer, Confirm: confirm,
@@ -822,8 +903,8 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 		fopts := pipeline.Options{
 			InputDir: src.LocalRoot(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
 			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
-			Supervisor: superRunner,                  // opt-in local-AI-agent finish (nil → standard finish)
-			JobID:      id, FinishIterStore: m.store, // persist supervised iterations against this job
+			Supervisor: superRunner,                                                          // opt-in local-AI-agent finish (nil → standard finish)
+			JobID:      id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal, // persist supervised iterations against this job
 			Library: m.store, LibraryDir: m.cfg.LibraryDir, OnProgress: pipeProg, Steer: steer, Confirm: confirm,
 			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir,
 			Catalog: m.store,
@@ -861,7 +942,7 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 		r, err := pipeline.ProcessComet(ctx, pipeline.Options{
 			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
 			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
-			Supervisor: superRunner, JobID: id, FinishIterStore: m.store, // opt-in local-AI-agent finish
+			Supervisor: superRunner, JobID: id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal, // opt-in local-AI-agent finish
 			Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir, FilterMapping: p.FilterMap,
 			Catalog: m.store, OnProgress: pipeProg, Steer: steer, Confirm: confirm,
 		})
@@ -877,8 +958,8 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 		opts := pipeline.Options{
 			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
 			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
-			Supervisor: superRunner,                  // opt-in local-AI-agent finish (nil → standard finish)
-			JobID:      id, FinishIterStore: m.store, // persist supervised iterations against this job
+			Supervisor: superRunner,                                                          // opt-in local-AI-agent finish (nil → standard finish)
+			JobID:      id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal, // persist supervised iterations against this job
 			Library: m.store, LibraryDir: m.cfg.LibraryDir, OnProgress: pipeProg, Steer: steer, Confirm: confirm,
 			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir,
 			Catalog:      m.store, // always record the run so its frames become reusable
@@ -915,10 +996,19 @@ func (m *Manager) executeRefine(ctx context.Context, id int64, p RunRequest, pre
 	if p.Refine.MaxIters > 0 {
 		preset.SuperviseMaxIters = p.Refine.MaxIters
 	}
+	if len(p.Refine.Params) > 0 {
+		pr, err := pipeline.ApplyParamPatch(&preset, p.Refine.Params)
+		if err != nil {
+			return nil, fmt.Errorf("invalid refine params: %w", err)
+		}
+		if len(pr.Changed) > 0 {
+			m.publish(Event{JobID: id, Line: "refine params: set " + strings.Join(pr.Changed, ", ")})
+		}
+	}
 	opts := pipeline.Options{
 		OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
 		Preset: &preset, Gimp: gclient, Graxpert: grax, Starnet: star,
-		Supervisor: super, JobID: id, FinishIterStore: m.store,
+		Supervisor: super, JobID: id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal,
 		Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir, OnProgress: pipeProg,
 		Steer: steer, Confirm: confirm,
 	}

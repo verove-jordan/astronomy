@@ -41,11 +41,19 @@ type decision struct {
 	Action     *action              `json:"action"`
 }
 
-// critique asks the local vision model to judge a rendered finish and propose a parameter change, using
-// the mode-specific prompt (system + objective + knob state) built by the renderer. It sends the
-// full-frame thumbnail plus a native-res centre crop and the measured metrics. Soft-fail: any error
-// yields a neutral verdict so the loop stops on the best render so far.
-func critique(ctx context.Context, super *llm.Runner, p supervisePrompt, m finishMetrics, pngPath, guidance string) decision {
+// completer is the LLM seam the critique needs (satisfied by *llm.Runner) — an interface so the
+// loop is testable with a scripted model.
+type completer interface {
+	Complete(ctx context.Context, msgs []llm.Message, opts llm.CompleteOptions) (string, error)
+}
+
+// critique asks the local vision model to judge a rendered finish and propose a parameter change,
+// using the mode-specific prompt (system + objective + knob state) built by the renderer. It sends
+// the full-frame thumbnail plus a native-res centre crop, the measured metrics, and — the model's
+// MEMORY — a compact digest of the previous passes (what changed, what scored, what worsened) plus
+// the best-so-far render as a third image when it isn't the current one. Soft-fail: any error yields
+// a neutral verdict so the loop keeps the best render so far.
+func critique(ctx context.Context, super completer, p supervisePrompt, m finishMetrics, pngPath, guidance, history, bestPng string) decision {
 	stateJSON, _ := json.Marshal(p.state)
 	mJSON, _ := json.Marshal(m)
 	tierLine := ""
@@ -58,11 +66,21 @@ func critique(ctx context.Context, super *llm.Runner, p supervisePrompt, m finis
 			"Image 1 is the whole frame; image 2 is a 100%% centre crop for judging noise, stars and colour.\n"+
 			"Diagnose the defects, then propose the smallest change that fixes the worst one. Return JSON only.",
 		p.objective, tierLine, stateJSON, mJSON)}
+	if history != "" {
+		user.Text += "\n\nPrevious passes (oldest first). NEVER re-propose a change that made the score worse, " +
+			"and prefer refining the direction that improved it:\n" + history
+	}
+	if bestPng != "" && bestPng != pngPath {
+		user.Text += "\n\nImage 3 is the BEST previous pass. Decide whether the current render beats it and what to change next."
+	}
 	if g := strings.TrimSpace(guidance); g != "" {
 		user.Text += fmt.Sprintf("\n\nThe user is watching this run and asked for this change — honor it in "+
 			"your diagnosis and your next patch: %q", g)
 	}
 	attachPreviews(&user, pngPath)
+	if bestPng != "" && bestPng != pngPath {
+		attachBestPreview(&user, bestPng)
+	}
 	reply, err := super.Complete(ctx,
 		[]llm.Message{{Role: "system", Text: p.system}, user},
 		llm.CompleteOptions{Temperature: 0.2, MaxTokens: 900, JSON: true})
@@ -70,6 +88,16 @@ func critique(ctx context.Context, super *llm.Runner, p supervisePrompt, m finis
 		return decision{Score: 5, Assessment: "model unavailable: " + err.Error()}
 	}
 	return parseDecision(reply)
+}
+
+// attachBestPreview appends the best-so-far full-frame thumbnail (smaller than the current frame —
+// it is a comparison anchor, not the subject) to the message's image list.
+func attachBestPreview(user *llm.Message, bestPng string) {
+	thumb, err := thumbnailJPEG(bestPng, 768, superviseThumbQuality)
+	if err != nil {
+		return
+	}
+	user.Images = append(user.Images, llm.InlineImage{Data: thumb, Mime: "image/jpeg"})
 }
 
 // attachPreviews attaches the whole-frame thumbnail (legacy single-image slot) and the centre crop

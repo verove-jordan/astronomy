@@ -26,6 +26,7 @@ func ProcessPlanetary(ctx context.Context, opts Options) (*planetary.Result, err
 	if err != nil {
 		return nil, err
 	}
+	opts.PriorObject = r.Object // key for the supervisor's cross-run memory (warm start)
 	if superviseOn(ctx, opts) && len(r.Masters) > 0 {
 		if final, serr := superviseFinishPlanetary(ctx, opts, r); serr != nil {
 			r.Notes = append(r.Notes, "supervised planetary finish failed, using standard finish: "+serr.Error())
@@ -109,21 +110,19 @@ func (c *planetaryRenderer) prompt(working mode.Preset, _ tier) supervisePrompt 
 	}
 }
 
-func (c *planetaryRenderer) applyPatch(working mode.Preset, raw json.RawMessage, _ tier) (mode.Preset, tier, bool) {
-	var patch planetaryPatch
-	if err := json.Unmarshal(raw, &patch); err != nil {
-		return working, tierA, false
+func (c *planetaryRenderer) applyPatch(working mode.Preset, raw json.RawMessage, affordable tier) (mode.Preset, tier, bool) {
+	next, t, changed := applyPlanetaryParamPatch(working, raw)
+	if t > affordable {
+		// Revert the unaffordable re-stack fields so the working preset never drifts from the render.
+		next.Planetary.BestPercent = working.Planetary.BestPercent
+		next.Planetary.APAlign = working.Planetary.APAlign
+		next.Planetary.DeconvFWHM = working.Planetary.DeconvFWHM
+		next.Planetary.DeconvIters = working.Planetary.DeconvIters
+		next.Planetary.DeconvAlpha = working.Planetary.DeconvAlpha
+		t = tierA
+		changed = next.Planetary.Finish != working.Planetary.Finish
 	}
-	next := working
-	f := &next.Planetary.Finish
-	setF(&f.Stretch, patch.Stretch)
-	setF(&f.Highlight, patch.Highlight)
-	setF(&f.Sharpen, patch.Sharpen)
-	setF(&f.Clahe, patch.Clahe)
-	setF(&f.Saturation, patch.Saturation)
-	*f = clampPlanetaryFinish(*f)
-	changed := next.Planetary.Finish != working.Planetary.Finish // all float64 → comparable
-	return next, tierA, changed
+	return next, t, changed
 }
 
 func (c *planetaryRenderer) params(p mode.Preset) map[string]float64 {
@@ -147,13 +146,21 @@ func (c *planetaryRenderer) finalize(ctx context.Context, _ Options, best *super
 	}, nil
 }
 
-// planetaryPatch is the model's proposed change to the planetary finish (all optional).
+// planetaryPatch is the model's proposed change to the planetary run: the finish knobs (tierA
+// Refinish, seconds) plus the stack/deconvolution knobs (tierC — a full re-stack).
 type planetaryPatch struct {
 	Stretch    *float64 `json:"stretch,omitempty"`
 	Highlight  *float64 `json:"highlight,omitempty"`
 	Sharpen    *float64 `json:"sharpen,omitempty"`
 	Clahe      *float64 `json:"clahe,omitempty"`
 	Saturation *float64 `json:"saturation,omitempty"`
+
+	// Tier C — re-stack from the source frames.
+	BestPercent *int     `json:"best_percent,omitempty"`
+	APAlign     *bool    `json:"ap_align,omitempty"`
+	DeconvFWHM  *float64 `json:"deconv_fwhm,omitempty"`
+	DeconvIters *int     `json:"deconv_iters,omitempty"`
+	DeconvAlpha *float64 `json:"deconv_alpha,omitempty"`
 }
 
 func clampPlanetaryFinish(f siril.PlanetaryFinish) siril.PlanetaryFinish {
