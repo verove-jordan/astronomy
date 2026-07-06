@@ -1,5 +1,7 @@
 // Centralized fetch wrapper. Stores call these; components never fetch directly.
 
+import type { Health } from "@/types";
+
 export const BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
 
 export class ApiError extends Error {
@@ -43,6 +45,10 @@ export const apiPost = <T>(path: string, body?: unknown) =>
 export const apiPut = <T>(path: string, body?: unknown) =>
   request<T>("PUT", path, body);
 export const apiDelete = <T>(path: string) => request<T>("DELETE", path);
+
+// health returns the engine identity (GET /api/health) — stores cache it; engine.version is "dev"
+// for an un-stamped build.
+export const health = () => apiGet<Health>("/api/health");
 
 // Non-secret S3 UI selection, persisted by the S3 store. Owned here (the lowest-level module) so the
 // file/preview/thumb URL builders and the list endpoints can tag every request with the active

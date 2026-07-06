@@ -117,6 +117,15 @@ un avertissement et bascule en repli. Désactivez les deux explicitement avec `p
 des outils optionnels n'est embarqué — ils sont *invoqués* comme Siril/GIMP, donc leurs licences
 restent avec votre propre installation.
 
+Le moteur **sonde en profondeur la santé de GraXpert** (une vraie mini-extraction, pas un simple
+lookup du binaire) : une installation présente mais cassée — typiquement un runtime ONNX manquant —
+est traitée comme absente et affichée dans `/api/environment` ; réparez une installation pipx avec
+`pipx inject graxpert onnxruntime`.
+
+Pour la **résolution astrométrique + SPCC hors ligne** (aucun réseau au moment du traitement, hôte et
+moteur Docker confondus), téléchargez une fois les catalogues Gaia locaux avec
+`just download-catalogues` (`just download-catalogues-spcc` ajoute les fragments photométriques).
+
 ---
 
 ## Utilisation
@@ -127,7 +136,7 @@ restent avec votre propre installation.
 | `just up` / `just down` | Démarre / arrête Postgres (Docker). |
 | `just migrate` / `just migrate-down` | Applique / annule les migrations de la base. |
 | `just inspect DIR` | Affiche l'inventaire classifié d'un dossier de captures (sans traitement). |
-| `just process MODE FORMAT PATH` | Pipeline auto complet. MODE : `deepsky`·`nebula`·`milkyway`·`planetary` ; FORMAT : `image`·`video`·`both`. Le type d'entrée est détecté automatiquement. |
+| `just process MODE FORMAT PATH` | Pipeline auto complet. MODE : `deepsky`·`nebula`·`milkyway`·`planetary`·`comet` ; FORMAT : `image`·`video`·`both`. Le type d'entrée est détecté automatiquement. |
 | `just video FILE` | Raccourci pour `process planetary video` (lucky imaging). |
 | `just refine RUNDIR` | Relance **uniquement** la finition (via le superviseur IA) sur un traitement existant — sans réempilement. |
 | `just dev` | Lance le serveur API sur l'hôte avec rechargement à chaud. |
@@ -154,8 +163,11 @@ les courbes :
 |------|-------|----------|
 | `deepsky` | FITS mono (L/R/G/B/Ha) | calibration → notation → empilement par canal → co-alignement des canaux → composite GIMP LRGB+Ha + courbes douces |
 | `nebula` | FITS mono | comme deepsky mais notation indulgente + extraction IA du fond + mélange privilégiant le Ha + réduction d'étoiles StarNet++ |
-| `milkyway` | couleur one-shot (iPhone ProRAW/HEIC, jpg/png/tif) | dématriçage → alignement → notation → empilement → courbes GIMP ; *rendu* réglable (natural/iphone/deepsky) + *luminosité* |
-| `planetary` | vidéo (SER/AVI/MP4/MOV) | lucky imaging : tri des images par netteté → empilement du meilleur % → accentuation |
+| `milkyway` | couleur one-shot (iPhone ProRAW/HEIC, jpg/png/tif) | développement photométrique → alignement → empilement du ciel seul → composite avec l'avant-plan + *rendu* gradé (natural/iphone/deepsky) + *luminosité* |
+| `planetary` | vidéo (SER/AVI/MP4/MOV) ou un dossier d'images | lucky imaging : tri par netteté en pleine résolution → alignement multi-points → empilement pondéré par zones (AP) → déconvolution + accentuation |
+| `comet` | FITS mono (horodatés) | double empilement étoiles/comète sur un alignement global unique + trajectoire auto-ajustée → recomposition de la couche d'étoiles via StarNet |
+
+Approfondissements par mode (algorithme, réglages, replis, sorties) : [docs/modes/](docs/modes/README.md) *(en anglais)*.
 
 ---
 
@@ -289,8 +301,8 @@ Pour le chemin planétaire, la réutilisation inter-sessions et les réglages pa
 Une petite fonctionnalité entièrement locale qui traite la finition comme une boucle d'optimisation.
 Démarrez le modèle une fois avec `just run-ia-model` (sert un modèle de vision MLX — Qwen2.5-VL par
 défaut — sur `:1234`), puis activez-le par traitement : cochez **« Run with local AI agent »** sur la
-page Import (deepsky/nebula uniquement), passez `process … --supervise`, ou `just refine <run-dir>` pour
-réajuster un empilement existant sans réempiler. Il est **désactivé par défaut et à tolérance de
+page Import (fonctionne pour **tous les modes d'empilement**), passez `process … --supervise`, ou
+`just refine <run-dir>` pour réajuster un empilement existant sans réempiler. Il est **désactivé par défaut et à tolérance de
 panne** : case décochée ou serveur éteint, la finition est identique au pipeline standard. Voir
 [`.env.example`](.env.example) (`ASTRO_LLM_*`) pour les réglages.
 

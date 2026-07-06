@@ -155,6 +155,7 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 	finishOSC(ctx, opts, res, masterBase+".fits", workRun, outDir)
 	captureFinalPNG(ctx, opts, outDir, res.Final)    // milestone: the final image
 	res.StagePreviews = collectStagePreviews(outDir) // persist the milestone timeline for reload
+	stampFinishQuality(res)                          // objective colour/clipping guardrails on every run
 	writeRunJSON(outDir, res)                        // durable, reopenable record
 	return res, nil
 }
@@ -268,6 +269,7 @@ func processNightscape(ctx context.Context, opts Options, res *Result, frames []
 		capturePreview(ctx, opts, outDir, ordFinal, stageFinal, "", nres.PreviewPNG, false) // milestone: the final
 	}
 	res.StagePreviews = collectStagePreviews(outDir) // persist the milestone timeline for reload
+	stampFinishQuality(res)                          // objective colour/clipping guardrails on every run
 	writeRunJSON(outDir, res)
 	return res, nil
 }

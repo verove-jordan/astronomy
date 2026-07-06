@@ -122,6 +122,7 @@ func ProcessComet(ctx context.Context, opts Options) (*Result, error) {
 		finishComet(ctx, opts, res, starMasters, cometMasters, haveTrack, pMid, outDir)
 	}
 
+	stampFinishQuality(res) // objective colour/clipping guardrails on every run
 	if res.Final != nil {
 		for _, o := range res.Final.Outputs {
 			if filepath.Ext(o) == ".png" {

@@ -9,6 +9,7 @@ import MetricsChart from "@/components/Dataviz/MetricsChart.vue";
 import ImageViewer from "@/components/Common/ImageViewer.vue";
 import FilePreviewButton from "@/components/Common/FilePreviewButton.vue";
 import FilterChip from "@/components/Common/FilterChip.vue";
+import EngineChip from "@/components/Common/EngineChip.vue";
 import StagePreviewTimeline from "@/components/Common/StagePreviewTimeline.vue";
 import IconCheck from "@/components/Icons/IconCheck.vue";
 import IconMinus from "@/components/Icons/IconMinus.vue";
@@ -64,7 +65,12 @@ const planetaryFrameRows = computed<Row[]>(() =>
 const planetaryFrameColumns: Column<Row>[] = [
   { key: "index", label: t("fields.index"), sortable: true, align: "right" },
   { key: "file", label: t("fields.file"), searchable: true },
-  { key: "filter", label: t("fields.filter"), sortable: true, searchable: true },
+  {
+    key: "filter",
+    label: t("fields.filter"),
+    sortable: true,
+    searchable: true,
+  },
   {
     key: "score",
     label: t("fields.score"),
@@ -72,7 +78,12 @@ const planetaryFrameColumns: Column<Row>[] = [
     format: (v) => Number(v).toFixed(1),
     align: "right",
   },
-  { key: "status", label: t("fields.status"), sortable: true, searchable: true },
+  {
+    key: "status",
+    label: t("fields.status"),
+    sortable: true,
+    searchable: true,
+  },
 ];
 
 // Channel switcher: flip the preview between the final composite and each channel. Channel PNGs load
@@ -166,16 +177,18 @@ const channelColumns: Column<Row>[] = [
 const masterRows = computed<Row[]>(() =>
   // Deep-sky/comet results carry masters as an array; planetary's is a {label: path} object (no calib
   // table) — guard so a non-array never crashes the whole result view.
-  (Array.isArray(props.result.masters) ? props.result.masters : []).map((m) => ({
-    type: m.type,
-    filter: m.filter || "",
-    exposure_ms: m.exposure_ms,
-    gain: m.gain,
-    offset: m.offset,
-    temp_milli_c: m.temp_milli_c,
-    frame_count: m.frame_count,
-    file: baseName(m.path),
-  })),
+  (Array.isArray(props.result.masters) ? props.result.masters : []).map(
+    (m) => ({
+      type: m.type,
+      filter: m.filter || "",
+      exposure_ms: m.exposure_ms,
+      gain: m.gain,
+      offset: m.offset,
+      temp_milli_c: m.temp_milli_c,
+      frame_count: m.frame_count,
+      file: baseName(m.path),
+    }),
+  ),
 );
 const masterColumns: Column<Row>[] = [
   { key: "type", label: t("fields.type"), sortable: true, searchable: true },
@@ -271,8 +284,15 @@ const rejectedClass = (r: Row) =>
           v-else-if="stackStats"
           class="ml-2 text-sm font-normal text-slate-500"
         >
-          {{ t("job.framesStacked", { kept: stackStats.kept, total: stackStats.total }) }}
+          {{
+            t("job.framesStacked", {
+              kept: stackStats.kept,
+              total: stackStats.total,
+            })
+          }}
         </span>
+        <!-- Engine build that produced this result; amber when older than the serving engine. -->
+        <EngineChip :engine="result.engine" class="ml-2 align-middle" />
       </h2>
       <div
         v-if="totalIntegrationMs > 0"

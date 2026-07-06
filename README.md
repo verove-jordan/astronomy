@@ -111,6 +111,14 @@ GraXpert and StarNet++ are **soft-fail**: when the binary is missing the run log
 back. Disable both explicitly with `process … --no-ai`. None of the optional tools are bundled — they
 are *invoked* like Siril/GIMP, so their licences stay with your own install.
 
+The engine **deep-probes GraXpert health** (a real tiny extraction, not a binary lookup): a
+present-but-broken install — typically a missing ONNX runtime — is treated as absent and shown in
+`/api/environment`; fix a pipx install with `pipx inject graxpert onnxruntime`.
+
+For **offline plate-solving + SPCC** (no network at run time, host and Docker engine alike), download
+the local Gaia catalogues once with `just download-catalogues` (`just download-catalogues-spcc` adds
+the photometric chunks).
+
 ---
 
 ## Usage
@@ -121,7 +129,7 @@ are *invoked* like Siril/GIMP, so their licences stay with your own install.
 | `just up` / `just down` | Start / stop Postgres (Docker). |
 | `just migrate` / `just migrate-down` | Apply / roll back DB migrations. |
 | `just inspect DIR` | Print the classified inventory of a capture folder (no processing). |
-| `just process MODE FORMAT PATH` | Full auto pipeline. MODE: `deepsky`·`nebula`·`milkyway`·`planetary`; FORMAT: `image`·`video`·`both`. Input type is auto-detected. |
+| `just process MODE FORMAT PATH` | Full auto pipeline. MODE: `deepsky`·`nebula`·`milkyway`·`planetary`·`comet`; FORMAT: `image`·`video`·`both`. Input type is auto-detected. |
 | `just video FILE` | Shortcut for `process planetary video` (lucky imaging). |
 | `just refine RUNDIR` | Re-run **only** the finish (via the AI supervisor) on an existing run — no re-stacking. |
 | `just dev` | Run the API server on the host with hot reload. |
@@ -147,8 +155,11 @@ Each mode retunes grading, background extraction, stretch, Ha blend, saturation 
 |------|-------|----------|
 | `deepsky` | mono FITS (L/R/G/B/Ha) | calibrate → grade → stack per channel → co-register channels → GIMP LRGB+Ha composite + gentle curves |
 | `nebula` | mono FITS | like deepsky but lenient grading + AI background extraction + Ha-forward blend + StarNet++ star reduction |
-| `milkyway` | one-shot-color (iPhone ProRAW/HEIC, jpg/png/tif) | debayer → register → grade → stack → GIMP curves; tunable *look* (natural/iphone/deepsky) + *brightness* |
-| `planetary` | video (SER/AVI/MP4/MOV) | lucky imaging: sharpness-rank frames → stack best % → sharpen |
+| `milkyway` | one-shot-color (iPhone ProRAW/HEIC, jpg/png/tif) | photometric develop → register → sky-only stack → foreground composite + graded *look* (natural/iphone/deepsky) + *brightness* |
+| `planetary` | video (SER/AVI/MP4/MOV) or a folder of stills | lucky imaging: sharpness-rank at native res → multi-point align → AP-weighted stack → deconvolve + sharpen |
+| `comet` | mono FITS (timestamped) | dual star/comet stacks over one global alignment + auto-fit motion track → StarNet star-layer recomposite |
+
+Per-mode deep dives (algorithm, knobs, fallbacks, outputs): [docs/modes/](docs/modes/README.md).
 
 ---
 
@@ -291,8 +302,9 @@ For the planetary path, cross-session reuse, and per-mode tuning, see
 
 A small, fully local feature that treats the finish as an optimisation loop. Start the model once with
 `just run-ia-model` (serves an MLX vision model — Qwen2.5-VL by default — on `:1234`), then enable it
-per run: tick **"Run with local AI agent"** in the Import page (deep-sky/nebula only), pass
-`process … --supervise`, or `just refine <run-dir>` to re-tune an existing stack without re-stacking.
+per run: tick **"Run with local AI agent"** in the Import page (works for **every stacking mode**),
+pass `process … --supervise`, or `just refine <run-dir>` to re-tune an existing stack without
+re-stacking.
 It is **off by default and soft-fails**: with the box unticked or the server down, the finish is
 identical to the standard pipeline. See [`.env.example`](.env.example) (`ASTRO_LLM_*`) for the knobs.
 

@@ -197,6 +197,9 @@ export interface RunResult {
   output_dir: string;
   object?: string;
   run_id?: string;
+  // Engine build that produced this run (internal/buildinfo: "version" or "version (built_at)";
+  // "dev" = un-stamped build). Present on nested and flat (planetary) results alike.
+  engine?: string;
   detection?: ChannelDetection;
   masters: Master[];
   channels: ChannelResult[];
@@ -235,6 +238,14 @@ export interface JobParams {
   color_calibration?: boolean;
   denoise?: boolean;
   supervise?: boolean;
+  // Fine tunable-knob overrides (same whitelist/clamps as the supervisor) + the free-text objective
+  // the agent carries, its re-entry ceiling and iteration cap.
+  params?: Record<string, unknown>;
+  goal?: string;
+  tier?: string;
+  max_iters?: number;
+  // Agent improvement series this job belongs to (0/absent = none).
+  series_id?: number;
 }
 
 export interface Job {
@@ -250,8 +261,28 @@ export interface Job {
   result: RunResult;
   started_at_ms: number; // 0 until the job leaves the queue and starts processing
   finished_at_ms: number; // 0 until the job reaches a terminal state
+  series_id?: number; // agent improvement series (0 = none)
   created_at: number;
   updated_at: number;
+}
+
+// Series is one durable agent improvement campaign over a target; each attempt is a normal job
+// linked by jobs.series_id (GET /api/series, GET /api/series/{id}).
+export interface Series {
+  id: number;
+  object: string;
+  kind: string;
+  input_path: string;
+  goal: string;
+  status: string; // active | done | stopped
+  auto_continue: boolean;
+  max_attempts: number;
+  target_score: number;
+  best_job_id: number;
+  best_score: number;
+  created_at: number;
+  updated_at: number;
+  attempts?: number; // attempt count — present on GET /api/series list rows only
 }
 
 export interface BrowseEntry {
@@ -333,6 +364,46 @@ export interface RunSummary {
   mode?: string;
   channels?: string[];
   created_at_ms: number;
+  // Engine build that produced the run (from its run.json; absent when the summary predates stamping).
+  engine?: string;
+}
+
+// Health is the GET /api/health snapshot; engine identifies the serving build ("dev" = un-stamped).
+export interface EngineBuild {
+  version: string;
+  built_at: string;
+}
+export interface Health {
+  status: string;
+  data_dir: string;
+  output_dir: string;
+  library_dir: string;
+  engine: EngineBuild;
+}
+
+// Environment health (GET /api/environment): deep per-tool probes + the offline plate-solve
+// catalogue situation, with human-readable run-impacting warnings. Cached ~5 min server-side.
+export interface EnvTool {
+  ok: boolean;
+  detail?: string; // version / resolved kind / probe state (may be "probing")
+  err?: string;
+}
+export interface EnvPlateSolve {
+  local_gaia_astro: boolean;
+  xpsamp_chunks: number;
+  local_asnet: boolean;
+  catalog: string; // effective platesolve -catalog value ("" = Siril default/online)
+}
+export interface Environment {
+  siril: EnvTool;
+  gimp: EnvTool;
+  graxpert: EnvTool;
+  starnet: EnvTool;
+  raw_developer: EnvTool;
+  llm: EnvTool;
+  plate_solve: EnvPlateSolve;
+  checked_ms: number;
+  warnings?: string[];
 }
 
 // Cross-session reuse: prior light data a run can fold in to grow total integration.

@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
-import { apiGet, apiPost, withS3 } from "@/services/api";
+import { apiGet, apiPost, health, withS3 } from "@/services/api";
 import type {
   Inventory,
   Job,
@@ -43,6 +43,14 @@ export interface CreateOpts {
     prefix?: string;
     exposureSec?: number;
   };
+  // Advanced AI parameters: a free-text objective the agent carries for the run, fine tunable-knob
+  // overrides (same whitelist/clamps as the supervisor), its re-entry ceiling and iteration cap.
+  goal?: string;
+  params?: Record<string, unknown>;
+  tier?: "A" | "B" | "C";
+  maxIters?: number;
+  // Agent improvement series to link the job to (0/absent = none).
+  seriesId?: number;
 }
 
 // RefineOpts tunes an AI-supervised re-finish of a completed run (POST /api/jobs/{id}/refine).
@@ -50,6 +58,7 @@ export interface RefineOpts {
   maxIters?: number;
   tier?: "A" | "B" | "C"; // how far the agent may reach: composite | +finish prep | +re-stack
   allowRestack?: boolean; // permit Tier-C re-stack from the original raw frames
+  params?: Record<string, unknown>; // fine knob overrides seeded onto the preset before the loop
 }
 
 // Runs gallery page size (paginated so a large output dir loads fast).
@@ -162,6 +171,12 @@ export const useJobsStore = defineStore("jobs", () => {
       body.storage_mode = "s3";
       body.s3 = { bucket: opts.s3.bucket, prefix: opts.s3.prefix };
     }
+    if (opts.goal) body.goal = opts.goal;
+    if (opts.params && Object.keys(opts.params).length)
+      body.params = opts.params;
+    if (opts.tier) body.tier = opts.tier;
+    if (opts.maxIters) body.max_iters = opts.maxIters;
+    if (opts.seriesId) body.series_id = opts.seriesId;
     const data = await apiPost<{ id: number; turn_id?: string }>(
       "/api/jobs",
       body,
@@ -226,6 +241,8 @@ export const useJobsStore = defineStore("jobs", () => {
     if (opts.maxIters) body.max_iters = opts.maxIters;
     if (opts.tier) body.tier = opts.tier;
     if (opts.allowRestack) body.allow_restack = true;
+    if (opts.params && Object.keys(opts.params).length)
+      body.params = opts.params;
     const data = await apiPost<{ id: number; turn_id?: string }>(
       `/api/jobs/${id}/refine`,
       body,
@@ -237,6 +254,26 @@ export const useJobsStore = defineStore("jobs", () => {
   // turnFor returns the conversation turn id stashed for a supervised/refine job (empty when none).
   function turnFor(id: number): string {
     return turnByJob.value[id] ?? "";
+  }
+
+  // Engine identity of the CURRENTLY-serving build (GET /api/health), fetched once and cached so run
+  // cards/results can flag images produced by an older build. "" until known; "dev" = un-stamped.
+  const engineVersion = ref("");
+  let healthInflight: Promise<void> | null = null;
+  async function fetchHealth(): Promise<void> {
+    if (engineVersion.value) return;
+    if (healthInflight) return healthInflight;
+    healthInflight = (async () => {
+      try {
+        const h = await health();
+        engineVersion.value = h.engine?.version || "";
+      } catch {
+        // soft-fail: engine chips simply skip stale detection
+      } finally {
+        healthInflight = null;
+      }
+    })();
+    return healthInflight;
   }
 
   // Durable on-disk run records (independent of the DB) for the Runs gallery, paginated so a large
@@ -292,5 +329,7 @@ export const useJobsStore = defineStore("jobs", () => {
     restart,
     refine,
     listRuns,
+    engineVersion,
+    fetchHealth,
   };
 });

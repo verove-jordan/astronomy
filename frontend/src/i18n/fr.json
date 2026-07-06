@@ -218,7 +218,8 @@
     },
     "orientation": "Orientation",
     "orientations": {
-      "auto": "Auto (EXIF)",
+      "exif": "Comme la photo (EXIF)",
+      "auto": "Auto (contenu)",
       "none": "Original",
       "cw": "Rotation 90° droite",
       "ccw": "Rotation 90° gauche",
@@ -231,7 +232,12 @@
     "flats": "Flats",
     "bias": "Bias / offset",
     "addToQueue": "Ajouter à la file",
-    "addToQueueHint": "Mettre ce traitement en file pour l'exécuter après les autres, un à la fois."
+    "addToQueueHint": "Mettre ce traitement en file pour l'exécuter après les autres, un à la fois.",
+    "advancedParams": "Paramètres IA avancés",
+    "goal": "Objectif",
+    "goalHint": "ex. faire ressortir les nébulosités externes faibles",
+    "paramsJson": "Paramètres fins (JSON)",
+    "paramsInvalid": "JSON invalide — objet attendu, ex. {\"denoise_lum\": 0.6}"
   },
   "reuse": {
     "title": "Réutiliser des données antérieures",
@@ -525,7 +531,29 @@
     "empty": "Aucun traitement — lancez une capture pour le voir ici.",
     "open": "Ouvrir",
     "loadMore": "Charger plus",
-    "count": "{n} sur {total}"
+    "count": "{n} sur {total}",
+    "engine": "Moteur",
+    "engineStale": "Produit avec une version antérieure du moteur"
+  },
+  "env": {
+    "title": "Avertissements d'environnement",
+    "dismiss": "Ignorer"
+  },
+  "series": {
+    "title": "Série d'amélioration",
+    "goal": "Objectif",
+    "attempts": "Tentatives",
+    "attempt": "Tentative {n}",
+    "best": "Meilleur",
+    "target": "Cible",
+    "continue": "Continuer à améliorer",
+    "stop": "Arrêter",
+    "empty": "Aucune tentative pour l'instant.",
+    "status": {
+      "active": "Active",
+      "done": "Terminée",
+      "stopped": "Arrêtée"
+    }
   },
   "library": {
     "title": "Bibliothèque de calibration",

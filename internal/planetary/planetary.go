@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/verove-jordan/astronomy/internal/buildinfo"
 	"github.com/verove-jordan/astronomy/internal/comet"
 	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/fsutil"
@@ -86,6 +87,7 @@ type Result struct {
 	Object    string `json:"object,omitempty"`
 	RunID     string `json:"run_id,omitempty"`
 	OutputDir string `json:"output_dir,omitempty"`
+	Engine    string `json:"engine,omitempty"` // build that produced this run (see internal/buildinfo)
 	// Iterations records each supervised-finish pass (empty for a standard run) for the UI timeline.
 	Iterations []postprocess.IterationRecord `json:"iterations,omitempty"`
 	// StagePreviews are the saved milestone preview PNGs (stacked masters + final) for the UI timeline.
@@ -132,7 +134,7 @@ func Process(ctx context.Context, runner *siril.Runner, ffmpegBin, inputPath, wo
 	if err := fsutil.EnsureDir(runDir); err != nil {
 		return nil, err
 	}
-	res := &Result{Source: inputPath, Object: object, RunID: runID, OutputDir: runDir}
+	res := &Result{Source: inputPath, Object: object, RunID: runID, OutputDir: runDir, Engine: buildinfo.String()}
 
 	// Start from a clean per-object scratch dir: stale aligned frames / Siril .seq files from a prior run
 	// of the same target would otherwise collide with `convert`/`stack` (it picks up leftover al_*.fits).

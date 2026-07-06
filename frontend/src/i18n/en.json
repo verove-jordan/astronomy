@@ -218,7 +218,8 @@
     },
     "orientation": "Orientation",
     "orientations": {
-      "auto": "Auto (EXIF)",
+      "exif": "Match photo (EXIF)",
+      "auto": "Auto (content)",
       "none": "Original",
       "cw": "Rotate 90° right",
       "ccw": "Rotate 90° left",
@@ -231,7 +232,12 @@
     "flats": "Flats",
     "bias": "Bias / offset",
     "addToQueue": "Add to queue",
-    "addToQueueHint": "Queue this processing to run after the others, one at a time."
+    "addToQueueHint": "Queue this processing to run after the others, one at a time.",
+    "advancedParams": "Advanced AI parameters",
+    "goal": "Goal",
+    "goalHint": "e.g. bring out the faint outer nebulosity",
+    "paramsJson": "Fine parameters (JSON)",
+    "paramsInvalid": "Invalid JSON — expected an object like {\"denoise_lum\": 0.6}"
   },
   "reuse": {
     "title": "Reuse prior data",
@@ -525,7 +531,29 @@
     "empty": "No runs yet — process a capture to see it here.",
     "open": "Open",
     "loadMore": "Load more",
-    "count": "{n} of {total}"
+    "count": "{n} of {total}",
+    "engine": "Engine",
+    "engineStale": "Built with an older engine than the current one"
+  },
+  "env": {
+    "title": "Environment warnings",
+    "dismiss": "Dismiss"
+  },
+  "series": {
+    "title": "Improvement series",
+    "goal": "Goal",
+    "attempts": "Attempts",
+    "attempt": "Attempt {n}",
+    "best": "Best",
+    "target": "Target",
+    "continue": "Continue improving",
+    "stop": "Stop",
+    "empty": "No attempts yet.",
+    "status": {
+      "active": "Active",
+      "done": "Done",
+      "stopped": "Stopped"
+    }
   },
   "library": {
     "title": "Calibration library",

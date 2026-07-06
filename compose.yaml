@@ -69,6 +69,11 @@ services:
     build:
       context: .
       dockerfile: docker/engine.Dockerfile
+      args:
+        # Build identity for /api/health + run records (.dockerignore excludes .git, so it must
+        # arrive as an arg). just stack/stack-build export GIT_DESCRIBE/BUILD_TIME.
+        GIT_DESCRIBE: ${GIT_DESCRIBE:-dev}
+        BUILD_TIME: ${BUILD_TIME:-}
     restart: unless-stopped
     profiles: ["stack"]
     # No platform pin → built for the HOST arch (arm64 on Apple Silicon, amd64 on Linux) so Siril/GIMP

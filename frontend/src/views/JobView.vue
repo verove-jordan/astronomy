@@ -19,6 +19,8 @@ import RunResultPanels from "@/components/Common/RunResultPanels.vue";
 import SupervisorPanel from "@/components/Common/SupervisorPanel.vue";
 import SupervisorChat from "@/components/Common/SupervisorChat.vue";
 import StagePreviewTimeline from "@/components/Common/StagePreviewTimeline.vue";
+import SeriesTimeline from "@/components/Common/SeriesTimeline.vue";
+import EnvWarnings from "@/components/Common/EnvWarnings.vue";
 import { btnDanger, btnPrimary, card } from "@/constants/styles";
 import { baseName, formatBytes } from "@/utils/format";
 import type { Inventory } from "@/types";
@@ -98,6 +100,12 @@ const canRestart = computed(() => {
 const restarting = ref(false);
 // Live-stacking jobs run until stopped; the "cancel" affordance is really "stop & finalize".
 const isLive = computed(() => job.value?.params?.mode === "livestack");
+
+// Improvement series this job belongs to: series_id lives on the job row itself and is echoed in its
+// persisted params (the RunRequest) — read both so every row resolves. 0 = not part of a series.
+const seriesId = computed(
+  () => job.value?.series_id || job.value?.params?.series_id || 0,
+);
 
 // Any completed run can be re-finished by the AI supervisor: it re-tunes that mode's finish from the
 // masters/intermediates left on disk. Needs a nested `final` (deep-sky/comet/milkyway) or a flat
@@ -240,6 +248,9 @@ async function restartJob() {
       </button>
     </div>
 
+    <!-- Environment warnings (missing/broken tools, catalogues): collapsed count chip, expandable. -->
+    <EnvWarnings />
+
     <p
       v-if="job?.error"
       class="rounded-md bg-red-100 p-3 text-sm text-red-800 dark:bg-red-900/40 dark:text-red-300"
@@ -250,6 +261,10 @@ async function restartJob() {
     <!-- Live, steerable AI-supervisor conversation for this run: previews + reasoning + steering. Shows
          whenever this session started the run (supervise checkbox or "Améliorer avec l'IA"). -->
     <SupervisorChat v-if="turnId" :turn-id="turnId" />
+
+    <!-- Durable improvement campaign this run belongs to: goal, status, best-vs-target and every
+         attempt (each a job) as a horizontal timeline, with Continue/Stop controls. -->
+    <SeriesTimeline v-if="seriesId" :series-id="seriesId" />
 
     <!-- While processing: keep capture context visible + live progress, logs and preview -->
     <template v-if="running">

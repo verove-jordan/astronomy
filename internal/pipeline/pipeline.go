@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/verove-jordan/astronomy/internal/buildinfo"
 	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/fsutil"
@@ -212,6 +213,9 @@ type Result struct {
 	Final     *postprocess.Result       `json:"final,omitempty"`
 	Reuse     *ReuseSummary             `json:"reuse,omitempty"` // prior data folded into this run
 	Warnings  []string                  `json:"warnings"`
+	// Engine identifies the build that produced this run (buildinfo; "dev" for un-stamped binaries) —
+	// so a result from a stale Docker engine is identifiable instead of masquerading as current code.
+	Engine string `json:"engine,omitempty"`
 	// StagePreviews are the saved milestone preview PNGs (stacked/aligned/combined/finish…), reconstructed
 	// from the run's previews/ dir so the UI shows the processing timeline after a reload.
 	StagePreviews []postprocess.StagePreview `json:"stage_previews,omitempty"`
@@ -405,6 +409,7 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 // writeRunJSON persists the full result (channels, metrics, masters, detection, notes) next to the
 // images so a run is self-contained and reopenable independent of the database. Best-effort.
 func writeRunJSON(outDir string, res *Result) {
+	res.Engine = buildinfo.String()
 	b, err := json.MarshalIndent(res, "", "  ")
 	if err != nil {
 		return

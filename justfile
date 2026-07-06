@@ -40,11 +40,11 @@ web-prod:
 
 # Build the engine + frontend images (no model — Ollama is a pulled image, not built).
 stack-build:
-    docker compose --profile stack build
+    GIT_DESCRIBE=$(git describe --tags --always --dirty) BUILD_TIME=$(date -u +%Y-%m-%dT%H:%MZ) docker compose --profile stack build
 
 # Run the whole app in containers WITHOUT the model — db + engine + frontend (UI :${WEB_PORT_PROD:-8082}, API :${ENGINE_PORT:-8080}).
 stack:
-    API_UPSTREAM=engine:8080 docker compose --profile stack up -d --build
+    GIT_DESCRIBE=$(git describe --tags --always --dirty) BUILD_TIME=$(date -u +%Y-%m-%dT%H:%MZ) API_UPSTREAM=engine:8080 docker compose --profile stack up -d --build
 
 # Run the whole app in containers WITH the model (Linux+GPU; needs nvidia-container-toolkit). Then: just ai-pull
 stack-ai:
@@ -167,10 +167,11 @@ build-mcp:
     @mkdir -p {{bin}}
     go build -o {{bin}}/siril-mcp ./cmd/siril-mcp
 
-# Build all binaries + the frontend.
+# Build all binaries + the frontend (build identity stamped via ldflags — shows in /api/health,
+# every run record, and the UI's engine chip, so a stale-engine run is identifiable at a glance).
 build:
     @mkdir -p {{bin}}
-    go build -o {{bin}}/astrostack ./cmd/astrostack
+    go build -ldflags "-X github.com/verove-jordan/astronomy/internal/buildinfo.Version=$(git describe --tags --always --dirty) -X github.com/verove-jordan/astronomy/internal/buildinfo.BuiltAt=$(date -u +%Y-%m-%dT%H:%MZ)" -o {{bin}}/astrostack ./cmd/astrostack
     go build -o {{bin}}/siril-mcp ./cmd/siril-mcp
     @test -d frontend/node_modules && (cd frontend && pnpm build) || true
 

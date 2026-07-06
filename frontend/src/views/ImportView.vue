@@ -20,6 +20,7 @@ import CalibrationPanel from "@/components/Capture/CalibrationPanel.vue";
 import FilePreviewButton from "@/components/Common/FilePreviewButton.vue";
 import CollapsibleCard from "@/components/Common/CollapsibleCard.vue";
 import StatusPill from "@/components/Common/StatusPill.vue";
+import EnvWarnings from "@/components/Common/EnvWarnings.vue";
 import IconFolder from "@/components/Icons/IconFolder.vue";
 import type { CreateOpts } from "@/stores/jobs";
 import type {
@@ -82,15 +83,23 @@ const looks = ["natural", "iphone", "deepsky"];
 // Sky brightness target for the nightscape auto-levels (data-driven stretch); balanced is the default.
 const brightness = ref("balanced");
 const brightnesses = ["darker", "balanced", "brighter"];
-// Final display orientation. "auto" reads the phone's EXIF orientation tag (content heuristic as
-// fallback); the override is for the rare frame whose orientation still comes out wrong. "Mirror"
-// appends a horizontal flip. orientationValue folds the two into the backend token.
-const orientation = ref("auto");
-const orientations = ["auto", "none", "cw", "ccw", "180"];
+// Final display orientation. The default ("" = EXIF, the backend default — sent as nothing) matches
+// the photo's real EXIF orientation; "auto" opts into the legacy content heuristic (bright-half =
+// sky); the explicit overrides are for the rare frame that still comes out wrong. "Mirror" appends a
+// horizontal flip (explicit overrides only). orientationValue folds the two into the backend token.
+const orientation = ref("");
+const orientations = [
+  { value: "", label: "exif" },
+  { value: "auto", label: "auto" },
+  { value: "none", label: "none" },
+  { value: "cw", label: "cw" },
+  { value: "ccw", label: "ccw" },
+  { value: "180", label: "180" },
+];
 const mirror = ref(false);
 const orientationValue = computed(() => {
   const base = orientation.value;
-  if (base === "auto") return "auto";
+  if (base === "" || base === "auto") return base; // exif/content — no mirror variant
   if (mirror.value) return base === "none" ? "flip" : base + "-flip";
   return base;
 });
@@ -102,6 +111,25 @@ const isMilkyway = computed(() => selectedMode.value === "milkyway");
 // The supervisor now re-tunes every mode's finish — deepsky/nebula LRGB composite, comet colour
 // composite, milkyway grade, planetary sharpen — so every stacking mode in the picker supports it.
 const supportsSupervise = computed(() => modes.includes(selectedMode.value));
+
+// Advanced AI parameters: a free-text goal the agent carries for the run + fine tunable-knob
+// overrides as a JSON object (same whitelist/clamps as the supervisor). The JSON is validated here —
+// invalid text turns the field red and blocks the run; empty means "send nothing".
+const goal = ref("");
+const paramsText = ref("");
+const runParams = computed<Record<string, unknown> | null | undefined>(() => {
+  const txt = paramsText.value.trim();
+  if (!txt) return undefined; // nothing to send
+  try {
+    const v: unknown = JSON.parse(txt);
+    if (v && typeof v === "object" && !Array.isArray(v))
+      return v as Record<string, unknown>;
+  } catch {
+    // fall through: not valid JSON
+  }
+  return null; // invalid (unparsable, or not a JSON object)
+});
+const paramsInvalid = computed(() => runParams.value === null);
 
 onMounted(async () => {
   s3.fetchStatus(); // learn whether S3 is configured (drives presence badges + transfer actions)
@@ -382,7 +410,11 @@ const fileColumns: Column<Row>[] = [
 ];
 
 const canRun = computed(
-  () => selectedPaths.value.length > 0 && !!inv.value && !launching.value,
+  () =>
+    selectedPaths.value.length > 0 &&
+    !!inv.value &&
+    !launching.value &&
+    !paramsInvalid.value,
 );
 
 // One path → show it; several → a count (the pills in the browser already list them).
@@ -403,6 +435,9 @@ function runOpts(): CreateOpts {
     haExcludeStars: haExcludeStars.value,
     dropWheelTransition: dropWheelTransition.value,
     supervise: supportsSupervise.value && supervise.value,
+    // Advanced AI parameters (empty goal / empty-or-absent params are simply not sent).
+    goal: goal.value.trim() || undefined,
+    params: runParams.value || undefined,
     look: isMilkyway.value ? look.value : undefined,
     brightness: isMilkyway.value ? brightness.value : undefined,
     orientation: isMilkyway.value ? orientationValue.value : undefined,
@@ -698,6 +733,8 @@ function histChip(exists: boolean): string {
     />
 
     <div ref="runControls" :class="card">
+      <!-- Environment warnings (missing/broken tools, catalogues) — warn before the run, not after. -->
+      <EnvWarnings class="mb-3" />
       <div class="flex flex-wrap items-end gap-4">
         <label class="text-sm">
           <span class="mb-1 block text-xs font-medium text-slate-500">{{
@@ -757,12 +794,12 @@ function histChip(exists: boolean): string {
             t("run.orientation")
           }}</span>
           <select v-model="orientation" :class="input">
-            <option v-for="o in orientations" :key="o" :value="o">
-              {{ t("run.orientations." + o) }}
+            <option v-for="o in orientations" :key="o.label" :value="o.value">
+              {{ t("run.orientations." + o.label) }}
             </option>
           </select>
           <span
-            v-if="orientation !== 'auto'"
+            v-if="orientation && orientation !== 'auto'"
             class="mt-1 flex items-center gap-2 text-xs text-slate-500"
           >
             <input v-model="mirror" type="checkbox" :class="checkbox" />
@@ -876,6 +913,49 @@ function histChip(exists: boolean): string {
               :placeholder="t('run.calibPlaceholder')"
               :class="input"
             />
+          </label>
+        </div>
+      </details>
+
+      <!-- Advanced AI parameters: free-text goal + fine knob overrides (JSON), forwarded on the run. -->
+      <details class="mt-3 text-sm">
+        <summary class="cursor-pointer text-xs font-medium text-slate-500">
+          {{ t("run.advancedParams") }}
+        </summary>
+        <div class="mt-2 grid gap-3 sm:grid-cols-2">
+          <label class="text-sm">
+            <span class="mb-1 block text-xs font-medium text-slate-500">{{
+              t("run.goal")
+            }}</span>
+            <input
+              v-model="goal"
+              type="text"
+              :placeholder="t('run.goalHint')"
+              :class="input"
+              data-demo="run-goal"
+            />
+          </label>
+          <label class="text-sm">
+            <span class="mb-1 block text-xs font-medium text-slate-500">{{
+              t("run.paramsJson")
+            }}</span>
+            <textarea
+              v-model="paramsText"
+              rows="4"
+              spellcheck="false"
+              placeholder='{"denoise_lum": 0.6}'
+              :class="[
+                input,
+                'h-24 font-mono text-xs',
+                paramsInvalid
+                  ? '!border-danger-500 focus:!border-danger-500 focus:!ring-danger-500'
+                  : '',
+              ]"
+              data-demo="run-params"
+            />
+            <span v-if="paramsInvalid" class="mt-1 block text-xs text-danger">
+              {{ t("run.paramsInvalid") }}
+            </span>
           </label>
         </div>
       </details>

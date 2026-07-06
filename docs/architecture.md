@@ -47,14 +47,65 @@ public data services by default.
 | `internal/graxpert` | Optional host CLI: GraXpert AI background-gradient extraction / denoise (`GRAXPERT_BIN`). |
 | `internal/starnet` | Optional host CLI: StarNet++ v2 star removal for star-reduced finishing (`STARNET_BIN`). |
 | `internal/llm` | Optional, opt-in: drives a host-run OpenAI-compatible vision model to auto-tune the finish for **every stacking mode** — deep-sky/nebula composite, comet colour composite, milkyway grade, planetary sharpen — via per-mode `candidateRenderer` adapters (`internal/pipeline/supervise_*.go`); the shared render→judge→re-tune loop soft-fails when the server is down. |
-| `internal/planetary` | SER/AVI/MP4/MOV lucky-imaging path. |
-| `internal/livestack` + `internal/source` | Incremental live-stacking session + its watched source (local dir or S3 via `minio-go`). |
+| `internal/planetary` | SER/AVI/MP4/MOV/stills lucky-imaging path: native-res disk-masked sharpness ranking, multi-point ZNCC alignment, AP-weighted sigma-clipped stack, RL deconvolution. |
+| `internal/comet` | Pure comet primitives: multi-scale coma detection, robust linear/quadratic track fit, starless ZNCC alignment, sub-pixel translate (driven by `pipeline.ProcessComet`). |
+| `internal/mode` | Capture modes (deepsky/nebula/milkyway/planetary/livestack/comet) → the `Preset` that retunes the whole pipeline. |
+| `internal/livestack` + `internal/source` | Incremental live-stacking session + its watched source abstraction (local dir or S3 via `minio-go`). |
 | `internal/nightscape` | Milky-Way / one-shot-color foreground+sky composite recipe. |
+| `internal/rawconv` | Camera-raw → 16-bit TIFF develop for Siril ingestion: LibRaw `dcraw_emu` preferred (photometric, `-t 0`, exact sRGB), macOS `sips` fallback; also raw thumbnails. |
+| `internal/weather` | Astronomy weather: Open-Meteo + 7Timer! + air quality + NOAA SWPC merged into per-site forecasts and the chunked multi-point cloud grid (soft-fail, disk-cached). |
+| `internal/darksky` | Dark-site finder: grid an area for low light pollution, score horizon openness (terrain + canopy). |
+| `internal/elevation` | Terrain elevation provider + horizon-profile sampling (keyless Open-Meteo elevation, cached). |
+| `internal/s3store` | Small reusable minio-go v7 client (list/stat/upload/download/delete, byte progress). |
+| `internal/transfer` | S3 sync engine: upload / sync / download / `removeLocal` (verify-then-delete — content-MD5/ETag where possible, abort on any unverified file). |
+| `internal/s3conn` | Builds S3 clients from UI-managed connections (default connection → env resolution). |
+| `internal/secret` | AES-256-GCM encryption for stored S3 secrets (`ASTRO_ENCRYPTION_KEY` or an auto-generated key file kept outside the backup roots). |
+| `internal/backup` | Snapshot/restore of the precious non-bulk state: `pg_dump`, master library, light-pollution atlas, browser-side app state. |
+| `internal/buildinfo` | Engine build identity injected via `-ldflags` (`Version`/`BuiltAt`) — stamped into `/api/health` and every `run.json`. |
+| `internal/toolhealth` | Deep environment probes (Siril/GIMP/GraXpert/StarNet/raw developer/LLM + offline-catalogue presence) behind `/api/environment`. |
 | `internal/store` | Postgres access via **raw `pgx/v5`** (no ORM/sqlc); schema applied from embedded, versioned `*.up.sql` migrations (`store.Migrate`, tracked in `schema_migrations`). |
 | `internal/job` | In-process worker pool + job lifecycle. |
 | `internal/api` | HTTP handlers (Go 1.22 `http.ServeMux` method routing) + SSE progress; the `/api/sky/*` planner endpoints. |
 | `astro` · `skycat` · `skyplan` | Ephemeris, sky-object catalog, and visibility/event scoring behind the **planner** (`/api/sky/*`). |
 | `internal/report` | JSON + markdown run reports. |
+
+## Weather & sky overlays
+
+The Tonight page's animated cloud map is served by `GET /api/sky/weather/grid`
+(`internal/api/weather.go` → `weather.Provider.Grid` in `internal/weather/provider.go`): a
+`GRID_SIZE × GRID_SIZE` (default 32×32, `ASTRO_WEATHER_GRID_SIZE`) lat/lon sample box around the
+site, returned as one float frame per forecast hour per layer. The default `clouds` layer expands
+to its **per-altitude bands** — `clouds_low` / `clouds_mid` / `clouds_high` — which the browser
+composites into an intensity-true cloud raster. Because 1024 coordinates can't ride in one URL,
+the Open-Meteo multi-point request is fetched in **chunked GETs** (a few in flight at once,
+`internal/weather/openmeteo.go`); any failed chunk fails the fetch and the **stale-cache
+soft-fail** takes over (last cached frames + a warning). The disk cache is **versioned**
+(`gridCacheVersion` in `internal/weather/provider.go`, part of the cache key) so a semantic or
+geometry change ignores stale cubes instead of mis-rendering them. On the client, the coarse grid
+is bicubically interpolated onto a viewport-sized **canvas overlay** (a Leaflet `imageOverlay`
+backed by a canvas, `frontend/src/composables/useWeatherGridLayer.ts`) with play/scrub over the
+timesteps. Weather is overlay + panel only — it never changes visibility scores.
+
+## Run provenance & environment health
+
+Two mechanisms make "which code produced this image, and could the tools actually run?" answerable
+at a glance:
+
+- **Build provenance** (`internal/buildinfo`): `Version`/`BuiltAt` are injected at build time via
+  `-ldflags` (git describe + timestamp; un-stamped `go run`/test binaries read "dev"). The identity
+  is exposed at **`/api/health`** (`engine.version` / `engine.built_at`) and stamped into **every
+  `run.json`** (`Result.Engine`) — so a result produced by a stale Docker engine is identifiable
+  instead of masquerading as current code. Rebuild the container engine with `just stack-build`
+  after pulling changes.
+- **Environment health** (`internal/toolhealth`, served at **`/api/environment`**): *deep* probes,
+  not mere binary lookups — Siril version, GIMP binary, StarNet binary, the raw developer kind
+  (`dcraw_emu` vs the `sips` tone-curve fallback), the LLM server, the offline plate-solve
+  catalogue situation (local Gaia astrometric file + xp_sampled chunk count → the effective
+  `-catalog` value), and the **GraXpert deep probe** — a real tiny extraction run in the
+  background, so a present-but-broken install (typically a missing ONNX runtime;
+  fix: `pipx inject graxpert onnxruntime`) reads as broken instead of silently degrading
+  gradients. The report is cached ~5 minutes and each problem carries a human-readable,
+  run-impacting warning the UI can show before a run.
 
 ## Why no Redis / Celery
 

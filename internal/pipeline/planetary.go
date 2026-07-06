@@ -45,13 +45,15 @@ func ProcessPlanetary(ctx context.Context, opts Options) (*planetary.Result, err
 		// Persist run.json so the run is reopenable, shows in the gallery, and a post-run refine + full-S3
 		// push resolve this run dir — matching ProcessOSC/ProcessComet. The flat planetary.Result is
 		// projected onto the pipeline.Result contract the UI + refine read.
-		writeRunJSON(outDir, &Result{
+		projected := &Result{
 			InputDir: opts.InputDir, OutputDir: outDir, Object: r.Object, RunID: r.RunID,
 			Final: &postprocess.Result{
 				Mode: "planetary", Outputs: r.Outputs, Notes: r.Notes, Iterations: r.Iterations,
 			},
 			StagePreviews: r.StagePreviews,
-		})
+		}
+		stampFinishQuality(projected) // objective clipping guardrails on every run
+		writeRunJSON(outDir, projected)
 	}
 	return r, nil
 }

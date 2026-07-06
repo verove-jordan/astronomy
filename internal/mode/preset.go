@@ -275,7 +275,7 @@ func For(m Mode) Preset {
 			ColorCalibration: true,
 			LinkedStretch:    true,
 			// Auto-levels target sky-background ("Balanced") for the nightscape composite; the UI/CLI
-			// brightness control overrides it (Darker 0.04 / Balanced 0.06 / Brighter 0.09). The dedicated
+			// brightness control overrides it (Darker 0.035 / Balanced 0.05 / Brighter 0.07). The dedicated
 			// recipe reads this via nightscape.Options.Brightness (data-driven auto-stretch). After the v3
 			// per-channel black-clip the sky is genuinely dark, so the targets are lower than v2's.
 			BackgroundLevel: 0.05,

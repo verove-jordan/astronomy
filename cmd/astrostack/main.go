@@ -12,11 +12,12 @@ package main
 
 import (
 	"fmt"
+	"github.com/verove-jordan/astronomy/internal/buildinfo"
 	"os"
 )
 
-// version is overridden at build time with -ldflags "-X main.version=...".
-var version = "dev"
+// version reports the stamped build identity (see internal/buildinfo; "dev" for a bare `go run`).
+var version = buildinfo.String()
 
 func main() {
 	if len(os.Args) < 2 {

@@ -15,7 +15,14 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/astrostack ./cmd/astrostack
+# Build identity: .dockerignore excludes .git, so the describe string arrives as a build arg
+# (compose passes GIT_DESCRIBE; a bare `docker build` gets "dev").
+ARG GIT_DESCRIBE=dev
+ARG BUILD_TIME=
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w \
+      -X github.com/verove-jordan/astronomy/internal/buildinfo.Version=${GIT_DESCRIBE} \
+      -X github.com/verove-jordan/astronomy/internal/buildinfo.BuiltAt=${BUILD_TIME}" \
+      -o /out/astrostack ./cmd/astrostack
 
 ########## runtime — engine + host tools on a glibc base ##########
 FROM ubuntu:24.04 AS runtime

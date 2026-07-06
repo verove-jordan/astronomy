@@ -55,12 +55,16 @@ per-frame grades) is stored on the job and rendered in the web UI's frame-review
 
 When a run **opts in** (the Import page's "Run with local AI agent" checkbox, `process … --supervise`,
 or `astrostack refine <run-dir>`), the finish becomes a bounded optimisation loop instead of a single
-pass. The heavy prep (channel combine, GraXpert, SPCC, stretch) runs once; then the fast GIMP composite
-is re-rendered a few times with varied knobs (saturation, Ha screen/black-point, chroma blur, crop).
-Each render is scored by **deterministic image metrics** *and* a local **vision model** (a host-run,
-OpenAI-compatible server — e.g. mlx-vlm on `:1234`, started with `just run-ia-model`), combined as
-`0.6·metrics + 0.4·model`, and the best render is kept. Iterations (params, scores, reasoning, the
-chosen flag) are persisted and shown in the job's supervisor panel.
+pass — for **every stacking mode**, each through its own cheap re-finish (`candidateRenderer` in
+`internal/pipeline/supervise_renderer.go`; per-mode details in the [mode docs](modes/README.md)). For
+deep-sky, the heavy prep (channel combine, GraXpert, SPCC, stretch) runs once; then the fast GIMP
+composite is re-rendered a few times with varied knobs (saturation, Ha screen/black-point, chroma blur,
+crop). Each render is scored by **deterministic image metrics** *and* a local **vision model** (a
+host-run, OpenAI-compatible server — e.g. mlx-vlm on `:1234`, started with `just run-ia-model`),
+combined as `0.6·metrics + 0.4·model`, and the best render is kept. The critique sees a rolling
+**iteration history** and the best-so-far image; a repeat run of the same target **warm-starts** from
+its best prior pass. Iterations (params, scores, reasoning, the chosen flag) are persisted and shown in
+the job's supervisor panel.
 
 It is **off by default and soft-fails**: with the box unticked or the model server unreachable, the
 finish is **byte-identical** to the standard pipeline. `refine` re-tunes an existing stack with **no
@@ -91,23 +95,36 @@ still recorded). The single-session path is unchanged when no prior data matches
 ## Lunar / planetary video
 
 `astrostack video <file>` (`internal/planetary`): extract frames (ffmpeg for MP4/MOV/MKV/AVI; SER
-read by Siril) → convert to a FITS sequence → rank frames by Laplacian-variance **sharpness** in Go
-→ keep the best N% → stack (no surface alignment) → unsharp + stretch → export.
-
-High-precision multi-point planetary alignment is a known Siril-CLI limitation; for demanding
-planetary work use the Siril GUI or AutoStakkert!.
+read by Siril; a folder of stills also works) → rank frames by **full-resolution, disk-masked
+Laplacian-variance sharpness** in Go → keep the best N% → **multi-point surface alignment** (coarse
++ fine ZNCC and a 10×10 alignment-point grid, applied by a single Catmull-Rom resample) →
+**sharpness-weighted, sigma-clipped stack** with per-region (AP) quality weights → Richardson-Lucy
+**deconvolution** of the luminance → highlight-safe stretch + wavelet sharpen. The stack is
+objectively accepted only when the master out-details the best single frame (≥ 1.05×). The old
+Siril-CLI "no surface alignment — use AutoStakkert! for demanding work" caveat no longer applies:
+the in-house path does native ranking, AP-weighted stacking and real deconvolution. Full detail:
+[docs/modes/planetary.md](modes/planetary.md).
 
 ## Modes
 
-`internal/mode` maps each capture mode to a `Preset` that retunes the whole pipeline:
+`internal/mode` maps each capture mode to a `Preset` that retunes the whole pipeline. Each mode has
+a dedicated document with the fixed template *what & when · detection · algorithm end-to-end ·
+preset knobs · soft-fail fallbacks · AI supervisor · outputs · config* — see
+[docs/modes/README.md](modes/README.md):
 
-- **deepsky** — mono LRGB+Ha, balanced grading, gentle curves.
-- **nebula** — mono LRGB+Ha, lenient grading + stronger background extraction + a heavier Ha
-  screen for faint emission; enables AI background extraction and StarNet++ star reduction.
-- **milkyway** — one-shot-color (iPhone ProRAW/HEIC, jpg/png/tif) via `pipeline.ProcessOSC`:
-  debayer → register → grade → stack → GIMP curves, with strong gradient removal and natural
-  star colors.
-- **planetary** — lucky imaging (`internal/planetary`): sharpness-ranked best frames, sharpened.
+- **[deepsky](modes/deepsky.md)** — mono LRGB+Ha galaxies/clusters: per-channel
+  calibrate/register/grade/stack, channel co-registration, combined GraXpert+RBF gradient removal,
+  SPCC → star-field → neutralization colour ladder, layered GIMP finish.
+- **[nebula](modes/nebula.md)** — same engine, retuned for faint emission: lenient grading,
+  Ha-forward blend, StarNet++ star reduction on by default.
+- **[milkyway](modes/milkyway.md)** — one-shot-color nightscapes (iPhone ProRAW/DSLR raws) via
+  `pipeline.ProcessOSC` → the `internal/nightscape` foreground/sky composite recipe: photometric
+  `dcraw_emu` develop, sky-only sigma-clipped stack, mask-aware flatten, data-driven auto-stretch,
+  dithered export.
+- **[planetary](modes/planetary.md)** — lucky imaging (`internal/planetary`): see above.
+- **[comet](modes/comet.md)** — moving comet: one global star alignment to the mid frame,
+  multi-scale coma detection + robust linear/quadratic track fit, dual star/comet stacks
+  (asymmetric rejection on the comet side), StarNet star-layer recomposite.
 
 The output `format` (`image`/`video`/`both`) additionally renders a Ken-Burns MP4 via
 `internal/videoout` (ffmpeg).

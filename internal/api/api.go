@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/verove-jordan/astronomy/internal/agent"
+	"github.com/verove-jordan/astronomy/internal/buildinfo"
 	"github.com/verove-jordan/astronomy/internal/canopy"
 	"github.com/verove-jordan/astronomy/internal/config"
 	"github.com/verove-jordan/astronomy/internal/darksky"
@@ -182,6 +183,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		"data_dir":    s.cfg.DataDir,
 		"output_dir":  s.cfg.OutputDir,
 		"library_dir": s.cfg.LibraryDir,
+		"engine":      map[string]string{"version": buildinfo.Version, "built_at": buildinfo.BuiltAt},
 	})
 }
 
@@ -626,6 +628,7 @@ type runSummary struct {
 	FinalPreview string   `json:"final_preview,omitempty"`
 	Mode         string   `json:"mode,omitempty"`
 	Channels     []string `json:"channels,omitempty"`
+	Engine       string   `json:"engine,omitempty"` // build that produced the run (stale-engine chip)
 	CreatedAtMs  int64    `json:"created_at_ms"`
 }
 
@@ -725,6 +728,7 @@ func summarizeRunBytes(data []byte, runJSONPath string, mtimeMs int64) runSummar
 		var rj struct {
 			Object string `json:"object"`
 			RunID  string `json:"run_id"`
+			Engine string `json:"engine"`
 			Final  *struct {
 				Mode     string   `json:"mode"`
 				Channels []string `json:"channels"`
@@ -738,6 +742,7 @@ func summarizeRunBytes(data []byte, runJSONPath string, mtimeMs int64) runSummar
 			if rj.RunID != "" {
 				sum.RunID = rj.RunID
 			}
+			sum.Engine = rj.Engine
 			if rj.Final != nil {
 				sum.Mode, sum.Channels = rj.Final.Mode, rj.Final.Channels
 				for _, o := range rj.Final.Outputs {
