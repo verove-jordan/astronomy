@@ -44,9 +44,18 @@ func autoStretch(im *fits.Image, targetBg float64, skyMask []float32) {
 	blackPct := autoBlackPct
 	bp := percentile(lum, blackPct)
 	bgNorm := (med - bp) / (wp - bp)
-	for bgNorm >= targetBg*0.9 && blackPct < 45 {
+	// Raise the black point until the background can reach the target. The cap is 60 (was 45 — too
+	// low to tame a strong light-pollution floor), but a STRUCTURE GUARD bounds the crush: the black
+	// point may climb through the noise-floor band yet never into its upper third toward the median,
+	// so faint real sky (dim Milky-Way regions) is compressed, not clipped to pure black.
+	maxBp := med - 0.35*(med-bp)
+	for bgNorm >= targetBg*0.9 && blackPct < 60 {
+		next := percentile(lum, blackPct+3)
+		if next > maxBp {
+			break
+		}
 		blackPct += 3
-		bp = percentile(lum, blackPct)
+		bp = next
 		if wp-bp < 1e-6 {
 			wp = bp + 1e-6
 		}

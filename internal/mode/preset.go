@@ -266,7 +266,7 @@ func For(m Mode) Preset {
 			BackgroundLevel: 0.05,
 			Previews:        true,
 			Look:            "natural", // dedicated nightscape recipe: foreground composite + faithful grade
-			Orientation:     "auto",
+			Orientation:     "exif",
 		}
 	case Planetary:
 		return Preset{

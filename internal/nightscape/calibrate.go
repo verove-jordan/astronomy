@@ -250,9 +250,19 @@ func medianMaster(paths []string) (*fits.Image, error) {
 
 // matchOrDrop returns m if it matches ref's dimensions, else nil plus an appended note — so a
 // differently-sized calibration master degrades the run to "less calibration" instead of a crash.
+// An exactly-TRANSPOSED master (portrait vs landscape of the same sensor) is still dropped — the
+// 90° direction is ambiguous from dims alone and a wrong guess would misplace the fixed-pattern
+// noise, which is worse than no calibration — but the note names the real cause: an old raw
+// developer baked the EXIF rotation into one side (dcraw_emu now runs -t 0, so re-developing the
+// masters fixes it for good).
 func matchOrDrop(m, ref *fits.Image, tag, notes string) (*fits.Image, string) {
 	if m == nil {
 		return nil, notes
+	}
+	if m.W == ref.H && m.H == ref.W && m.C == ref.C && m.W != m.H {
+		return nil, joinNotes(notes, fmt.Sprintf(
+			"%s master %dx%d is TRANSPOSED vs light %dx%d (orientation was baked by an old raw develop) — dropped; rebuild the master so both are sensor-native",
+			tag, m.W, m.H, ref.W, ref.H))
 	}
 	if m.W != ref.W || m.H != ref.H || m.C != ref.C {
 		return nil, joinNotes(notes, fmt.Sprintf("%s master %dx%d≠light %dx%d, dropped", tag, m.W, m.H, ref.W, ref.H))

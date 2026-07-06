@@ -299,7 +299,8 @@ func compose(ctx context.Context, o Options, aligned []string, fgPath string, re
 
 	// Persist the pre-grade linear inputs (+ the resolved orientation) so the supervised finish and a
 	// later post-run refine can re-grade in seconds without re-developing/re-registering. See Regrade.
-	orientMode := resolveOrientation(o)
+	// The developed reference frame's dims feed the baked-rotation detection (orientDecision).
+	orientMode := resolveOrientation(o, fg.W, fg.H)
 	persistGradeInputs(outDir, sky, fg, alpha, orientMode, res)
 	return gradeCompose(o, sky, fg, alpha, orientMode, res)
 }
@@ -451,9 +452,9 @@ func exportPNG(im *fits.Image, path string) error {
 				g, b = im.Pix[1][i], im.Pix[2][i]
 			}
 			o := rgba.PixOffset(x, y)
-			rgba.Pix[o+0] = to8(r)
-			rgba.Pix[o+1] = to8(g)
-			rgba.Pix[o+2] = to8(b)
+			rgba.Pix[o+0] = to8Dithered(r, i*3)
+			rgba.Pix[o+1] = to8Dithered(g, i*3+1)
+			rgba.Pix[o+2] = to8Dithered(b, i*3+2)
 			rgba.Pix[o+3] = 255
 		}
 	}
@@ -473,6 +474,33 @@ func to8(v float32) uint8 {
 		s = 255
 	}
 	return uint8(s + 0.5)
+}
+
+// to8Dithered quantizes with a deterministic ±0.5 LSB triangular dither: the smooth stretched sky
+// spans only a handful of 8-bit levels, and plain rounding turns that into visible banding (worst
+// case the posterized look). Triangular noise spreads the quantization error over two levels — it
+// reads as imperceptible fine grain instead of contours. Keyed by pixel index, so exports stay
+// byte-reproducible.
+func to8Dithered(v float32, key int) uint8 {
+	s := encodeSRGB(float64(v))*255 + ditherTri(key)
+	if s < 0 {
+		s = 0
+	} else if s > 255 {
+		s = 255
+	}
+	return uint8(s + 0.5)
+}
+
+// ditherTri returns a deterministic triangular-distribution dither in (-1,1) LSB units for key —
+// the sum of two independent uniform hashes.
+func ditherTri(key int) float64 {
+	h1 := uint32(key)*2654435761 + 0x9e3779b9
+	h1 ^= h1 >> 16
+	h2 := (uint32(key) + 0x85ebca6b) * 2246822519
+	h2 ^= h2 >> 13
+	u1 := float64(h1&0xffff) / 65536
+	u2 := float64(h2&0xffff) / 65536
+	return u1 + u2 - 1
 }
 
 // downsample nearest-neighbour shrinks an image so its larger axis is at most maxDim (for previews).
