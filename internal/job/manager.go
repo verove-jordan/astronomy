@@ -22,12 +22,14 @@ import (
 	"github.com/verove-jordan/astronomy/internal/llm"
 	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
-	"github.com/verove-jordan/astronomy/internal/planetary"
 	"github.com/verove-jordan/astronomy/internal/postprocess"
+	"github.com/verove-jordan/astronomy/internal/s3conn"
+	"github.com/verove-jordan/astronomy/internal/secret"
 	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/source"
 	"github.com/verove-jordan/astronomy/internal/starnet"
 	"github.com/verove-jordan/astronomy/internal/store"
+	"github.com/verove-jordan/astronomy/internal/turns"
 	"github.com/verove-jordan/astronomy/internal/videoout"
 )
 
@@ -52,7 +54,8 @@ type Event struct {
 
 	// Iteration carries one supervised-finish pass (preview + tier + defects + scores) as it happens,
 	// so the UI streams the AI agent's iterations live instead of only after the job finishes.
-	Iteration *postprocess.IterationRecord `json:"iteration,omitempty"`
+	Iteration    *postprocess.IterationRecord `json:"iteration,omitempty"`
+	StagePreview *postprocess.StagePreview    `json:"stage_preview,omitempty"` // one saved processing-milestone preview, streamed live
 
 	Done bool `json:"done,omitempty"`
 }
@@ -105,10 +108,24 @@ func encodeLog(entries []logEntry) string {
 }
 
 // Manager owns the worker pool and the subscriber registry.
+// TurnHub is the subset of *turns.Sessions the manager needs to surface a supervised finish as a live,
+// steerable conversation: mint a turn, stream per-iteration bubbles, block for the expensive-step
+// confirmation, drain free-text nudges, and end the turn. nil (unset) → conversations off, and every
+// supervised run behaves exactly as before.
+type TurnHub interface {
+	Start() string
+	Publish(turnID string, e turns.Event)
+	Await(ctx context.Context, turnID, callID string) (approve bool, choice string, ok bool)
+	Finish(turnID string)
+	DrainMessages(turnID string) (texts []string, stop bool)
+}
+
 type Manager struct {
 	store  *store.Store
 	runner *siril.Runner
 	cfg    *config.Config
+	s3conn *s3conn.Service // resolves the default S3 connection (UI-managed) for pipeline transfers/backups
+	turns  TurnHub         // shared turn transport for supervised-job conversations; nil → conversations off
 
 	queue     chan int64
 	seqQueue  chan int64 // sequential lane: stacked "Add to queue" jobs run one-at-a-time, auto-advancing
@@ -116,6 +133,9 @@ type Manager struct {
 	mu        sync.Mutex
 	subs      map[int64][]chan Event
 	cancels   map[int64]context.CancelFunc // cancel funcs for in-flight jobs (kill support)
+	jobTurns  map[int64]string             // supervised jobs → their conversation turn id (guarded by mu)
+
+	confirmSeq int64 // monotonic counter for unique expensive-step confirmation call ids
 
 	pathMu    sync.Mutex
 	pathLocks map[string]*sync.Mutex // serializes jobs sharing an input dir (shared library/output)
@@ -191,6 +211,32 @@ type RunRequest struct {
 	// process, push inputs+outputs, then remove local copies). S3 targets the run's S3Target.
 	StorageMode string    `json:"storage_mode,omitempty"`
 	S3          *S3Target `json:"s3,omitempty"`
+
+	// Backup / Restore, when set, make this a backup-everything (or restore) job instead of a pipeline run
+	// — intercepted before mode parsing like Transfer, reusing the whole job progress/SSE stack.
+	Backup  *BackupRequest  `json:"backup,omitempty"`
+	Restore *RestoreRequest `json:"restore,omitempty"`
+}
+
+// BackupRequest snapshots precious local state (Postgres db, calibration library, LP atlas, browser app
+// state) to <Prefix>/backup/<stamp>/ in Bucket. Credentials are env-only (never carried here). AppState is
+// the UI-exported browser JSON (favorites/setups/prefs + AI chats) — only the frontend can produce it.
+// StampMs is set server-side.
+type BackupRequest struct {
+	Bucket     string   `json:"bucket"`
+	Prefix     string   `json:"prefix"`
+	Components []string `json:"components"` // db | library | atlas | appstate
+	AppState   string   `json:"appstate,omitempty"`
+	StampMs    int64    `json:"stamp_ms"`
+}
+
+// RestoreRequest restores the chosen components from <Prefix>/backup/<Stamp>/ in Bucket. The appstate
+// component is applied browser-side (fetched via GET /api/backup/appstate), not by this job.
+type RestoreRequest struct {
+	Bucket     string   `json:"bucket"`
+	Prefix     string   `json:"prefix"`
+	Stamp      string   `json:"stamp"`
+	Components []string `json:"components"`
 }
 
 // TransferRequest describes an S3 folder transfer. Credentials are NOT carried here (env only); Bucket +
@@ -252,19 +298,33 @@ func (r RunRequest) reuseSessions() map[int64]bool {
 	return set
 }
 
-// NewManager creates a Manager with a bounded queue.
-func NewManager(st *store.Store, runner *siril.Runner, cfg *config.Config) *Manager {
+// NewManager creates a Manager with a bounded queue. hub is the shared turn transport (also handed to
+// the API layer) used to surface supervised jobs as conversations; nil disables that (jobs run headless).
+func NewManager(st *store.Store, runner *siril.Runner, cfg *config.Config, hub TurnHub) *Manager {
 	return &Manager{
 		store:     st,
 		runner:    runner,
 		cfg:       cfg,
+		turns:     hub,
+		s3conn:    newS3ConnService(st, cfg),
 		queue:     make(chan int64, 256),
 		seqQueue:  make(chan int64, 256),
 		xferQueue: make(chan int64, 256),
 		subs:      map[int64][]chan Event{},
 		cancels:   map[int64]context.CancelFunc{},
+		jobTurns:  map[int64]string{},
 		pathLocks: map[string]*sync.Mutex{},
 	}
+}
+
+// newS3ConnService builds the encrypted-connection service for the worker (nil when the master key can't be
+// resolved — pipeline S3 then falls back to the env credentials).
+func newS3ConnService(st *store.Store, cfg *config.Config) *s3conn.Service {
+	box, err := secret.NewBox(cfg.EncryptionKey, cfg.SecretKeyFile)
+	if err != nil {
+		return nil
+	}
+	return s3conn.New(st, box)
 }
 
 // lockTarget serializes jobs that share an input directory so a new run cannot race a still-running one
@@ -315,10 +375,19 @@ func (m *Manager) Enqueue(ctx context.Context, req RunRequest) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Supervised (and refine) jobs surface as a live conversation: mint the turn now, before the job can
+	// be dequeued, so the worker always finds it (and the API can hand the turn id straight back). Look it
+	// up with TurnFor. Non-supervised jobs — and headless mode (m.turns nil) — get none.
+	if m.turns != nil && (req.Supervise || req.Refine != nil) {
+		turnID := m.turns.Start()
+		m.mu.Lock()
+		m.jobTurns[id] = turnID
+		m.mu.Unlock()
+	}
 	target := m.queue
 	switch {
-	case req.Transfer != nil:
-		target = m.xferQueue // S3 transfers run in their own lane
+	case req.Transfer != nil || req.Backup != nil || req.Restore != nil:
+		target = m.xferQueue // S3 transfers / backups / restores run in their own lane
 	case req.Sequential:
 		target = m.seqQueue // run after the rest of the chain, one-at-a-time
 	}
@@ -368,11 +437,9 @@ func (m *Manager) Refine(ctx context.Context, sourceJobID int64, opts RefineRequ
 		return 0, fmt.Errorf("job %d has invalid params: %w", sourceJobID, err)
 	}
 	if opts.RunDir == "" {
-		var prev pipeline.Result
-		if len(j.Result) == 0 || json.Unmarshal(j.Result, &prev) != nil || prev.OutputDir == "" {
+		if opts.RunDir = runDirFromResult(j.Result); opts.RunDir == "" {
 			return 0, fmt.Errorf("job %d has no completed run to refine", sourceJobID)
 		}
-		opts.RunDir = prev.OutputDir
 	}
 	req := src // clone the source's processing choices; only the refine-specific bits change
 	req.Live = nil
@@ -380,6 +447,30 @@ func (m *Manager) Refine(ctx context.Context, sourceJobID int64, opts RefineRequ
 	req.Supervise = true
 	req.Refine = &opts
 	return m.Enqueue(ctx, req)
+}
+
+// runDirFromResult resolves a finished job's on-disk run directory from its stored result JSON. Deep-sky,
+// comet and milkyway persist a pipeline.Result with output_dir; planetary persists a flat planetary.Result
+// with out_base (<runDir>/<object>_stack) and no output_dir, so fall back to the directory of out_base.
+// Empty when neither is present (nothing on disk to refine).
+func runDirFromResult(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var r struct {
+		OutputDir string `json:"output_dir"`
+		OutBase   string `json:"out_base"`
+	}
+	if json.Unmarshal(raw, &r) != nil {
+		return ""
+	}
+	if r.OutputDir != "" {
+		return r.OutputDir
+	}
+	if r.OutBase != "" {
+		return filepath.Dir(r.OutBase)
+	}
+	return ""
 }
 
 // Cancel kills an in-flight job (cancelling its context terminates the running siril-cli). Returns
@@ -466,9 +557,11 @@ func (m *Manager) run(ctx context.Context, id int64) {
 	}
 	var p RunRequest
 	_ = json.Unmarshal(job.Params, &p)
+	turnID := m.TurnFor(id) // "" unless this is a supervised/refine job with a conversation
 
 	// A stacked job the user removed from the queue before it started is marked cancelled — skip it.
 	if job.Status == store.JobCancelled {
+		m.closeTurn(id, store.JobCancelled, "Cancelled before start.")
 		return
 	}
 
@@ -491,7 +584,26 @@ func (m *Manager) run(ctx context.Context, id int64) {
 	_ = m.store.SetJobRunning(ctx, id)
 	m.publish(Event{JobID: id, Status: store.JobRunning, Progress: 0, Step: "starting"})
 
-	res, runErr := m.execute(runCtx, id, job.Kind, p)
+	// Full-S3 storage: pull the capture folders from S3 before processing so a run can work from files
+	// that live only on S3 (idempotent — same-size local files are skipped). A pull failure fails the job.
+	if p.wantsS3Storage() {
+		if err := m.pullS3Inputs(runCtx, id, p); err != nil {
+			_ = m.store.FinishJob(context.Background(), id, store.JobFailed, nil, err.Error())
+			m.publish(Event{JobID: id, Status: store.JobFailed, Step: err.Error(), Done: true})
+			m.closeTurn(id, store.JobFailed, err.Error())
+			return
+		}
+	}
+
+	res, runErr := m.execute(runCtx, id, turnID, job.Kind, p)
+
+	// Full-S3 storage: after a successful run, push inputs+outputs to S3 and free the local copies
+	// (verified). A push failure fails the job (nothing was freed); a partial free is non-fatal.
+	if runErr == nil && p.wantsS3Storage() {
+		if err := m.pushAndFreeS3Run(runCtx, id, p, res); err != nil {
+			runErr = err
+		}
+	}
 	// Terminal writes use a fresh context so they persist even if the run was cancelled.
 	if runErr != nil {
 		status := store.JobFailed
@@ -500,18 +612,26 @@ func (m *Manager) run(ctx context.Context, id int64) {
 		}
 		_ = m.store.FinishJob(context.Background(), id, status, nil, runErr.Error())
 		m.publish(Event{JobID: id, Status: status, Step: runErr.Error(), Done: true})
+		m.closeTurn(id, status, runErr.Error())
 		return
 	}
 	result, _ := json.Marshal(res)
 	_ = m.store.FinishJob(context.Background(), id, store.JobSucceeded, result, "")
 	m.publish(Event{JobID: id, Status: store.JobSucceeded, Progress: 100, Step: "done", Done: true})
+	m.closeTurn(id, store.JobSucceeded, "Finished — kept the best pass as the final image.")
 }
 
-func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunRequest) (any, error) {
-	// S3 transfer jobs are intercepted before pipeline-mode parsing — they reuse the whole progress/SSE
-	// stack but do not run Siril.
+func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p RunRequest) (any, error) {
+	// S3 transfer / backup / restore jobs are intercepted before pipeline-mode parsing — they reuse the
+	// whole progress/SSE stack but do not run Siril.
 	if p.Transfer != nil {
 		return m.runTransfer(ctx, id, p.Transfer)
+	}
+	if p.Backup != nil {
+		return m.runBackup(ctx, id, p.Backup)
+	}
+	if p.Restore != nil {
+		return m.runRestore(ctx, id, p.Restore)
 	}
 	if p.Path == "" {
 		return nil, fmt.Errorf("job has no path")
@@ -556,12 +676,7 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunReque
 		preset.CometX1, preset.CometY1 = p.CometX1, p.CometY1
 		preset.CometX2, preset.CometY2 = p.CometX2, p.CometY2
 	}
-	solve := siril.SolveOptions{FocalMM: m.cfg.FocalLenMM, PixelUm: m.cfg.PixelSizeUm, Catalog: m.cfg.PlateSolveCatalog}
-	spcc := siril.SpccOptions{
-		MonoSensor: m.cfg.SpccMonoSensor, OSCSensor: m.cfg.NightscapeOSCSensor,
-		RFilter: m.cfg.SpccRFilter, GFilter: m.cfg.SpccGFilter,
-		BFilter: m.cfg.SpccBFilter, WhiteRef: m.cfg.SpccWhiteRef,
-	}
+	solve, spcc := postprocess.SolveSpccFromConfig(m.cfg)
 	gclient := gimp.New(m.cfg.GimpBin, m.cfg.GimpHost, m.cfg.GimpPort)
 	graxRunner := graxpert.New(m.cfg.GraxpertBin) // optional; skipped when binary absent
 	starRunner := starnet.New(m.cfg.StarnetBin)   // optional; skipped when binary absent
@@ -569,6 +684,10 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunReque
 	if p.Supervise || p.Refine != nil { // opt-in local-AI-agent finish (always on for a refine); nil → standard finish
 		superRunner = llm.New(m.cfg.LLMBaseURL, m.cfg.LLMModel, m.cfg.LLMImageFormat).WithTimeout(m.cfg.LLMTimeout)
 	}
+	// Conversation steering for a supervised job: free-text nudges + stop (steer) and the expensive-step
+	// gate (confirm). Both are nil when this job has no turn, leaving the autonomous path unchanged.
+	steer := m.steerHook(turnID)
+	confirm := m.confirmHook(turnID)
 	grd := preset.Grade
 
 	logRing := make([]logEntry, 0, 256)
@@ -590,6 +709,14 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunReque
 		_ = m.store.UpdateJobProgress(context.Background(), id, lastPct, lastStep, encodeLog(logRing))
 	}()
 	pipeProg := func(pr pipeline.Progress) {
+		// Milestone preview: a labeled PNG saved at a processing step. It carries no Index/Total, so publish
+		// it at the last real progress value (never yanking the % bar to 0) — it accumulates into the UI's
+		// stage timeline, and also drives the single live-preview image via Preview.
+		if pr.StagePreview != nil {
+			m.publish(Event{JobID: id, Status: store.JobRunning, Progress: lastPct, Step: pr.Step,
+				Preview: pr.StagePreview.PngPath, StagePreview: pr.StagePreview})
+			return
+		}
 		pct := stepPercent(pr.Index, pr.Total)
 		lastPct, lastStep = pct, pr.Step
 
@@ -598,6 +725,12 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunReque
 		if pr.Iteration != nil {
 			m.publish(Event{JobID: id, Status: store.JobRunning, Progress: pct, Step: pr.Step,
 				Preview: pr.Iteration.PngPath, Iteration: pr.Iteration})
+			// Mirror the pass into the job's conversation as a chat bubble (with its preview), so a
+			// supervised run reads as a live agent turn. Direct publish → durable backlog, never dropped.
+			if turnID != "" && m.turns != nil {
+				m.turns.Publish(turnID, turns.Event{Kind: "thinking", Step: pr.Iteration.Index + 1,
+					Text: iterSummary(pr.Iteration), Preview: pr.Iteration.PngPath})
+			}
 			return
 		}
 
@@ -640,17 +773,20 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunReque
 
 	// A refine job re-finishes an existing run under the supervisor instead of processing from scratch.
 	if p.Refine != nil {
-		return m.executeRefine(ctx, id, p, preset, gclient, graxRunner, starRunner, superRunner, solve, spcc, pipeProg)
+		return m.executeRefine(ctx, id, p, preset, gclient, graxRunner, starRunner, superRunner, solve, spcc, pipeProg, steer, confirm)
 	}
 
 	switch mo {
 	case mode.Planetary:
-		r, err := planetary.Process(ctx, m.runner, m.cfg.FfmpegBin, p.Path, m.cfg.WorkDir, m.cfg.OutputDir, preset.Planetary,
-			func(sp siril.Progress) {
-				// Route through pipeProg so planetary gets the same timestamped, refresh-proof logs
-				// and live resource readout as the deep-sky path.
-				pipeProg(pipeline.Progress{Step: "planetary", Line: sp.Line, Sample: sp.Sample})
-			})
+		// ProcessPlanetary runs lucky imaging then the optional supervised finish (re-tunes the
+		// sharpen/stretch over the persisted masters); it routes Siril logs through pipeProg like the
+		// deep-sky path, and returns the same flat planetary.Result.
+		r, err := pipeline.ProcessPlanetary(ctx, pipeline.Options{
+			InputDir: p.Path, OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
+			FfmpegBin: m.cfg.FfmpegBin, Preset: &preset,
+			Supervisor: superRunner, JobID: id, FinishIterStore: m.store, // opt-in local-AI-agent finish
+			OnProgress: pipeProg, Steer: steer, Confirm: confirm,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -661,9 +797,10 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunReque
 		r, err := pipeline.ProcessOSC(ctx, pipeline.Options{
 			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
 			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
+			Supervisor: superRunner, JobID: id, FinishIterStore: m.store, // opt-in local-AI-agent finish
 			Solve: solve, Spcc: spcc, DarkDir: p.DarkDir, FlatDir: p.FlatDir, BiasDir: p.BiasDir,
 			PhoneCalib: m.store, LibraryDir: m.cfg.LibraryDir,
-			CatalogDir: m.cfg.SirilCatalogDir, OnProgress: pipeProg,
+			CatalogDir: m.cfg.SirilCatalogDir, OnProgress: pipeProg, Steer: steer, Confirm: confirm,
 		})
 		if err != nil {
 			return nil, err
@@ -678,7 +815,7 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunReque
 		// pipeline on Stop. The finalize options mirror the deepsky branch (incl. cross-session reuse) so
 		// the published master is identical to a normal run; livestack.Run sets InputDir to the source's
 		// local root (the watched dir, or the S3 download mirror).
-		src, serr := m.liveSource(p)
+		src, serr := m.liveSource(ctx, p)
 		if serr != nil {
 			return nil, serr
 		}
@@ -687,7 +824,7 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunReque
 			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
 			Supervisor: superRunner,                  // opt-in local-AI-agent finish (nil → standard finish)
 			JobID:      id, FinishIterStore: m.store, // persist supervised iterations against this job
-			Library: m.store, LibraryDir: m.cfg.LibraryDir, OnProgress: pipeProg,
+			Library: m.store, LibraryDir: m.cfg.LibraryDir, OnProgress: pipeProg, Steer: steer, Confirm: confirm,
 			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir,
 			Catalog: m.store,
 		}
@@ -724,8 +861,9 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunReque
 		r, err := pipeline.ProcessComet(ctx, pipeline.Options{
 			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
 			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
+			Supervisor: superRunner, JobID: id, FinishIterStore: m.store, // opt-in local-AI-agent finish
 			Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir, FilterMapping: p.FilterMap,
-			Catalog: m.store, OnProgress: pipeProg,
+			Catalog: m.store, OnProgress: pipeProg, Steer: steer, Confirm: confirm,
 		})
 		if err != nil {
 			return nil, err
@@ -741,7 +879,7 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunReque
 			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
 			Supervisor: superRunner,                  // opt-in local-AI-agent finish (nil → standard finish)
 			JobID:      id, FinishIterStore: m.store, // persist supervised iterations against this job
-			Library: m.store, LibraryDir: m.cfg.LibraryDir, OnProgress: pipeProg,
+			Library: m.store, LibraryDir: m.cfg.LibraryDir, OnProgress: pipeProg, Steer: steer, Confirm: confirm,
 			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir,
 			Catalog:      m.store, // always record the run so its frames become reusable
 			CalibExclude: p.CalibExclude,
@@ -770,7 +908,8 @@ func (m *Manager) execute(ctx context.Context, id int64, kind string, p RunReque
 // iterations. Tier C (re-stack from raws) is not wired here yet, so the loop caps at Tier B.
 func (m *Manager) executeRefine(ctx context.Context, id int64, p RunRequest, preset mode.Preset,
 	gclient *gimp.Client, grax *graxpert.Runner, star *starnet.Runner, super *llm.Runner,
-	solve siril.SolveOptions, spcc siril.SpccOptions, pipeProg func(pipeline.Progress)) (any, error) {
+	solve siril.SolveOptions, spcc siril.SpccOptions, pipeProg func(pipeline.Progress),
+	steer func() (string, bool), confirm func(context.Context, string, []string) (string, bool)) (any, error) {
 	preset.Supervise = true
 	preset.SuperviseTier = p.Refine.Tier
 	if p.Refine.MaxIters > 0 {
@@ -781,19 +920,33 @@ func (m *Manager) executeRefine(ctx context.Context, id int64, p RunRequest, pre
 		Preset: &preset, Gimp: gclient, Graxpert: grax, Starnet: star,
 		Supervisor: super, JobID: id, FinishIterStore: m.store,
 		Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir, OnProgress: pipeProg,
+		Steer: steer, Confirm: confirm,
 	}
-	if _, err := pipeline.RefineExistingRun(ctx, opts, p.Refine.RunDir); err != nil {
-		return nil, err
-	}
-	res, err := pipeline.ReadRunResult(p.Refine.RunDir)
+	final, err := pipeline.RefineExistingRun(ctx, opts, p.Refine.RunDir)
 	if err != nil {
 		return nil, err
 	}
-	if res.Final != nil {
-		format, _ := mode.ParseFormat(p.Format)
-		res.Final.Outputs = m.appendVideo(ctx, id, format, res.Final.Outputs)
+	format, _ := mode.ParseFormat(p.Format)
+	// The deep-sky family rewrites run.json with the full record (channels + masters + the refreshed final +
+	// iterations); reopen it so JobView shows the richest view. The single-stage modes (comet / milkyway /
+	// planetary) keep no pipeline run.json at the run dir, so return the finish result directly — reading a
+	// missing run.json would fail the refine even though the supervised finish just succeeded.
+	switch preset.Mode {
+	case mode.Deepsky, mode.Nebula, mode.Livestack:
+		res, rerr := pipeline.ReadRunResult(p.Refine.RunDir)
+		if rerr != nil {
+			return nil, rerr
+		}
+		if res.Final != nil {
+			res.Final.Outputs = m.appendVideo(ctx, id, format, res.Final.Outputs)
+		}
+		return res, nil
+	default:
+		if final != nil {
+			final.Outputs = m.appendVideo(ctx, id, format, final.Outputs)
+		}
+		return final, nil
 	}
-	return res, nil
 }
 
 // deepOptions builds the raw-calibration pool window from config: a temperature tolerance and an
@@ -803,8 +956,9 @@ func deepOptions(cfg *config.Config) calib.DeepOptions {
 }
 
 // liveSource builds the frame source for a live-stacking job: a local directory (default) or an S3
-// bucket. S3 credentials come from config (the host environment), never the request.
-func (m *Manager) liveSource(p RunRequest) (source.Source, error) {
+// bucket. S3 credentials come from the resolved pipeline config (default UI connection, else the host
+// environment) — never the request. Bucket/prefix still come per-job from the request.
+func (m *Manager) liveSource(ctx context.Context, p RunRequest) (source.Source, error) {
 	if p.Live == nil || p.Live.SourceKind == "" || p.Live.SourceKind == "local" {
 		return source.NewLocal(p.Path)
 	}
@@ -814,9 +968,10 @@ func (m *Manager) liveSource(p RunRequest) (source.Source, error) {
 		}
 		key := strings.NewReplacer("/", "_", ":", "_", " ", "_").Replace(p.Live.Bucket + "_" + p.Live.Prefix)
 		dl := filepath.Join(m.cfg.WorkDir, "live_s3", key)
+		sc := m.s3ConfigResolved(ctx)
 		return source.NewS3(source.S3Config{
-			Endpoint: m.cfg.S3Endpoint, Region: m.cfg.S3Region,
-			AccessKeyID: m.cfg.S3AccessKeyID, SecretKey: m.cfg.S3SecretAccessKey, UseSSL: m.cfg.S3UseSSL,
+			Endpoint: sc.Endpoint, Region: sc.Region,
+			AccessKeyID: sc.AccessKeyID, SecretKey: sc.SecretKey, UseSSL: sc.UseSSL,
 			Bucket: p.Live.Bucket, Prefix: p.Live.Prefix, DownloadDir: dl,
 		})
 	}

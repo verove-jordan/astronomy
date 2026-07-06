@@ -14,7 +14,7 @@ import (
 // rivals a single frame while still averaging down noise (which is what lets the deconvolution finish
 // push past a single frame). Siril can't weight a starless stack, so we do it here in Go.
 const (
-	stackWeightPow = 3.0 // emphasise the sharpest frames (weight = (sharpness/maxSharpness)^pow)
+	stackWeightPow = 3.0  // emphasise the sharpest frames (weight = (sharpness/maxSharpness)^pow)
 	stackWeightMin = 0.02 // floor so a soft frame still trims noise a little, never fully dropped
 	stackClipSigma = 2.5  // per-pixel sigma-clip: reject transients (satellites, cosmic rays)
 	stackNormPct   = 0.999

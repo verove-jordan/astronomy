@@ -34,6 +34,12 @@ type Inputs struct {
 	// core to ceil < 1, so a blown-white centre becomes a dim, structured knot the Ha screen then tints
 	// deep pink. Disabled unless 0 < knee < ceil < 1. Only used when Lum is set.
 	CoreHighlightKnee, CoreHighlightCeil float64
+	// HighlightKnee / HighlightCeil add a star-safe highlight roll-off to the FINAL flattened composite (the
+	// last tone op before crop): a per-channel tanh shoulder — identity below knee, asymptoting the very top
+	// to ceil < 1. It stops bright STAR cores clipping to white and, being per-channel, pulls a warm star's
+	// dominant channel down most, so cores keep natural colour instead of an orange/white blob. Distinct from
+	// CoreHighlightKnee/Ceil (the nebula CORE, on the L luminance). Disabled unless 0 < knee < ceil < 1.
+	HighlightKnee, HighlightCeil float64
 	// HaExcludeStars median-filters the Ha layer before it is screened, so point-like stars drop out
 	// and the red screen lifts only extended HII nebulosity (not star halos). Default off → Ha on all.
 	HaExcludeStars bool
@@ -110,11 +116,21 @@ func composeScript(in Inputs, curve []float64, haScreen, saturation float64, res
 		fmt.Fprintf(&b, "    (gimp-drawable-curves-spline d HISTOGRAM-VALUE %d %s)\n", len(curve), floatVec(curve))
 	}
 	if in.Color {
-		// Neutralize the green sky-cast (a light SCNR-equivalent) for a natural background.
-		b.WriteString("    (gimp-drawable-hue-saturation d HUE-RANGE-GREEN 0 0 -35 0)\n")
+		// A GENTLE green-saturation trim (light SCNR top-up) for a natural background — kept small (-12,
+		// was -35). SCNR `rmgreen` already removed EXCESS green one-sided upstream; an aggressive
+		// unconditional green cut over-removes the only channel that balances R+B and tips a neutral or
+		// green-weak image toward a MAGENTA/pink cast (the M31 pink-galaxy/purple-star failure).
+		b.WriteString("    (gimp-drawable-hue-saturation d HUE-RANGE-GREEN 0 0 -12 0)\n")
 		if saturation > 0 {
 			fmt.Fprintf(&b, "    (gimp-drawable-hue-saturation d HUE-RANGE-ALL 0 0 %.0f 0)\n", clamp(saturation*100, 0, 100))
 		}
+	}
+	// Star-safe highlight roll-off — the LAST tone op. A per-channel tanh shoulder (identity below knee,
+	// asymptoting the very top to ceil<1) so bright STAR cores never clip to white; being per-channel it
+	// pulls a warm star's dominant (red) channel down most, so cores keep natural colour instead of burning
+	// to an orange/white blob. Applies to colour and mono. Reuses coreShoulderLUT. Disabled unless 0<knee<ceil<1.
+	if k, c := in.HighlightKnee, in.HighlightCeil; k > 0 && k < c && c < 1 {
+		fmt.Fprintf(&b, "    (gimp-drawable-curves-explicit d HISTOGRAM-VALUE %d %s)\n", coreShoulderSamples, floatVec(coreShoulderLUT(k, c)))
 	}
 	if cf := clamp(in.CropFrac, 0, 0.2); cf > 0 { // trim ragged stacking-edge bands off the export
 		fmt.Fprintf(&b, "    (let* ((w (car (gimp-image-width dup))) (h (car (gimp-image-height dup))) (cx (inexact->exact (round (* w %.4f)))) (cy (inexact->exact (round (* h %.4f))))) (gimp-image-crop dup (- w (* 2 cx)) (- h (* 2 cy)) cx cy))\n", cf, cf)

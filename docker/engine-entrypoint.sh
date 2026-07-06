@@ -15,8 +15,11 @@ mkdir -p "$WORK" "${ASTRO_OUTPUT_DIR:-/data/output}" "${ASTRO_LIBRARY_DIR:-/data
 # the GIMP profile working regardless of the runtime UID.
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$WORK/.config}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$WORK/.cache}"
+# XDG_DATA_HOME too: GraXpert downloads its AI models to ~/.local/share/GraXpert on first use —
+# without this redirect they land in the ephemeral container FS and re-download on every recreate.
+export XDG_DATA_HOME="${XDG_DATA_HOME:-$WORK/.local/share}"
 export GIMP2_DIRECTORY="${GIMP2_DIRECTORY:-$WORK/.gimp-2.10}"
-mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$GIMP2_DIRECTORY"
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$GIMP2_DIRECTORY"
 
 # serve reads all config from the environment and self-migrates the DB on startup.
 exec astrostack serve

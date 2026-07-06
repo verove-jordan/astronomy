@@ -16,7 +16,6 @@ import (
 	"strings"
 
 	"github.com/verove-jordan/astronomy/internal/fsutil"
-	"github.com/verove-jordan/astronomy/internal/gimp"
 	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/postprocess"
 )
@@ -31,51 +30,71 @@ const (
 	superviseQualityTarget = 7.0
 )
 
+// superviseRestackProceed is the confirm-gate answer that authorises the expensive Tier-C re-stack; any
+// other answer caps the change to Tier B. Only fresh supervised deep-sky runs reach the gate.
+const superviseRestackProceed = "Proceed"
+
+// superviseRestackQuestion is shown to the user before the agent re-stacks every frame from scratch.
+const superviseRestackQuestion = "The agent wants to re-stack every frame from scratch (Tier C — the " +
+	"most expensive step, usually several minutes). Proceed with the re-stack, or keep the cheaper " +
+	"Tier-B finish?"
+
+// superviseRestackOptions builds the confirm-gate choices (proceed / skip).
+func superviseRestackOptions() []string {
+	return []string{superviseRestackProceed, "Skip (keep Tier B)"}
+}
+
 // superviseIter records one rendered candidate for best-pick: the working preset that produced it,
 // the render, the prep notes, and its combined score.
 type superviseIter struct {
 	preset mode.Preset
-	result *gimp.Result
+	result renderResult
 	notes  []string
 	score  float64
 }
 
-// superviseEnabled reports whether the optional local-AI-agent finish should run: it is opt-in
-// (preset.Supervise), needs both GIMP and the model server reachable.
-func superviseEnabled(ctx context.Context, opts Options) bool {
+// superviseOn reports whether the local-AI-agent finish was requested (opt-in via preset.Supervise) and
+// the model server is reachable. Mode call sites pair it with their renderer's own readiness check
+// (GIMP for deepsky, Siril for comet/nightscape/planetary).
+func superviseOn(ctx context.Context, opts Options) bool {
 	return opts.Supervisor != nil && opts.Preset != nil && opts.Preset.Supervise &&
-		opts.Gimp != nil && opts.Gimp.Available() == nil && opts.Supervisor.Available(ctx) == nil
+		opts.Supervisor.Available(ctx) == nil
 }
 
-// superviseFinish iterates render → critique → re-enter, keeping the best-scoring pass. The first pass
-// establishes the linear prep (the standard finish); later passes re-enter at the tier the model's
-// change requires, bounded by the tier ceiling, per-tier budgets and the iteration cap. StarNet++ star
-// reduction is applied once, to the winning composite. An error makes finishAligned fall back.
-func superviseFinish(ctx context.Context, opts Options, channels map[string]string, workRun, outDir string, res *Result) (*postprocess.Result, error) {
-	re, err := newReentry(opts, channels, workRun, outDir)
-	if err != nil {
-		return nil, err
-	}
-	ceiling := allowedMaxTier(opts)
-	iters := superviseIters(opts.Preset)
-	objective := objectiveText(opts.Preset)
+// superviseEnabled is the deepsky gate: the agent is on AND the layered-composite tool (GIMP) is ready.
+func superviseEnabled(ctx context.Context, opts Options) bool {
+	return superviseOn(ctx, opts) && opts.Gimp != nil && opts.Gimp.Available() == nil
+}
 
-	working := clampPreset(*opts.Preset)
+// superviseFinish iterates render → critique → re-enter, keeping the best-scoring pass, driving a
+// mode-specific candidateRenderer. Pass 0 renders the renderer's baseline (deepsky builds the linear
+// prep = the standard finish); later passes re-enter at the tier the model's change requires, bounded by
+// the tier ceiling, per-tier budgets and the iteration cap. The winner is finalized by the renderer. An
+// error makes the caller fall back to the standard finish.
+func superviseFinish(ctx context.Context, opts Options, r candidateRenderer, outDir string) (*postprocess.Result, error) {
+	if opts.Supervisor == nil {
+		return nil, fmt.Errorf("supervised finish requires a model runner")
+	}
+	ceiling := r.maxTier(opts)
+	iters := superviseIters(opts.Preset)
+
+	working := *opts.Preset
 	budgetB, budgetC := superviseBudgetTierB, superviseBudgetTierC
-	renderTier := tierB // pass 0 builds the linear prep = the standard-finish baseline
+	renderTier := r.firstTier()
 
 	var best *superviseIter
 	bestIdx := -1
 	var records []postprocess.IterationRecord
 	var history []string
 	var iterIDs []int64
+	var guidance string // user nudge drained between iterations, folded into the NEXT critique
 
 	for i := 0; i < iters; i++ {
 		if ctx.Err() != nil {
 			break
 		}
 		outBase := filepath.Join(outDir, fmt.Sprintf("final_iter%d", i))
-		g, err := re.render(ctx, renderTier, working, outBase)
+		g, notes, err := r.render(ctx, working, renderTier, outBase)
 		if err != nil {
 			if best != nil {
 				break // keep the best render we already have
@@ -92,7 +111,9 @@ func superviseFinish(ctx context.Context, opts Options, channels map[string]stri
 		opts.report(Progress{Step: fmt.Sprintf("supervise %d/%d", i+1, iters), Preview: g.Png})
 
 		det := scoreFinish(m, working.BackgroundLevel)
-		dec := critique(ctx, opts.Supervisor, objective, working, ceiling, m, g.Png)
+		steered := guidance != "" // this pass's critique is guided by the user's last nudge
+		dec := critique(ctx, opts.Supervisor, r.prompt(working, ceiling), m, g.Png, guidance)
+		guidance = "" // consumed by this pass
 		modelScore := clampf(dec.Score, 0, 10)
 		// Deterministic metrics dominate the model's aesthetic vote, so a clipped or cast render can
 		// never win on the model's word alone.
@@ -102,7 +123,7 @@ func superviseFinish(ctx context.Context, opts Options, channels map[string]stri
 		rec := postprocess.IterationRecord{
 			Index: i, Tier: renderTier.String(), PngPath: g.Png,
 			DetScore: det, ModelScore: modelScore, CombinedScore: combined,
-			Reasoning: reason, Defects: dec.Defects, Params: paramsMap(working),
+			Reasoning: reason, Defects: dec.Defects, Params: r.params(working),
 		}
 		records = append(records, rec)
 		reportIteration(opts, rec)
@@ -112,22 +133,51 @@ func superviseFinish(ctx context.Context, opts Options, channels map[string]stri
 		opts.report(Progress{Step: "supervise", Line: history[len(history)-1]})
 
 		if best == nil || combined > best.score {
-			best, bestIdx = &superviseIter{preset: working, result: g, notes: re.notes, score: combined}, i
+			best, bestIdx = &superviseIter{preset: working, result: g, notes: notes, score: combined}, i
 		}
 
-		// Stop policy: the model is done AND the deterministic guardrail is satisfied.
-		if dec.Done && det >= superviseQualityTarget {
+		// User steering: drain nudges/stop emitted while this pass rendered (after it's recorded so the
+		// user reacts to what they see). Stop is in-band — keep the best pass and finalize on a live ctx,
+		// so the job ends succeeded, not cancelled.
+		if opts.Steer != nil {
+			msg, stop := opts.Steer()
+			if stop {
+				break
+			}
+			guidance = msg
+		}
+
+		// Stop policy: honour the model's "done" only when the user isn't actively steering.
+		if guidance == "" && !steered && dec.Done && det >= superviseQualityTarget {
 			break
 		}
-		if dec.Action == nil || dec.Action.Patch == nil {
+		if dec.Action == nil || len(dec.Action.Patch) == 0 {
+			if guidance != "" {
+				continue // user asked for a change but the model proposed none → re-critique with the nudge
+			}
 			break // no proposed change → nothing more to try
 		}
-		// Cap the proposal to what we can still afford (ceiling + budgets), then re-derive the real tier.
+		// Cap the proposal to what we can still afford (ceiling + budgets); the renderer applies + clamps
+		// the patch and reports the tier its change requires and whether it effectively changed anything.
 		aff := affordableTier(ceiling, budgetB, budgetC)
-		next := clampPreset(capToTier(working, dec.Action.Patch.apply(working), aff))
-		nextTier := tierOf(working, next)
-		if nextTier == tierA && !composeChanged(working, next) {
+		next, nextTier, changed := r.applyPatch(working, dec.Action.Patch, aff)
+		if !changed {
+			if guidance != "" {
+				continue
+			}
 			break // no effective change we can afford → converged
+		}
+		// Ask the user before the most expensive step (deep-sky Tier-C re-stack); on decline, cap to Tier B.
+		if nextTier == tierC && opts.Confirm != nil {
+			if choice, ok := opts.Confirm(ctx, superviseRestackQuestion, superviseRestackOptions()); ok && choice != superviseRestackProceed {
+				next, nextTier, changed = r.applyPatch(working, dec.Action.Patch, tierB)
+				if !changed {
+					if guidance != "" {
+						continue
+					}
+					break
+				}
+			}
 		}
 		switch nextTier {
 		case tierC:
@@ -146,42 +196,7 @@ func superviseFinish(ctx context.Context, opts Options, channels map[string]stri
 		reportIteration(opts, records[bestIdx]) // re-emit the winner so the UI can mark it chosen
 	}
 	markChosen(ctx, opts, iterIDs, bestIdx)
-	return finalizeSupervised(ctx, opts, re, best, records, history, outDir)
-}
-
-// finalizeSupervised promotes the winning iteration to final.*, applies StarNet++ once with the
-// winner's preset, and assembles the result record.
-func finalizeSupervised(ctx context.Context, opts Options, re *reentry, best *superviseIter,
-	records []postprocess.IterationRecord, history []string, outDir string) (*postprocess.Result, error) {
-	finalBase := filepath.Join(outDir, "final")
-	if err := promoteResult(best.result, finalBase); err != nil {
-		return nil, err
-	}
-	out := &postprocess.Result{
-		Mode:     compMode(re.channels),
-		Channels: filterList(re.channels),
-		Outputs:  []string{finalBase + ".xcf", finalBase + ".tif", finalBase + ".png"},
-		Notes: append([]string{
-			fmt.Sprintf("local AI agent finish: %d iteration(s), best score %.1f", len(records), best.score),
-		}, best.notes...),
-	}
-
-	// StarNet++ star reduction once, on the winning composite, using the winner's (possibly tuned)
-	// StarReduce. Same soft-fail semantics as the standard finish.
-	star := opts
-	star.Preset = &best.preset
-	if aiStars(ctx, star) {
-		extra, note := reduceStarsAI(ctx, star, finalBase+".tif", outDir, nil)
-		out.Outputs = append(out.Outputs, extra...)
-		if note != "" {
-			out.Notes = append(out.Notes, note)
-		} else {
-			out.Notes = append(out.Notes, fmt.Sprintf("StarNet++ star reduction (stars at %.0f%%)", best.preset.StarReduce*100))
-		}
-	}
-	out.Notes = append(out.Notes, history...)
-	out.Iterations = records
-	return out, nil
+	return r.finalize(ctx, opts, best, records, history, outDir)
 }
 
 // superviseIters resolves the loop cap from the preset (0 → default), never above the hard max.
@@ -196,27 +211,14 @@ func superviseIters(p *mode.Preset) int {
 	return iters
 }
 
-// allowedMaxTier is the highest tier the agent may use: the preset ceiling (SuperviseTier), further
-// capped to Tier B when no raw frames are available to re-stack (Options.Reprocess is nil).
-func allowedMaxTier(opts Options) tier {
-	ceiling := tierC
-	if s := strings.TrimSpace(opts.Preset.SuperviseTier); s != "" {
-		ceiling = parseTier(s)
-	}
-	if opts.Reprocess == nil && ceiling > tierB {
-		ceiling = tierB
-	}
-	return ceiling
-}
-
 // promoteResult copies a winning iteration's artifacts onto the canonical final.* basename.
-func promoteResult(g *gimp.Result, finalBase string) error {
+func promoteResult(g renderResult, finalBase string) error {
 	for _, p := range [][2]string{
 		{g.Xcf, finalBase + ".xcf"},
 		{g.Tif, finalBase + ".tif"},
 		{g.Png, finalBase + ".png"},
 	} {
-		if p[0] == p[1] {
+		if p[0] == "" || p[0] == p[1] { // modes without a layered .xcf leave that source empty
 			continue
 		}
 		if err := fsutil.CopyFile(p[0], p[1]); err != nil {
@@ -235,9 +237,11 @@ func scoreFinish(m finishMetrics, targetBg float64) float64 {
 		s -= 60 * maxf(0, bc-0.01) // crushed shadows beyond 1% of pixels
 	}
 	for _, wc := range m.WhiteClip {
-		s -= 15 * maxf(0, wc-0.01) // blown highlights beyond 1% (some star cores are fine)
+		s -= 25 * maxf(0, wc-0.01) // blown highlights beyond 1% — the highlight cap rolls star cores below white, so residual clipping is a real defect (stars burning)
 	}
-	s -= 12 * absf(m.GreenCast)          // colour cast (per-channel median spread)
+	s -= 12 * absf(m.GreenCast)          // green/magenta cast (per-channel median spread)
+	s -= 20 * maxf(0, m.WarmCast-0.015)  // warm/orange SKY cast — one-sided: push a warm sky toward neutral without over-cooling to blue
+	s -= 15 * absf(m.SignalCast)         // magenta/pink (or green) cast in the BRIGHT galaxy/star signal — the median misses it (M31 pink)
 	s -= 8 * absf(m.Background-targetBg) // sky off the autostretch target
 	return clampf(s, 0, 10)
 }

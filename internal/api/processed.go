@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/verove-jordan/astronomy/internal/s3store"
 )
 
 // processedPath is one capture folder of a past processing, with whether it still exists on disk — so
@@ -30,12 +32,33 @@ type processedGroup struct {
 
 // processed reports, per past job, the capture folders it processed (with on-disk existence). GET /api/processed
 func (s *Server) processed(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.store.ListJobs(r.Context(), 500)
+	jobs, err := s.store.ListJobs(r.Context(), 500, 0)
 	if err != nil {
 		serverError(w, err)
 		return
 	}
 	exists := dirExistsCache() // a folder is shared by many jobs — stat it only once per request
+
+	// A folder freed locally after an S3 push must not read as "deleted": when a bucket is supplied, treat
+	// a folder present on the S3 data mirror as still existing. Memoized (one ListDir per unique folder).
+	q := r.URL.Query()
+	var s3c *s3store.Client
+	bucket, userPrefix := q.Get("bucket"), q.Get("prefix")
+	if bucket != "" && s.s3Config(r.Context()).Configured() {
+		s3c, _ = s3store.New(s.s3Config(r.Context()))
+	}
+	remoteSeen := make(map[string]bool)
+	remoteExists := func(p string) bool {
+		if s3c == nil {
+			return false
+		}
+		if v, ok := remoteSeen[p]; ok {
+			return v
+		}
+		v := s.remoteDataDirExists(r.Context(), s3c, bucket, userPrefix, p)
+		remoteSeen[p] = v
+		return v
+	}
 	groups := make([]processedGroup, 0, len(jobs))
 	for _, j := range jobs {
 		var p struct {
@@ -53,7 +76,7 @@ func (s *Server) processed(w http.ResponseWriter, r *http.Request) {
 		dirs := make([]processedPath, 0, len(raw))
 		for _, pp := range raw {
 			if pp != "" && !strings.HasPrefix(pp, "s3://") {
-				dirs = append(dirs, processedPath{Path: pp, Exists: exists(pp)})
+				dirs = append(dirs, processedPath{Path: pp, Exists: exists(pp) || remoteExists(pp)})
 			}
 		}
 		if len(dirs) == 0 {

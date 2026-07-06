@@ -195,3 +195,36 @@ func TestFinishScript_LinkedStretch(t *testing.T) {
 	assert.Contains(t, s, "savepng final")
 	assert.Contains(t, s, "savetif final")
 }
+
+func TestColorCalibrateScript_LocalCatalogues(t *testing.T) {
+	s := ColorCalibrateScript("c", "c",
+		SolveOptions{FocalMM: 740, PixelUm: 3.8, AstroCat: "/lib/catalogues/siril_cat_healpix8_astro.dat", XpsampDir: "/lib/catalogues"},
+		SpccOptions{MonoSensor: "ZWO ASI1600MM", Catalog: "localgaia"})
+	// The set lines must precede the load so every solve/SPCC uses the offline data.
+	assert.Contains(t, s, "set core.catalogue_gaia_astro=/lib/catalogues/siril_cat_healpix8_astro.dat\n")
+	assert.Contains(t, s, "set core.catalogue_gaia_photo=/lib/catalogues\n")
+	assert.Less(t, strings.Index(s, "set core.catalogue_gaia_astro"), strings.Index(s, "load c"))
+	// An installed astro catalogue makes localgaia the default platesolve catalog.
+	assert.Contains(t, s, "platesolve -focal=740.0 -pixelsize=3.80 -catalog=localgaia")
+	assert.Contains(t, s, "-catalog=localgaia\nsave c")
+}
+
+func TestColorCalibrateScript_LocalCataloguePathWithSpaces(t *testing.T) {
+	s := ColorCalibrateScript("c", "c",
+		SolveOptions{AstroCat: "/My Library/cat.dat"}, SpccOptions{})
+	// Whole-token quoting, same tokenizer rule as sirilKV.
+	assert.Contains(t, s, "set \"core.catalogue_gaia_astro=/My Library/cat.dat\"\n")
+}
+
+func TestColorCalibrateScript_NoLocalCatalogues(t *testing.T) {
+	s := ColorCalibrateScript("c", "c", SolveOptions{FocalMM: 740}, SpccOptions{})
+	assert.NotContains(t, s, "set core.catalogue")
+	assert.NotContains(t, s, "-catalog=")
+}
+
+func TestColorCalibrateScript_ExplicitCatalogWins(t *testing.T) {
+	s := ColorCalibrateScript("c", "c",
+		SolveOptions{Catalog: "nomad", AstroCat: "/lib/cat.dat"}, SpccOptions{})
+	assert.Contains(t, s, "-catalog=nomad")
+	assert.NotContains(t, s, "-catalog=localgaia")
+}

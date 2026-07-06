@@ -17,11 +17,13 @@ import (
 )
 
 // aiBackground reports whether GraXpert background extraction is enabled by the preset and the
-// binary is reachable. When true, the linear masters are gradient-removed by GraXpert and Siril runs
-// only a gentle degree-1 subsky cleanup at finish (see backgroundDegree).
+// tool can actually run (deep health probe, not a mere binary lookup — a present-but-broken
+// GraXpert must NOT capture the gradient-removal path). When true, the linear masters are
+// gradient-removed by GraXpert and Siril runs only a gentle degree-1 subsky cleanup at finish
+// (see backgroundDegree).
 func aiBackground(ctx context.Context, opts Options) bool {
 	return opts.Graxpert != nil && opts.Preset != nil && opts.Preset.BackgroundAI &&
-		opts.Graxpert.Available(ctx) == nil
+		opts.Graxpert.Healthy(ctx) == nil
 }
 
 // aiToolWarnings reports preset-enabled AI steps whose host binary is unreachable. Both steps
@@ -38,8 +40,8 @@ func aiToolWarnings(ctx context.Context, opts Options) []string {
 		case opts.Graxpert == nil:
 			w = append(w, "GraXpert background extraction is enabled for this mode but disabled for this run (--no-ai); using Siril subsky — expect residual gradients")
 		default:
-			if err := opts.Graxpert.Available(ctx); err != nil {
-				w = append(w, "GraXpert background extraction enabled but unavailable ("+err.Error()+"); using Siril subsky — expect residual gradients/brown sky")
+			if err := opts.Graxpert.Healthy(ctx); err != nil {
+				w = append(w, "GraXpert background extraction enabled but not working ("+err.Error()+"); using Siril subsky/RBF — expect residual gradients")
 			}
 		}
 	}
@@ -112,13 +114,18 @@ func extractCombinedBackground(ctx context.Context, opts Options, runner *siril.
 		}
 		return ""
 	}
-	if opts.Graxpert != nil && opts.Graxpert.Available(ctx) == nil {
+	if opts.Graxpert != nil && opts.Graxpert.Healthy(ctx) == nil {
 		if n := extractBackgroundAI(ctx, opts, filepath.Join(outDir, base+".fits"), nil); n != "" {
-			return "combined " + n
+			// The AI pass failed at runtime — the RBF pass below is now the ONLY gradient removal,
+			// so it must still run (returning early here shipped un-flattened, blotchy skies).
+			if rn := rbf(); rn != "" {
+				return "combined " + n + "; " + rn
+			}
+			return "combined " + n + " — RBF subsky fallback applied"
 		}
 		return rbf() // GraXpert removes most; the follow-up RBF cleans the residual it leaves
 	}
-	return rbf() // GraXpert absent → RBF alone (deterministic, better than a polynomial here)
+	return rbf() // GraXpert absent/broken → RBF alone (deterministic, better than a polynomial here)
 }
 
 // denoiseAI runs GraXpert AI denoising in place on a linear FITS (the combined RGB colour base). It is

@@ -135,15 +135,16 @@ func (p *Provider) Forecast(ctx context.Context, lat, lon float64) (SiteForecast
 }
 
 // Grid returns the regional cloud cube for the animated map overlay (one Open-Meteo multi-point call).
-func (p *Provider) Grid(ctx context.Context, lat, lon float64, layers []string) (Grid, string) {
+func (p *Provider) Grid(ctx context.Context, lat, lon, radiusDeg float64, layers []string) (Grid, string) {
 	if len(layers) == 0 {
 		layers = []string{"clouds"}
 	}
-	key := gridKey(lat, lon, layers)
+	radius := p.gridRadiusFor(radiusDeg)
+	key := gridKey(lat, lon, radius, layers)
 	if g, ok := p.cachedGrid(key); ok {
 		return g, ""
 	}
-	lats, lons, nx, ny, bbox := p.gridPoints(lat, lon)
+	lats, lons, nx, ny, bbox := p.gridPoints(lat, lon, radius)
 	resp, err := p.fetchOpenMeteoGrid(ctx, lats, lons, omGridVars(layers))
 	if err != nil || len(resp) == 0 {
 		if g, ok := p.anyGrid(key); ok {
@@ -157,9 +158,9 @@ func (p *Provider) Grid(ctx context.Context, lat, lon float64, layers []string) 
 }
 
 // gridPoints builds the lat/lon sample grid (row-major, north→south, west→east) and its bounding box.
-func (p *Provider) gridPoints(lat, lon float64) (lats, lons []float64, nx, ny int, bbox [4]float64) {
+func (p *Provider) gridPoints(lat, lon, radius float64) (lats, lons []float64, nx, ny int, bbox [4]float64) {
 	nx, ny = p.gridSize, p.gridSize
-	r := p.gridRadius
+	r := radius
 	west, east, south, north := lon-r, lon+r, lat-r, lat+r
 	bbox = [4]float64{west, south, east, north}
 	lats = make([]float64, 0, nx*ny)
@@ -174,6 +175,20 @@ func (p *Provider) gridPoints(lat, lon float64) (lats, lons []float64, nx, ny in
 	}
 	return lats, lons, nx, ny, bbox
 }
+
+// gridRadiusFor picks the half-span (deg) of the sample box: the caller's requested radius (from the
+// map viewport), clamped to a sane range, or the configured default when none (≤0) is given.
+func (p *Provider) gridRadiusFor(radiusDeg float64) float64 {
+	if radiusDeg <= 0 {
+		return p.gridRadius
+	}
+	return clampf(radiusDeg, gridRadiusMinDeg, gridRadiusMaxDeg)
+}
+
+const (
+	gridRadiusMinDeg = 0.5 // a very zoomed-in view still fetches a usable box
+	gridRadiusMaxDeg = 24  // cap a zoomed-out request (nx·ny is unchanged, so the box just gets coarser)
+)
 
 func (p *Provider) getJSON(ctx context.Context, url string, v any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -195,12 +210,12 @@ func (p *Provider) getJSON(ctx context.Context, url string, v any) error {
 func siteKey(lat, lon float64) string { return fmt.Sprintf("%+.2f_%+.2f", lat, lon) }
 
 // gridCacheVersion namespaces the grid cache; bump it when a layer's semantics change (e.g. precip went
-// from rain amount in mm to chance of precipitation in %) or the grid resolution changes, so stale
-// cached cubes are ignored. v3 = default grid size 16→22.
-const gridCacheVersion = 3
+// from rain amount in mm to chance of precipitation in %) or the grid geometry changes, so stale cached
+// cubes are ignored. v3 = default grid size 16→22; v4 = per-viewport radius in the key.
+const gridCacheVersion = 4
 
-func gridKey(lat, lon float64, layers []string) string {
-	s := fmt.Sprintf("v%d_%+.1f_%+.1f", gridCacheVersion, lat, lon)
+func gridKey(lat, lon, radius float64, layers []string) string {
+	s := fmt.Sprintf("v%d_%+.1f_%+.1f_r%.1f", gridCacheVersion, lat, lon, radius)
 	for _, l := range layers {
 		s += "_" + l
 	}

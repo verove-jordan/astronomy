@@ -212,6 +212,14 @@ export const useSkyStore = defineStore("sky", () => {
     selectedName.value = name;
   };
 
+  // setObserver sets just the observing location (lat/lon) and persists it, WITHOUT re-scoring targets —
+  // for tabs that need an origin (e.g. the dark-sky finder's distance/route column) but not a fetch. The
+  // next targets fetch picks it up; the finder reads params.lat/lon directly.
+  function setObserver(lat: number, lon: number): void {
+    params.value = { ...params.value, lat, lon };
+    persist(params.value);
+  }
+
   // reset clears the user's overrides; the next fetch re-seeds from the server defaults.
   function reset(): Promise<void> {
     params.value = {};
@@ -324,6 +332,7 @@ export const useSkyStore = defineStore("sky", () => {
     fetch,
     refresh,
     select,
+    setObserver,
     reset,
     favorites,
     isFavorite,

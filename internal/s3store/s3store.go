@@ -49,7 +49,7 @@ func New(cfg Config) (*Client, error) {
 	if !cfg.Configured() {
 		return nil, ErrNoCredentials
 	}
-	endpoint := cfg.Endpoint
+	endpoint := normalizeEndpoint(cfg.Endpoint)
 	if endpoint == "" {
 		endpoint = "s3.amazonaws.com"
 	}
@@ -150,4 +150,26 @@ func (c *Client) ListBuckets(ctx context.Context) ([]string, error) {
 
 func objectFrom(o minio.ObjectInfo) Object {
 	return Object{Key: o.Key, Size: o.Size, ModTime: o.LastModified.UnixMilli()}
+}
+
+// normalizeEndpoint reduces a user-entered endpoint to the bare host[:port] minio-go requires: it strips a
+// scheme (http/https — the UseSSL flag, not the scheme, controls TLS) and any trailing path/query, so
+// pasting a console URL like "https://s3.fr-par.scw.cloud/" works instead of erroring with
+// "Endpoint url cannot have fully qualified paths".
+func normalizeEndpoint(ep string) string {
+	ep = strings.TrimSpace(ep)
+	ep = strings.TrimPrefix(ep, "https://")
+	ep = strings.TrimPrefix(ep, "http://")
+	if i := strings.IndexAny(ep, "/?"); i >= 0 {
+		ep = ep[:i]
+	}
+	// Virtual-hosted-style endpoint (bucket baked into the host, e.g. "<bucket>.s3.fr-par.scw.cloud" or
+	// "<bucket>.s3.amazonaws.com" — what a cloud console copies): drop the leading bucket label down to the
+	// "s3." service host so minio addresses the bucket exactly once (path-style against the region host, or
+	// virtual-host for AWS) instead of doubling it into "<bucket>/<bucket>/…", which S3 rejects with
+	// NoSuchKey. A region/base endpoint ("s3.<region>.…", "s3.amazonaws.com", "minio:9000") is left as-is.
+	if i := strings.Index(ep, ".s3."); i > 0 && !strings.HasPrefix(ep, "s3.") {
+		ep = ep[i+1:]
+	}
+	return ep
 }

@@ -35,12 +35,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # --- Siril: installed to match the image architecture, so the engine runs NATIVELY on the host arch
 # (amd64 on a Linux server, arm64 on Apple Silicon) — no emulation.
 #   • amd64 → the host's 1.4.x x86_64 AppImage, extracted (best output parity; Siril ships only x86_64).
-#   • arm64 → the distro package (Siril has no arm64 AppImage) — a slightly older version; see the
-#     README "version-drift" note. Override the amd64 URL with --build-arg to track the host exactly.
+#   • arm64 → the maintainer PPA (ppa:lock042/siril) 1.4.x build. Siril ships no arm64 AppImage, and the
+#     distro 'universe' package is only 1.2.1 — too old for the 1.4 script syntax the pipeline emits
+#     (e.g. `rgbcomp -lum=/-out=`), which 1.2.x silently ignores, breaking the finish. See README
+#     "version-drift". Override the amd64 URL / arm64 PPA with --build-arg to track the host exactly.
 # Either arch ends up at /usr/local/bin/siril-cli with its catalogue dir linked at /opt/siril-catalogue.
 ARG TARGETARCH
 ARG SIRIL_VERSION=1.4.3
 ARG SIRIL_APPIMAGE_URL=https://free-astro.org/download/Siril-1.4.3-x86_64.AppImage
+ARG SIRIL_PPA=ppa:lock042/siril
 RUN set -eux; \
     if [ "${TARGETARCH:-amd64}" = "amd64" ]; then \
       apt-get update && apt-get install -y --no-install-recommends squashfs-tools binutils && rm -rf /var/lib/apt/lists/*; \
@@ -65,6 +68,11 @@ RUN set -eux; \
       chmod +x /usr/local/bin/siril-cli; \
       ln -sfn /opt/siril/usr/share/siril /opt/siril-catalogue; \
     else \
+      # arm64: add the maintainer PPA so apt installs Siril 1.4.x (the noble 'universe' package is 1.2.1,
+      # too old for the 1.4 script syntax the pipeline emits). software-properties-common provides
+      # add-apt-repository.
+      apt-get update && apt-get install -y --no-install-recommends software-properties-common; \
+      add-apt-repository -y "$SIRIL_PPA"; \
       apt-get update && apt-get install -y --no-install-recommends siril && rm -rf /var/lib/apt/lists/*; \
       sirilbin="$(command -v siril-cli || true)"; \
       [ -n "$sirilbin" ] || { echo "ERROR: the 'siril' package provided no siril-cli on ${TARGETARCH}"; dpkg -L siril | grep -iE 'bin/siril' || true; exit 1; }; \
@@ -81,7 +89,14 @@ RUN set -eux; \
 ARG INSTALL_GRAXPERT=true
 RUN if [ "$INSTALL_GRAXPERT" = "true" ]; then \
       python3.12 -m venv /opt/graxpert-venv; \
-      /opt/graxpert-venv/bin/pip install --no-cache-dir --upgrade pip graxpert; \
+      /opt/graxpert-venv/bin/pip install --no-cache-dir --upgrade pip; \
+      # onnxruntime pinned explicitly: `pip install graxpert` alone does not reliably resolve a working
+      # wheel on every arch/python combo, and a GraXpert with a broken ONNX runtime fails EVERY
+      # extraction at runtime while still exiting 0 — worse than GraXpert being absent (the engine's
+      # graxpert.Healthy probe then disables the AI path). The import check below makes the IMAGE BUILD
+      # fail loudly instead of shipping a silently-broken tool.
+      /opt/graxpert-venv/bin/pip install --no-cache-dir graxpert "onnxruntime>=1.18,<2"; \
+      /opt/graxpert-venv/bin/python -c "import onnxruntime, graxpert; print('graxpert OK, onnxruntime', onnxruntime.__version__)"; \
       ln -s /opt/graxpert-venv/bin/graxpert /usr/local/bin/graxpert; \
     fi
 
@@ -103,9 +118,13 @@ RUN chmod +x /usr/local/bin/engine-entrypoint
 
 # Baked defaults — all overridable via compose/.env. Tool paths point at the Linux installs above; the
 # data dirs live under /data (bind-mounted); DB + LLM URLs are set by compose to the `db`/`ai` services
-# or the host. ASTRO_SIRIL_CATALOG_DIR must be set explicitly (the macOS-bundle default doesn't apply).
+# or the host. ASTRO_SIRIL_CATALOG_DIR must be set explicitly (the macOS-bundle default doesn't apply);
+# it points at the `catalogue` SUBDIR (where the CSVs live), matching the host default. On amd64 the
+# 1.4.x AppImage ships those CSVs there; on arm64 the distro Siril ships a legacy .txt format the
+# parser can't read, so the engine falls back to the catalogue snapshot embedded in the binary
+# (internal/skycat) — the tonight planner + name→coord resolver work either way.
 ENV SIRIL_BIN=/usr/local/bin/siril-cli \
-    ASTRO_SIRIL_CATALOG_DIR=/opt/siril-catalogue \
+    ASTRO_SIRIL_CATALOG_DIR=/opt/siril-catalogue/catalogue \
     GIMP_BIN=/usr/bin/gimp-console-2.10 \
     GRAXPERT_BIN=graxpert \
     DCRAW_BIN=dcraw_emu \

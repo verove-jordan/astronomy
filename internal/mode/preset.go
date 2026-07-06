@@ -80,6 +80,14 @@ type Preset struct {
 	CoreHighlightKnee float64
 	CoreHighlightCeil float64
 
+	// HighlightKnee / HighlightCeil add a star-safe highlight roll-off to the final composite (the last tone
+	// op): a per-channel shoulder that keeps bright STAR cores below white and, being per-channel, pulls a
+	// warm star's dominant (red) channel down most — so stars never burn and keep natural colour instead of
+	// an orange/white blob. Distinct from CoreHighlightKnee/Ceil (the nebula CORE, on the L luminance).
+	// Disabled unless 0 < knee < ceil < 1. See internal/gimp/compose.go.
+	HighlightKnee float64
+	HighlightCeil float64
+
 	// Noise reduction (Siril `denoise` on the linear stacks). Chroma is denoised harder than
 	// luminance to cut color noise while preserving detail; 0 skips a channel class.
 	DenoiseChroma float64
@@ -199,12 +207,13 @@ func For(m Mode) Preset {
 	switch m {
 	case Comet:
 		// Comet mode reuses the deepsky LRGB tuning (it runs the channel pipeline twice) but enables
-		// StarNet so the star layer can be lifted, and skips the supervisor/Ha-specific finish. The dual
-		// star/comet stacking + recomposite is handled by pipeline.ProcessComet, not the preset.
+		// StarNet so the star layer can be lifted. The dual star/comet stacking + recomposite is handled
+		// by pipeline.ProcessComet, not the preset. The optional supervised finish re-tunes the comet
+		// colour composite (background/saturation) — see internal/pipeline/supervise_comet.go.
 		p := For(Deepsky)
 		p.Mode = Comet
 		p.StarReduce = 0.5 // ensure StarNet is wired (used to separate the star layer)
-		p.Supervise = false
+		p.Saturation = 0   // no satu on the comet composite by default; the supervisor may raise it
 		return p
 	case Nebula:
 		return Preset{
@@ -212,7 +221,7 @@ func For(m Mode) Preset {
 			Color:            Mono,
 			Grade:            grade.Options{RoundnessFloor: 0.50, RoundnessSigma: 3.0, FWHMSigma: 3.0, BackgroundSigma: 3.0, StarCountFrac: 0.4, RejectTrails: true},
 			BackgroundDegree: 2,
-			HaScreen:         0.60,
+			HaScreen:         0.50, // trimmed from 0.60: less global red push (warmth); HaExcludeStars keeps it off stars
 			Saturation:       0.10,
 			Curve:            []float64{0, 0, 0.20, 0.27, 0.5, 0.58, 0.8, 0.85, 1, 1}, // lift faint nebulosity
 
@@ -221,6 +230,9 @@ func For(m Mode) Preset {
 			TrailMaskK:                3.0,  // cross-frame transient mask: clean satellite trails / cosmic rays pre-stack
 			CoreHighlightKnee:         0.64, // roll off the L luminance core highlights → structured pink knot
 			CoreHighlightCeil:         0.76,
+			HighlightKnee:             0.85, // star-safe highlight cap: bright star cores stay coloured, never burn white
+			HighlightCeil:             0.96,
+			HaExcludeStars:            true, // median-remove stars before the red Ha screen → no orange/pink star tint
 			DropFilterWheelTransition: true,
 			ColorCalibration:          true,
 			LinkedStretch:             true,
@@ -253,7 +265,7 @@ func For(m Mode) Preset {
 	case Planetary:
 		return Preset{
 			Mode:      Planetary,
-			Planetary: planetary.Options{BestPercent: 40, Sharpen: true, APAlign: true, Formats: []string{"png", "tif"}},
+			Planetary: planetary.Options{BestPercent: 40, Sharpen: true, APAlign: true, Formats: []string{"png", "tif"}, Finish: planetary.DefaultFinish()},
 			Curve:     []float64{0, 0, 0.5, 0.52, 1, 1},
 			Previews:  true, // lucky-imaging sharpens; no denoise/color-cal
 		}
@@ -270,7 +282,7 @@ func For(m Mode) Preset {
 			Grade:            grade.DefaultOptions(),
 			BackgroundDegree: 1,
 			HaScreen:         0.42, // a touch brighter so HII regions read red (HaBlackPoint keeps it off the sky/stars)
-			Saturation:       0.16, // color is clean after AI denoise + SCNR, so a touch more saturation reads natural
+			Saturation:       0.12, // gentler than 0.16, which over-saturated stars (too orange); colour still reads natural
 			// Gentle value curve: with the background already flat (combined GraXpert) + neutral (SPCC), a
 			// strong value curve would only re-amplify residual colour. Brightness/contrast for the galaxy
 			// comes from LumCurve (the L luminance) instead — so the sky stays homogeneous, no banding.
@@ -290,10 +302,12 @@ func For(m Mode) Preset {
 			TrailMaskK:                3.0,   // cross-frame transient mask: clean satellite trails / cosmic rays pre-stack
 			CoreHighlightKnee:         0.64,  // roll off the L luminance above this so the blown nebula core dims
 			CoreHighlightCeil:         0.76,  // ...to this asymptote → structured pink knot, outer tones untouched
-			BackgroundAI:              true,  // per-channel GraXpert background extraction
-			CombinedBackgroundAI:      true,  // 2nd GraXpert pass on the combined RGB + RBF subsky → homogeneous sky
-			ColorDenoiseAI:            true,  // GraXpert AI denoise on the combined colour → no RGB chroma speckle
-			HaExcludeStars:            true,  // Ha on the galaxy/nebulosity only (stars median-removed)
+			HighlightKnee:             0.85,  // star-safe highlight cap: bright star cores stay coloured, never burn white
+			HighlightCeil:             0.96,
+			BackgroundAI:              true, // per-channel GraXpert background extraction
+			CombinedBackgroundAI:      true, // 2nd GraXpert pass on the combined RGB + RBF subsky → homogeneous sky
+			ColorDenoiseAI:            true, // GraXpert AI denoise on the combined colour → no RGB chroma speckle
+			HaExcludeStars:            true, // Ha on the galaxy/nebulosity only (stars median-removed)
 			DropFilterWheelTransition: true,
 			ColorCalibration:          true,
 			LinkedStretch:             true,

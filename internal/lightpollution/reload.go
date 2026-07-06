@@ -35,7 +35,7 @@ func (p *Provider) Coverage() Coverage {
 	if a == nil {
 		return Coverage{}
 	}
-	return coverageFromMeta(a.meta, p.AtlasDir())
+	return coverageFromMeta(a.Meta, p.AtlasDir())
 }
 
 // ReloadAtlas re-opens the atlas from disk (after a rebuild) and swaps it in, then clears the per-site memo

@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -175,12 +176,17 @@ func parseCatalogFile(path, source string) ([]*Record, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return parseCatalog(f, source, path)
+}
 
-	reader := csv.NewReader(f)
+// parseCatalog reads catalog rows from r; name identifies the source in error messages. It is the
+// shared core behind both the on-disk loader (parseCatalogFile) and the embedded-snapshot loader.
+func parseCatalog(r io.Reader, source, name string) ([]*Record, error) {
+	reader := csv.NewReader(r)
 	reader.FieldsPerRecord = -1
 	rows, err := reader.ReadAll()
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
+		return nil, fmt.Errorf("read %s: %w", name, err)
 	}
 	if len(rows) < 2 {
 		return nil, nil
@@ -191,7 +197,7 @@ func parseCatalogFile(path, source string) ([]*Record, error) {
 	iRA, okRA := cols["ra"]
 	iDec, okDec := cols["dec"]
 	if !okName || !okRA || !okDec {
-		return nil, fmt.Errorf("catalog %s missing name/ra/dec header", path)
+		return nil, fmt.Errorf("catalog %s missing name/ra/dec header", name)
 	}
 	iDiam, hasDiam := cols["diameter"]
 	iMag, hasMag := cols["mag"]

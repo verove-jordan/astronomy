@@ -72,6 +72,19 @@ wiring (soft-fail) is in `internal/pipeline/enhance.go`. Per-mode toggles are `m
 and `mode.Preset.StarReduce`. `astrostack process --no-ai` skips both. **Do not add new Python** for
 these — they are external binaries.
 
+**Finish supervisor (opt-in local-AI agent) is mode-generic.** The `--supervise` run option (+ the
+post-run **Refine** panel) drives a host vision model to render → judge → re-tune → keep-best, and now
+covers **every** stacking mode, not just deep-sky. The loop (`internal/pipeline/supervise.go`,
+`measureFinish`/`scoreFinish`/`critique`) is mode-agnostic; each mode plugs in a `candidateRenderer`
+(`supervise_renderer.go`) that owns its cheap **re-finish** and tunable knobs: deepsky/nebula
+(`supervise_deepsky.go`, the staged GIMP reentry, Tier A/B/C), comet (`supervise_comet.go`, re-combine
+the star/comet masters), milkyway (`supervise_nightscape.go`, `nightscape.Regrade` over persisted linear
+sky/fg), planetary (`supervise_planetary.go`, re-run `planetary.Refinish` over the persisted masters — no
+re-stack/re-deconv). New modes re-finish only (single-stage tierA); Tier C re-stack stays deep-sky-only.
+Post-run refine dispatches by mode in `refine.go` (`RefineExistingRun`). To add a mode: implement
+`candidateRenderer` + persist its re-finish inputs, then gate the call on `superviseOn` in that mode's
+pipeline entry. Everything soft-falls to the standard finish; a run never fails because of the agent.
+
 **Persistence.** Postgres via `pgx/v5` + `sqlc`; versioned SQL migrations via `golang-migrate`.
 Per the house DB convention, `created_at`/`updated_at` are **int64 millisecond** timestamps; durations
 (exposure) are stored in ms and temperatures in milli-°C to stay integer-clean.
@@ -108,6 +121,21 @@ any group not at the East-left `det<0` convention). Groups are then co-registere
 `pipeline/reuse_process.go` `processChannelGroups`. The single-session path is byte-identical. Jobs over
 the same input dir are **serialized** (`job.Manager.lockTarget`) and master writes are atomic
 (temp+rename in `calib`) so concurrent runs never corrupt the shared `library/`.
+
+**S3 storage.** Captures/results can mirror to S3 (import/process/results + sync + backup-everything) so
+local disk stays free without data loss. **S3 credentials** come from either a **UI-managed connection**
+(Processing → Storage) — endpoint/access-key/secret entered in the UI and stored in Postgres with the
+**secret AES-256-GCM encrypted at rest** (master key `ASTRO_ENCRYPTION_KEY` or an auto-generated key file
+kept OUTSIDE the backup roots; `internal/secret`) — **or** the legacy env `ASTRO_S3_*`. The **default**
+connection drives the pipeline (`s.s3Config(ctx)` / `m.s3ConfigResolved(ctx)` resolve default-connection →
+env). The **secret is decrypted only to build a client and NEVER returned to the UI or logged**
+(`store.S3Connection.SecretEnc` is `json:"-"`). Bucket + prefix are per-request UI state. Mirror layout
+under `<prefix>`: `data/`, `output/`, `backup/<stamp>/`. Transfers/backups/restores are **jobs** (own worker
+lane), `removeLocal` **verifies each file on S3 before deleting local** (aborts the folder otherwise), and
+freed previews/results serve local-first with an S3 fallback (frontend must tag file/preview/thumb URLs via
+`services/api.ts` `s3Suffix`/`withS3`). Full-S3 process mode pulls inputs → runs (engine stays local-only)
+→ pushes → frees. Backup gathers **browser-only** state (favorites/setups + AI-chat IndexedDB) UI-side
+(`utils/appstate.ts`); `.env` secrets are excluded. See `docs/architecture.md` → "S3 storage".
 
 **Code graph (gitnexus).** This repo is indexed by **gitnexus** (a code knowledge-graph; binary
 `gitnexus`, MCP server `gitnexus mcp`). Use it as the FIRST move for any "where / what / what-breaks"

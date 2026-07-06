@@ -72,7 +72,11 @@ func New(cfg *config.Config) *Provider {
 	}
 	atlasPath := cfg.LightPollutionAtlas
 	if atlasPath == "" {
-		atlasPath = filepath.Join(cfg.DataDir, "lightpollution", "atlas.bin")
+		// The downloaded atlas is a generated artifact, so it lives under WorkDir alongside the tile/site
+		// cache above — NOT under DataDir, which is the (often read-only) capture-data mount. Defaulting it
+		// to DataDir made "download this zone" fail silently on a read-only DataDir. Override with
+		// ASTRO_LIGHTPOLLUTION_ATLAS if you keep a prebuilt atlas elsewhere.
+		atlasPath = filepath.Join(cfg.WorkDir, "lightpollution", "atlas.bin")
 	}
 	ttl := time.Duration(cfg.LightPollutionCacheTTLHours) * time.Hour
 	if ttl <= 0 {

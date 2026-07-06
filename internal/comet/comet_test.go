@@ -122,7 +122,10 @@ func blobImage(w, h int, cx, cy, sigma float64) *fits.Image {
 func TestAlignToReference_RecoversShift(t *testing.T) {
 	const w, h = 200, 160
 	ref := blobImage(w, h, 100, 80, 9)
-	tests := []struct{ name string; tx, ty, wantDx, wantDy float64 }{
+	tests := []struct {
+		name                   string
+		tx, ty, wantDx, wantDy float64
+	}{
 		{"integer shift", 104, 75, -4, 5},
 		{"sub-pixel shift", 102.5, 81.5, -2.5, -1.5},
 	}

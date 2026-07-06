@@ -1,12 +1,21 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/verove-jordan/astronomy/internal/mode"
 )
+
+// patchOf unmarshals a decision's raw action patch into the deepsky supervisePatch for assertions.
+func patchOf(t *testing.T, d decision) supervisePatch {
+	t.Helper()
+	var p supervisePatch
+	require.NoError(t, json.Unmarshal(d.Action.Patch, &p))
+	return p
+}
 
 func TestClampPreset_BoundsAllTiers(t *testing.T) {
 	p := mode.Preset{
@@ -19,7 +28,7 @@ func TestClampPreset_BoundsAllTiers(t *testing.T) {
 	got := clampPreset(p)
 
 	// Tier A composite knobs.
-	assert.Equal(t, 0.6, got.Saturation)
+	assert.Equal(t, 0.35, got.Saturation) // ceiling lowered from 0.6 — high satu made stars garish
 	assert.Equal(t, 0.0, got.HaScreen)
 	assert.Equal(t, 0.3, got.HaBlackPoint)
 	assert.Equal(t, 12.0, got.ChromaBlur)
@@ -79,6 +88,17 @@ func TestComposeChanged(t *testing.T) {
 	c := base
 	c.HaScreen += 0.05
 	assert.True(t, composeChanged(base, c))
+
+	hl := base
+	hl.HighlightKnee += 0.02
+	assert.True(t, composeChanged(base, hl)) // the star-safe highlight cap is a Tier-A compose knob
+}
+
+func TestClampPreset_HighlightCap(t *testing.T) {
+	got := clampPreset(mode.Preset{HighlightKnee: 2, HighlightCeil: 2})
+	assert.Equal(t, 0.98, got.HighlightKnee)
+	assert.Equal(t, 0.995, got.HighlightCeil)
+	assert.Equal(t, 0.0, clampPreset(mode.Preset{}).HighlightKnee) // unset stays disabled, not clamped up
 }
 
 func TestAffordableTier(t *testing.T) {
@@ -126,15 +146,16 @@ func TestParseDecision(t *testing.T) {
 			assert.Equal(t, tt.wantScore, d.Score)
 			assert.Equal(t, tt.wantDone, d.Done)
 			if tt.wantSat == nil {
-				if d.Action != nil && d.Action.Patch != nil {
-					assert.Nil(t, d.Action.Patch.Saturation)
+				if d.Action != nil && len(d.Action.Patch) > 0 {
+					assert.Nil(t, patchOf(t, d).Saturation)
 				}
 				return
 			}
 			require.NotNil(t, d.Action)
-			require.NotNil(t, d.Action.Patch)
-			require.NotNil(t, d.Action.Patch.Saturation)
-			assert.Equal(t, *tt.wantSat, *d.Action.Patch.Saturation)
+			require.NotEmpty(t, d.Action.Patch)
+			sat := patchOf(t, d).Saturation
+			require.NotNil(t, sat)
+			assert.Equal(t, *tt.wantSat, *sat)
 		})
 	}
 }
@@ -146,9 +167,10 @@ func TestParseDecision_DefectsAndBoolPatch(t *testing.T) {
 	assert.Equal(t, "gradient", d.Defects[0].Kind)
 	assert.Equal(t, "high", d.Defects[0].Severity)
 	require.NotNil(t, d.Action)
-	require.NotNil(t, d.Action.Patch)
-	require.NotNil(t, d.Action.Patch.CombinedBackgroundAI)
-	assert.True(t, *d.Action.Patch.CombinedBackgroundAI)
+	require.NotEmpty(t, d.Action.Patch)
+	cba := patchOf(t, d).CombinedBackgroundAI
+	require.NotNil(t, cba)
+	assert.True(t, *cba)
 }
 
 func TestScoreFinish(t *testing.T) {
@@ -160,6 +182,19 @@ func TestScoreFinish(t *testing.T) {
 
 	cast := finishMetrics{GreenCast: 0.3, Background: 0.06}
 	assert.Less(t, scoreFinish(cast, 0.06), 10.0)
+
+	// Warm/orange sky cast is penalized (the user complaint); it is one-sided, so a neutral sky is not.
+	warm := finishMetrics{WarmCast: 0.2, Background: 0.06}
+	assert.Less(t, scoreFinish(warm, 0.06), 10.0)
+	assert.InDelta(t, 10.0, scoreFinish(finishMetrics{WarmCast: -0.2, Background: 0.06}, 0.06), 1e-9) // a cool sky is not penalized
+
+	// Blown star cores (white clip) are a real defect now — the highlight cap should keep cores below white.
+	blown := finishMetrics{WhiteClip: [3]float64{0.2, 0.2, 0.2}, Background: 0.06}
+	assert.Less(t, scoreFinish(blown, 0.06), 9.0)
+
+	// A magenta/pink cast in the BRIGHT signal (galaxy/stars) is penalised even when the sky median is neutral.
+	signal := finishMetrics{SignalCast: -0.3, Background: 0.06}
+	assert.Less(t, scoreFinish(signal, 0.06), 10.0)
 
 	// A thoroughly broken render floors at 0 rather than going negative.
 	awful := finishMetrics{BlackClip: [3]float64{1, 1, 1}, WhiteClip: [3]float64{1, 1, 1}, GreenCast: 1}

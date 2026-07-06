@@ -28,7 +28,7 @@ const AssistSystemPrompt = assistPromptIntro + tierKnobMenu + assistPromptMappin
 
 const assistPromptIntro = `You are AstroAgent, an expert astrophotography image-processing assistant built into AstroStack. The user uploads a stacked or processed astro image and asks about it. Your job is a FACTUAL, image-specific technical critique of THIS image and exactly how to fix it with AstroStack's own controls — never a generic textbook answer.
 
-GROUND TRUTH. Each user image is followed by a line "AstroStack measurements of this image" holding objective pixel stats measured server-side from that exact image (fractions/levels in 0..1 unless noted): background (10th-percentile luma); median R/G/B; green_cast = medianG - mean(medianR,medianB) (positive = green, negative = magenta); black_clip / white_clip (fraction of pixels crushed to 0 / blown to 255, per channel); gradient (large-scale corner-vs-centre background unevenness, %); trail (a detected satellite or plane streak). Treat these numbers as ground truth: when they disagree with your visual impression, the numbers win. If no measurement line is present, say so and judge only what the pixels support.
+GROUND TRUTH. Each user image is followed by a line "AstroStack measurements of this image" holding objective pixel stats measured server-side from that exact image (fractions/levels in 0..1 unless noted): background (10th-percentile luma); median R/G/B; green_cast = medianG - mean(medianR,medianB) (positive = green, negative = magenta); warm_cast = background red-excess bgR - mean(bgG,bgB) (positive = warm/orange sky cast); black_clip / white_clip (fraction of pixels crushed to 0 / blown to 255, per channel); gradient (large-scale corner-vs-centre background unevenness, %); trail (a detected satellite or plane streak). Treat these numbers as ground truth: when they disagree with your visual impression, the numbers win. If no measurement line is present, say so and judge only what the pixels support.
 
 WHAT YOU MAY JUDGE — only these, and only from the image plus its measurements: background level and neutrality, colour cast, black/white clipping, large-scale gradients, saturation, chroma and luminance noise (judge from the 100% crop), star size/bloat, star dominance, halos around stars, blown object cores, and trail / edge / stacking-border artifacts.
 
@@ -40,7 +40,7 @@ PRESCRIBE FIXES IN ASTROSTACK'S VOCABULARY. Every fix must name a specific Astro
 
 const assistPromptMappings = `
 
-Typical mappings: green or magenta cast -> color_calibration (SPCC, tier B) or lower saturation (tier A); brown or too-bright sky -> lower background_level plus combined_background_ai (B); large-scale gradient -> combined_background_ai / background_degree (B) or a GraXpert background-extraction; chroma noise -> color_denoise_ai (B) or chroma_blur (A); luminance noise or thin data -> more integration or denoise_lum (C); blown core -> core_highlight_knee/ceil (A); bloated or dominant stars -> star_reduce (B, StarNet++); crushed shadows -> raise background_level (B); ragged edges -> crop_frac (A); trail residue -> a trail_mask_k re-stack (C). Diagnose with this defect vocabulary where useful: `
+Typical mappings: green or magenta cast -> color_calibration (SPCC, tier B) or lower saturation (tier A); warm or orange sky cast -> lower saturation (A) and verify color_calibration (B); discoloured stars (uniform orange, or pink/violet fringing) or blown star cores -> highlight_knee/ceil (A, star-safe highlight cap) plus lower saturation (A), and ha_exclude_stars (A) when a red Ha screen is tinting stars; brown or too-bright sky -> lower background_level plus combined_background_ai (B); large-scale gradient -> combined_background_ai / background_degree (B) or a GraXpert background-extraction; chroma noise -> color_denoise_ai (B) or chroma_blur (A); luminance noise or thin data -> more integration or denoise_lum (C); blown core -> core_highlight_knee/ceil (A); bloated or dominant stars -> star_reduce (B, StarNet++); crushed shadows -> raise background_level (B); ragged edges -> crop_frac (A); trail residue -> a trail_mask_k re-stack (C). Diagnose with this defect vocabulary where useful: `
 
 const assistPromptOutput = `.
 
@@ -57,6 +57,7 @@ type AssistMeasurement struct {
 	Background  float64    `json:"background"`   // sky level (10th-percentile luma), 0..1
 	MedianRGB   [3]float64 `json:"median_rgb"`   // per-channel median, 0..1
 	GreenCast   float64    `json:"green_cast"`   // medianG - mean(medianR,medianB); >0 green, <0 magenta
+	WarmCast    float64    `json:"warm_cast"`    // background red-excess bgR - mean(bgG,bgB); >0 warm/orange sky
 	BlackClip   [3]float64 `json:"black_clip"`   // fraction of pixels at 0, per channel R,G,B
 	WhiteClip   [3]float64 `json:"white_clip"`   // fraction of pixels at 255, per channel R,G,B
 	GradientPct float64    `json:"gradient_pct"` // large-scale corner-vs-centre background unevenness, %
@@ -80,6 +81,7 @@ func AnalyzeAssistImage(data []byte) (AssistMeasurement, string, []byte, error) 
 		Background:  fm.Background,
 		MedianRGB:   fm.Median,
 		GreenCast:   fm.GreenCast,
+		WarmCast:    fm.WarmCast,
 		BlackClip:   fm.BlackClip,
 		WhiteClip:   fm.WhiteClip,
 		GradientPct: backgroundGradientPct(meanGrid, w, h),
@@ -99,9 +101,9 @@ func formatAssistReport(m AssistMeasurement) string {
 	}
 	return fmt.Sprintf(
 		"AstroStack measurements of this image (objective pixel stats; fractions/levels in 0..1 unless noted — treat as ground truth): "+
-			"background=%.3f | median R/G/B=%.3f/%.3f/%.3f | green_cast=%+.3f | black_clip R/G/B=%.3f/%.3f/%.3f | "+
+			"background=%.3f | median R/G/B=%.3f/%.3f/%.3f | green_cast=%+.3f | warm_cast=%+.3f | black_clip R/G/B=%.3f/%.3f/%.3f | "+
 			"white_clip R/G/B=%.3f/%.3f/%.3f | gradient=%.1f%% | trail=%s",
-		m.Background, m.MedianRGB[0], m.MedianRGB[1], m.MedianRGB[2], m.GreenCast,
+		m.Background, m.MedianRGB[0], m.MedianRGB[1], m.MedianRGB[2], m.GreenCast, m.WarmCast,
 		m.BlackClip[0], m.BlackClip[1], m.BlackClip[2],
 		m.WhiteClip[0], m.WhiteClip[1], m.WhiteClip[2],
 		m.GradientPct, trail)

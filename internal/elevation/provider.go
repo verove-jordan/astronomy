@@ -24,6 +24,15 @@ const (
 	maxBatch  = 100 // Open-Meteo elevation accepts at most 100 coordinates per request
 )
 
+// CanopySampler supplies tree/forest canopy height (metres) at points, so the horizon can include treetops,
+// not just bare terrain (implemented by *canopy.Provider). Active reports whether any canopy source is
+// installed; when it is, Horizon switches to the finer near-field ring and adds canopy height to each
+// terrain sample. Declared here (not imported from canopy) to keep the package dependency one-way.
+type CanopySampler interface {
+	Active() bool
+	CanopyHeights(ctx context.Context, lats, lons []float64) []float64
+}
+
 // Provider fetches elevations and scores horizon openness. Safe for concurrent use.
 type Provider struct {
 	http     *http.Client
@@ -31,16 +40,24 @@ type Provider struct {
 	ttl      time.Duration
 	cacheDir string
 
-	naz     int       // azimuth samples around the horizon
-	radii   []float64 // sample distances (metres) along each azimuth
+	naz     int       // azimuth samples around the horizon (terrain-only mode)
+	radii   []float64 // sample distances (metres) along each azimuth (terrain-only mode)
 	openDeg float64   // an azimuth counts as "open" when its obstruction angle is below this
+
+	// Canopy mode is used only when canopy != nil && canopy.Active(). Trees are a near-field effect, so the
+	// ring is finer and reaches from tens of metres out; eyeHeightM is subtracted from obstruction angles.
+	canopy      CanopySampler
+	canopyNaz   int
+	canopyRadii []float64
+	eyeHeightM  float64
 
 	mu   sync.Mutex
 	memo map[string]cachedHorizon // in-process horizon cache, keyed by rounded lat/lon
 }
 
 // New builds a Provider with its on-disk cache under the work dir (falling back to the user cache dir).
-func New(cfg *config.Config) *Provider {
+// canopy may be nil (or inactive): the horizon then stays terrain-only, byte-identical to before.
+func New(cfg *config.Config, canopy CanopySampler) *Provider {
 	cache := filepath.Join(cfg.WorkDir, "cache", "elevation")
 	if err := os.MkdirAll(cache, 0o755); err != nil {
 		if ucd, e2 := os.UserCacheDir(); e2 == nil {
@@ -64,15 +81,31 @@ func New(cfg *config.Config) *Provider {
 	if openDeg <= 0 {
 		openDeg = 3
 	}
+	canopyNaz := cfg.HorizonCanopyAzimuths
+	if canopyNaz < 4 {
+		canopyNaz = 24
+	}
+	canopyRadii := cfg.HorizonCanopyRadiiM
+	if len(canopyRadii) == 0 {
+		canopyRadii = []float64{30, 60, 120, 250, 500, 1000, 2500}
+	}
+	eye := cfg.HorizonEyeHeightM
+	if eye < 0 {
+		eye = 0
+	}
 	return &Provider{
-		http:     &http.Client{Timeout: 12 * time.Second},
-		apiURL:   cfg.ElevationAPIURL,
-		ttl:      ttl,
-		cacheDir: cache,
-		naz:      naz,
-		radii:    radii,
-		openDeg:  openDeg,
-		memo:     map[string]cachedHorizon{},
+		http:        &http.Client{Timeout: 12 * time.Second},
+		apiURL:      cfg.ElevationAPIURL,
+		ttl:         ttl,
+		cacheDir:    cache,
+		naz:         naz,
+		radii:       radii,
+		openDeg:     openDeg,
+		canopy:      canopy,
+		canopyNaz:   canopyNaz,
+		canopyRadii: canopyRadii,
+		eyeHeightM:  eye,
+		memo:        map[string]cachedHorizon{},
 	}
 }
 

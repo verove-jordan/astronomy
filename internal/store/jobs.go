@@ -121,17 +121,28 @@ func (s *Store) GetJob(ctx context.Context, id int64) (*Job, error) {
 	return &job, nil
 }
 
-// ListJobs returns recent jobs, newest first.
-func (s *Store) ListJobs(ctx context.Context, limit int) ([]Job, error) {
+// ListJobs returns jobs newest first (id desc = submission/date order), paginated by limit + offset so the
+// Tasks page never loads the whole history at once.
+func (s *Store) ListJobs(ctx context.Context, limit, offset int) ([]Job, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := s.pool.Query(ctx, jobSelect+` ORDER BY id DESC LIMIT $1`, limit)
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := s.pool.Query(ctx, jobSelect+` ORDER BY id DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	return pgx.CollectRows(rows, pgx.RowToStructByName[Job])
+}
+
+// CountJobs returns the total number of jobs (for the Tasks page's pagination / "load more").
+func (s *Store) CountJobs(ctx context.Context) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM jobs`).Scan(&n)
+	return n, err
 }
 
 const jobSelect = `SELECT id, session_id, kind, status, progress, current_step, log_tail, error,

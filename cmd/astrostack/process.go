@@ -15,7 +15,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/llm"
 	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
-	"github.com/verove-jordan/astronomy/internal/planetary"
+	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/report"
 	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/starnet"
@@ -80,12 +80,7 @@ func runProcess(args []string) error {
 	workDir := pick(*work, cfg.WorkDir)
 	ctx := context.Background()
 	runner := siril.New(cfg.SirilBin, sirilLimits(cfg))
-	solve := siril.SolveOptions{FocalMM: cfg.FocalLenMM, PixelUm: cfg.PixelSizeUm, Catalog: cfg.PlateSolveCatalog}
-	spcc := siril.SpccOptions{
-		MonoSensor: cfg.SpccMonoSensor, OSCSensor: cfg.NightscapeOSCSensor,
-		RFilter: cfg.SpccRFilter, GFilter: cfg.SpccGFilter,
-		BFilter: cfg.SpccBFilter, WhiteRef: cfg.SpccWhiteRef,
-	}
+	solve, spcc := postprocess.SolveSpccFromConfig(cfg)
 	// Optional astro-AI host tools (skipped with -no-ai or when the binary is absent).
 	var graxRunner *graxpert.Runner
 	var starRunner *starnet.Runner
@@ -104,7 +99,10 @@ func runProcess(args []string) error {
 		if _, err := os.Stat(path); err != nil {
 			return fmt.Errorf("planetary input not found: %s", path)
 		} // a video file, a SER, or a folder of frames are all accepted by planetary.Process
-		res, err := planetary.Process(ctx, runner, cfg.FfmpegBin, path, workDir, outDir, preset.Planetary, videoProgress(*verbose))
+		res, err := pipeline.ProcessPlanetary(ctx, pipeline.Options{
+			InputDir: path, OutputDir: outDir, WorkDir: workDir, Runner: runner, FfmpegBin: cfg.FfmpegBin,
+			Preset: &preset, Supervisor: superRunner, OnProgress: pipelineProgress(*verbose),
+		})
 		if err != nil {
 			return err
 		}
@@ -123,7 +121,7 @@ func runProcess(args []string) error {
 		res, err := pipeline.ProcessComet(ctx, pipeline.Options{
 			InputDir: path, OutputDir: outDir, WorkDir: workDir, Runner: runner,
 			Grade: &grd, Preset: &preset, Gimp: gimp.New(cfg.GimpBin, cfg.GimpHost, cfg.GimpPort),
-			Graxpert: graxRunner, Starnet: starRunner, Solve: solve, Spcc: spcc,
+			Graxpert: graxRunner, Starnet: starRunner, Solve: solve, Spcc: spcc, Supervisor: superRunner,
 			CatalogDir: cfg.SirilCatalogDir, OnProgress: pipelineProgress(*verbose),
 		})
 		if err != nil {
@@ -159,6 +157,7 @@ func runProcess(args []string) error {
 			Gimp:       gimp.New(cfg.GimpBin, cfg.GimpHost, cfg.GimpPort),
 			Graxpert:   graxRunner,
 			Starnet:    starRunner,
+			Supervisor: superRunner,
 			Solve:      solve,
 			Spcc:       spcc,
 			DarkDir:    *darks,
@@ -277,21 +276,6 @@ func pipelineProgress(verbose bool) func(pipeline.Progress) {
 		if p.Step != lastStep {
 			lastStep = p.Step
 			fmt.Fprintf(os.Stderr, "[%d/%d] %s\n", p.Index, p.Total, p.Step)
-		}
-	}
-}
-
-func videoProgress(verbose bool) func(siril.Progress) {
-	lastStep := ""
-	return func(p siril.Progress) {
-		if p.Line == "" {
-			return
-		}
-		if verbose {
-			fmt.Fprintf(os.Stderr, "    %s\n", p.Line)
-		} else if p.Line != lastStep {
-			lastStep = p.Line
-			fmt.Fprintf(os.Stderr, "==> %s\n", p.Line)
 		}
 	}
 }

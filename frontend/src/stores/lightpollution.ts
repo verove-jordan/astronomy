@@ -17,6 +17,15 @@ export const useLightPollutionStore = defineStore("lightpollution", () => {
   const builtAtMs = computed(() =>
     present.value ? (coverage.value?.built_at_ms ?? 0) : 0,
   );
+  // A build failure (read-only atlas dir, network, …) surfaced from the async build state or an HTTP
+  // error, so the UI shows it instead of silently reverting to "not downloaded for this zone".
+  const buildError = computed(
+    () =>
+      error.value ||
+      (state.value?.status === "error"
+        ? state.value?.error || "build failed"
+        : ""),
+  );
 
   let timer: ReturnType<typeof setInterval> | null = null;
   function stopPolling() {
@@ -59,6 +68,7 @@ export const useLightPollutionStore = defineStore("lightpollution", () => {
     present,
     building,
     builtAtMs,
+    buildError,
     fetchStatus,
     build,
   };

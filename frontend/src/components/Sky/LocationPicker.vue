@@ -159,6 +159,7 @@ onMounted(() => {
   // Light pollution: learn what the installed atlas covers, then re-check as the user pans so we can
   // offer to download data for an uncovered area (and refetch full-zoom tiles once a new atlas lands).
   lmap.on("moveend", recomputeLpCoverage);
+  lmap.on("moveend zoomend", onMapMovedForGrid); // weather grid follows the viewport (debounced)
   lpStore.fetchStatus().then(() => {
     lpStatusReady.value = true;
     recomputeLpCoverage();
@@ -168,6 +169,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   detachWheel?.();
   detachWheel = null;
+  if (gridMoveTimer) clearTimeout(gridMoveTimer);
   lmap?.remove();
   lmap = null;
   marker = null;
@@ -206,9 +208,24 @@ function syncGridOverlay(id: string) {
   }
 }
 
-// Load the weather cube once any animated layer is on (it serves the map AND the scrubber/panel).
+// Fetch the weather cube for the CURRENT map viewport (centre + half-span) whenever an animated layer
+// is on, so the overlay always shows real data where the map is focused — not a fixed box around the
+// initial site.
 function maybeFetchWeather(force = false) {
-  if (anyGridEnabled()) weather.fetch(force);
+  if (!lmap || !anyGridEnabled()) return;
+  const c = lmap.getCenter();
+  const b = lmap.getBounds();
+  const radius =
+    Math.max(b.getNorth() - b.getSouth(), b.getEast() - b.getWest()) / 2;
+  void weather.fetchGrid(c.lat, c.lng, radius, force);
+}
+
+// Refetch the grid for the new viewport on pan/zoom (debounced), so the layer follows the map.
+let gridMoveTimer: ReturnType<typeof setTimeout> | null = null;
+function onMapMovedForGrid() {
+  if (!anyGridEnabled()) return;
+  if (gridMoveTimer) clearTimeout(gridMoveTimer);
+  gridMoveTimer = setTimeout(() => maybeFetchWeather(), 450);
 }
 
 // --- Light-pollution offline atlas: atlas-aware rendering + download-on-demand for uncovered areas ---
@@ -270,7 +287,7 @@ const showLpPrompt = computed(
     lpStatusReady.value &&
     isEnabled("lightPollution") &&
     !lpPromptDismissed.value &&
-    (lpUncovered.value || lpStore.building),
+    (lpUncovered.value || lpStore.building || !!lpStore.buildError),
 );
 
 // downloadLpArea builds the offline atlas for the current view, UNIONed with any existing coverage so
@@ -426,7 +443,10 @@ function choose(r: GeoResult) {
         v-if="showLpPrompt"
         class="absolute inset-x-2 bottom-2 z-[500] flex items-center gap-2 rounded-md border border-brand-500/40 bg-surface-raised/95 px-3 py-2 text-xs text-slate-200 shadow-lg backdrop-blur-sm"
       >
-        <span>{{
+        <span v-if="lpStore.buildError" class="text-red-300">
+          {{ t("tonight.lp.failed") }}: {{ lpStore.buildError }}
+        </span>
+        <span v-else>{{
           lpStore.building
             ? t("tonight.lp.downloading", {
                 done: lpStore.state?.done ?? 0,

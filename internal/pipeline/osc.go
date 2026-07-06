@@ -146,12 +146,15 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 		if _, err := opts.Runner.Run(ctx, outDir, siril.PreviewScript("osc_master.fits", "osc_master_preview", 0.5), nil); err == nil {
 			res.Channels[0].PreviewPath = filepath.Join(outDir, "osc_master_preview.png")
 			opts.report(Progress{Step: "preview", Index: 2, Total: 3, Preview: res.Channels[0].PreviewPath})
+			capturePreview(ctx, opts, outDir, ordStacked, stageStacked, "", res.Channels[0].PreviewPath, false) // milestone
 		}
 	}
 
 	opts.report(Progress{Step: "finishing (GIMP)", Index: 3, Total: 3})
 	finishOSC(ctx, opts, res, masterBase+".fits", workRun, outDir)
-	writeRunJSON(outDir, res) // durable, reopenable record
+	captureFinalPNG(ctx, opts, outDir, res.Final)    // milestone: the final image
+	res.StagePreviews = collectStagePreviews(outDir) // persist the milestone timeline for reload
+	writeRunJSON(outDir, res)                        // durable, reopenable record
 	return res, nil
 }
 
@@ -245,9 +248,23 @@ func processNightscape(ctx context.Context, opts Options, res *Result, frames []
 		Outputs: []string{nres.FinalPNG, nres.CompositeFITS, nres.SkyFITS, nres.ForegroundFITS},
 		Notes:   []string{fmt.Sprintf("foreground composite, %s look (%dx%d)", nopts.Look.Name, nres.Width, nres.Height)},
 	}
+	// Optional supervised finish (opt-in): re-tune the grade (look + sky brightness) from the persisted
+	// pre-grade linear inputs, keeping the best pass. Soft-fall to the standard finish above on any error.
+	if superviseOn(ctx, opts) {
+		if final, serr := superviseFinishNightscape(ctx, opts, outDir); serr != nil {
+			res.Warnings = append(res.Warnings, "supervised milkyway finish failed, using standard finish: "+serr.Error())
+		} else {
+			res.Final = final
+		}
+	}
+	if nres.SkyFITS != "" { // milestone: the stacked sky master (linear → autostretched)
+		capturePreview(ctx, opts, outDir, ordStacked, stageStacked, "", nres.SkyFITS, true)
+	}
 	if nres.PreviewPNG != "" {
 		opts.report(Progress{Step: "nightscape: register + composite", Index: 1, Total: 1, Preview: nres.PreviewPNG})
+		capturePreview(ctx, opts, outDir, ordFinal, stageFinal, "", nres.PreviewPNG, false) // milestone: the final
 	}
+	res.StagePreviews = collectStagePreviews(outDir) // persist the milestone timeline for reload
 	writeRunJSON(outDir, res)
 	return res, nil
 }

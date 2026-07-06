@@ -12,12 +12,22 @@ import (
 
 const earthRadiusM = 6371000.0
 
-// Horizon summarizes how open a site's horizon is, from a ring of terrain elevations around it.
+// Horizon summarizes how open a site's horizon is, from a ring of terrain (and, when available, treetop)
+// elevations around it.
 type Horizon struct {
 	ElevationM        float64 `json:"elevation_m"`         // ground elevation at the site
 	OpennessPct       float64 `json:"openness_pct"`        // % of azimuths whose horizon is below the open threshold
 	MaxObstructionDeg float64 `json:"max_obstruction_deg"` // worst (highest) horizon elevation angle around the site
 	WorstAzimuthDeg   float64 `json:"worst_azimuth_deg"`   // azimuth (° from north, clockwise) of that worst obstruction
+
+	// Precision metrics. South is the arc that matters most for N-hemisphere deep-sky (the celestial equator
+	// and most targets transit low in the south); these are 0 in a degenerate ring but always computed.
+	MeanObstructionDeg   float64    `json:"mean_obstruction_deg"`    // average horizon elevation angle over all azimuths
+	SouthObstructionDeg  float64    `json:"south_obstruction_deg"`   // worst obstruction within ±90° of due south
+	SouthWorstAzimuthDeg float64    `json:"south_worst_azimuth_deg"` // azimuth of that worst southern obstruction
+	SouthOpennessPct     float64    `json:"south_openness_pct"`      // cosine-of-south-weighted openness %
+	CanopyM              float64    `json:"canopy_m"`                // canopy height (m) at the site itself (0 = clearing / no data)
+	Octants              [8]float64 `json:"octants"`                 // max obstruction angle per 45° sector, N,NE,E…NW (for a UI rose)
 }
 
 // Horizon evaluates the openness of the horizon at (lat, lon): it samples the site plus a ring of
@@ -28,27 +38,49 @@ func (p *Provider) Horizon(ctx context.Context, lat, lon float64) (Horizon, stri
 	if h, ok := p.cachedHorizon(key); ok {
 		return h, ""
 	}
-	lats, lons := p.ringPoints(lat, lon)
+	naz, radii, eye := p.naz, p.radii, 0.0
+	canopyOn := p.canopy != nil && p.canopy.Active()
+	if canopyOn {
+		naz, radii, eye = p.canopyNaz, p.canopyRadii, p.eyeHeightM
+	}
+	lats, lons := ringPoints(lat, lon, naz, radii)
 	elevs, err := p.Elevations(ctx, lats, lons)
 	if err != nil || len(elevs) != len(lats) {
 		return Horizon{}, "elevation data unavailable — horizon openness not evaluated"
 	}
-	h := scoreHorizon(elevs[0], elevs[1:], p.radii, p.naz, p.openDeg)
+	in := horizonScore{
+		site:      elevs[0],
+		ring:      elevs[1:],
+		radii:     radii,
+		naz:       naz,
+		openDeg:   p.openDeg,
+		eyeHeight: eye,
+		southAz:   southAzFor(lat),
+	}
+	var siteCanopy float64
+	if canopyOn {
+		if ch := p.canopy.CanopyHeights(ctx, lats, lons); len(ch) == len(lats) {
+			siteCanopy = ch[0]
+			in.canopy = ch[1:]
+		}
+	}
+	h := scoreHorizonCanopy(in)
+	h.CanopyM = round1(siteCanopy)
 	p.storeHorizon(key, h)
 	return h, ""
 }
 
 // ringPoints returns the sample coordinates: index 0 is the site, then naz azimuths each at every
 // radius (azimuth-major, so ring index = az*len(radii) + radiusIndex).
-func (p *Provider) ringPoints(lat, lon float64) (lats, lons []float64) {
-	n := 1 + p.naz*len(p.radii)
+func ringPoints(lat, lon float64, naz int, radii []float64) (lats, lons []float64) {
+	n := 1 + naz*len(radii)
 	lats = make([]float64, 0, n)
 	lons = make([]float64, 0, n)
 	lats = append(lats, lat)
 	lons = append(lons, lon)
-	for a := 0; a < p.naz; a++ {
-		az := 2 * math.Pi * float64(a) / float64(p.naz)
-		for _, d := range p.radii {
+	for a := 0; a < naz; a++ {
+		az := 2 * math.Pi * float64(a) / float64(naz)
+		for _, d := range radii {
 			la, lo := offset(lat, lon, az, d)
 			lats = append(lats, la)
 			lons = append(lons, lo)
@@ -66,43 +98,122 @@ func offset(lat, lon, az, distM float64) (float64, float64) {
 	return lat + dLat*180/math.Pi, lon + dLon*180/math.Pi
 }
 
-// scoreHorizon is the pure scoring core (no I/O): given the site elevation and the ring elevations
-// laid out azimuth-major (naz azimuths × len(radii)), the obstruction for each azimuth is the highest
-// terrain elevation angle along it, and openness is the fraction of azimuths below openDeg.
+// horizonScore is the input to scoreHorizonCanopy: the site elevation, the ring elevations laid out
+// azimuth-major (naz azimuths × len(radii)), optional canopy heights aligned to the same ring (nil = bare
+// terrain), and the tuning. southAz is the azimuth (° from north) of due south for the site's hemisphere.
+type horizonScore struct {
+	site      float64
+	ring      []float64
+	canopy    []float64 // aligned to ring, or nil for bare terrain
+	radii     []float64
+	naz       int
+	openDeg   float64
+	eyeHeight float64 // observer eye height (m) above the site ground
+	southAz   float64
+}
+
+// scoreHorizon scores a bare-terrain horizon (no canopy, observer at ground level). Retained as the
+// terrain-only entry point (and its regression test); it delegates to scoreHorizonCanopy, so their shared
+// OpennessPct/MaxObstructionDeg/WorstAzimuthDeg are byte-identical.
 func scoreHorizon(site float64, ring, radii []float64, naz int, openDeg float64) Horizon {
-	nr := len(radii)
-	open := 0
-	maxObs, worstAz := 0.0, 0.0
-	for a := 0; a < naz; a++ {
-		obs := 0.0
+	return scoreHorizonCanopy(horizonScore{
+		site: site, ring: ring, radii: radii, naz: naz, openDeg: openDeg, southAz: 180,
+	})
+}
+
+// scoreHorizonCanopy is the pure scoring core (no I/O). The obstruction for each azimuth is the highest
+// treetop elevation angle along it — atan2((terrain+canopy) − (site+eye), radius) — and openness is the
+// fraction of azimuths below openDeg. With canopy=nil and eyeHeight=0 the treetop reference collapses to
+// the bare terrain (treetop−eye ≡ terrain−site), so the shared metrics match the old terrain-only result.
+func scoreHorizonCanopy(in horizonScore) Horizon {
+	nr := len(in.radii)
+	eye := in.site + in.eyeHeight
+	obs := make([]float64, in.naz)
+	for a := 0; a < in.naz; a++ {
+		worst := 0.0
 		for ri := 0; ri < nr; ri++ {
 			idx := a*nr + ri
-			if idx >= len(ring) {
+			if idx >= len(in.ring) {
 				continue
 			}
-			angle := math.Atan2(ring[idx]-site, radii[ri]) * 180 / math.Pi
-			if angle > obs {
-				obs = angle
+			top := in.ring[idx]
+			if in.canopy != nil && idx < len(in.canopy) {
+				top += in.canopy[idx]
+			}
+			angle := math.Atan2(top-eye, in.radii[ri]) * 180 / math.Pi
+			if angle > worst {
+				worst = angle
 			}
 		}
-		if obs < openDeg {
+		obs[a] = worst
+	}
+	return summarizeObstruction(in.site, obs, in.naz, in.openDeg, in.southAz)
+}
+
+// summarizeObstruction turns per-azimuth obstruction angles into the Horizon metrics: overall openness +
+// worst/mean, the south-weighted openness/worst (cosine weight over ±90° of due south), and an 8-way rose.
+func summarizeObstruction(site float64, obs []float64, naz int, openDeg, southAz float64) Horizon {
+	open, sum := 0, 0.0
+	maxObs, worstAz := 0.0, 0.0
+	southMax, southWorstAz := 0.0, 0.0
+	var southOpenW, southW float64
+	var octants [8]float64
+	for a := 0; a < naz; a++ {
+		o := obs[a]
+		sum += o
+		if o < openDeg {
 			open++
 		}
-		if obs > maxObs {
-			maxObs = obs
-			worstAz = 360 * float64(a) / float64(naz)
+		if o > maxObs {
+			maxObs, worstAz = o, 360*float64(a)/float64(naz)
+		}
+		azDeg := 360 * float64(a) / float64(naz)
+		if oct := ((int(math.Round(azDeg/45)) % 8) + 8) % 8; o > octants[oct] {
+			octants[oct] = o
+		}
+		if w := math.Cos((azDeg - southAz) * math.Pi / 180); w > 0 {
+			southW += w
+			if o < openDeg {
+				southOpenW += w
+			}
+			if o > southMax {
+				southMax, southWorstAz = o, azDeg
+			}
 		}
 	}
-	pct := 0.0
+	pct, meanObs := 0.0, 0.0
 	if naz > 0 {
 		pct = 100 * float64(open) / float64(naz)
+		meanObs = sum / float64(naz)
+	}
+	southPct := pct
+	if southW > 0 {
+		southPct = 100 * southOpenW / southW
+	}
+	for i := range octants {
+		octants[i] = round1(octants[i])
 	}
 	return Horizon{
-		ElevationM:        round1(site),
-		OpennessPct:       round1(pct),
-		MaxObstructionDeg: round1(maxObs),
-		WorstAzimuthDeg:   round1(worstAz),
+		ElevationM:           round1(site),
+		OpennessPct:          round1(pct),
+		MaxObstructionDeg:    round1(maxObs),
+		WorstAzimuthDeg:      round1(worstAz),
+		MeanObstructionDeg:   round1(meanObs),
+		SouthObstructionDeg:  round1(southMax),
+		SouthWorstAzimuthDeg: round1(southWorstAz),
+		SouthOpennessPct:     round1(southPct),
+		Octants:              octants,
 	}
+}
+
+// southAzFor returns the azimuth (° from north) of due south for the site's hemisphere: 180° in the
+// northern hemisphere (where the low southern sky holds the celestial equator and most deep-sky targets),
+// 0° in the southern hemisphere.
+func southAzFor(lat float64) float64 {
+	if lat < 0 {
+		return 0
+	}
+	return 180
 }
 
 // --- cache (in-process memo + disk JSON, keyed by ~1 km cell) ---

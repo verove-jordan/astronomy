@@ -2,9 +2,11 @@
 //
 // Apple's iPhone DNG/HEIC (and other lossy/linear camera raws) are frequently undecodable by the
 // libraw build bundled with Siril — `convert` writes its plan file but produces no FITS. We sidestep
-// libraw-in-Siril by developing those frames to a 16-bit RGB TIFF Siril imports natively, using whichever
-// raw developer the platform provides: macOS `sips` on the host, or LibRaw's `dcraw_emu` (the `libraw-bin`
-// package) in the Linux container — both produce an equivalent developed image. Stills already in a
+// libraw-in-Siril by developing those frames to a 16-bit RGB TIFF Siril imports natively. LibRaw's
+// `dcraw_emu` is PREFERRED on every platform (`brew install libraw` on macOS, `libraw-bin` in the
+// container): it develops with no per-frame auto-brightening, no baked orientation and an exact sRGB
+// transfer curve — the photometric consistency the nightscape stack requires. macOS `sips` remains a
+// soft-fail fallback (Apple's ProRAW rendering applies an opaque tone curve). Stills already in a
 // Siril-native format (TIFF/PNG/JPEG) are symlinked through unchanged.
 package rawconv
 
@@ -76,17 +78,35 @@ func PrepareTIFF(ctx context.Context, srcs []string, dstDir string, onProgress P
 	return out, warnings, nil
 }
 
-// rawTranscoder returns the platform's raw→TIFF developer: macOS `sips` when present (the host), else
-// LibRaw's `dcraw_emu` (the Linux container). It errors when neither is available so a raw frame reports a
-// clear cause instead of a silent "no frames".
-func rawTranscoder() (func(context.Context, string, string) error, error) {
-	if _, err := exec.LookPath(sipsBin()); err == nil {
-		return transcodeSips, nil
-	}
+// Developer reports which raw→TIFF developer PrepareTIFF will use: "dcraw_emu" (preferred — exact,
+// photometrically consistent output, identical on host and in the container) or "sips" (macOS
+// fallback; Apple's ProRAW rendering applies a tone curve we cannot exactly invert). Exposed for
+// environment health reporting and for the nightscape orientation decision, which must know how the
+// developer treats the EXIF orientation tag.
+func Developer() (string, error) {
 	if _, err := exec.LookPath(dcrawBin()); err == nil {
+		return "dcraw_emu", nil
+	}
+	if _, err := exec.LookPath(sipsBin()); err == nil {
+		return "sips", nil
+	}
+	return "", fmt.Errorf("no raw developer found: install LibRaw (`brew install libraw` on macOS, `libraw-bin` on Linux) or set DCRAW_BIN; macOS `sips` works as a fallback")
+}
+
+// rawTranscoder returns the platform's raw→TIFF developer, preferring LibRaw's `dcraw_emu` over
+// macOS `sips`: dcraw develops with NO per-frame auto-brightening and an exactly-known transfer
+// curve (see transcodeDcraw), which the nightscape stack depends on for photometric consistency —
+// sips renders ProRAW through Apple's opaque tone curve and is kept only as a fallback. It errors
+// when neither is available so a raw frame reports a clear cause instead of a silent "no frames".
+func rawTranscoder() (func(context.Context, string, string) error, error) {
+	kind, err := Developer()
+	if err != nil {
+		return nil, err
+	}
+	if kind == "dcraw_emu" {
 		return transcodeDcraw, nil
 	}
-	return nil, fmt.Errorf("no raw developer found: install `sips` (macOS) or `dcraw_emu` from libraw-bin (Linux), or set DCRAW_BIN")
+	return transcodeSips, nil
 }
 
 func sipsBin() string {
@@ -112,9 +132,19 @@ func transcodeSips(ctx context.Context, src, dst string) error {
 	return nil
 }
 
-// transcodeDcraw develops one raw to a 16-bit RGB TIFF with LibRaw's `dcraw_emu` (the Linux path).
+// transcodeDcraw develops one raw to a 16-bit RGB TIFF with LibRaw's `dcraw_emu`, tuned for the
+// stacking pipeline rather than a pretty single frame:
+//
+//	-6            16-bit output
+//	-W            NO per-frame auto-brightening — every frame of a stack must share one exposure
+//	              scale or per-frame gains break calibration and the sigma-clipped stack
+//	-w            camera white balance (shared by lights and calibration frames, so it cancels)
+//	-t 0          NEVER bake the EXIF orientation into the pixels — orientation is applied exactly
+//	              once, at the end of the nightscape composite, from the raw's own EXIF tag
+//	-g 2.4 12.92  exact sRGB transfer curve, so the pipeline's linearizeSRGB is its exact inverse
+//	              (dcraw's default is a BT.709-ish curve that linearizeSRGB would mis-invert)
 func transcodeDcraw(ctx context.Context, src, dst string) error {
-	return dcrawDevelop(ctx, src, dst, "-6", "-w")
+	return dcrawDevelop(ctx, src, dst, "-6", "-W", "-w", "-t", "0", "-g", "2.4", "12.92")
 }
 
 // dcrawDevelop runs dcraw_emu with the given options. dcraw_emu writes `<input>.tiff` beside its input and

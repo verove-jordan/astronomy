@@ -112,7 +112,7 @@ func TestGrid_ShapeAndCells(t *testing.T) {
 	om := fakeOpenMeteo(t)
 	p := testProvider(t, om.URL, "", "", "")
 
-	g, warn := p.Grid(context.Background(), 48.86, 2.35, []string{"clouds"})
+	g, warn := p.Grid(context.Background(), 48.86, 2.35, 0, []string{"clouds"})
 	require.Empty(t, warn)
 	assert.Equal(t, 4, g.Nx)
 	assert.Equal(t, 4, g.Ny)
@@ -122,4 +122,9 @@ func TestGrid_ShapeAndCells(t *testing.T) {
 	require.Len(t, frames[0], 16, "nx*ny cells per frame")
 	assert.InDelta(t, 10, frames[0][0], 0.01, "frame 0 cloud cover")
 	assert.InDelta(t, 80, frames[1][0], 0.01, "frame 1 cloud cover")
+
+	// A larger viewport radius widens the sampled box, so the overlay follows a zoomed-out map.
+	narrow, _ := p.Grid(context.Background(), 48.86, 2.35, 1, []string{"clouds"})
+	wide, _ := p.Grid(context.Background(), 48.86, 2.35, 20, []string{"clouds"})
+	assert.Greater(t, wide.BBox[2]-wide.BBox[0], narrow.BBox[2]-narrow.BBox[0], "radius widens the bbox")
 }

@@ -46,7 +46,7 @@ public data services by default.
 | `internal/postprocess` | LRGB+Ha channel combine, color calibration, stretch; optional GIMP touch-ups. |
 | `internal/graxpert` | Optional host CLI: GraXpert AI background-gradient extraction / denoise (`GRAXPERT_BIN`). |
 | `internal/starnet` | Optional host CLI: StarNet++ v2 star removal for star-reduced finishing (`STARNET_BIN`). |
-| `internal/llm` | Optional, opt-in: drives a host-run OpenAI-compatible vision model to auto-tune the finish (the supervisor loop; soft-fails when the server is down). |
+| `internal/llm` | Optional, opt-in: drives a host-run OpenAI-compatible vision model to auto-tune the finish for **every stacking mode** — deep-sky/nebula composite, comet colour composite, milkyway grade, planetary sharpen — via per-mode `candidateRenderer` adapters (`internal/pipeline/supervise_*.go`); the shared render→judge→re-tune loop soft-fails when the server is down. |
 | `internal/planetary` | SER/AVI/MP4/MOV lucky-imaging path. |
 | `internal/livestack` + `internal/source` | Incremental live-stacking session + its watched source (local dir or S3 via `minio-go`). |
 | `internal/nightscape` | Milky-Way / one-shot-color foreground+sky composite recipe. |
@@ -92,6 +92,56 @@ Linux), so Siril/GIMP run **natively — no emulation**. Siril has no arm64 buil
 branches on `TARGETARCH`: amd64 gets the pinned **1.4.3 x86_64 AppImage** (extracted from its squashfs
 without executing the AppImage runtime), arm64 gets the **distro package (~1.2.x)**. The WCS/parity logic
 in `reuse_process.go` assumes 1.4.3, so prefer a native amd64 host (or host-dev on macOS) when exact
-multi-session parity matters. **StarNet++** is not baked in (licence not redistributable) — mount it +
+multi-session parity matters. That distro Siril also ships its deep-sky **object catalogue in a legacy
+semicolon `.txt` format** (RA in hours, split N/S sign column) the engine's CSV parser can't read, so the
+tonight planner and the name→coord resolver fall back to a **catalogue snapshot compiled into the engine
+binary** (`internal/skycat/catalogue/*.csv` via `go:embed`; `skycat.Load` prefers the on-disk Siril
+catalogue and drops to the embed only when none is readable). Suggested targets therefore work on every
+arch regardless of the installed Siril, while the on-disk catalogue is still used wherever it *is* readable
+(the macOS host + the amd64 AppImage, whose CSVs live in the `catalogue/` subdir `ASTRO_SIRIL_CATALOG_DIR`
+points at). **StarNet++** is not baked in (licence not redistributable) — mount it +
 set `STARNET_BIN`; it soft-fails to full stars otherwise. The one thing that cannot run in a container on
 macOS is the **VLM** (no GPU/Metal) — keep it native there.
+
+## S3 storage (import / process / results + sync + backup)
+
+S3 is a first-class store alongside the local filesystem, so large captures/results can live in the cloud
+and local disk stays free — without ever losing data. **Credentials** come from a **UI-managed connection**
+or the host environment (`ASTRO_S3_*`); the **bucket + prefix** are chosen per-request in the UI. The mirror
+convention under `<prefix>` is `data/<relToDataDir>` (captures), `output/<relToOutputDir>` (results) and
+`backup/<stamp>/` (snapshots).
+
+- **Connections (`internal/secret` + `internal/store/s3conn.go` + `internal/s3conn`)** — the UI (Processing →
+  **Storage**, `views/StorageView.vue`) connects to any S3-compatible store by entering endpoint + access
+  key + secret. Connections persist in Postgres (`s3_connections`) with the **secret access key AES-256-GCM
+  encrypted at rest** — the master key is `ASTRO_ENCRYPTION_KEY` or an auto-generated key file kept *outside*
+  the backup roots. The secret is decrypted only to build a client and **never returned to the UI**
+  (`SecretEnc` is `json:"-"`). One connection is the **default**, and the pipeline's S3 config resolves
+  *default connection → env* (`s.s3Config(ctx)` / `m.s3ConfigResolved(ctx)`), so a UI connection transparently
+  drives import/process/results/backup. The same view is a full **object manager** (browse buckets/objects,
+  upload, download, delete, create folder/bucket — `internal/s3store/manage.go`).
+- **`internal/s3store`** — a small reusable minio-go v7 client (list/stat/upload/download with byte
+  progress/delete/put+get bytes). Deals in raw `(bucket, key, localPath)`; the mirror mapping lives in the
+  callers.
+- **`internal/transfer`** — the sync engine: `upload` / `sync` (upload only what's missing, by rel-key +
+  size) / `download` / `removeLocal` (**verifies each file is present + same-size on S3, then deletes
+  local — aborting the whole folder if any file is unverified**, so "free local" never loses data).
+- **Transfers, backups and restores are modeled as jobs** (`RunRequest.Transfer/Backup/Restore`,
+  intercepted in `Manager.execute` before mode parsing) so they inherit the SSE progress / Cancel /
+  persistence stack and a dedicated worker lane (`xferQueue`, never starving pipeline runs). `Event` gains
+  live-only `bytes_done/bytes_total`.
+- **Local-first, S3-fallback serving** (`internal/api` `ensureServable`, `s3OutputRuns`,
+  `remoteDataDirExists`) — after "Free local", previews/results/thumbnails and the Runs gallery transparently
+  download-on-demand from the mirror into a regenerable cache. The frontend tags every file/preview/thumb
+  URL and the runs/processed lists with the active bucket/prefix (`services/api.ts` `s3Suffix`/`withS3`), so
+  previews work everywhere with zero per-component changes.
+- **Process modes** (`StorageMode`) — *full-local* (default, keep) or *full-S3*: `run()` pulls the capture
+  folders from S3 → runs the pipeline unchanged (the engine stays local-only: Siril/GIMP write absolute
+  paths) → backs up inputs+outputs → frees local (verified). A failed push fails the job (nothing freed); a
+  partial free is non-fatal (data is safe on S3).
+- **`internal/backup`** — snapshot the precious state that isn't a big file: Postgres (`pg_dump -Fc` →
+  `pg_restore --clean` on restore), the calibration-master library (tar), the light-pollution atlas, and the
+  **browser-only app state** (favorites/setups/prefs + AI-chat IndexedDB) — the latter can only be gathered
+  UI-side (`frontend/src/utils/appstate.ts`), posted as `appstate.json`, and re-imported on restore.
+  Components soft-fail individually; a `manifest.json` records what was stored + the roots. Secrets in
+  `.env` are excluded by default. Captures/results are backed up via the per-folder sync instead.

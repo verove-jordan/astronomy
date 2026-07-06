@@ -12,6 +12,7 @@ import GenericTable, {
 } from "@/components/Common/GenericTable.vue";
 import FilterChip from "@/components/Common/FilterChip.vue";
 import FileBrowser from "@/components/Common/FileBrowser.vue";
+import BackupPanel from "@/components/Common/BackupPanel.vue";
 import CaptureSummary from "@/components/Capture/CaptureSummary.vue";
 import FilterMappingEditor from "@/components/Capture/FilterMappingEditor.vue";
 import ReusePanel from "@/components/Capture/ReusePanel.vue";
@@ -43,6 +44,20 @@ const { t } = useI18n();
 const browseStore = useBrowseStore();
 const jobsStore = useJobsStore();
 const s3 = useS3Store();
+// Storage mode for a run (only offered when S3 is active): "local" keeps files on disk; "s3" pulls inputs
+// from S3, processes locally, pushes inputs+results back to S3, then frees the local copies (verified).
+const processMode = ref<"local" | "s3">("local");
+
+// Import file-source tab: browse local disk vs the S3 mirror. Both drive the same FileBrowser over the
+// DataDir tree, filtered by source; the selection is shared across tabs. S3-only folders download to local
+// before inspect (downloadingS3 = count in flight; inspectError surfaces a failure).
+const sourceTab = ref<"local" | "s3">("local");
+const tabClass = (kind: "local" | "s3") =>
+  kind === sourceTab.value
+    ? "rounded-md px-3 py-2 text-sm font-medium bg-brand-600 text-white"
+    : "rounded-md px-3 py-2 text-sm font-medium text-slate-500 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-700";
+const downloadingS3 = ref(0);
+const inspectError = ref("");
 
 const selectedPaths = ref<string[]>([]);
 const rootPath = ref("");
@@ -55,7 +70,7 @@ const colorCalibration = ref(true);
 const denoise = ref(true);
 const dropWheelTransition = ref(true);
 const haExcludeStars = ref(true); // default: Hα on the galaxy/nebulosity only; uncheck → over everything
-// Opt-in: drive the local AI agent to auto-tune the finish (deepsky/nebula only). Off by default.
+// Opt-in: drive the local AI agent to auto-tune the finish (every stacking mode). Off by default.
 const supervise = ref(false);
 
 const modes = ["deepsky", "nebula", "milkyway", "planetary", "comet"];
@@ -84,10 +99,9 @@ const darkDir = ref("");
 const flatDir = ref("");
 const biasDir = ref("");
 const isMilkyway = computed(() => selectedMode.value === "milkyway");
-// The supervisor tunes the LRGB/combine finish, which only runs for deepsky/nebula.
-const supportsSupervise = computed(
-  () => selectedMode.value === "deepsky" || selectedMode.value === "nebula",
-);
+// The supervisor now re-tunes every mode's finish — deepsky/nebula LRGB composite, comet colour
+// composite, milkyway grade, planetary sharpen — so every stacking mode in the picker supports it.
+const supportsSupervise = computed(() => modes.includes(selectedMode.value));
 
 onMounted(async () => {
   s3.fetchStatus(); // learn whether S3 is configured (drives presence badges + transfer actions)
@@ -101,14 +115,23 @@ async function openDir(path: string) {
 }
 
 // --- S3 storage --------------------------------------------------------------------------------------
-// Changing the bucket/prefix re-browses so the presence badges reflect the new mirror.
+// openS3Tab switches to the S3 tab and lists the real bucket at its root (only when configured).
+function openS3Tab() {
+  if (!s3.configured) return;
+  sourceTab.value = "s3";
+  if (s3.bucket) void s3.s3Browse("");
+}
+// Changing the bucket/prefix re-lists the S3 tab from the root (and refreshes the local presence badges);
+// the previous S3 selection is cleared since it referred to the old bucket/prefix.
 async function onBucket(e: Event) {
   s3.setBucket((e.target as HTMLSelectElement).value);
-  await browseStore.browse(browseStore.path);
+  s3.clearS3();
+  await Promise.all([browseStore.browse(browseStore.path), s3.s3Browse("")]);
 }
 async function onPrefix(e: Event) {
   s3.setPrefix((e.target as HTMLInputElement).value);
-  await browseStore.browse(browseStore.path);
+  s3.clearS3();
+  await Promise.all([browseStore.browse(browseStore.path), s3.s3Browse("")]);
 }
 
 // relToRoot maps a selected folder's absolute path to its path relative to the capture root (DataDir),
@@ -162,7 +185,8 @@ const reuseSelectionForRun = computed(() =>
     : reuseSelected.value,
 );
 
-async function inspectSelected(paths: string[]) {
+// doInspect inspects a set of LOCAL capture folder paths (unions frames + reuse/calibration previews).
+async function doInspect(paths: string[]) {
   selectedPaths.value = paths;
   await browseStore.inspect(paths);
   // Reuse + calibration previews are independent — fetch them together.
@@ -177,6 +201,34 @@ async function inspectSelected(paths: string[]) {
   // Default: include every matched library master (user can uncheck).
   calibPreview.value = calib;
   calibExcluded.value = [];
+}
+
+// onInspect is the primary action for both tabs: download any S3-picked folders to local (kept local),
+// then inspect the combined set (local selection + the downloaded S3 folders). Falls back to the emitted
+// active local folder only when nothing is checked in either tab.
+async function onInspect(emitted: string[]) {
+  inspectError.value = "";
+  const localSel = browseStore.selected.map((e) => e.path);
+  const s3Rels = s3.s3Selected.map((e) => e.path);
+  const localPaths =
+    localSel.length || s3Rels.length
+      ? localSel
+      : emitted.filter((p) => p.startsWith(rootPath.value)); // ignore an S3-tab active rel
+  if (s3Rels.length) {
+    downloadingS3.value = s3Rels.length;
+    try {
+      await s3.importFolders(s3Rels);
+      await browseStore.browse(browseStore.path); // downloaded folders now show in Local Files
+    } catch (e) {
+      inspectError.value = (e as Error).message;
+      downloadingS3.value = 0;
+      return;
+    }
+    downloadingS3.value = 0;
+  }
+  const landing = s3Rels.map((rel) => `${rootPath.value}/${rel}`);
+  const paths = [...localPaths, ...landing];
+  if (paths.length) await doInspect(paths);
 }
 
 const inv = computed(() => browseStore.inventory);
@@ -363,6 +415,12 @@ function runOpts(): CreateOpts {
     reuseSessions: reuseSelectionForRun.value,
     // Library masters the user unchecked in the Calibration panel (skipped at process time).
     calibExclude: calibExcluded.value,
+    // Full-S3 run: pull inputs from S3, process, push inputs+results, then free local (only when active).
+    storageMode: s3.active && processMode.value === "s3" ? "s3" : undefined,
+    s3:
+      s3.active && processMode.value === "s3"
+        ? { bucket: s3.bucket, prefix: s3.prefix }
+        : undefined,
   };
 }
 
@@ -410,7 +468,7 @@ async function useHistory(entry: ProcessingHistoryEntry) {
   if (entry.mode && modes.includes(entry.mode)) selectedMode.value = entry.mode;
   if (entry.format && formats.includes(entry.format))
     selectedFormat.value = entry.format;
-  await inspectSelected(existing);
+  await doInspect(existing);
   await nextTick();
   runControls.value?.scrollIntoView({ behavior: "smooth", block: "center" });
 }
@@ -433,9 +491,24 @@ function histChip(exists: boolean): string {
     </div>
 
     <div :class="card">
-      <!-- S3 storage: pick a bucket/prefix to see cloud presence + enable per-folder transfers. -->
+      <!-- Source tabs: browse local disk vs the S3 mirror; the selection is shared across both. -->
+      <div class="mb-4 flex gap-2">
+        <button :class="tabClass('local')" @click="sourceTab = 'local'">
+          {{ t("import.tabs.local") }}
+        </button>
+        <button
+          :class="tabClass('s3')"
+          :disabled="!s3.configured"
+          :title="!s3.configured ? t('import.s3NotConfigured') : ''"
+          @click="openS3Tab"
+        >
+          {{ t("import.tabs.s3") }}
+        </button>
+      </div>
+
+      <!-- S3 storage config (S3 tab only): pick a bucket/prefix to see the mirror + enable transfers. -->
       <div
-        v-if="s3.configured"
+        v-if="sourceTab === 's3' && s3.configured"
         class="mb-3 flex flex-wrap items-center gap-2 text-xs"
       >
         <span class="font-medium text-slate-500 dark:text-slate-400">{{
@@ -479,13 +552,15 @@ function histChip(exists: boolean): string {
         }}</span>
       </div>
       <p
-        v-else-if="s3.status"
+        v-else-if="sourceTab === 's3'"
         class="mb-3 text-xs text-slate-400 dark:text-slate-500"
       >
-        {{ t("s3.notConfigured") }}
+        {{ t("import.s3NotConfigured") }}
       </p>
 
+      <!-- Local tab: the local filesystem (with S3-mirror presence badges for the sync/backup workflow). -->
       <FileBrowser
+        v-if="sourceTab === 'local'"
         :path="browseStore.path"
         :root="rootPath"
         :entries="browseStore.entries"
@@ -495,12 +570,45 @@ function histChip(exists: boolean): string {
         :fetch-children="browseStore.listDir"
         :processed="browseStore.processedByPath"
         :s3-enabled="s3.active"
+        source-filter="local"
+        :downloading="downloadingS3 > 0"
         @navigate="openDir"
-        @inspect="inspectSelected"
+        @inspect="onInspect"
         @toggle="browseStore.toggleSelected"
         @clear-selection="browseStore.clearSelected"
         @transfer="onTransfer"
       />
+      <!-- S3 tab: the real bucket at <prefix>/<rel> (default connection). Picked folders download to
+           <DataDir>/<rel> on inspect and become normal local captures. -->
+      <FileBrowser
+        v-else
+        :path="s3.s3Rel"
+        root=""
+        :entries="s3.s3Entries"
+        :loading="s3.loading"
+        :selected="s3.s3Selected"
+        :error="s3.error"
+        :fetch-children="s3.s3ListDir"
+        :downloading="downloadingS3 > 0"
+        @navigate="s3.s3Browse"
+        @inspect="onInspect"
+        @toggle="s3.toggleS3"
+        @clear-selection="s3.clearS3"
+      />
+      <p
+        v-if="downloadingS3 > 0"
+        class="mt-2 text-xs text-slate-500 dark:text-slate-400"
+      >
+        {{ t("import.downloadingS3", { n: downloadingS3 }) }}
+        <router-link
+          :to="{ name: 'jobs' }"
+          class="font-medium underline hover:text-slate-700 dark:hover:text-slate-200"
+          >{{ t("import.viewQueue") }}</router-link
+        >
+      </p>
+      <p v-if="inspectError" class="mt-2 text-xs text-danger">
+        {{ inspectError }}
+      </p>
       <p
         v-if="transferToast"
         class="mt-2 text-xs text-success-600 dark:text-success-300"
@@ -613,6 +721,15 @@ function histChip(exists: boolean): string {
             <option v-for="fmt in formats" :key="fmt" :value="fmt">
               {{ t("run.formats." + fmt) }}
             </option>
+          </select>
+        </label>
+        <label v-if="s3.active" class="text-sm" :title="t('s3.storageHint')">
+          <span class="mb-1 block text-xs font-medium text-slate-500">{{
+            t("s3.storage")
+          }}</span>
+          <select v-model="processMode" :class="input">
+            <option value="local">{{ t("s3.storageLocal") }}</option>
+            <option value="s3">{{ t("s3.storageS3") }}</option>
           </select>
         </label>
         <label v-if="isMilkyway" class="text-sm">
@@ -778,6 +895,9 @@ function histChip(exists: boolean): string {
         </router-link>
       </p>
     </div>
+
+    <!-- Backup everything (db + calibration library + LP atlas + browser app-state) to S3, and restore. -->
+    <BackupPanel v-if="s3.active" />
 
     <div v-if="inv" class="space-y-6">
       <div class="flex flex-wrap gap-3">

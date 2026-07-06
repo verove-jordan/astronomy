@@ -276,7 +276,23 @@ func DeconvolveLuminanceScript(master string, fwhm float64, iters, alpha int) st
 // hyperbolic stretch (`ght`, keeping [HP,1] linear so bright craters/highlands don't blow out), à-trous
 // wavelet sharpening (boost the mid-fine layers), gentle CLAHE for local relief, and — for colour — a
 // saturation boost. All paths absolute; outBase has no extension.
-func PlanetaryFinishScript(r, g, b, l, mono, outBase string, sharpen bool, formats []string) string {
+// PlanetaryFinish tunes the lucky-imaging finish (stretch / wavelet sharpen / local contrast / colour).
+// Its defaults reproduce the original hand-tuned constants; the supervised finish re-tunes these.
+type PlanetaryFinish struct {
+	Stretch    float64 // ght -D: overall hyperbolic stretch intensity
+	Highlight  float64 // ght -HP: highlight-protection point ([HP,1] stays linear, keeping bright craters intact)
+	Sharpen    float64 // à-trous mid-layer boost scalar (1 = default; 0 = none, >1 sharper); ignored when sharpen=false
+	Clahe      float64 // CLAHE clip limit (local relief)
+	Saturation float64 // colour saturation boost (colour path only)
+}
+
+// DefaultPlanetaryFinish is the original mineral-Moon finish (ght -D=0.6 -HP=0.85, wrecons 1 2.2 1.8 1.1
+// 1 1 = Sharpen 1.0, clahe 1.2, satu 0.8).
+func DefaultPlanetaryFinish() PlanetaryFinish {
+	return PlanetaryFinish{Stretch: 0.6, Highlight: 0.85, Sharpen: 1.0, Clahe: 1.2, Saturation: 0.8}
+}
+
+func PlanetaryFinishScript(r, g, b, l, mono, outBase string, sharpen bool, fin PlanetaryFinish, formats []string) string {
 	var sb strings.Builder
 	sb.WriteString(scriptHeader)
 	color := false
@@ -294,19 +310,19 @@ func PlanetaryFinishScript(r, g, b, l, mono, outBase string, sharpen bool, forma
 	}
 	// Highlight-safe stretch: everything above HP stays linear, so the Moon's bright ray-craters and
 	// highlands keep their structure instead of clipping to white.
-	sb.WriteString("ght -D=0.6 -SP=0.18 -HP=0.85\n")
+	fmt.Fprintf(&sb, "ght -D=%.3f -SP=0.18 -HP=%.3f\n", fin.Stretch, fin.Highlight)
 	if sharpen {
 		// À-trous wavelet sharpen: boost the mid-fine detail layers (crater edges), leave coarse ≈1, then
-		// a gentle CLAHE for local relief. Deconvolution already recovered the fine detail, so no unsharp
-		// (which would only add halos on top).
+		// a gentle CLAHE for local relief. The Sharpen scalar scales the mid-layer boost (1.0 reproduces the
+		// original 1 2.2 1.8 1.1 1 1). Deconvolution already recovered the fine detail, so no unsharp.
 		sb.WriteString("wavelet 6 2\n")
-		sb.WriteString("wrecons 1 2.2 1.8 1.1 1 1\n")
-		sb.WriteString("clahe 1.2 12\n")
+		fmt.Fprintf(&sb, "wrecons 1 %.2f %.2f %.2f 1 1\n", 1+1.2*fin.Sharpen, 1+0.8*fin.Sharpen, 1+0.1*fin.Sharpen)
+		fmt.Fprintf(&sb, "clahe %.2f 12\n", fin.Clahe)
 	}
 	if color {
 		// The Moon's mineral colour (blue titanium maria, tan iron highlands) is real but faint at these
 		// exposures — boost saturation to reveal it (the classic "mineral Moon").
-		sb.WriteString("satu 0.8 0\n")
+		fmt.Fprintf(&sb, "satu %.3f 0\n", fin.Saturation)
 	}
 	for _, f := range formats {
 		sb.WriteString(saveCmd(f, outBase) + "\n")
@@ -407,12 +423,18 @@ func PreviewScript(loadName, outName string, downscale float64) string {
 
 // SolveOptions parameterize Siril `platesolve`. Coords ("RA,Dec" or "HH:MM:SS,DD:MM:SS") may be
 // empty to use the header WCS; LocalAsnet uses a local astrometry.net solve (offline) when set.
+// AstroCat/XpsampDir point Siril at the LOCAL Gaia DR3 catalogues (the astrometric extract file and
+// the xp_sampled chunk directory) via `set core.catalogue_gaia_*` script lines — callers set them
+// only when the files actually exist, and a set AstroCat makes `-catalog=localgaia` the default so
+// plate-solving works fully offline.
 type SolveOptions struct {
 	Coords     string
 	FocalMM    float64
 	PixelUm    float64
 	Catalog    string
 	LocalAsnet bool
+	AstroCat   string // local Gaia astrometric catalogue file (core.catalogue_gaia_astro)
+	XpsampDir  string // local Gaia xp_sampled chunk dir (core.catalogue_gaia_photo)
 }
 
 // SpccOptions parameterize Siril `spcc` (SpectroPhotometric Color Calibration).
@@ -424,6 +446,7 @@ type SpccOptions struct {
 	BFilter    string
 	WhiteRef   string
 	Narrowband bool
+	Catalog    string // "" (Siril picks local when installed) | "gaia" | "localgaia"
 }
 
 // ColorCalibrateScript plate-solves the loaded image then runs SPCC, saving the calibrated result.
@@ -431,6 +454,7 @@ type SpccOptions struct {
 func ColorCalibrateScript(loadName, outName string, s SolveOptions, c SpccOptions) string {
 	var b strings.Builder
 	b.WriteString(scriptHeader)
+	b.WriteString(catalogueSetCmds(s))
 	fmt.Fprintf(&b, "load %s\n", loadName)
 	b.WriteString(platesolveCmd(s) + "\n")
 	b.WriteString(spccCmd(c) + "\n")
@@ -444,10 +468,35 @@ func ColorCalibrateScript(loadName, outName string, s SolveOptions, c SpccOption
 func ParityProbeScript(loadName, outName string, s SolveOptions) string {
 	var b strings.Builder
 	b.WriteString(scriptHeader)
+	b.WriteString(catalogueSetCmds(s))
 	fmt.Fprintf(&b, "load %s\n", loadName)
 	fmt.Fprintf(&b, "%s -noflip\n", platesolveCmd(s))
 	fmt.Fprintf(&b, "save %s\n", outName)
 	return b.String()
+}
+
+// catalogueSetCmds emits `set core.catalogue_gaia_*` lines pointing Siril at the local Gaia
+// catalogues, so every solve/SPCC in the script uses the offline data regardless of the user's own
+// Siril preferences (and identically in the Docker engine). Empty options yield no lines.
+func catalogueSetCmds(s SolveOptions) string {
+	var b strings.Builder
+	if s.AstroCat != "" {
+		b.WriteString(setCmd("core.catalogue_gaia_astro", s.AstroCat) + "\n")
+	}
+	if s.XpsampDir != "" {
+		b.WriteString(setCmd("core.catalogue_gaia_photo", s.XpsampDir) + "\n")
+	}
+	return b.String()
+}
+
+// setCmd formats a Siril `set key=value` line, quoting the whole key=value token only when the
+// value contains whitespace (same tokenizer rule as sirilKV).
+func setCmd(key, val string) string {
+	tok := key + "=" + val
+	if strings.ContainsAny(tok, " \t") {
+		return "set " + fmt.Sprintf("%q", tok)
+	}
+	return "set " + tok
 }
 
 // MirrorFramesScript flips each named frame about the horizontal axis in place (load/mirrorx/save),
@@ -473,8 +522,12 @@ func platesolveCmd(s SolveOptions) string {
 	if s.PixelUm > 0 {
 		cmd += fmt.Sprintf(" -pixelsize=%.2f", s.PixelUm)
 	}
-	if s.Catalog != "" {
+	switch {
+	case s.Catalog != "":
 		cmd += " -catalog=" + s.Catalog
+	case s.AstroCat != "":
+		// A local astrometric catalogue is installed — prefer it so solving needs no network.
+		cmd += " -catalog=localgaia"
 	}
 	if s.LocalAsnet {
 		cmd += " -localasnet"
@@ -504,6 +557,9 @@ func spccCmd(c SpccOptions) string {
 	}
 	if c.Narrowband {
 		args = append(args, "-narrowband")
+	}
+	if c.Catalog != "" {
+		args = append(args, "-catalog="+c.Catalog)
 	}
 	return strings.Join(args, " ")
 }

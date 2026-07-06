@@ -17,6 +17,7 @@ const keyToName: Record<string, string> = {
   tasks: "jobs",
   runs: "runs",
   library: "library",
+  storage: "storage",
 };
 const nameToKey: Record<string, string> = {
   import: "import",
@@ -25,6 +26,7 @@ const nameToKey: Record<string, string> = {
   job: "tasks", // job detail lives under the Tasks tab
   runs: "runs",
   library: "library",
+  storage: "storage",
 };
 
 const tabs = computed(() => [
@@ -33,6 +35,7 @@ const tabs = computed(() => [
   { key: "tasks", label: t("processing.tabs.tasks") },
   { key: "runs", label: t("processing.tabs.runs") },
   { key: "library", label: t("processing.tabs.library") },
+  { key: "storage", label: t("processing.tabs.storage") },
 ]);
 
 const active = computed(() => nameToKey[String(route.name)] ?? "import");

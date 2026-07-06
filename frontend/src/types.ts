@@ -174,6 +174,16 @@ export interface IterationRecord {
   params?: Record<string, number>;
 }
 
+// StagePreview is one saved processing-milestone preview PNG (stacked/aligned/combined/colorcal/
+// starless/final). `stage` is a key the UI maps to a localized label; `filter` is set for per-channel
+// milestones (L/R/G/B/Ha). `index` orders the timeline left→right.
+export interface StagePreview {
+  index: number;
+  stage: string;
+  filter?: string;
+  png_path: string;
+}
+
 export interface FinalResult {
   mode: string;
   channels: string[];
@@ -200,6 +210,10 @@ export interface RunResult {
   frame_count?: number;
   stacked_frames?: number;
   frames?: PlanetaryFrame[];
+  // Supervised-finish passes for a flat (planetary) result — nested results carry these under `final`.
+  iterations?: IterationRecord[];
+  // Saved processing-milestone previews (stacked/aligned/combined/finish…), for the stage timeline.
+  stage_previews?: StagePreview[];
 }
 
 // PlanetaryFrame is one lucky-imaging frame's quality record (kept/rejected + sharpness score).
@@ -581,13 +595,21 @@ export interface DarkSiteHorizon {
   openness_pct: number; // % of azimuths with a clear (low) horizon
   max_obstruction_deg: number;
   worst_azimuth_deg: number;
+  mean_obstruction_deg: number;
+  south_obstruction_deg: number; // worst obstruction within ±90° of due south
+  south_worst_azimuth_deg: number;
+  south_openness_pct: number; // south-weighted openness (matters most for deep-sky)
+  canopy_m: number; // tree/forest canopy height at the site (0 = clearing / no data)
+  octants: number[]; // max obstruction angle per 45° sector (N, NE, … NW)
 }
 export interface DarkSite {
   lat: number;
   lon: number;
   sqm: number;
   bortle: number;
-  distance_km: number;
+  distance_km: number; // straight-line (great-circle) distance
+  drive_km?: number; // road distance from the observer (absent = not computed)
+  drive_min?: number; // estimated driving time, minutes (absent = not computed)
   score: number;
   elevation_m?: number;
   horizon?: DarkSiteHorizon;

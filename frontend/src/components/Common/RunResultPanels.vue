@@ -9,6 +9,7 @@ import MetricsChart from "@/components/Dataviz/MetricsChart.vue";
 import ImageViewer from "@/components/Common/ImageViewer.vue";
 import FilePreviewButton from "@/components/Common/FilePreviewButton.vue";
 import FilterChip from "@/components/Common/FilterChip.vue";
+import StagePreviewTimeline from "@/components/Common/StagePreviewTimeline.vue";
 import IconCheck from "@/components/Icons/IconCheck.vue";
 import IconMinus from "@/components/Icons/IconMinus.vue";
 import IconDownload from "@/components/Icons/IconDownload.vue";
@@ -163,7 +164,9 @@ const channelColumns: Column<Row>[] = [
 ];
 
 const masterRows = computed<Row[]>(() =>
-  (props.result.masters ?? []).map((m) => ({
+  // Deep-sky/comet results carry masters as an array; planetary's is a {label: path} object (no calib
+  // table) — guard so a non-array never crashes the whole result view.
+  (Array.isArray(props.result.masters) ? props.result.masters : []).map((m) => ({
     type: m.type,
     filter: m.filter || "",
     exposure_ms: m.exposure_ms,
@@ -381,6 +384,9 @@ const rejectedClass = (r: Row) =>
         </li>
       </ul>
     </section>
+
+    <!-- Processing-step filmstrip, directly below the final image (before the data tables). -->
+    <StagePreviewTimeline :result="props.result" />
 
     <section v-if="planetaryFrames.length">
       <h2 class="mb-2 text-lg font-medium">{{ t("job.frameReview") }}</h2>

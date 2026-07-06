@@ -118,6 +118,9 @@ type Options struct {
 	Orientation     string // auto|none|cw|ccw|180 (+ -flip)
 	RefIndex        int    // 1-based reference frame (0 = middle); ignored if ForegroundFrame set
 	OnProgress      func(siril.Progress)
+	// PreviewOnly makes gradeCompose write only final.png (skip the preview + linear FITS intermediates).
+	// The supervised finish sets it for its per-iteration re-grades, which only need the PNG to score.
+	PreviewOnly bool
 }
 
 // Result reports what Process produced.
@@ -294,6 +297,24 @@ func compose(ctx context.Context, o Options, aligned []string, fgPath string, re
 	neutralizeBackground(fg, look.NeutralizePercentile)
 	removeGreenCast(fg, look.GreenRemoval)
 
+	// Persist the pre-grade linear inputs (+ the resolved orientation) so the supervised finish and a
+	// later post-run refine can re-grade in seconds without re-developing/re-registering. See Regrade.
+	orientMode := resolveOrientation(o)
+	persistGradeInputs(outDir, sky, fg, alpha, orientMode, res)
+	return gradeCompose(o, sky, fg, alpha, orientMode, res)
+}
+
+// gradeCompose runs the tunable colour grade over the cleaned linear sky/foreground + sky mask: auto-
+// stretch, asinh foreground, masked composite, saturation / split-tone / highlight shoulder, then orient
+// and export. Shared by compose (a full run) and Regrade (a re-tune from persisted linear inputs), so the
+// supervised finish renders exactly what a full run would for the same Look/Brightness.
+func gradeCompose(o Options, sky, fg *fits.Image, alpha []float32, orientMode string, res *Result) (*Result, error) {
+	look := o.Look
+	if look.Name == "" {
+		look = LookByName("")
+	}
+	outDir := o.OutDir
+
 	targetBg := o.Brightness
 	ceilScale := 1.0
 	if targetBg <= 0 {
@@ -320,9 +341,7 @@ func compose(ctx context.Context, o Options, aligned []string, fgPath string, re
 	splitTone(composite, look.ShadowTint, look.HighlightTint, look.ToneStrength, 0.85)
 	compressHighlights(composite, look.HighlightKnee, look.HighlightCeiling*ceilScale)
 
-	// Restore the intended display orientation: an explicit user override wins; else the phone's real EXIF
-	// orientation (robust, handles mirroring); else the content heuristic. See resolveOrientation.
-	orientMode := resolveOrientation(o)
+	// Restore the intended display orientation (resolved by the caller: user override / EXIF / heuristic).
 	composite = orient(composite, orientMode)
 	res.Width, res.Height = composite.W, composite.H
 
@@ -330,6 +349,9 @@ func compose(ctx context.Context, o Options, aligned []string, fgPath string, re
 	res.FinalPNG = filepath.Join(outDir, "final.png")
 	if err := exportPNG(composite, res.FinalPNG); err != nil {
 		return nil, fmt.Errorf("export png: %w", err)
+	}
+	if o.PreviewOnly { // supervised per-iteration render: only the PNG is scored — skip the heavy FITS
+		return res, nil
 	}
 	res.PreviewPNG = filepath.Join(outDir, "final_preview.png")
 	if err := exportPNG(downsample(composite, 1400), res.PreviewPNG); err != nil {
@@ -342,6 +364,55 @@ func compose(ctx context.Context, o Options, aligned []string, fgPath string, re
 	res.ForegroundFITS = filepath.Join(outDir, "foreground_reference.fits")
 	_ = orient(fg, orientMode).WriteFITS(res.ForegroundFITS)
 	return res, nil
+}
+
+// persistGradeInputs writes the pre-grade linear sky/foreground, the sky mask, and the resolved
+// orientation to outDir, so the supervised finish and a post-run refine can re-grade without re-
+// developing. Best-effort — a failure just warns (refine falls back to a full re-process).
+func persistGradeInputs(outDir string, sky, fg *fits.Image, alpha []float32, orientMode string, res *Result) {
+	if err := sky.WriteFITS(filepath.Join(outDir, "lin_sky.fits")); err != nil {
+		res.Warnings = append(res.Warnings, "persist lin_sky: "+err.Error())
+		return
+	}
+	if err := fg.WriteFITS(filepath.Join(outDir, "lin_fg.fits")); err != nil {
+		res.Warnings = append(res.Warnings, "persist lin_fg: "+err.Error())
+		return
+	}
+	mask := fits.NewImage(sky.W, sky.H, 1)
+	copy(mask.Pix[0], alpha)
+	if err := mask.WriteFITS(filepath.Join(outDir, "sky_alpha.fits")); err != nil {
+		res.Warnings = append(res.Warnings, "persist sky_alpha: "+err.Error())
+		return
+	}
+	_ = os.WriteFile(filepath.Join(outDir, "grade.orient"), []byte(orientMode), 0o644)
+}
+
+// Regrade re-runs only the colour grade over the persisted pre-grade linear inputs (lin_sky/lin_fg/
+// sky_alpha + grade.orient) in srcDir, with the Look/Brightness in o, writing the result to o.OutDir. It
+// backs both the in-run supervised finish and a post-run refine of a milkyway run — re-tuning the grade
+// in seconds without re-developing or re-registering. Errors if the linear inputs are missing.
+func Regrade(ctx context.Context, o Options, srcDir string) (*Result, error) {
+	sky, err := fits.ReadImage(filepath.Join(srcDir, "lin_sky.fits"))
+	if err != nil {
+		return nil, fmt.Errorf("regrade: read lin_sky: %w", err)
+	}
+	fg, err := fits.ReadImage(filepath.Join(srcDir, "lin_fg.fits"))
+	if err != nil {
+		return nil, fmt.Errorf("regrade: read lin_fg: %w", err)
+	}
+	mask, err := fits.ReadImage(filepath.Join(srcDir, "sky_alpha.fits"))
+	if err != nil {
+		return nil, fmt.Errorf("regrade: read sky_alpha: %w", err)
+	}
+	if err := fsutil.EnsureDir(o.OutDir); err != nil {
+		return nil, err
+	}
+	orientMode := o.Orientation
+	if b, rerr := os.ReadFile(filepath.Join(srcDir, "grade.orient")); rerr == nil && len(b) > 0 {
+		orientMode = strings.TrimSpace(string(b))
+	}
+	_ = ctx // grade is pure Go (no I/O to cancel); ctx kept for a uniform signature
+	return gradeCompose(o, sky, fg, mask.Pix[0], orientMode, &Result{})
 }
 
 // percentileStretch maps [pLo,pHi] (over all channels) to [0,1] — a quick linear look for debugging.

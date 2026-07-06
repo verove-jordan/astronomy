@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/verove-jordan/astronomy/internal/llm"
-	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/postprocess"
 )
 
@@ -25,10 +24,11 @@ const (
 )
 
 // action is the model's proposed change: a target tier (informational — the engine re-derives the
-// real tier from which fields actually changed) plus the parameter patch.
+// real tier from which fields actually changed) plus the parameter patch. Patch stays raw JSON so each
+// mode's candidateRenderer unmarshals its own knob set (supervise_deepsky.go, supervise_comet.go, …).
 type action struct {
 	Tier  string          `json:"tier"`
-	Patch *supervisePatch `json:"patch"`
+	Patch json.RawMessage `json:"patch"`
 }
 
 // decision is the model's verdict for one iteration: the diagnosed defects, a one-line assessment, an
@@ -41,22 +41,30 @@ type decision struct {
 	Action     *action              `json:"action"`
 }
 
-// critique asks the local vision model to judge a rendered finish and propose a parameter change. It
-// sends the full-frame thumbnail plus a native-res centre crop and the measured metrics, and tells the
-// model which tiers it may still use (maxTier). Soft-fail: any error yields a neutral verdict so the
-// loop stops on the best render so far.
-func critique(ctx context.Context, super *llm.Runner, objective string, cur mode.Preset, maxTier tier, m finishMetrics, pngPath string) decision {
-	stateJSON, _ := json.Marshal(supervisorState(cur))
+// critique asks the local vision model to judge a rendered finish and propose a parameter change, using
+// the mode-specific prompt (system + objective + knob state) built by the renderer. It sends the
+// full-frame thumbnail plus a native-res centre crop and the measured metrics. Soft-fail: any error
+// yields a neutral verdict so the loop stops on the best render so far.
+func critique(ctx context.Context, super *llm.Runner, p supervisePrompt, m finishMetrics, pngPath, guidance string) decision {
+	stateJSON, _ := json.Marshal(p.state)
 	mJSON, _ := json.Marshal(m)
+	tierLine := ""
+	if p.tiered {
+		tierLine = fmt.Sprintf("You may use tiers up to %s (a change to a higher-tier knob is ignored).\n\n", p.maxTier)
+	}
 	user := llm.Message{Role: "user", Text: fmt.Sprintf(
-		"Objective:\n%s\n\nYou may use tiers up to %s (a change to a higher-tier knob is ignored).\n\n"+
-			"Current parameters:\n%s\n\nMeasured metrics of the rendered image (fractions/levels in 0..1):\n%s\n\n"+
+		"Objective:\n%s\n\n%sCurrent parameters:\n%s\n\n"+
+			"Measured metrics of the rendered image (fractions/levels in 0..1):\n%s\n\n"+
 			"Image 1 is the whole frame; image 2 is a 100%% centre crop for judging noise, stars and colour.\n"+
-			"Diagnose the defects, then propose the smallest-tier change that fixes the worst one. Return JSON only.",
-		objective, maxTier, stateJSON, mJSON)}
+			"Diagnose the defects, then propose the smallest change that fixes the worst one. Return JSON only.",
+		p.objective, tierLine, stateJSON, mJSON)}
+	if g := strings.TrimSpace(guidance); g != "" {
+		user.Text += fmt.Sprintf("\n\nThe user is watching this run and asked for this change — honor it in "+
+			"your diagnosis and your next patch: %q", g)
+	}
 	attachPreviews(&user, pngPath)
 	reply, err := super.Complete(ctx,
-		[]llm.Message{{Role: "system", Text: supervisorSystemPrompt}, user},
+		[]llm.Message{{Role: "system", Text: p.system}, user},
 		llm.CompleteOptions{Temperature: 0.2, MaxTokens: 900, JSON: true})
 	if err != nil {
 		return decision{Score: 5, Assessment: "model unavailable: " + err.Error()}
@@ -91,41 +99,6 @@ func extractJSON(s string) string {
 		return s[start : end+1]
 	}
 	return s
-}
-
-// supervisorState is the compact current-parameter view sent to the model, grouped by tier so the
-// model can reason about the cost of each knob it might change.
-func supervisorState(p mode.Preset) map[string]any {
-	return map[string]any{
-		"tierA": map[string]any{
-			"saturation": p.Saturation, "ha_screen": p.HaScreen, "ha_black_point": p.HaBlackPoint,
-			"chroma_blur": p.ChromaBlur, "crop_frac": p.CropFrac,
-			"core_highlight_knee": p.CoreHighlightKnee, "core_highlight_ceil": p.CoreHighlightCeil,
-			"ha_exclude_stars": p.HaExcludeStars,
-		},
-		"tierB": map[string]any{
-			"background_level": p.BackgroundLevel, "linked_stretch": p.LinkedStretch,
-			"color_calibration": p.ColorCalibration, "combined_background_ai": p.CombinedBackgroundAI,
-			"background_degree": p.BackgroundDegree, "color_denoise_ai": p.ColorDenoiseAI,
-			"star_reduce": p.StarReduce,
-		},
-		"tierC": map[string]any{
-			"roundness_floor": p.Grade.RoundnessFloor, "fwhm_sigma": p.Grade.FWHMSigma,
-			"background_sigma": p.Grade.BackgroundSigma, "star_count_frac": p.Grade.StarCountFrac,
-			"trail_mask_k": p.TrailMaskK, "denoise_chroma": p.DenoiseChroma,
-			"denoise_lum": p.DenoiseLum, "background_ai": p.BackgroundAI,
-		},
-	}
-}
-
-func objectiveText(p *mode.Preset) string {
-	return fmt.Sprintf(
-		"Produce a clean, natural %s image: a neutral sky background near %.3f (no green or magenta cast), "+
-			"shadows not crushed to pure black, highlights not blown (star cores excepted), pleasing but not "+
-			"oversaturated colour, tight round stars, and no gradients or trail residue. Change parameters in "+
-			"small steps, only when the image clearly needs it, and prefer the cheapest tier that can fix the "+
-			"defect. Set done=true once further tuning would not clearly help.",
-		p.Mode, p.BackgroundLevel)
 }
 
 // supervisorSystemPrompt documents the whitelisted knobs as a tiered "tool menu" (each with its cost

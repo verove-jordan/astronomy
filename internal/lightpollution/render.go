@@ -106,7 +106,7 @@ func (p *Provider) ColoredTile(ctx context.Context, z, x, y int) (string, error)
 		return out, nil
 	}
 
-	if a := p.currentAtlas(); a != nil && tileIntersectsAtlas(z, x, y, a.meta) {
+	if a := p.currentAtlas(); a != nil && tileIntersectsAtlas(z, x, y, a.Meta) {
 		img, err := p.renderAtlasTile(ctx, a, z, x, y)
 		if err != nil {
 			return "", err
@@ -135,10 +135,10 @@ func (p *Provider) ColoredTile(ctx context.Context, z, x, y int) (string, error)
 // badge). Pixels the atlas does not cover fall back to the GIBS luminance recolor when a raw GIBS tile is
 // available (fetched only when the tile is not wholly inside coverage), else to the darkest palette colour.
 func (p *Provider) renderAtlasTile(ctx context.Context, a *atlas, z, x, y int) (*image.NRGBA, error) {
-	a.ensureRAM() // fast per-pixel sampling; no-op (keeps ReadAt) for a too-large grid
+	a.EnsureRAM() // fast per-pixel sampling; no-op (keeps ReadAt) for a too-large grid
 
 	var gibs image.Image
-	if !tileInsideAtlas(z, x, y, a.meta) && p.tileURL != "" {
+	if !tileInsideAtlas(z, x, y, a.Meta) && p.tileURL != "" {
 		if rawPath, err := p.FetchTile(ctx, z, x, y); err == nil {
 			gibs, _ = decodePNG(rawPath) // best-effort; nil → darkest fallback below
 		}

@@ -1,6 +1,6 @@
 import { ref, onUnmounted } from "vue";
 import { eventsUrl } from "@/services/api";
-import type { LogLine, IterationRecord } from "@/types";
+import type { LogLine, IterationRecord, StagePreview } from "@/types";
 
 interface JobEvent {
   job_id: number;
@@ -14,6 +14,7 @@ interface JobEvent {
   cpu_percent?: number; // live CPU usage (100 == one core)
   peak_rss_bytes?: number; // peak resident memory seen this step
   iteration?: IterationRecord; // one supervised-finish pass, streamed as it completes
+  stage_preview?: StagePreview; // one saved processing-milestone preview, streamed as it is produced
   done?: boolean;
 }
 
@@ -47,6 +48,8 @@ export function useJobStream(jobId: number, onDone?: () => void) {
   // Supervised-finish iterations accumulated live (upsert by index, so the winner's re-emit with
   // chosen=true updates its card in place). Empty for non-supervised runs.
   const iterations = ref<IterationRecord[]>([]);
+  // Processing-milestone previews accumulated live (upsert by index → the ordered timeline).
+  const stagePreviews = ref<StagePreview[]>([]);
 
   function seed(initial: string[]) {
     lines.value = initial.filter((l) => l.length > 0).map(parseLogRow);
@@ -78,6 +81,13 @@ export function useJobStream(jobId: number, onDone?: () => void) {
       if (at >= 0) iterations.value[at] = e.iteration;
       else iterations.value.push(e.iteration);
     }
+    if (e.stage_preview) {
+      const at = stagePreviews.value.findIndex(
+        (sp) => sp.index === e.stage_preview!.index,
+      );
+      if (at >= 0) stagePreviews.value[at] = e.stage_preview;
+      else stagePreviews.value.push(e.stage_preview);
+    }
     if (e.preview) preview.value = e.preview;
     if (e.done) {
       done.value = true;
@@ -102,6 +112,7 @@ export function useJobStream(jobId: number, onDone?: () => void) {
     cpuPercent,
     peakRssBytes,
     iterations,
+    stagePreviews,
     seed,
   };
 }

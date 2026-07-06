@@ -64,6 +64,8 @@ type composeParams struct {
 	LumCurve          []float64
 	CoreHighlightKnee float64
 	CoreHighlightCeil float64
+	HighlightKnee     float64
+	HighlightCeil     float64
 	HaExcludeStars    bool
 }
 
@@ -78,6 +80,8 @@ func presetComposeParams(p *mode.Preset) composeParams {
 		LumCurve:          p.LumCurve,
 		CoreHighlightKnee: p.CoreHighlightKnee,
 		CoreHighlightCeil: p.CoreHighlightCeil,
+		HighlightKnee:     p.HighlightKnee,
+		HighlightCeil:     p.HighlightCeil,
 		HaExcludeStars:    p.HaExcludeStars,
 	}
 }
@@ -94,6 +98,8 @@ type supervisePatch struct {
 	CropFrac          *float64 `json:"crop_frac,omitempty"`
 	CoreHighlightKnee *float64 `json:"core_highlight_knee,omitempty"`
 	CoreHighlightCeil *float64 `json:"core_highlight_ceil,omitempty"`
+	HighlightKnee     *float64 `json:"highlight_knee,omitempty"`
+	HighlightCeil     *float64 `json:"highlight_ceil,omitempty"`
 	HaExcludeStars    *bool    `json:"ha_exclude_stars,omitempty"`
 
 	// Tier B — linear finish prep (tens of s–min).
@@ -125,6 +131,8 @@ func (patch supervisePatch) apply(p mode.Preset) mode.Preset {
 	setF(&p.CropFrac, patch.CropFrac)
 	setF(&p.CoreHighlightKnee, patch.CoreHighlightKnee)
 	setF(&p.CoreHighlightCeil, patch.CoreHighlightCeil)
+	setF(&p.HighlightKnee, patch.HighlightKnee)
+	setF(&p.HighlightCeil, patch.HighlightCeil)
 	setB(&p.HaExcludeStars, patch.HaExcludeStars)
 
 	setF(&p.BackgroundLevel, patch.BackgroundLevel)
@@ -150,7 +158,7 @@ func (patch supervisePatch) apply(p mode.Preset) mode.Preset {
 // model suggestion can never push processing outside known-good territory.
 func clampPreset(p mode.Preset) mode.Preset {
 	// Tier A.
-	p.Saturation = clampf(p.Saturation, 0, 0.6)
+	p.Saturation = clampf(p.Saturation, 0, 0.35) // capped below the old 0.6 — high satu split stars into a garish blue-purple / orange look
 	p.HaScreen = clampf(p.HaScreen, 0, 0.8)
 	p.HaBlackPoint = clampf(p.HaBlackPoint, 0, 0.3)
 	p.ChromaBlur = clampf(p.ChromaBlur, 0, 12)
@@ -158,6 +166,10 @@ func clampPreset(p mode.Preset) mode.Preset {
 	if p.CoreHighlightKnee != 0 || p.CoreHighlightCeil != 0 {
 		p.CoreHighlightKnee = clampf(p.CoreHighlightKnee, 0, 0.95)
 		p.CoreHighlightCeil = clampf(p.CoreHighlightCeil, 0, 0.99)
+	}
+	if p.HighlightKnee != 0 || p.HighlightCeil != 0 {
+		p.HighlightKnee = clampf(p.HighlightKnee, 0, 0.98)
+		p.HighlightCeil = clampf(p.HighlightCeil, 0, 0.995)
 	}
 	// Tier B.
 	p.BackgroundLevel = clampf(p.BackgroundLevel, 0.03, 0.2)
@@ -206,6 +218,8 @@ func composeChanged(prev, next mode.Preset) bool {
 		floatChanged(prev.CropFrac, next.CropFrac) ||
 		floatChanged(prev.CoreHighlightKnee, next.CoreHighlightKnee) ||
 		floatChanged(prev.CoreHighlightCeil, next.CoreHighlightCeil) ||
+		floatChanged(prev.HighlightKnee, next.HighlightKnee) ||
+		floatChanged(prev.HighlightCeil, next.HighlightCeil) ||
 		prev.HaExcludeStars != next.HaExcludeStars
 }
 

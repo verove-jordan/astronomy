@@ -17,26 +17,32 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/verove-jordan/astronomy/internal/comet"
 	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/inspect"
+	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/siril"
 )
 
 // Options tunes the lucky-imaging run.
 type Options struct {
-	BestPercent int      // keep this percent of the sharpest frames (default 50)
-	Sharpen     bool     // apply an unsharp mask + CLAHE to the final image
-	APAlign     bool     // run multi-point (alignment-point) warping to correct atmospheric distortion
-	Formats     []string // output formats: png, tif, fits
+	BestPercent int                   // keep this percent of the sharpest frames (default 50)
+	Sharpen     bool                  // apply wavelet sharpening + CLAHE to the final image
+	APAlign     bool                  // run multi-point (alignment-point) warping to correct atmospheric distortion
+	Formats     []string              // output formats: png, tif, fits
+	Finish      siril.PlanetaryFinish // stretch/sharpen/contrast/saturation of the finish (tuned by the supervisor)
 }
 
 // DefaultOptions returns sensible defaults.
 func DefaultOptions() Options {
-	return Options{BestPercent: 50, Sharpen: true, APAlign: true, Formats: []string{"png", "tif"}}
+	return Options{BestPercent: 50, Sharpen: true, APAlign: true, Formats: []string{"png", "tif"}, Finish: DefaultFinish()}
 }
+
+// DefaultFinish is the original mineral-Moon finish tuning (see siril.DefaultPlanetaryFinish).
+func DefaultFinish() siril.PlanetaryFinish { return siril.DefaultPlanetaryFinish() }
 
 // FrameScore is one input frame's lucky-imaging quality record, for the frame report (kept/rejected).
 type FrameScore struct {
@@ -55,6 +61,22 @@ type Result struct {
 	Outputs       []string     `json:"outputs"`
 	Frames        []FrameScore `json:"frames,omitempty"`
 	Notes         []string     `json:"notes,omitempty"`
+
+	// Masters maps each channel label (R/G/B/L or "mono") to its persisted, stacked+deconvolved master
+	// base path (no extension) in the output dir — the re-finish inputs the supervised finish and a
+	// post-run refine re-run the finish over (no re-stack, no re-deconvolution).
+	Masters map[string]string `json:"masters,omitempty"`
+	Sharpen bool              `json:"sharpen,omitempty"`  // whether the finish sharpens (from Options.Sharpen)
+	OutBase string            `json:"out_base,omitempty"` // canonical final base path (<outDir>/<object>_stack)
+	// Run identity (mirrors pipeline.Result) so the run lives at output/<object>/<run_id> and a post-run
+	// refine + full-S3 push can resolve it. json tags match pipeline.Result / job.s3ResultTarget.
+	Object    string `json:"object,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
+	OutputDir string `json:"output_dir,omitempty"`
+	// Iterations records each supervised-finish pass (empty for a standard run) for the UI timeline.
+	Iterations []postprocess.IterationRecord `json:"iterations,omitempty"`
+	// StagePreviews are the saved milestone preview PNGs (stacked masters + final) for the UI timeline.
+	StagePreviews []postprocess.StagePreview `json:"stage_previews,omitempty"`
 }
 
 var videoExts = map[string]bool{".mp4": true, ".mov": true, ".mkv": true, ".m4v": true, ".avi": true}
@@ -90,7 +112,14 @@ func Process(ctx context.Context, runner *siril.Runner, ffmpegBin, inputPath, wo
 		return nil, err
 	}
 	object := objectName(inputPath)
-	res := &Result{Source: inputPath}
+	// Every run gets its own output/<object>/<runID> directory (consistent with deepsky/OSC/comet), so
+	// runs never overwrite each other, the base output dir stays clean, and a refine/run.json resolves here.
+	runID := time.Now().Format("20060102_150405")
+	runDir := filepath.Join(outAbs, object, runID)
+	if err := fsutil.EnsureDir(runDir); err != nil {
+		return nil, err
+	}
+	res := &Result{Source: inputPath, Object: object, RunID: runID, OutputDir: runDir}
 
 	// Start from a clean per-object scratch dir: stale aligned frames / Siril .seq files from a prior run
 	// of the same target would otherwise collide with `convert`/`stack` (it picks up leftover al_*.fits).
@@ -123,7 +152,7 @@ func Process(ctx context.Context, runner *siril.Runner, ffmpegBin, inputPath, wo
 
 	// 3. Finish: co-register channels + colour LRGB combine when R/G/B exist, else the mono master.
 	report(onProgress, "finishing")
-	outBase := filepath.Join(outAbs, object+"_stack")
+	outBase := filepath.Join(runDir, object+"_stack")
 	r, g, b, l, mono := masters["R"], masters["G"], masters["B"], masters["L"], ""
 	if r != "" && g != "" && b != "" {
 		if cerr := coRegisterMasters(masters, refChannel(masters)); cerr != nil {
@@ -153,8 +182,26 @@ func Process(ctx context.Context, runner *siril.Runner, ffmpegBin, inputPath, wo
 		}
 		res.Notes = append(res.Notes, "mono lucky-imaging stack")
 	}
-	script := siril.PlanetaryFinishScript(r, g, b, l, mono, outBase, opts.Sharpen, opts.Formats)
-	if _, err := runner.Run(ctx, outAbs, script, onProgress); err != nil {
+	// Persist the finalized (stacked + deconvolved) masters to the output dir + record them, so the
+	// supervised finish and a post-run refine can re-run the finish over them without re-stacking.
+	finishMasters := map[string]string{}
+	if mono != "" {
+		finishMasters["mono"] = mono
+	} else {
+		finishMasters["R"], finishMasters["G"], finishMasters["B"] = r, g, b
+		if l != "" {
+			finishMasters["L"] = l
+		}
+	}
+	if persisted, perr := persistPlanetaryMasters(runDir, finishMasters); perr != nil {
+		res.Notes = append(res.Notes, "warn: "+perr.Error())
+	} else {
+		res.Masters = persisted
+	}
+	res.Sharpen, res.OutBase = opts.Sharpen, outBase
+
+	script := siril.PlanetaryFinishScript(r, g, b, l, mono, outBase, opts.Sharpen, opts.Finish, opts.Formats)
+	if _, err := runner.Run(ctx, runDir, script, onProgress); err != nil {
 		return nil, err
 	}
 	for _, f := range opts.Formats {
@@ -162,6 +209,54 @@ func Process(ctx context.Context, runner *siril.Runner, ffmpegBin, inputPath, wo
 	}
 	res.Notes = append(res.Notes,
 		fmt.Sprintf("sub-pixel surface alignment; kept best %d%% of frames by sharpness", opts.BestPercent))
+	return res, nil
+}
+
+// persistPlanetaryMasters copies each finalized master FITS into outDir as master_<label>.fits and
+// returns a label→base-path (no extension) map — the re-finish inputs for the supervised finish/refine.
+func persistPlanetaryMasters(outDir string, work map[string]string) (map[string]string, error) {
+	out := map[string]string{}
+	for label, base := range work {
+		if base == "" {
+			continue
+		}
+		dstBase := filepath.Join(outDir, "master_"+label)
+		if err := fsutil.CopyFile(base+".fits", dstBase+".fits"); err != nil {
+			return nil, fmt.Errorf("persist master %s: %w", label, err)
+		}
+		out[label] = dstBase
+	}
+	return out, nil
+}
+
+// Refinish re-runs only the planetary finish (stretch / wavelet sharpen / local contrast / saturation)
+// over already-stacked+deconvolved masters with a tuned Finish, writing outBase.<fmt>. It backs the
+// supervised finish and a post-run refine: no re-stack, and NO re-deconvolution (the masters are already
+// deconvolved, so re-finishing them avoids double-deconv). masters maps R/G/B/L or "mono" → base path.
+func Refinish(ctx context.Context, runner *siril.Runner, outDir string, masters map[string]string,
+	sharpen bool, fin siril.PlanetaryFinish, formats []string, outBase string) (*Result, error) {
+	r, g, b, l := masters["R"], masters["G"], masters["B"], masters["L"]
+	mono := ""
+	if !(r != "" && g != "" && b != "") {
+		mono = masters["mono"]
+		if mono == "" {
+			for _, base := range masters { // any single master (defensive)
+				mono = base
+				break
+			}
+		}
+	}
+	if r == "" && g == "" && b == "" && mono == "" {
+		return nil, fmt.Errorf("planetary refinish: no masters")
+	}
+	script := siril.PlanetaryFinishScript(r, g, b, l, mono, outBase, sharpen, fin, formats)
+	if _, err := runner.Run(ctx, outDir, script, nil); err != nil {
+		return nil, err
+	}
+	res := &Result{OutBase: outBase, Sharpen: sharpen, Masters: masters}
+	for _, f := range formats {
+		res.Outputs = append(res.Outputs, outBase+"."+f)
+	}
 	return res, nil
 }
 

@@ -32,6 +32,11 @@ const props = withDefaults(
     processed?: Map<string, ProcessedFolder>;
     // s3Enabled turns on the S3 presence badges + per-selection transfer actions (Import view only).
     s3Enabled?: boolean;
+    // sourceFilter scopes the browsable/selectable folders to one source (the Import Local/S3 tabs):
+    // "local" hides cloud-only folders; "s3" shows only folders present on S3. Undefined = show all.
+    sourceFilter?: "local" | "s3";
+    // downloading: an S3-sourced selection is being pulled to local before inspect (drives the button).
+    downloading?: boolean;
   }>(),
   { selected: () => [], multiSelect: true },
 );
@@ -49,6 +54,38 @@ const { t } = useI18n();
 function isSelected(p: string): boolean {
   return props.selected.some((s) => s.path === p);
 }
+
+// filterBySource scopes a column's entries to the active source tab, but always keeps the folder the user
+// has drilled into (keepPath) so the navigation path never disappears (an ancestor may be local-only).
+function filterBySource(
+  entries: BrowseEntry[],
+  keepPath: string,
+): BrowseEntry[] {
+  const f = props.sourceFilter;
+  if (!f) return entries;
+  return entries.filter((e) => {
+    if (e.path === keepPath) return true;
+    if (f === "local") return !e.is_dir || e.local !== false; // local-only + synced (+ files)
+    return e.is_dir && e.remote === true; // "s3": only folders present on S3
+  });
+}
+
+// hasRemoteOnly: the selection includes a folder that lives only on S3 → it must download before inspect.
+const hasRemoteOnly = computed(() =>
+  props.selected.some((e) => e.remote && !e.local),
+);
+
+// inspectLabel adapts the primary button: downloading state, "Download & inspect" when the selection has
+// S3-only folders, else the normal inspect/use-folder labels.
+const inspectLabel = computed(() => {
+  if (props.downloading) return t("import.downloadingBtn");
+  if (props.multiSelect && props.selected.length) {
+    return hasRemoteOnly.value
+      ? t("import.downloadInspect", { n: props.selected.length })
+      : t("import.inspectN", { n: props.selected.length });
+  }
+  return t("import.useFolder");
+});
 
 // Past-processing annotation for a folder (a dot; siblings of one processing share a colour).
 function proc(path: string): ProcessedFolder | undefined {
@@ -139,13 +176,25 @@ interface Column {
 
 const columns = computed<Column[]>(() => {
   const crumbs = chain.value;
+  // No breadcrumb (e.g. the S3 tab rooted at "" at its top level): render the current entries as one
+  // column so the listing still shows. Navigating into a folder gives a non-empty path → a real chain.
+  if (!crumbs.length) {
+    return [
+      {
+        dir: props.path,
+        entries: filterBySource(props.entries, ""),
+        loading: props.loading,
+        active: "",
+      },
+    ];
+  }
   if (!props.fetchChildren) {
     const leaf = crumbs[crumbs.length - 1];
     return leaf
       ? [
           {
             dir: leaf.path,
-            entries: props.entries,
+            entries: filterBySource(props.entries, ""),
             loading: props.loading,
             active: "",
           },
@@ -154,7 +203,10 @@ const columns = computed<Column[]>(() => {
   }
   return crumbs.map((c, i) => ({
     dir: c.path,
-    entries: childrenCache.get(c.path) ?? [],
+    entries: filterBySource(
+      childrenCache.get(c.path) ?? [],
+      crumbs[i + 1]?.path ?? "",
+    ),
     loading:
       i === crumbs.length - 1
         ? props.loading && !childrenCache.has(c.path)
@@ -222,15 +274,11 @@ function up() {
       </button>
       <button
         :class="btnPrimary"
-        :disabled="loading || (!path && !selected.length)"
+        :disabled="loading || downloading || (!path && !selected.length)"
         data-demo="browse-inspect"
         @click="inspectAction"
       >
-        {{
-          multiSelect && selected.length
-            ? t("import.inspectN", { n: selected.length })
-            : t("import.useFolder")
-        }}
+        {{ inspectLabel }}
       </button>
     </div>
 
@@ -250,6 +298,12 @@ function up() {
         t("import.selectedCount", { n: selected.length })
       }}</span>
       <span v-for="s in selected" :key="s.path" :class="entrySelected">
+        <!-- Cloud marker on folders that live only on S3 — these download before inspect. -->
+        <IconCloud
+          v-if="s.remote && !s.local"
+          class="h-3 w-3 shrink-0 text-sky-500"
+          :title="t('s3.badge.cloudOnly')"
+        />
         <!-- Click the name to reveal that folder in the columns (it may live in another location). -->
         <button
           type="button"

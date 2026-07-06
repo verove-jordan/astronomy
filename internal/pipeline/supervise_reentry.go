@@ -97,6 +97,8 @@ func buildComposite(c *gimp.Client, base gimp.Inputs, p composeParams, outBase s
 	in.LumCurve = p.LumCurve
 	in.CoreHighlightKnee = p.CoreHighlightKnee
 	in.CoreHighlightCeil = p.CoreHighlightCeil
+	in.HighlightKnee = p.HighlightKnee // star-safe highlight cap: keep the supervised renders identical to the standard finish
+	in.HighlightCeil = p.HighlightCeil
 	in.HaExcludeStars = p.HaExcludeStars
 	return gimp.BuildImage(c, in, p.Curve, p.HaScreen, p.Saturation, outBase)
 }

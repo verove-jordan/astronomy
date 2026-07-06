@@ -24,6 +24,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
 	"github.com/verove-jordan/astronomy/internal/planetary"
+	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/report"
 	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/starnet"
@@ -303,12 +304,7 @@ func (a *app) refineFinish(ctx context.Context, args json.RawMessage) (string, e
 	if a.cfg.LLMBaseURL != "" {
 		supervisor = llm.New(a.cfg.LLMBaseURL, a.cfg.LLMModel, a.cfg.LLMImageFormat).WithTimeout(a.cfg.LLMTimeout)
 	}
-	solve := siril.SolveOptions{FocalMM: a.cfg.FocalLenMM, PixelUm: a.cfg.PixelSizeUm, Catalog: a.cfg.PlateSolveCatalog}
-	spcc := siril.SpccOptions{
-		MonoSensor: a.cfg.SpccMonoSensor, OSCSensor: a.cfg.NightscapeOSCSensor,
-		RFilter: a.cfg.SpccRFilter, GFilter: a.cfg.SpccGFilter,
-		BFilter: a.cfg.SpccBFilter, WhiteRef: a.cfg.SpccWhiteRef,
-	}
+	solve, spcc := postprocess.SolveSpccFromConfig(a.cfg)
 
 	final, err := pipeline.RefineExistingRun(ctx, pipeline.Options{
 		WorkDir:    a.cfg.WorkDir,

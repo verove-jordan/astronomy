@@ -90,13 +90,14 @@ func TestFormatAssistReport(t *testing.T) {
 		Background:  0.052,
 		MedianRGB:   [3]float64{0.071, 0.068, 0.059},
 		GreenCast:   0.006,
+		WarmCast:    0.009,
 		BlackClip:   [3]float64{0.021, 0.018, 0.033},
 		WhiteClip:   [3]float64{0.004, 0.003, 0.002},
 		GradientPct: 8.4,
 		Trail:       false,
 	}
 	want := "AstroStack measurements of this image (objective pixel stats; fractions/levels in 0..1 unless noted — treat as ground truth): " +
-		"background=0.052 | median R/G/B=0.071/0.068/0.059 | green_cast=+0.006 | black_clip R/G/B=0.021/0.018/0.033 | " +
+		"background=0.052 | median R/G/B=0.071/0.068/0.059 | green_cast=+0.006 | warm_cast=+0.009 | black_clip R/G/B=0.021/0.018/0.033 | " +
 		"white_clip R/G/B=0.004/0.003/0.002 | gradient=8.4% | trail=none"
 	assert.Equal(t, want, formatAssistReport(m))
 }

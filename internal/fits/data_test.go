@@ -7,7 +7,10 @@ import (
 )
 
 func TestImage_FITSRoundTrip(t *testing.T) {
-	tests := []struct{ name string; w, h, c int }{
+	tests := []struct {
+		name    string
+		w, h, c int
+	}{
 		{"mono", 5, 4, 1},
 		{"rgb", 7, 3, 3},
 	}

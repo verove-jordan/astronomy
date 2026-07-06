@@ -21,7 +21,8 @@ const { t } = useI18n();
 const iterations = computed<IterationRecord[]>(() =>
   props.live && props.live.length
     ? props.live
-    : (props.result?.final?.iterations ?? []),
+    : // deep-sky/comet/milkyway nest iterations under `final`; planetary's flat result carries them at top level.
+      (props.result?.final?.iterations ?? props.result?.iterations ?? []),
 );
 
 function scoreClass(score: number): string {

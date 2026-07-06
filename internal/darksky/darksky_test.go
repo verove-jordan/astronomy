@@ -9,6 +9,7 @@ import (
 
 	"github.com/verove-jordan/astronomy/internal/elevation"
 	"github.com/verove-jordan/astronomy/internal/lightpollution"
+	"github.com/verove-jordan/astronomy/internal/routing"
 )
 
 type fakeScanner struct{ cells []lightpollution.Cell }
@@ -63,4 +64,46 @@ func TestFind_EmptyWhenNoneBelowThreshold(t *testing.T) {
 	res := f.Find(context.Background(), Query{Bbox: area(), MaxBortle: 4, Limit: 10})
 	assert.Equal(t, 0, res.Count)
 	assert.NotEmpty(t, res.Warnings)
+}
+
+type fakeRouter struct{}
+
+func (fakeRouter) DriveMatrix(_ context.Context, _, _ float64, dstLats, _ []float64) ([]routing.Drive, string) {
+	out := make([]routing.Drive, len(dstLats))
+	for i := range out {
+		out[i] = routing.Drive{DistanceKm: 42, DurationMin: 55, OK: true}
+	}
+	return out, ""
+}
+
+func TestFind_DriveDistanceFilled(t *testing.T) {
+	cells := []lightpollution.Cell{{Lat: 1, Lon: 1, SQM: 21.5, Bortle: 2}}
+	f := New(fakeScanner{cells}, nil, 4000, 10, WithRouter(fakeRouter{}))
+	res := f.Find(context.Background(), Query{Bbox: area(), MaxBortle: 4, Limit: 10, ObsLat: 0.5, ObsLon: 0.5, ObsSet: true})
+	require.Equal(t, 1, res.Count)
+	assert.Equal(t, 42.0, res.Candidates[0].DriveKm)
+	assert.Equal(t, 55.0, res.Candidates[0].DriveMin)
+}
+
+func TestScoreCandidate_SouthWeightPenalisesBlockedSouth(t *testing.T) {
+	// Great overall openness but a poor southern horizon: south weighting must lower the score.
+	c := Candidate{SQM: 21.0, Horizon: &elevation.Horizon{OpennessPct: 90, SouthOpennessPct: 10}}
+	base := scoreCandidate(c, ScoreConfig{DarkWeight: 0.6})                  // openness ignores south
+	south := scoreCandidate(c, ScoreConfig{DarkWeight: 0.6, SouthWeight: 1}) // openness = south only
+	assert.Greater(t, base, south)
+}
+
+func TestScoreCandidate_SouthGate(t *testing.T) {
+	c := Candidate{SQM: 21.5, Horizon: &elevation.Horizon{OpennessPct: 100, SouthOpennessPct: 100, SouthObstructionDeg: 25}}
+	open := scoreCandidate(c, ScoreConfig{DarkWeight: 0.6})                        // no gate
+	gated := scoreCandidate(c, ScoreConfig{DarkWeight: 0.6, MaxSouthBlockDeg: 20}) // blocked past 20°
+	assert.Greater(t, open, gated)
+}
+
+func TestScoreCandidate_DefaultIsHistoricalBlend(t *testing.T) {
+	// Default config must reproduce the old 0.6·dark + 0.4·open score exactly.
+	c := Candidate{SQM: 21.0, Horizon: &elevation.Horizon{OpennessPct: 50}}
+	got := scoreCandidate(c, defaultScoreConfig())
+	darkNorm := (21.0 - 18.0) / (22.0 - 18.0)
+	assert.InDelta(t, 0.6*darkNorm+0.4*0.5, got, 1e-9)
 }

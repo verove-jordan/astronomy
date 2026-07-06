@@ -169,12 +169,25 @@ function rampRGBA(value: number, stops: { at: number; rgba: RGBA }[]): RGBA {
 
 export const GRID_LAYERS: GridLayerDef[] = [
   {
-    // Cloud cover: white, opacity by cover (it varies 0–100% spatially, so a single hue reads fine).
+    // Cloud cover: a faint cool haze at low cover deepening to bright white overcast. A multi-stop ramp
+    // (with alpha rising steeply through the low band) reads as depth, and the bilinear-upsampled canvas
+    // renders it as smooth cloud fields rather than flat blocks.
     id: "clouds",
     metric: "clouds",
     labelKey: "tonight.layers.clouds",
-    color: (pct) => [236, 239, 244, clamp01(pct / 100) * 0.85],
-    gradient: ["rgba(236,239,244,0)", "rgba(236,239,244,0.85)"],
+    color: (pct) =>
+      rampRGBA(pct, [
+        { at: 0, rgba: [210, 224, 240, 0] },
+        { at: 12, rgba: [206, 219, 236, 0.16] },
+        { at: 35, rgba: [216, 226, 240, 0.42] },
+        { at: 65, rgba: [232, 238, 246, 0.66] },
+        { at: 100, rgba: [248, 250, 253, 0.9] },
+      ]),
+    gradient: [
+      "rgba(206,219,236,0)",
+      "rgba(216,226,240,0.42)",
+      "rgba(248,250,253,0.9)",
+    ],
   },
   {
     // Humidity: green (dry) → red (≥95%, dew / poor transparency). A steep hue ramp through the 70–100%

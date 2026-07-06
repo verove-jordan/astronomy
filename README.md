@@ -104,7 +104,7 @@ Docker + `just` — and jump to [Docker & deployment](#docker--deployment).
 |------|---------|-----|
 | GraXpert | [graxpert.com](https://www.graxpert.com) | AI background-gradient extraction / denoise; absent → Siril `subsky` |
 | StarNet++ v2 | [starnetastro.com](https://www.starnetastro.com) | star removal for star-reduced finishing; absent → full stars |
-| Local vision model | `just run-ia-model` (downloads ~26 GB) | the opt-in **finish supervisor** — a host MLX vision model that critiques and re-tunes the finish (see below) |
+| Local vision model | `just run-ia-model` (downloads ~26 GB) | the opt-in **finish supervisor** — a host MLX vision model that critiques and re-tunes the finish for **every stacking mode** (deep-sky, comet, milkyway, planetary; see below) |
 | OpenCV | `brew install opencv` | only for the optional GoCV trail detector; absent → the pure-Go Hough detector |
 
 GraXpert and StarNet++ are **soft-fail**: when the binary is missing the run logs a warning and falls

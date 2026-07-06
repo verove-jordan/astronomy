@@ -117,7 +117,7 @@ func TestProvider_ColoredTile_FromAtlas(t *testing.T) {
 	require.NotNil(t, p.atlas)
 
 	z, x, y := 8, 131, 92 // ~lon 5, lat 45 — well inside coverage
-	require.True(t, tileInsideAtlas(z, x, y, p.atlas.meta), "test tile must be fully inside coverage")
+	require.True(t, tileInsideAtlas(z, x, y, p.atlas.Meta), "test tile must be fully inside coverage")
 
 	path, err := p.ColoredTile(context.Background(), z, x, y)
 	require.NoError(t, err)

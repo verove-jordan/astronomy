@@ -50,11 +50,34 @@ func TestMetricsFromImage_GreenCast(t *testing.T) {
 	assert.Greater(t, m.GreenCast, 0.15)
 }
 
+func TestMetricsFromImage_WarmCast(t *testing.T) {
+	// Warm sky: red background above green/blue → positive warm cast (measured on the 10th-pct background).
+	warm := metricsFromImage(fill(8, 8, color.RGBA{90, 60, 55, 255}, nil))
+	assert.InDelta(t, (90.0-(60.0+55.0)/2)/255.0, warm.WarmCast, 1e-9)
+	assert.Greater(t, warm.WarmCast, 0.1)
+	// Neutral grey → no warm cast.
+	assert.InDelta(t, 0.0, metricsFromImage(fill(8, 8, color.RGBA{60, 60, 60, 255}, nil)).WarmCast, 1e-9)
+}
+
 func TestMetricsFromImage_Neutral(t *testing.T) {
 	m := metricsFromImage(fill(8, 8, color.RGBA{60, 60, 60, 255}, nil))
 	assert.InDelta(t, 0.0, m.GreenCast, 1e-9)
 	assert.InDelta(t, 0.0, m.BlackClip[0], 1e-9)
 	assert.InDelta(t, 0.0, m.WhiteClip[0], 1e-9)
+}
+
+func TestMetricsFromImage_SignalCast(t *testing.T) {
+	// A bright magenta signal (R,B high, G low) over a dark sky → the 90th-pct lands in the signal →
+	// negative SignalCast, even though the sky median is neutral/black.
+	black := color.RGBA{0, 0, 0, 255}
+	magenta := color.RGBA{200, 80, 200, 255}
+	over := map[int]color.RGBA{}
+	for i := 0; i < 20; i++ { // 20% bright magenta pixels
+		over[i] = magenta
+	}
+	m := metricsFromImage(fill(10, 10, black, over))
+	assert.Less(t, m.SignalCast, -0.2)                  // bright signal reads magenta (green deficit)
+	assert.InDelta(t, 0.0, m.GreenCast, 1e-9)           // sky median stays neutral — the reason we need SignalCast
 }
 
 func TestPercentile(t *testing.T) {

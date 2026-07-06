@@ -203,5 +203,15 @@ async function restart(id: unknown) {
         </button>
       </template>
     </GenericTable>
+
+    <div v-if="jobsStore.jobsHasMore" class="mt-4 text-center">
+      <button
+        :class="btnGhost"
+        :disabled="jobsStore.loadingMore"
+        @click="jobsStore.loadMoreJobs()"
+      >
+        {{ jobsStore.loadingMore ? t("common.loading") : t("runs.loadMore") }}
+      </button>
+    </div>
   </div>
 </template>

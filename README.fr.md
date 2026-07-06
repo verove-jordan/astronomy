@@ -109,7 +109,7 @@ il ne faut que Docker + `just` — et allez à [Docker & déploiement](#docker--
 |------|---------|-----|
 | GraXpert | [graxpert.com](https://www.graxpert.com) | extraction IA du gradient de fond / débruitage ; absent → `subsky` de Siril |
 | StarNet++ v2 | [starnetastro.com](https://www.starnetastro.com) | retrait des étoiles pour une finition à étoiles réduites ; absent → étoiles complètes |
-| Modèle de vision local | `just run-ia-model` (télécharge ~26 Go) | le **superviseur de finition** activable — un modèle de vision MLX hôte qui critique et réajuste la finition (voir plus bas) |
+| Modèle de vision local | `just run-ia-model` (télécharge ~26 Go) | le **superviseur de finition** activable — un modèle de vision MLX hôte qui critique et réajuste la finition pour **tous les modes d'empilement** (ciel profond, comète, voie lactée, planétaire ; voir plus bas) |
 | OpenCV | `brew install opencv` | uniquement pour le détecteur de traînées GoCV optionnel ; absent → le détecteur de Hough en Go pur |
 
 GraXpert et StarNet++ sont **à tolérance de panne** : si le binaire est absent, le traitement consigne

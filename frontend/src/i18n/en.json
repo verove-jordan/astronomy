@@ -18,7 +18,7 @@
   },
   "astroAgent": {
     "title": "AstroAgent",
-    "subtitle": "Chat with the local vision model — send prompts and images, see its replies.",
+    "subtitle": "Your astrophotography copilot — ask about your data, sky and setup, and let it run tasks for you (you approve every action).",
     "modelLabel": "Model",
     "modelMissing": "No model configured. Set ASTRO_LLM_MODEL (or pick one above) to chat.",
     "placeholder": "Ask the model something, or attach an image and describe what you want…",
@@ -50,6 +50,20 @@
       "magenta": "magenta",
       "detected": "detected",
       "none": "none"
+    }
+  },
+  "agent": {
+    "activity": {
+      "title": "Agent activity",
+      "toolCount": "{n} tool(s)",
+      "mutating": "action",
+      "running": "running…",
+      "preview": "Pass preview"
+    },
+    "confirm": {
+      "title": "The agent wants to take an action — approve it?",
+      "approve": "Approve",
+      "reject": "Reject"
     }
   },
   "goto": {
@@ -123,8 +137,55 @@
       "live": "Live stack",
       "tasks": "Tasks",
       "runs": "Runs",
-      "library": "Library"
+      "library": "Library",
+      "storage": "Storage"
     }
+  },
+  "storage": {
+    "title": "S3 storage manager",
+    "subtitle": "Connect any S3-compatible store, browse and manage its objects. The default connection also powers import, processing, results and backups.",
+    "connections": "Connections",
+    "addConnection": "Add connection",
+    "newConnection": "New connection",
+    "editConnection": "Edit connection",
+    "noConnections": "No connections yet. Add one to connect to an S3 store.",
+    "default": "Default",
+    "browse": "Browse",
+    "setDefault": "Set default",
+    "edit": "Edit",
+    "delete": "Delete",
+    "name": "Name",
+    "endpoint": "Endpoint",
+    "region": "Region",
+    "accessKey": "Access key ID",
+    "secretKey": "Secret access key",
+    "secretKeep": "•••••• (unchanged)",
+    "useSSL": "Use SSL",
+    "makeDefault": "Make default",
+    "test": "Test connection",
+    "testing": "Testing…",
+    "testOk": "Connected — {n} bucket(s) visible.",
+    "testFail": "Failed: {error}",
+    "save": "Save",
+    "cancel": "Cancel",
+    "confirmDeleteConn": "Delete the connection \"{name}\"?",
+    "browsing": "Browsing: {name}",
+    "buckets": "Buckets",
+    "newBucket": "New bucket",
+    "refresh": "Refresh",
+    "noBuckets": "No buckets.",
+    "allBuckets": "Buckets",
+    "up": "Up",
+    "newFolder": "New folder",
+    "upload": "Upload",
+    "download": "Download",
+    "emptyFolder": "This folder is empty.",
+    "newBucketPrompt": "New bucket name:",
+    "confirmDeleteBucket": "Delete bucket \"{name}\"?",
+    "forceDeleteBucket": "Delete ALL objects in it first? (OK = force-empty then delete, Cancel = only if already empty)",
+    "newFolderPrompt": "New folder name:",
+    "confirmDeleteObject": "Delete \"{name}\"?",
+    "confirmDeleteFolder": "Delete the folder \"{name}\" and everything in it?"
   },
   "run": {
     "mode": "Mode",
@@ -134,7 +195,7 @@
     "haExcludeStars": "Hα on nebulosity only (exclude stars)",
     "dropTransition": "Drop filter-wheel transition frames",
     "supervise": "Run with local AI agent (experimental)",
-    "superviseHint": "Opt-in: a local vision model auto-tunes the finish (saturation, Hα, colour, crop) over a few iterations, keeping the best. Needs a host model server (ASTRO_LLM_URL). Deep-sky / nebula only.",
+    "superviseHint": "Opt-in: a local vision model auto-tunes the finish over a few iterations, keeping the best — for every stacking mode (deep-sky/nebula composite, comet, milkyway grade, planetary sharpen). Needs a host model server (ASTRO_LLM_URL).",
     "modes": {
       "deepsky": "Deep-sky",
       "nebula": "Nebula",
@@ -194,6 +255,10 @@
     "connected": "Connected",
     "notConfigured": "S3 is not configured — set ASTRO_S3_* in the environment to enable cloud storage.",
     "queued": "Queued {n} transfer(s).",
+    "storage": "Storage",
+    "storageHint": "Full S3: pull inputs from S3, process locally, push inputs + results back, then free local disk (only after every file is verified on S3).",
+    "storageLocal": "Full local",
+    "storageS3": "Full S3 (free local after)",
     "badge": {
       "synced": "On S3 (synced with local)",
       "cloudOnly": "Only on S3 — download to use it locally"
@@ -207,6 +272,28 @@
       "removeLocalHint": "Delete local copies — only after verifying every file is on S3",
       "upload": "Upload"
     }
+  },
+  "backup": {
+    "title": "Backup & restore",
+    "subtitle": "Snapshot your database, calibration library, light-pollution atlas and app settings to S3.",
+    "component": {
+      "db": "Database",
+      "library": "Calibration library",
+      "atlas": "Light-pollution atlas",
+      "appstate": "App settings & AI chats"
+    },
+    "secretsNote": "Captures & results are backed up via Sync. Secrets in .env (DB password, API keys) are never included.",
+    "backupNow": "Back up now",
+    "working": "Working…",
+    "refresh": "Refresh",
+    "queued": "Backup queued.",
+    "past": "Past backups",
+    "empty": "No backups yet.",
+    "restore": "Restore",
+    "confirmRestore": "Restore this backup? The database / library / atlas will be overwritten with the snapshot.",
+    "restoreQueued": "Restore started.",
+    "reload": "Reload now",
+    "reloadHint": "App settings & chats were restored —"
   },
   "common": {
     "inspect": "Inspect",
@@ -241,6 +328,11 @@
     "selectCapture": "Select a capture folder above, then run.",
     "useFolder": "Inspect this folder",
     "inspectN": "Inspect {n} folders",
+    "downloadInspect": "Download & inspect {n}",
+    "downloadingBtn": "Downloading…",
+    "downloadingS3": "Downloading {n} folder(s) from S3…",
+    "tabs": { "local": "Local Files", "s3": "S3 Storage" },
+    "s3NotConfigured": "Configure S3 on the Storage page to browse it here.",
     "selectedCount": "{n} selected",
     "nFolders": "{n} folders",
     "selectFolder": "Add to selection",
@@ -376,6 +468,30 @@
     },
     "scoreSplit": "metrics {det} · model {model}"
   },
+  "supervisorChat": {
+    "title": "AI finish — live",
+    "live": "live",
+    "hint": "Follow the local AI agent as it re-finishes this run, and steer it: ask for a change, or stop it keeping the best pass.",
+    "placeholder": "Ask for a change (e.g. \"less saturation\", \"brighten the background\")…",
+    "send": "Send",
+    "stop": "Stop & keep best",
+    "convTitle": "AI finish — job #{id}"
+  },
+  "stagePreviews": {
+    "title": "Processing steps",
+    "hint": "A preview saved after each major step — click any frame to enlarge.",
+    "enlarge": "Click to enlarge",
+    "close": "Close",
+    "stages": {
+      "stacked": "Stacked",
+      "aligned": "Aligned",
+      "combined": "Combined",
+      "colorcal": "Color calibration",
+      "deconv": "Deconvolved",
+      "starless": "Star reduction",
+      "final": "Final"
+    }
+  },
   "refine": {
     "title": "Improve this run with AI",
     "hint": "The local vision model looks at the result, diagnoses its defects, and re-finishes it — iterating until it's clean.",
@@ -385,7 +501,8 @@
     "iters": "Max passes",
     "itersAuto": "auto",
     "run": "Improve with AI",
-    "starting": "Starting…"
+    "starting": "Starting…",
+    "failed": "Couldn't start the AI improvement for this run."
   },
   "log": { "empty": "No log output yet." },
   "viewer": {
@@ -424,11 +541,12 @@
     "cancelled": "Cancelled"
   },
   "darksky": {
-    "hint": "Draw an area on the map, set a maximum Bortle, then search for the darkest spots — optionally ranked by how open their ~360° horizon is.",
+    "hint": "Draw an area on the map, set a maximum Bortle, then search for the darkest spots — ranked by sky darkness and how open the horizon is (terrain + nearby trees), with driving distance from your location.",
     "drawArea": "Draw area",
     "drawing": "Drag on the map…",
     "maxBortle": "≤ Bortle {n}",
-    "evalHorizon": "Evaluate horizon openness",
+    "evalHorizon": "Horizon (terrain + trees)",
+    "evalHorizonHint": "Sample terrain and nearby tree/forest canopy to score the low horizon — the southern sky, where deep-sky targets ride lowest, is weighted most.",
     "search": "Search",
     "mapLabel": "Dark-sky search map",
     "coords": "Coordinates",
@@ -437,10 +555,38 @@
     "sqm": "SQM",
     "elevation": "Elevation",
     "openness": "Open horizon",
+    "south": "South",
+    "trees": "Trees",
+    "drive": "Drive",
+    "driveTitle": "Driving distance and time by road from your location.",
+    "driveDirectTitle": "Driving route unavailable — straight-line distance shown.",
+    "driveMin": "{n} min",
+    "driveHour": "{h} h {m}",
     "distance": "Distance",
     "locate": "Locate",
     "useLocation": "Use",
     "noResults": "No matching locations — try a larger area or a higher Bortle.",
+    "treesHint": "Trees show “—” until a canopy-height atlas is installed — run 'just update-canopy-data' with a canopy dataset and restart to fold nearby forests into the horizon.",
+    "location": {
+      "label": "Your location",
+      "placeholder": "Search a town or address…",
+      "gps": "📍 My location",
+      "gpsLabel": "My location",
+      "you": "You",
+      "notSet": "not set — search or use GPS"
+    },
+    "canopy": {
+      "title": "Tree/forest data",
+      "none": "Not installed — trees are ignored in the horizon. Download canopy heights for your area.",
+      "covers": "Installed: {area} · built {date}",
+      "download": "Download",
+      "building": "Downloading… {done}/{total}",
+      "hint": "Downloads ETH canopy-height data (10 m, © ETH Zürich, CC BY 4.0) for the chosen area via gdal, so nearby forests lower the horizon. Draw an area for the smallest download. Requires gdal (e.g. brew install gdal).",
+      "regions": {
+        "custom": "Drawn area",
+        "france": "France"
+      }
+    },
     "offline": {
       "title": "Offline data",
       "none": "Using coarse online data — install an offline atlas for accurate dark-sky values.",
@@ -498,7 +644,8 @@
     "lp": {
       "uncovered": "Detailed light-pollution data isn't downloaded for this area.",
       "download": "Download this area",
-      "downloading": "Downloading… {done}/{total}"
+      "downloading": "Downloading… {done}/{total}",
+      "failed": "Download failed"
     },
     "weather": {
       "title": "Astronomy weather",

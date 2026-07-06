@@ -122,6 +122,24 @@ update-light-pollution-data REGION="france":
 update-light-pollution-data-custom:
     @scripts/update-light-pollution.sh
 
+# Build the OFFLINE tree-canopy-height atlas for the dark-sky finder's tree-aware horizon (a spot hemmed in
+# by forest then scores its low southern horizon correctly). Point ASTRO_CANOPY_ATLAS_TIFF_URL at an ETH/Meta
+# canopy-height GeoTIFF (or /vsicurl/ URL) in .env; optional ASTRO_CANOPY_BBOX + ASTRO_CANOPY_RES_DEG (default
+# ~90 m). Needs gdal + jq. Optional + soft-fails; restart the engine to load it. See scripts/update-canopy.sh.
+update-canopy-data:
+    @scripts/update-canopy.sh
+
+# One-time download of Siril's OFFLINE Gaia plate-solve catalogue (~1.1 GB → ~3 GB) into
+# library/catalogues — makes plate-solving (and therefore SPCC colour calibration) work with no
+# network, on the host AND in the Docker engine (same files via the /data/library volume).
+download-catalogues:
+    @scripts/download-catalogues.sh
+
+# Also fetch the offline SPCC xp_sampled chunks (~5 GB, 48 files). Optional: without them SPCC
+# falls back to the online Gaia archive (needs network at run time).
+download-catalogues-spcc:
+    @scripts/download-catalogues.sh --spcc
+
 # Run the full auto pipeline (host). MODE: deepsky|nebula|milkyway|planetary  FORMAT: image|video|both
 # e.g. just process deepsky image ~/Astro/M31   ·   just process planetary video ~/Astro/moon.mp4
 process MODE FORMAT PATH *args:

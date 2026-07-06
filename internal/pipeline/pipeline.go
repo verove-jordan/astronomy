@@ -41,6 +41,7 @@ type Options struct {
 	OutputDir   string
 	WorkDir     string
 	Runner      *siril.Runner
+	FfmpegBin   string               // ffmpeg path for the planetary video/frame source (ProcessPlanetary)
 	Grade       *grade.Options       // nil → grade.DefaultOptions()
 	Postprocess *postprocess.Options // nil → postprocess.DefaultOptions()
 	Preset      *mode.Preset         // mode preset (curves/Ha/saturation for the GIMP finish)
@@ -65,6 +66,15 @@ type Options struct {
 	// supervised finish uses for structural fixes; nil (a pure refine with no raws) disables Tier C, so
 	// the supervisor caps at re-running the finish prep. Set by Process/ProcessOSC.
 	Reprocess func(ctx context.Context, preset *mode.Preset) (map[string]string, error)
+
+	// Steer lets the user nudge a supervised finish between iterations: it returns free-text guidance
+	// folded into the next critique and a stop flag that ends the loop early keeping the best pass. nil →
+	// the loop runs autonomously (CLI/MCP and non-conversation jobs unchanged). Set by the job manager.
+	Steer func() (guidance string, stop bool)
+	// Confirm blocks the supervised finish before an expensive step (the deep-sky Tier-C re-stack) to ask
+	// the user, returning the chosen option; ok=false (unanswered/unavailable) → proceed. nil → no gate
+	// (auto-proceed), preserving the autonomous path. Set by the job manager for supervised jobs.
+	Confirm func(ctx context.Context, question string, options []string) (choice string, ok bool)
 
 	// Catalog records the scanned inventory (frames + target) so future runs can reuse this data.
 	// nil → the run is not persisted and no cross-session reuse is possible.
@@ -141,6 +151,9 @@ type Progress struct {
 	// Iteration carries one completed supervised-finish pass as it happens, so the UI can stream the
 	// agent's iterations (preview + defects + scores) live instead of only after the job finishes.
 	Iteration *postprocess.IterationRecord `json:"iteration,omitempty"`
+	// StagePreview carries one saved processing-milestone preview (stacked/aligned/combined/finish…) as it
+	// is produced, so the UI accumulates a labeled timeline rather than only the latest live preview.
+	StagePreview *postprocess.StagePreview `json:"stage_preview,omitempty"`
 }
 
 // ChannelResult is the stacked output for one light channel (filter).
@@ -172,6 +185,9 @@ type Result struct {
 	Final     *postprocess.Result       `json:"final,omitempty"`
 	Reuse     *ReuseSummary             `json:"reuse,omitempty"` // prior data folded into this run
 	Warnings  []string                  `json:"warnings"`
+	// StagePreviews are the saved milestone preview PNGs (stacked/aligned/combined/finish…), reconstructed
+	// from the run's previews/ dir so the UI shows the processing timeline after a reload.
+	StagePreviews []postprocess.StagePreview `json:"stage_previews,omitempty"`
 }
 
 // Process runs the full pipeline and returns its result. Per-channel failures are recorded as
@@ -311,7 +327,7 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 	// shared across channels so each session is plate-solved only once.
 	parity := newParityCache(opts.Runner, opts.Solve)
 
-	for _, filter := range orderedPlanFilters(plan) {
+	for chIdx, filter := range orderedPlanFilters(plan) {
 		groups := plan.byFilter[filter]
 		var ch ChannelResult
 		if len(groups) == 1 && groups[0].Current { // no prior data → proven single-session path
@@ -328,6 +344,8 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 		}
 		if ch.PreviewPath != "" { // surface per-channel imagery live
 			opts.report(Progress{Step: "preview " + filter, Index: step, Total: total, Preview: ch.PreviewPath})
+			// Milestone timeline: the stacked+extracted master for this channel (copy the ready PNG).
+			capturePreview(ctx, opts, outDir, ordStacked+chIdx, stageStacked, filter, ch.PreviewPath, false)
 		}
 	}
 
@@ -346,11 +364,13 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 		for _, o := range res.Final.Outputs {
 			if strings.HasSuffix(o, ".png") {
 				opts.report(Progress{Step: "final", Index: total, Total: total, Preview: o})
+				capturePreview(ctx, opts, outDir, ordFinal, stageFinal, "", o, false) // milestone: the final image
 				break
 			}
 		}
 	}
-	writeRunJSON(outDir, res) // durable record so any run can be reopened from disk
+	res.StagePreviews = collectStagePreviews(outDir) // persist the milestone timeline for reload
+	writeRunJSON(outDir, res)                        // durable record so any run can be reopened from disk
 	return res, nil
 }
 
@@ -445,7 +465,7 @@ func finishAligned(ctx context.Context, opts Options, channels map[string]string
 	// Optional: local-AI-agent supervised finish (opt-in; GIMP composite path only). Soft-fall to the
 	// standard finish on any error so a run never fails because of the agent.
 	if superviseEnabled(ctx, opts) {
-		if final, err := superviseFinish(ctx, opts, channels, workRun, outDir, res); err != nil {
+		if final, err := superviseFinishDeepsky(ctx, opts, channels, workRun, outDir); err != nil {
 			res.Warnings = append(res.Warnings, "supervised finish failed, using standard finish: "+err.Error())
 		} else {
 			res.Final = final
@@ -505,6 +525,8 @@ func finishWithGimp(ctx context.Context, opts Options, channels map[string]strin
 	in.LumCurve = opts.Preset.LumCurve                   // brighten the galaxy from the L luminance (not the combined value)
 	in.CoreHighlightKnee = opts.Preset.CoreHighlightKnee // roll off the blown nebula core in the L luminance (pre-Ha-screen)
 	in.CoreHighlightCeil = opts.Preset.CoreHighlightCeil
+	in.HighlightKnee = opts.Preset.HighlightKnee // star-safe highlight cap on the final composite (cores never burn / over-orange)
+	in.HighlightCeil = opts.Preset.HighlightCeil
 	in.CropFrac = opts.Preset.CropFrac             // trim ragged stacking-edge bands off the export
 	in.HaExcludeStars = opts.Preset.HaExcludeStars // screen Ha onto nebulosity only when requested
 	g, err := gimp.BuildImage(opts.Gimp, in, opts.Preset.Curve, opts.Preset.HaScreen, opts.Preset.Saturation, filepath.Join(outDir, "final"))
@@ -526,6 +548,10 @@ func finishWithGimp(ctx context.Context, opts Options, channels map[string]strin
 			out.Notes = append(out.Notes, note)
 		} else {
 			out.Notes = append(out.Notes, fmt.Sprintf("StarNet++ star reduction (stars at %.0f%%)", opts.Preset.StarReduce*100))
+		}
+		// Milestone: the star-reduced final (copy the ready PNG if StarNet produced one).
+		if reduced := filepath.Join(outDir, "final_reduced.png"); fileExists(reduced) {
+			capturePreview(ctx, opts, outDir, ordStarless, stageStarless, "", reduced, false)
 		}
 	}
 	return out, nil
@@ -553,15 +579,18 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 	}
 
 	if rgb {
-		// Linear, background-extracted RGB base → SPCC color calibration → dark, *linked* stretch.
-		// Linked keeps SPCC's neutral channel balance (an unlinked stretch re-casts each channel and
-		// re-introduces a color tint); the dark target background keeps the sky near-black instead of
-		// Siril's washed-out 0.25 default.
+		// Linear, background-extracted RGB base → SPCC color calibration → dark stretch. A LINKED stretch
+		// keeps a *trustworthy* channel balance (SPCC's) — but only when SPCC actually ran; on the
+		// neutralization fallback there is no trustworthy balance, so we stretch UNLINKED to equalize the
+		// channels toward neutral (see the linked/spccApplied handling below). The dark target background
+		// keeps the sky near-black instead of Siril's washed-out 0.25 default.
 		s1 := hdr + fmt.Sprintf("rgbcomp %s %s %s -out=rgb_base\nload rgb_base\n%ssave rgb_base\n",
 			channels["R"], channels["G"], channels["B"], siril.SubskyCmd(deg))
 		if _, err := runner.Run(ctx, outDir, s1, nil); err != nil {
 			return gimp.Inputs{}, nil, err
 		}
+		// Milestone: the combined RGB (channels aligned + merged), before gradient/colour calibration.
+		capturePreview(ctx, opts, outDir, ordCombined, stageCombined, "", filepath.Join(outDir, "rgb_base.fits"), true)
 		// Remove the residual large-scale colour gradient (amp-glow + light pollution) that survives the
 		// per-channel extraction and the combine — a 2nd GraXpert pass on the linear combined RGB, before
 		// SPCC, so the whole sky is homogeneous. RBF subsky is the deterministic fallback (no GraXpert).
@@ -570,20 +599,28 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 		}
 		// AI colour denoise on the combined linear RGB (edge-preserving) — cuts the thin colour's heavy
 		// chrominance noise *before* SPCC/stretch amplify it, without smearing star halos (a blur would).
-		if opts.Preset != nil && opts.Preset.ColorDenoiseAI && opts.Graxpert != nil && opts.Graxpert.Available(ctx) == nil {
+		if opts.Preset != nil && opts.Preset.ColorDenoiseAI && opts.Graxpert != nil && opts.Graxpert.Healthy(ctx) == nil {
 			if n := denoiseAI(ctx, opts, filepath.Join(outDir, "rgb_base.fits"), nil); n != "" {
 				notes = append(notes, "colour "+n)
 			}
 		}
-		note, err := postprocess.ColorCalibrate(ctx, runner, outDir, "rgb_base", cc)
+		note, spccApplied, err := postprocess.ColorCalibrate(ctx, runner, outDir, "rgb_base", cc)
 		if err != nil {
 			return gimp.Inputs{}, nil, err
 		}
 		if note != "" {
 			notes = append(notes, note)
 		}
+		// Only a real SPCC pass gives a channel balance worth preserving with a LINKED stretch. When SPCC
+		// fell back to neutralization, a linked stretch would lock in the raw channel imbalance of the
+		// uncalibrated masters (typically green-weak → a magenta cast); an UNLINKED stretch normalizes each
+		// channel independently → a neutral result — and makes the final match the (unlinked) milestone
+		// previews instead of diverging into magenta.
+		linked = linked && spccApplied
+		// Milestone: the colour-calibrated (SPCC + gradient-removed) linear RGB, before the stretch.
+		capturePreview(ctx, opts, outDir, ordColorCal, stageColorCal, "", filepath.Join(outDir, "rgb_base.fits"), true)
 		// SCNR (rmgreen, average-neutral) after SPCC removes the residual green star/sky cast SPCC alone
-		// leaves; then a dark linked stretch.
+		// leaves; then a dark stretch (linked only when SPCC calibrated — see above).
 		s2 := hdr + fmt.Sprintf("load rgb_base\nrmgreen 0\n%s\nsavetif %s\n", siril.AutostretchCmd(linked, bgLevel), base)
 		if _, err := runner.Run(ctx, outDir, s2, nil); err != nil {
 			return gimp.Inputs{}, nil, err

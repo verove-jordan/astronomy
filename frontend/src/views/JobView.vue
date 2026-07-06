@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useJobsStore } from "@/stores/jobs";
+import { useAgentStore } from "@/stores/agent";
 import { useJobStream } from "@/composables/useJobStream";
 import { fileUrl } from "@/services/api";
 import {
@@ -16,6 +17,8 @@ import CaptureSummary from "@/components/Capture/CaptureSummary.vue";
 import ChannelMappingList from "@/components/Capture/ChannelMappingList.vue";
 import RunResultPanels from "@/components/Common/RunResultPanels.vue";
 import SupervisorPanel from "@/components/Common/SupervisorPanel.vue";
+import SupervisorChat from "@/components/Common/SupervisorChat.vue";
+import StagePreviewTimeline from "@/components/Common/StagePreviewTimeline.vue";
 import { btnDanger, btnPrimary, card } from "@/constants/styles";
 import { baseName, formatBytes } from "@/utils/format";
 import type { Inventory } from "@/types";
@@ -24,6 +27,9 @@ const props = defineProps<{ id: string }>();
 const { t } = useI18n();
 const router = useRouter();
 const jobsStore = useJobsStore();
+const agent = useAgentStore();
+// Set (this session) for a supervised/refine run: the id of its live steerable conversation turn.
+const turnId = computed(() => jobsStore.turnFor(jobId));
 
 const TERMINAL = ["succeeded", "failed", "cancelled"];
 function isTerminal(s?: string): boolean {
@@ -42,6 +48,7 @@ const {
   cpuPercent,
   peakRssBytes,
   iterations,
+  stagePreviews,
   seed,
 } = useJobStream(jobId, () => jobsStore.get(jobId));
 
@@ -49,6 +56,14 @@ const reInv = ref<Inventory | null>(null);
 const cancelling = ref(false);
 
 onMounted(async () => {
+  // A supervised/refine run started this session has a live conversation turn — open it so its previews,
+  // reasoning and steering show inline (and it lands in the AstroAgent history). Fire-and-forget; the
+  // stream ends itself when the run finishes.
+  if (turnId.value) {
+    void agent.watchTurn(turnId.value, {
+      title: t("supervisorChat.convTitle", { id: jobId }),
+    });
+  }
   await jobsStore.get(jobId);
   const jb = jobsStore.current;
   if (jb?.log_tail) seed(jb.log_tail.split("\n"));
@@ -84,15 +99,19 @@ const restarting = ref(false);
 // Live-stacking jobs run until stopped; the "cancel" affordance is really "stop & finalize".
 const isLive = computed(() => job.value?.params?.mode === "livestack");
 
-// A completed deep-sky/nebula run can be re-finished by the AI supervisor (no re-stack unless the user
-// opts into Tier C). Needs a `final` (channel masters on disk to re-finish).
-const canRefine = computed(() => {
-  const mode = job.value?.params?.mode ?? "deepsky";
-  return (
+// Any completed run can be re-finished by the AI supervisor: it re-tunes that mode's finish from the
+// masters/intermediates left on disk. Needs a nested `final` (deep-sky/comet/milkyway) or a flat
+// `outputs` (planetary).
+const canRefine = computed(
+  () =>
     job.value?.status === "succeeded" &&
-    (mode === "deepsky" || mode === "nebula") &&
-    !!result.value?.final
-  );
+    (!!result.value?.final || !!result.value?.outputs?.length),
+);
+// Only the deep-sky supervisor has cost tiers (composite / finish / re-stack); the other modes re-finish
+// in a single cheap stage, so the tier selector is hidden for them.
+const refineHasTiers = computed(() => {
+  const mode = job.value?.params?.mode ?? "deepsky";
+  return mode === "deepsky" || mode === "nebula" || mode === "livestack";
 });
 const refining = ref(false);
 // Refine re-finishes an existing run from its stacked masters, so it reaches Tier A (composite) or B
@@ -100,17 +119,21 @@ const refining = ref(false);
 // checkbox at run time (a fresh run keeps its raw frames wired for Tier C).
 const refineTier = ref<"A" | "B">("B");
 const refineIters = ref<number | null>(null);
+const refineError = ref("");
 
 async function refineJob() {
   refining.value = true;
+  refineError.value = "";
   try {
     const newId = await jobsStore.refine(jobId, {
       tier: refineTier.value,
       maxIters: refineIters.value || undefined,
     });
     router.push({ name: "job", params: { id: String(newId) } });
-  } catch {
-    refining.value = false; // stay on the run so any error stays visible
+  } catch (e) {
+    // Surface the failure (e.g. a run with nothing on disk to refine) instead of silently doing nothing.
+    refineError.value = (e as Error).message || t("refine.failed");
+    refining.value = false; // stay on the run so the error stays visible
   }
 }
 
@@ -224,6 +247,10 @@ async function restartJob() {
       {{ job.error }}
     </p>
 
+    <!-- Live, steerable AI-supervisor conversation for this run: previews + reasoning + steering. Shows
+         whenever this session started the run (supervise checkbox or "Améliorer avec l'IA"). -->
+    <SupervisorChat v-if="turnId" :turn-id="turnId" />
+
     <!-- While processing: keep capture context visible + live progress, logs and preview -->
     <template v-if="running">
       <div :class="card">
@@ -281,6 +308,7 @@ async function restartJob() {
       </section>
 
       <!-- Supervised finish: stream the agent's iterations (preview + defects + scores) as they land. -->
+      <StagePreviewTimeline :live="stagePreviews" />
       <SupervisorPanel v-if="iterations.length" :live="iterations" />
 
       <LogConsole :lines="lines" />
@@ -304,6 +332,7 @@ async function restartJob() {
             </p>
           </div>
           <label
+            v-if="refineHasTiers"
             class="flex flex-col gap-1 text-xs text-slate-500 dark:text-slate-400"
           >
             {{ t("refine.reach") }}
@@ -337,6 +366,13 @@ async function restartJob() {
             {{ refining ? t("refine.starting") : t("refine.run") }}
           </button>
         </div>
+        <p
+          v-if="refineError"
+          class="mt-2 text-sm text-red-600 dark:text-red-400"
+          data-demo="refine-error"
+        >
+          {{ refineError }}
+        </p>
       </section>
 
       <RunResultPanels :result="result" />

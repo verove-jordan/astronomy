@@ -75,7 +75,8 @@ func (s *Server) skyWeatherGrid(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "lat/lon out of range")
 		return
 	}
-	g, warn := s.weatherGridAt(r.Context(), lat, lon, splitCSV(q.Get("layers"))) // splitCSV: events.go
+	radius := floatParam(q, "radius", 0)                                                 // 0 → provider default; the provider clamps to a sane range
+	g, warn := s.weatherGridAt(r.Context(), lat, lon, radius, splitCSV(q.Get("layers"))) // splitCSV: events.go
 	writeJSON(w, http.StatusOK, weatherGridResponse{Grid: g, Warning: warn})
 }
 
@@ -88,9 +89,9 @@ func (s *Server) weatherAt(ctx context.Context, lat, lon float64) (weather.SiteF
 	return s.weather.Forecast(ctx, lat, lon)
 }
 
-func (s *Server) weatherGridAt(ctx context.Context, lat, lon float64, layers []string) (weather.Grid, string) {
+func (s *Server) weatherGridAt(ctx context.Context, lat, lon, radiusDeg float64, layers []string) (weather.Grid, string) {
 	if s.weather == nil {
 		return weather.Grid{Layers: map[string][][]float32{}}, ""
 	}
-	return s.weather.Grid(ctx, lat, lon, layers)
+	return s.weather.Grid(ctx, lat, lon, radiusDeg, layers)
 }

@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
-import { apiGet, apiPost } from "@/services/api";
+import { apiGet, apiPost, agentTurnEventsUrl } from "@/services/api";
 import { idbGet, idbSet } from "@/utils/idb";
 
 // Objective per-image stats the backend measured (fed to the model as ground truth, and shown in the
@@ -16,20 +16,63 @@ export interface AssistMeasurement {
   trail_span: number;
 }
 
+// AgentOption is one choice the agent offers (a fix to apply, a folder to process…).
+export interface AgentOption {
+  id: string;
+  label: string;
+  detail?: string;
+}
+
+// AgentStep is one streamed step of an agent turn — a thought, a tool call (with its result merged in),
+// a confirmation/choice request, an error, or the final answer. Mirrors the Go agent.Event.
+export interface AgentStep {
+  kind: "thinking" | "tool_call" | "tool_result" | "confirm" | "ask" | "error";
+  step?: number;
+  text?: string;
+  tool?: string;
+  args?: string;
+  output?: string;
+  is_error?: boolean;
+  mutating?: boolean;
+  call_id?: string;
+  question?: string;
+  options?: AgentOption[];
+  preview?: string; // supervised pass: server file path of the rendered image (wrapped with fileUrl)
+  resolved?: boolean; // confirm/ask: the user has answered
+  answer?: string; // confirm/ask: what they chose (approve/decline or option label)
+}
+
+// A pending confirmation the agent is blocked on: the UI shows an approve/reject or choice card.
+export interface PendingConfirm {
+  turnId: string;
+  callId: string;
+  kind: "confirm" | "ask";
+  tool?: string;
+  args?: string;
+  question?: string;
+  options?: AgentOption[];
+}
+
 // One chat turn. Images are base64 data URLs (browser FileReader output) attached to user turns;
-// measurements are the backend's objective stats for those images (user turns only).
+// measurements are the backend's objective stats for those images (user turns only); steps are the
+// agent's tool-activity log accumulated while an assistant turn streams.
 export interface AgentChatMessage {
   role: "user" | "assistant";
   text: string;
   images?: string[];
   measurements?: AssistMeasurement[];
+  steps?: AgentStep[];
 }
 
 // A stored conversation: full message history (incl. images) so it can be continued at any time.
+// turnId is set for a supervised-job conversation (a backend-spawned turn we watch rather than start);
+// live is true only while its SSE stream is open this session (so its composer steers instead of chats).
 export interface Conversation {
   id: string;
   title: string;
   model?: string;
+  turnId?: string;
+  live?: boolean;
   createdAt: number;
   updatedAt: number;
   messages: AgentChatMessage[];
@@ -106,6 +149,9 @@ export const useAgentStore = defineStore("agent", () => {
     try {
       const saved = await idbGet<Conversation[]>(STORAGE_KEY);
       conversations.value = Array.isArray(saved) ? saved : [];
+      // A persisted `live` flag is stale after a reload — the SSE stream is gone. Reset it so a reopened
+      // supervised conversation shows its transcript read-only rather than pretending to still steer.
+      conversations.value.forEach((c) => (c.live = false));
       activeId.value = orderedConversations.value[0]?.id ?? null; // open the most recent, or a new chat
     } catch {
       conversations.value = [];
@@ -135,9 +181,19 @@ export const useAgentStore = defineStore("agent", () => {
     }
   }
 
-  // send appends the user turn to the active conversation (creating one on the first send), calls the
-  // model with the full history, then appends the reply. Throws on API error — the user turn is already
-  // saved, so it can be retried — and the caller surfaces the message.
+  // --- a running agent turn (streamed over SSE) ---
+  const streaming = ref(false);
+  const pendingConfirm = ref<PendingConfirm | null>(null);
+
+  // wireMessages strips client-only fields (steps/measurements) so the backend receives just the
+  // conversation (role/text/images) it needs to seed the turn.
+  function wireMessages(msgs: AgentChatMessage[]) {
+    return msgs.map((m) => ({ role: m.role, text: m.text, images: m.images }));
+  }
+
+  // send runs one agent turn: it appends the user turn, starts the turn on the backend, then streams the
+  // agent's steps (thoughts, tool calls, confirmations, final answer) onto a new assistant message. It
+  // resolves when the turn finishes. Throws on the initial API error (the user turn is already saved).
   async function send(
     text: string,
     images: string[],
@@ -167,22 +223,197 @@ export const useAgentStore = defineStore("agent", () => {
     conv.updatedAt = Date.now();
     persist();
 
-    const body: Record<string, unknown> = { messages: conv.messages };
+    const body: Record<string, unknown> = {
+      messages: wireMessages(conv.messages),
+    };
     if (opts.model) body.model = opts.model;
-    if (opts.maxTokens) body.max_tokens = opts.maxTokens;
-    if (opts.temperature !== undefined) body.temperature = opts.temperature;
     const data = await apiPost<{
-      reply: string;
+      turn_id: string;
       measurements?: AssistMeasurement[];
     }>("/api/agent/chat", body);
-
-    // Attach the backend's objective stats to the user turn (for the stats panel), then the reply.
     if (data.measurements && data.measurements.length) {
       conv.messages[userIdx].measurements = data.measurements;
     }
-    conv.messages.push({ role: "assistant", text: data.reply });
+
+    const assistant: AgentChatMessage = {
+      role: "assistant",
+      text: "",
+      steps: [],
+    };
+    conv.messages.push(assistant);
     conv.updatedAt = Date.now();
     persist();
+    await streamTurn(data.turn_id, assistant);
+    conv.updatedAt = Date.now();
+    persist();
+  }
+
+  // streamTurn opens the turn's SSE stream and accumulates each step onto the assistant message
+  // (merging a tool_result into its tool_call). Application is idempotent by "kind:step:call_id" so a
+  // reconnect that replays the backlog never duplicates rows. Resolves on the terminal "done" event.
+  function streamTurn(
+    turnId: string,
+    assistant: AgentChatMessage,
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      streaming.value = true;
+      const src = new EventSource(agentTurnEventsUrl(turnId));
+      const seen = new Set<string>();
+      let tick = 0;
+      const steps = () => (assistant.steps ??= []);
+      // The raw SSE event carries the two terminal kinds ("done"/"final") on top of the display kinds.
+      type AgentEvent = Omit<AgentStep, "kind"> & {
+        kind: AgentStep["kind"] | "done" | "final";
+      };
+      src.onmessage = (ev: MessageEvent<string>) => {
+        const e = JSON.parse(ev.data) as AgentEvent;
+        if (e.kind === "done") {
+          src.close();
+          streaming.value = false;
+          pendingConfirm.value = null;
+          persist();
+          resolve();
+          return;
+        }
+        const sig = `${e.kind}:${e.step ?? ""}:${e.call_id ?? ""}`;
+        if (seen.has(sig)) return;
+        seen.add(sig);
+        if (e.kind === "final") {
+          assistant.text = e.text || assistant.text;
+        } else if (e.kind === "tool_result") {
+          const call = [...steps()]
+            .reverse()
+            .find(
+              (s) =>
+                s.kind === "tool_call" &&
+                s.tool === e.tool &&
+                s.output === undefined,
+            );
+          if (call) {
+            call.output = e.output;
+            call.is_error = e.is_error;
+          } else steps().push(e as AgentStep);
+        } else if (e.kind === "confirm" || e.kind === "ask") {
+          steps().push(e as AgentStep);
+          pendingConfirm.value = {
+            turnId,
+            callId: e.call_id ?? "",
+            kind: e.kind,
+            tool: e.tool,
+            args: e.args,
+            question: e.question,
+            options: e.options,
+          };
+        } else {
+          steps().push(e as AgentStep); // thinking / tool_call / error
+        }
+        if (++tick % 3 === 0) persist();
+      };
+      src.onerror = () => {
+        // The browser auto-reconnects and replays the backlog; the `seen` set keeps it idempotent.
+      };
+    });
+  }
+
+  // respondConfirm answers the agent's pending confirmation/choice, marks the step resolved, and
+  // unblocks the server-side loop.
+  async function respondConfirm(
+    approve: boolean,
+    choice?: string,
+  ): Promise<void> {
+    const pc = pendingConfirm.value;
+    if (!pc) return;
+    const step = active.value?.messages
+      .flatMap((m) => m.steps ?? [])
+      .find((s) => s.call_id === pc.callId);
+    if (step) {
+      step.resolved = true;
+      step.answer =
+        pc.kind === "ask"
+          ? (pc.options?.find((o) => o.id === choice)?.label ?? choice ?? "")
+          : approve
+            ? "approved"
+            : "declined";
+    }
+    pendingConfirm.value = null;
+    persist();
+    await apiPost(`/api/agent/turns/${pc.turnId}/confirm`, {
+      call_id: pc.callId,
+      approve,
+      choice,
+    });
+  }
+
+  // conversationByTurn finds the conversation bound to a backend turn (a supervised finish), if any.
+  function conversationByTurn(turnId: string): Conversation | null {
+    return conversations.value.find((c) => c.turnId === turnId) ?? null;
+  }
+
+  // watchTurn attaches to a backend-spawned turn (a supervised finish) and streams it into a persisted
+  // conversation, reusing the same step model + rendering as the chat — so the run reads as a live agent
+  // turn (with per-pass previews) and lands in the history sidebar. The turn id is unique per run, so this
+  // creates a fresh conversation; a second call while it is already streaming is a no-op.
+  async function watchTurn(
+    turnId: string,
+    meta: { title?: string } = {},
+  ): Promise<void> {
+    let conv = conversationByTurn(turnId);
+    if (conv?.live) return;
+    if (!conv) {
+      conv = {
+        id: crypto.randomUUID(),
+        title: meta.title || "Finish",
+        turnId,
+        live: true,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: [{ role: "assistant", text: "", steps: [] }],
+      };
+      conversations.value.push(conv);
+    }
+    conv.live = true;
+    if (meta.title) conv.title = meta.title;
+    let assistant = conv.messages[conv.messages.length - 1];
+    if (!assistant || assistant.role !== "assistant") {
+      assistant = { role: "assistant", text: "", steps: [] };
+      conv.messages.push(assistant);
+    }
+    persist();
+    try {
+      await streamTurn(turnId, assistant);
+    } finally {
+      const c = conversationByTurn(turnId);
+      if (c) {
+        c.live = false;
+        c.updatedAt = Date.now();
+      }
+      persist();
+    }
+  }
+
+  // steerTurn sends a free-text nudge and/or a stop request to a live supervised turn, optimistically
+  // showing the user's message in the conversation. The backend folds the text into the next pass's
+  // critique (and a stop keeps the best pass so far).
+  async function steerTurn(
+    turnId: string,
+    text: string,
+    stop = false,
+  ): Promise<void> {
+    const trimmed = text.trim();
+    if (!trimmed && !stop) return;
+    const conv = conversationByTurn(turnId);
+    if (conv) {
+      conv.messages.push({
+        role: "user",
+        text: trimmed || "⏹ Stop & keep the best pass",
+      });
+      conv.updatedAt = Date.now();
+      persist();
+    }
+    await apiPost(`/api/agent/turns/${turnId}/message`, {
+      text: trimmed,
+      stop,
+    });
   }
 
   return {
@@ -197,10 +428,16 @@ export const useAgentStore = defineStore("agent", () => {
     activeMessages,
     activeId,
     loaded,
+    streaming,
+    pendingConfirm,
     newChat,
     selectChat,
     deleteChat,
     renameChat,
     send,
+    respondConfirm,
+    conversationByTurn,
+    watchTurn,
+    steerTurn,
   };
 });

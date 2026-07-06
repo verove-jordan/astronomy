@@ -14,11 +14,13 @@ import (
 // finish PNG — the exact pixels the vision model and the user see. They drive the supervisor's
 // deterministic score, so a crushed or colour-cast render can never win on the model's word alone.
 type finishMetrics struct {
-	BlackClip  [3]float64 `json:"black_clip"` // fraction of pixels at 0, per channel R,G,B
-	WhiteClip  [3]float64 `json:"white_clip"` // fraction of pixels at 255, per channel R,G,B
-	Median     [3]float64 `json:"median"`     // per-channel median, 0..1
-	Background float64    `json:"background"` // sky level estimate (10th-percentile luma), 0..1
-	GreenCast  float64    `json:"green_cast"` // medianG - mean(medianR, medianB); >0 → green cast
+	BlackClip  [3]float64 `json:"black_clip"`  // fraction of pixels at 0, per channel R,G,B
+	WhiteClip  [3]float64 `json:"white_clip"`  // fraction of pixels at 255, per channel R,G,B
+	Median     [3]float64 `json:"median"`      // per-channel median, 0..1
+	Background float64    `json:"background"`  // sky level estimate (10th-percentile luma), 0..1
+	GreenCast  float64    `json:"green_cast"`  // medianG - mean(medianR, medianB); >0 → green cast
+	WarmCast   float64    `json:"warm_cast"`   // sky red-excess: bgR - mean(bgG,bgB) on the per-channel 10th-pct background; >0 → warm/orange cast
+	SignalCast float64    `json:"signal_cast"` // bright-signal (galaxy/star) green balance: 90th-pct G - mean(90th-pct R,B); <0 → magenta/pink signal, >0 → green
 }
 
 // measureFinish decodes a rendered PNG and computes per-channel clipping, medians, a background
@@ -77,6 +79,19 @@ func metricsFromImage(img image.Image) finishMetrics {
 	}
 	m.Background = float64(percentile(lumHist[:], n, 0.10)) / 255
 	m.GreenCast = m.Median[1] - (m.Median[0]+m.Median[2])/2
+	// Warm/orange cast is measured on the SKY (per-channel 10th-percentile background), not the whole-frame
+	// median — so legitimate red nebulosity (bright, not in the background) never reads as a cast.
+	bgR := float64(percentile(hist[0][:], n, 0.10)) / 255
+	bgG := float64(percentile(hist[1][:], n, 0.10)) / 255
+	bgB := float64(percentile(hist[2][:], n, 0.10)) / 255
+	m.WarmCast = bgR - (bgG+bgB)/2
+	// Signal (galaxy/star) colour cast on the BRIGHT 90th-percentile per channel — not the sky median — so a
+	// magenta/pink galaxy + discoloured stars register even when the sky median is neutral (the M31 failure).
+	// <0 → magenta/pink signal, >0 → green signal.
+	sigR := float64(percentile(hist[0][:], n, 0.90)) / 255
+	sigG := float64(percentile(hist[1][:], n, 0.90)) / 255
+	sigB := float64(percentile(hist[2][:], n, 0.90)) / 255
+	m.SignalCast = sigG - (sigR+sigB)/2
 	return m
 }
 

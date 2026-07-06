@@ -11,6 +11,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/llm"
 	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
+	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/starnet"
 )
@@ -51,6 +52,7 @@ func runRefine(args []string) error {
 		graxRunner = graxpert.New(cfg.GraxpertBin)
 		starRunner = starnet.New(cfg.StarnetBin)
 	}
+	refineSolve, refineSpcc := postprocess.SolveSpccFromConfig(cfg)
 
 	final, err := pipeline.RefineExistingRun(ctx, pipeline.Options{
 		WorkDir:    cfg.WorkDir,
@@ -60,12 +62,8 @@ func runRefine(args []string) error {
 		Starnet:    starRunner,
 		Supervisor: llm.New(cfg.LLMBaseURL, cfg.LLMModel, cfg.LLMImageFormat).WithTimeout(cfg.LLMTimeout),
 		Preset:     &preset,
-		Solve:      siril.SolveOptions{FocalMM: cfg.FocalLenMM, PixelUm: cfg.PixelSizeUm, Catalog: cfg.PlateSolveCatalog},
-		Spcc: siril.SpccOptions{
-			MonoSensor: cfg.SpccMonoSensor, OSCSensor: cfg.NightscapeOSCSensor,
-			RFilter: cfg.SpccRFilter, GFilter: cfg.SpccGFilter,
-			BFilter: cfg.SpccBFilter, WhiteRef: cfg.SpccWhiteRef,
-		},
+		Solve:      refineSolve,
+		Spcc:       refineSpcc,
 		CatalogDir: cfg.SirilCatalogDir,
 		OnProgress: pipelineProgress(*verbose),
 	}, runDir)

@@ -7,6 +7,8 @@ import { ApiError } from "@/services/api";
 import { card, btnPrimary, btnGhost, input } from "@/constants/styles";
 import MarkdownText from "@/components/Common/MarkdownText.vue";
 import ImageStatsPanel from "@/components/Common/ImageStatsPanel.vue";
+import AgentActivity from "@/components/Common/AgentActivity.vue";
+import AgentConfirm from "@/components/Common/AgentConfirm.vue";
 
 const { t } = useI18n();
 const agent = useAgentStore();
@@ -49,6 +51,22 @@ watch(
   () => [agent.activeMessages.length, sending.value] as const,
   () => void scrollToBottom(),
 );
+// Keep the transcript pinned to the bottom as steps stream in and as a confirmation appears.
+const lastSteps = computed(
+  () =>
+    agent.activeMessages[agent.activeMessages.length - 1]?.steps?.length ?? 0,
+);
+watch(
+  () => [lastSteps.value, agent.pendingConfirm?.callId] as const,
+  () => void scrollToBottom(),
+);
+
+// Show the "thinking" placeholder only until the first step streams in (then the activity log takes over).
+const showThinking = computed(() => agent.streaming && lastSteps.value === 0);
+
+function onConfirm(approve: boolean, choice?: string) {
+  void agent.respondConfirm(approve, choice);
+}
 
 onMounted(() => {
   void agent.refreshStatus();
@@ -94,6 +112,23 @@ async function send() {
   if (!canSend.value) return;
   error.value = "";
   const text = draft.value.trim();
+  // A live supervised-finish conversation: the composer steers the running loop (folded into the next
+  // pass) instead of starting a fresh chat turn.
+  const conv = agent.active;
+  if (conv?.live && conv.turnId) {
+    draft.value = "";
+    sending.value = true;
+    try {
+      await agent.steerTurn(conv.turnId, text);
+    } catch (e) {
+      error.value =
+        e instanceof ApiError ? e.message : (e as Error).message || String(e);
+    } finally {
+      sending.value = false;
+      await scrollToBottom();
+    }
+    return;
+  }
   const images = [...attachments.value];
   draft.value = "";
   attachments.value = [];
@@ -207,7 +242,11 @@ const convItemClass = (id: string) =>
     <div v-else class="flex flex-col gap-4 md:flex-row">
       <!-- Conversation history -->
       <aside class="flex shrink-0 flex-col gap-2 md:w-64">
-        <button type="button" :class="[btnPrimary, 'w-full']" @click="startNewChat">
+        <button
+          type="button"
+          :class="[btnPrimary, 'w-full']"
+          @click="startNewChat"
+        >
           + {{ t("astroAgent.newChat") }}
         </button>
         <div
@@ -251,10 +290,7 @@ const convItemClass = (id: string) =>
           ref="transcriptEl"
           :class="[card, 'h-[60vh] space-y-3 overflow-y-auto']"
         >
-          <p
-            v-if="!agent.activeMessages.length"
-            class="text-sm text-slate-400"
-          >
+          <p v-if="!agent.activeMessages.length" class="text-sm text-slate-400">
             {{ t("astroAgent.empty") }}
           </p>
           <div
@@ -287,20 +323,38 @@ const convItemClass = (id: string) =>
                 class="w-full"
               />
             </div>
-            <div v-else class="group relative max-w-[85%]">
-              <div :class="bubbleClass('assistant')">
-                <MarkdownText :text="m.text" />
+            <div v-else class="flex max-w-[85%] flex-col gap-2">
+              <AgentActivity
+                v-if="m.steps?.length"
+                :steps="m.steps"
+                :streaming="
+                  i === agent.activeMessages.length - 1 && agent.streaming
+                "
+              />
+              <div v-if="m.text" class="group relative">
+                <div :class="bubbleClass('assistant')">
+                  <MarkdownText :text="m.text" />
+                </div>
+                <button
+                  type="button"
+                  class="absolute right-1 top-1 rounded bg-slate-900/70 px-1.5 py-0.5 text-xs text-slate-300 opacity-0 transition-opacity hover:text-white group-hover:opacity-100"
+                  @click="copyText(m.text, i)"
+                >
+                  {{
+                    copiedIdx === i
+                      ? t("astroAgent.copied")
+                      : t("astroAgent.copy")
+                  }}
+                </button>
               </div>
-              <button
-                type="button"
-                class="absolute right-1 top-1 rounded bg-slate-900/70 px-1.5 py-0.5 text-xs text-slate-300 opacity-0 transition-opacity hover:text-white group-hover:opacity-100"
-                @click="copyText(m.text, i)"
-              >
-                {{ copiedIdx === i ? t("astroAgent.copied") : t("astroAgent.copy") }}
-              </button>
             </div>
           </div>
-          <div v-if="sending" class="animate-pulse text-sm text-slate-400">
+          <AgentConfirm
+            v-if="agent.pendingConfirm"
+            :confirm="agent.pendingConfirm"
+            @respond="onConfirm"
+          />
+          <div v-if="showThinking" class="animate-pulse text-sm text-slate-400">
             {{ t("astroAgent.thinking") }}
           </div>
         </div>

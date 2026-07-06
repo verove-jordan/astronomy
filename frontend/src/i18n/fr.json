@@ -18,7 +18,7 @@
   },
   "astroAgent": {
     "title": "AstroAgent",
-    "subtitle": "Discutez avec le modèle de vision local — envoyez des invites et des images, et voyez ses réponses.",
+    "subtitle": "Votre copilote d'astrophotographie — interrogez-le sur vos données, le ciel et votre matériel, et laissez-le exécuter des tâches pour vous (vous approuvez chaque action).",
     "modelLabel": "Modèle",
     "modelMissing": "Aucun modèle configuré. Définissez ASTRO_LLM_MODEL (ou choisissez-en un ci-dessus) pour discuter.",
     "placeholder": "Posez une question au modèle, ou joignez une image et décrivez ce que vous voulez…",
@@ -50,6 +50,20 @@
       "magenta": "magenta",
       "detected": "détectée",
       "none": "aucune"
+    }
+  },
+  "agent": {
+    "activity": {
+      "title": "Activité de l'agent",
+      "toolCount": "{n} outil(s)",
+      "mutating": "action",
+      "running": "en cours…",
+      "preview": "Aperçu de la passe"
+    },
+    "confirm": {
+      "title": "L'agent veut effectuer une action — l'approuver ?",
+      "approve": "Approuver",
+      "reject": "Refuser"
     }
   },
   "goto": {
@@ -123,8 +137,55 @@
       "live": "Empilement direct",
       "tasks": "Tâches",
       "runs": "Traitements",
-      "library": "Bibliothèque"
+      "library": "Bibliothèque",
+      "storage": "Stockage"
     }
+  },
+  "storage": {
+    "title": "Gestionnaire de stockage S3",
+    "subtitle": "Connectez n'importe quel stockage compatible S3, parcourez et gérez ses objets. La connexion par défaut alimente aussi l'import, le traitement, les résultats et les sauvegardes.",
+    "connections": "Connexions",
+    "addConnection": "Ajouter une connexion",
+    "newConnection": "Nouvelle connexion",
+    "editConnection": "Modifier la connexion",
+    "noConnections": "Aucune connexion. Ajoutez-en une pour vous connecter à un stockage S3.",
+    "default": "Défaut",
+    "browse": "Parcourir",
+    "setDefault": "Définir par défaut",
+    "edit": "Modifier",
+    "delete": "Supprimer",
+    "name": "Nom",
+    "endpoint": "Endpoint",
+    "region": "Région",
+    "accessKey": "Access key ID",
+    "secretKey": "Secret access key",
+    "secretKeep": "•••••• (inchangé)",
+    "useSSL": "Utiliser SSL",
+    "makeDefault": "Définir par défaut",
+    "test": "Tester la connexion",
+    "testing": "Test…",
+    "testOk": "Connecté — {n} bucket(s) visible(s).",
+    "testFail": "Échec : {error}",
+    "save": "Enregistrer",
+    "cancel": "Annuler",
+    "confirmDeleteConn": "Supprimer la connexion « {name} » ?",
+    "browsing": "Parcours : {name}",
+    "buckets": "Buckets",
+    "newBucket": "Nouveau bucket",
+    "refresh": "Actualiser",
+    "noBuckets": "Aucun bucket.",
+    "allBuckets": "Buckets",
+    "up": "Remonter",
+    "newFolder": "Nouveau dossier",
+    "upload": "Envoyer",
+    "download": "Télécharger",
+    "emptyFolder": "Ce dossier est vide.",
+    "newBucketPrompt": "Nom du nouveau bucket :",
+    "confirmDeleteBucket": "Supprimer le bucket « {name} » ?",
+    "forceDeleteBucket": "Supprimer d'abord TOUS ses objets ? (OK = vider puis supprimer, Annuler = seulement s'il est déjà vide)",
+    "newFolderPrompt": "Nom du nouveau dossier :",
+    "confirmDeleteObject": "Supprimer « {name} » ?",
+    "confirmDeleteFolder": "Supprimer le dossier « {name} » et tout son contenu ?"
   },
   "run": {
     "mode": "Mode",
@@ -134,7 +195,7 @@
     "haExcludeStars": "Hα sur la nébulosité seule (exclure les étoiles)",
     "dropTransition": "Écarter les images de transition du filtre",
     "supervise": "Lancer avec l'agent IA local (expérimental)",
-    "superviseHint": "Optionnel : un modèle de vision local ajuste automatiquement la finition (saturation, Hα, couleur, recadrage) sur quelques itérations et garde la meilleure. Nécessite un serveur de modèle local (ASTRO_LLM_URL). Ciel profond / nébuleuse uniquement.",
+    "superviseHint": "Optionnel : un modèle de vision local ajuste automatiquement la finition sur quelques itérations et garde la meilleure — pour tous les modes d'empilement (composite ciel profond/nébuleuse, comète, rendu voie lactée, netteté planétaire). Nécessite un serveur de modèle local (ASTRO_LLM_URL).",
     "modes": {
       "deepsky": "Ciel profond",
       "nebula": "Nébuleuse",
@@ -194,6 +255,10 @@
     "connected": "Connecté",
     "notConfigured": "S3 n'est pas configuré — définissez ASTRO_S3_* dans l'environnement pour activer le stockage cloud.",
     "queued": "{n} transfert(s) mis en file.",
+    "storage": "Stockage",
+    "storageHint": "Full S3 : récupère les entrées depuis S3, traite en local, renvoie les entrées + résultats, puis libère le disque local (seulement une fois chaque fichier vérifié sur S3).",
+    "storageLocal": "Full local",
+    "storageS3": "Full S3 (libère le local ensuite)",
     "badge": {
       "synced": "Sur S3 (synchronisé avec le local)",
       "cloudOnly": "Uniquement sur S3 — téléchargez-le pour l'utiliser en local"
@@ -207,6 +272,28 @@
       "removeLocalHint": "Supprimer les copies locales — seulement après vérification sur S3",
       "upload": "Envoyer"
     }
+  },
+  "backup": {
+    "title": "Sauvegarde & restauration",
+    "subtitle": "Sauvegardez sur S3 votre base de données, bibliothèque de calibration, atlas de pollution lumineuse et réglages de l'app.",
+    "component": {
+      "db": "Base de données",
+      "library": "Bibliothèque de calibration",
+      "atlas": "Atlas de pollution lumineuse",
+      "appstate": "Réglages & discussions IA"
+    },
+    "secretsNote": "Les captures et résultats se sauvegardent via Synchroniser. Les secrets du .env (mot de passe DB, clés API) ne sont jamais inclus.",
+    "backupNow": "Sauvegarder",
+    "working": "En cours…",
+    "refresh": "Actualiser",
+    "queued": "Sauvegarde lancée.",
+    "past": "Sauvegardes précédentes",
+    "empty": "Aucune sauvegarde.",
+    "restore": "Restaurer",
+    "confirmRestore": "Restaurer cette sauvegarde ? La base / bibliothèque / atlas seront écrasés par l'instantané.",
+    "restoreQueued": "Restauration lancée.",
+    "reload": "Recharger",
+    "reloadHint": "Réglages & discussions restaurés —"
   },
   "common": {
     "inspect": "Inspecter",
@@ -240,6 +327,11 @@
     "openFolder": "Ouvrir le dossier",
     "selectCapture": "Sélectionnez un dossier de captures ci-dessus, puis lancez.",
     "useFolder": "Inspecter ce dossier",
+    "downloadInspect": "Télécharger et inspecter {n}",
+    "downloadingBtn": "Téléchargement…",
+    "downloadingS3": "Téléchargement de {n} dossier(s) depuis S3…",
+    "tabs": { "local": "Fichiers locaux", "s3": "Stockage S3" },
+    "s3NotConfigured": "Configurez S3 sur la page Stockage pour le parcourir ici.",
     "inspectN": "Inspecter {n} dossiers",
     "selectedCount": "{n} sélectionné·s",
     "nFolders": "{n} dossiers",
@@ -376,6 +468,30 @@
     },
     "scoreSplit": "métriques {det} · modèle {model}"
   },
+  "supervisorChat": {
+    "title": "Finition IA — en direct",
+    "live": "en direct",
+    "hint": "Suivez l'agent IA local pendant qu'il refait la finition de ce run, et pilotez-le : demandez une modification, ou arrêtez-le en gardant la meilleure passe.",
+    "placeholder": "Demandez une modification (ex. « moins de saturation », « éclaircir le fond »)…",
+    "send": "Envoyer",
+    "stop": "Arrêter et garder la meilleure",
+    "convTitle": "Finition IA — tâche n°{id}"
+  },
+  "stagePreviews": {
+    "title": "Étapes de traitement",
+    "hint": "Un aperçu enregistré après chaque étape importante — cliquez sur une image pour l'agrandir.",
+    "enlarge": "Cliquer pour agrandir",
+    "close": "Fermer",
+    "stages": {
+      "stacked": "Empilé",
+      "aligned": "Aligné",
+      "combined": "Combiné",
+      "colorcal": "Calibration des couleurs",
+      "deconv": "Déconvolué",
+      "starless": "Réduction des étoiles",
+      "final": "Final"
+    }
+  },
   "refine": {
     "title": "Améliorer ce run avec l'IA",
     "hint": "Le modèle de vision local observe le résultat, diagnostique ses défauts et refait la finition — en itérant jusqu'à obtenir une image propre.",
@@ -385,7 +501,8 @@
     "iters": "Passes max",
     "itersAuto": "auto",
     "run": "Améliorer avec l'IA",
-    "starting": "Démarrage…"
+    "starting": "Démarrage…",
+    "failed": "Impossible de lancer l'amélioration IA pour ce run."
   },
   "log": { "empty": "Aucune sortie pour le moment." },
   "viewer": {
@@ -424,11 +541,12 @@
     "cancelled": "Annulé"
   },
   "darksky": {
-    "hint": "Dessinez une zone sur la carte, choisissez un Bortle maximum, puis recherchez les endroits les plus sombres — éventuellement classés selon l'ouverture de leur horizon à ~360°.",
+    "hint": "Dessinez une zone sur la carte, choisissez un Bortle maximum, puis recherchez les endroits les plus sombres — classés selon la noirceur du ciel et l'ouverture de l'horizon (relief + arbres), avec la distance routière depuis votre position.",
     "drawArea": "Dessiner une zone",
     "drawing": "Glissez sur la carte…",
     "maxBortle": "≤ Bortle {n}",
-    "evalHorizon": "Évaluer l'ouverture de l'horizon",
+    "evalHorizon": "Horizon (relief + arbres)",
+    "evalHorizonHint": "Échantillonne le relief et la canopée (arbres/forêt) à proximité pour évaluer l'horizon bas — le ciel sud, où les cibles du ciel profond culminent le plus bas, est le plus pondéré.",
     "search": "Rechercher",
     "mapLabel": "Carte de recherche de ciel sombre",
     "coords": "Coordonnées",
@@ -437,10 +555,38 @@
     "sqm": "SQM",
     "elevation": "Altitude",
     "openness": "Horizon dégagé",
+    "south": "Sud",
+    "trees": "Arbres",
+    "drive": "Route",
+    "driveTitle": "Distance et temps de trajet par la route depuis votre position.",
+    "driveDirectTitle": "Itinéraire routier indisponible — distance à vol d'oiseau affichée.",
+    "driveMin": "{n} min",
+    "driveHour": "{h} h {m}",
     "distance": "Distance",
     "locate": "Localiser",
     "useLocation": "Utiliser",
     "noResults": "Aucun lieu correspondant — élargissez la zone ou augmentez le Bortle.",
+    "treesHint": "Les arbres affichent « — » tant qu'un atlas de canopée n'est pas installé — lancez « just update-canopy-data » avec un jeu de données de canopée puis redémarrez pour intégrer les forêts proches à l'horizon.",
+    "location": {
+      "label": "Votre position",
+      "placeholder": "Rechercher une ville ou une adresse…",
+      "gps": "📍 Ma position",
+      "gpsLabel": "Ma position",
+      "you": "Vous",
+      "notSet": "non définie — recherchez ou utilisez le GPS"
+    },
+    "canopy": {
+      "title": "Données arbres/forêt",
+      "none": "Non installées — les arbres sont ignorés dans l'horizon. Téléchargez la hauteur de canopée pour votre zone.",
+      "covers": "Installées : {area} · créé le {date}",
+      "download": "Télécharger",
+      "building": "Téléchargement… {done}/{total}",
+      "hint": "Télécharge les hauteurs de canopée ETH (10 m, © ETH Zürich, CC BY 4.0) pour la zone choisie via gdal, afin que les forêts proches abaissent l'horizon. Dessinez une zone pour un téléchargement minimal. Nécessite gdal (p. ex. brew install gdal).",
+      "regions": {
+        "custom": "Zone dessinée",
+        "france": "France"
+      }
+    },
     "offline": {
       "title": "Données hors-ligne",
       "none": "Données en ligne approximatives — installez un atlas hors-ligne pour des valeurs de ciel sombre précises.",
@@ -498,7 +644,8 @@
     "lp": {
       "uncovered": "Les données détaillées de pollution lumineuse ne sont pas téléchargées pour cette zone.",
       "download": "Télécharger cette zone",
-      "downloading": "Téléchargement… {done}/{total}"
+      "downloading": "Téléchargement… {done}/{total}",
+      "failed": "Échec du téléchargement"
     },
     "weather": {
       "title": "Météo astro",

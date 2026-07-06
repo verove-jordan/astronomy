@@ -33,9 +33,14 @@ export const useWeatherStore = defineStore("weather", () => {
   const playhead = ref(0); // current animation time (epoch ms)
   const playing = ref(false);
 
-  let lastKey = "";
-  let inflight: Promise<void> | null = null;
-  let controller: AbortController | null = null;
+  // Forecast (per-site; drives the badge/panel) and grid (regional; follows the map) fetch
+  // independently — each with its own dedup key + abort controller so one never cancels the other.
+  let fcKey = "";
+  let fcInflight: Promise<void> | null = null;
+  let fcController: AbortController | null = null;
+  let gridReqKey = "";
+  let gridInflight: Promise<void> | null = null;
+  let gridController: AbortController | null = null;
   let timer: ReturnType<typeof setInterval> | null = null;
 
   const timesteps = computed(() => grid.value?.timesteps ?? []);
@@ -81,6 +86,8 @@ export const useWeatherStore = defineStore("weather", () => {
     playhead.value = Math.min(Math.max(now, ts[0]), ts[ts.length - 1]);
   }
 
+  // fetch loads the per-site point forecast (conditions badge + weather panel), keyed to the observing
+  // site. The animated map grid is fetched separately by fetchGrid so it can follow the map viewport.
   async function fetch(force = false): Promise<void> {
     const sky = useSkyStore();
     if (!sky.query) await sky.fetch();
@@ -90,39 +97,67 @@ export const useWeatherStore = defineStore("weather", () => {
     if (lat == null || lon == null) return;
 
     const key = `${lat.toFixed(3)},${lon.toFixed(3)},${at ?? ""}`;
-    if (!force && key === lastKey && forecast.value) return; // cache hit
-    if (inflight && key === lastKey) return inflight; // in-flight dedup
-    controller?.abort();
-    controller = new AbortController();
-    const signal = controller.signal;
-    lastKey = key;
+    if (!force && key === fcKey && forecast.value) return; // cache hit
+    if (fcInflight && key === fcKey) return fcInflight; // in-flight dedup
+    fcController?.abort();
+    fcController = new AbortController();
+    const signal = fcController.signal;
+    fcKey = key;
     loading.value = true;
     error.value = "";
-    inflight = (async () => {
+    fcInflight = (async () => {
       try {
-        const [fc, gr] = await Promise.all([
-          apiGet<WeatherResponse>(
-            `/api/sky/weather${queryString({ lat, lon, at })}`,
-            signal,
-          ),
-          apiGet<WeatherGridResponse>(
-            `/api/sky/weather/grid${queryString({ lat, lon, layers: GRID_LAYERS })}`,
-            signal,
-          ),
-        ]);
+        const fc = await apiGet<WeatherResponse>(
+          `/api/sky/weather${queryString({ lat, lon, at })}`,
+          signal,
+        );
         forecast.value = fc.forecast;
-        grid.value = gr.grid;
-        warning.value = fc.warning || gr.warning || "";
-        resetPlayheadToNow();
+        if (fc.warning) warning.value = fc.warning;
       } catch (e) {
         if ((e as Error).name !== "AbortError")
           error.value = (e as Error).message;
       } finally {
         loading.value = false;
-        inflight = null;
+        fcInflight = null;
       }
     })();
-    return inflight;
+    return fcInflight;
+  }
+
+  // fetchGrid loads the regional weather cube (animated overlay) for an explicit map centre + radius
+  // (deg), so the layer always shows real data where the map is focused — independent of the site. A
+  // 0 radius lets the server pick its default extent.
+  async function fetchGrid(
+    lat: number,
+    lon: number,
+    radiusDeg = 0,
+    force = false,
+  ): Promise<void> {
+    if (lat == null || lon == null) return;
+    const key = `${lat.toFixed(2)},${lon.toFixed(2)},${radiusDeg.toFixed(2)}`;
+    if (!force && key === gridReqKey && grid.value) return; // cache hit
+    if (gridInflight && key === gridReqKey) return gridInflight; // in-flight dedup
+    gridController?.abort();
+    gridController = new AbortController();
+    const signal = gridController.signal;
+    gridReqKey = key;
+    gridInflight = (async () => {
+      try {
+        const gr = await apiGet<WeatherGridResponse>(
+          `/api/sky/weather/grid${queryString({ lat, lon, radius: radiusDeg || undefined, layers: GRID_LAYERS })}`,
+          signal,
+        );
+        grid.value = gr.grid;
+        if (gr.warning) warning.value = gr.warning;
+        resetPlayheadToNow();
+      } catch (e) {
+        if ((e as Error).name !== "AbortError")
+          error.value = (e as Error).message;
+      } finally {
+        gridInflight = null;
+      }
+    })();
+    return gridInflight;
   }
 
   function setPlayhead(ms: number) {
@@ -176,6 +211,7 @@ export const useWeatherStore = defineStore("weather", () => {
     kp,
     sources,
     fetch,
+    fetchGrid,
     setPlayhead,
     step,
     play,

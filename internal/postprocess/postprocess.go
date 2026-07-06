@@ -75,6 +75,17 @@ type IterationRecord struct {
 	Params        map[string]float64 `json:"params,omitempty"`
 }
 
+// StagePreview is one saved preview PNG of the image at a major processing milestone (stacked, aligned,
+// combined, colour-calibrated, star-reduced, final). Index drives the timeline order; Stage is a key the
+// UI maps to a localized label; Filter is set for per-channel milestones (L/R/G/B/Ha). Primitive fields
+// only (no pipeline import) so package pipeline can populate it without a cycle.
+type StagePreview struct {
+	Index   int    `json:"index"`
+	Stage   string `json:"stage"`
+	Filter  string `json:"filter,omitempty"`
+	PngPath string `json:"png_path"`
+}
+
 // Combine builds the final image from channel masters located in dir (referenced by basename, e.g.
 // "master_L"), writing finalBase.<ext> alongside them.
 func Combine(ctx context.Context, runner *siril.Runner, dir string, channels map[string]string,
@@ -91,7 +102,7 @@ func Combine(ctx context.Context, runner *siril.Runner, dir string, channels map
 
 	// Stage 2 — color calibration (color modes only), SPCC with a neutralization fallback.
 	if isColor(res.Mode) {
-		note, err := ColorCalibrate(ctx, runner, dir, "combined", ColorCalOptions{
+		note, _, err := ColorCalibrate(ctx, runner, dir, "combined", ColorCalOptions{
 			Enabled: opts.ColorCalibration, RemoveGreen: opts.RemoveGreen, Solve: opts.Solve, Spcc: opts.Spcc,
 		})
 		if err != nil {

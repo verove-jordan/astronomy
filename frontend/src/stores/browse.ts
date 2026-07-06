@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import { apiGet, apiPost, previewUrl } from "@/services/api";
+import { apiGet, apiPost, previewUrl, withS3 } from "@/services/api";
 import { PROCESSED_GROUP_COLORS } from "@/constants/colors";
 import { baseName } from "@/utils/format";
 import { useS3Store } from "@/stores/s3";
@@ -43,7 +43,9 @@ export const useBrowseStore = defineStore("browse", () => {
 
   async function loadProcessed() {
     try {
-      const data = await apiGet<{ groups: ProcessedGroup[] }>("/api/processed");
+      const data = await apiGet<{ groups: ProcessedGroup[] }>(
+        withS3("/api/processed"),
+      );
       processedGroups.value = data.groups ?? [];
     } catch {
       processedGroups.value = [];

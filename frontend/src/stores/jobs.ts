@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
-import { apiGet, apiPost } from "@/services/api";
+import { apiGet, apiPost, withS3 } from "@/services/api";
 import type {
   Inventory,
   Job,
@@ -32,6 +32,10 @@ export interface CreateOpts {
   reuseSessions?: number[];
   // Library calibration the user unchecked in the Calibration panel (calib.SuggestID keys to skip).
   calibExclude?: string[];
+  // Storage mode: "local" (default — keep files) or "s3" (pull inputs from S3, process locally, push
+  // inputs+results back to S3, then free the local copies — verified). s3 carries the target bucket/prefix.
+  storageMode?: "local" | "s3";
+  s3?: { bucket: string; prefix: string };
   // Live stacking (mode "livestack"): which source to watch and the per-sub exposure.
   live?: {
     sourceKind: "local" | "s3";
@@ -51,25 +55,57 @@ export interface RefineOpts {
 // Runs gallery page size (paginated so a large output dir loads fast).
 const RUNS_PAGE = 12;
 
+// Tasks page size (paginated, newest first, so a long job history never loads all at once).
+const JOBS_PAGE = 20;
+
 export const useJobsStore = defineStore("jobs", () => {
   const jobs = ref<Job[]>([]);
   const current = ref<Job | null>(null);
   const runs = ref<RunSummary[]>([]);
   const loading = ref(false);
   const error = ref("");
+  const jobsTotal = ref(0);
+  const jobsHasMore = computed(() => jobs.value.length < jobsTotal.value);
   // Inventory stashed at create-time so JobView can show the capture summary while processing.
   const captureByJob = ref<Record<number, Inventory>>({});
+  // Conversation turn id stashed at create/refine-time (supervised jobs only) so JobView can open the
+  // live steerable conversation for the run it just started.
+  const turnByJob = ref<Record<number, string>>({});
 
+  // list refreshes the currently-loaded window (newest first). It re-fetches from offset 0 with a limit of
+  // however many are already shown (min one page), so the Tasks poll updates live status without discarding
+  // "load more" pages — and a fresh visit loads just the first page.
   async function list() {
-    loading.value = true;
+    const limit = Math.max(JOBS_PAGE, jobs.value.length);
+    loading.value = jobs.value.length === 0;
     error.value = "";
     try {
-      const data = await apiGet<{ jobs: Job[] }>("/api/jobs");
+      const data = await apiGet<{ jobs: Job[]; total: number }>(
+        `/api/jobs?offset=0&limit=${limit}`,
+      );
       jobs.value = data.jobs || [];
+      jobsTotal.value = data.total ?? jobs.value.length;
     } catch (e) {
       error.value = (e as Error).message;
     } finally {
       loading.value = false;
+    }
+  }
+
+  // loadMoreJobs appends the next older page.
+  async function loadMoreJobs() {
+    loadingMore.value = true;
+    error.value = "";
+    try {
+      const data = await apiGet<{ jobs: Job[]; total: number }>(
+        `/api/jobs?offset=${jobs.value.length}&limit=${JOBS_PAGE}`,
+      );
+      jobs.value = [...jobs.value, ...(data.jobs || [])];
+      jobsTotal.value = data.total ?? jobs.value.length;
+    } catch (e) {
+      error.value = (e as Error).message;
+    } finally {
+      loadingMore.value = false;
     }
   }
 
@@ -122,8 +158,16 @@ export const useJobsStore = defineStore("jobs", () => {
         prefix: opts.live.prefix,
         exposure_sec: opts.live.exposureSec,
       };
-    const data = await apiPost<{ id: number }>("/api/jobs", body);
+    if (opts.storageMode === "s3" && opts.s3?.bucket) {
+      body.storage_mode = "s3";
+      body.s3 = { bucket: opts.s3.bucket, prefix: opts.s3.prefix };
+    }
+    const data = await apiPost<{ id: number; turn_id?: string }>(
+      "/api/jobs",
+      body,
+    );
     if (opts.inventory) captureByJob.value[data.id] = opts.inventory;
+    if (data.turn_id) turnByJob.value[data.id] = data.turn_id;
     return data.id;
   }
 
@@ -182,8 +226,17 @@ export const useJobsStore = defineStore("jobs", () => {
     if (opts.maxIters) body.max_iters = opts.maxIters;
     if (opts.tier) body.tier = opts.tier;
     if (opts.allowRestack) body.allow_restack = true;
-    const data = await apiPost<{ id: number }>(`/api/jobs/${id}/refine`, body);
+    const data = await apiPost<{ id: number; turn_id?: string }>(
+      `/api/jobs/${id}/refine`,
+      body,
+    );
+    if (data.turn_id) turnByJob.value[data.id] = data.turn_id;
     return data.id;
+  }
+
+  // turnFor returns the conversation turn id stashed for a supervised/refine job (empty when none).
+  function turnFor(id: number): string {
+    return turnByJob.value[id] ?? "";
   }
 
   // Durable on-disk run records (independent of the DB) for the Runs gallery, paginated so a large
@@ -202,7 +255,7 @@ export const useJobsStore = defineStore("jobs", () => {
     error.value = "";
     try {
       const data = await apiGet<{ runs: RunSummary[]; total: number }>(
-        `/api/runs?offset=${runs.value.length}&limit=${RUNS_PAGE}`,
+        withS3(`/api/runs?offset=${runs.value.length}&limit=${RUNS_PAGE}`),
       );
       runs.value = [...runs.value, ...(data.runs || [])];
       runsTotal.value = data.total ?? runs.value.length;
@@ -220,6 +273,9 @@ export const useJobsStore = defineStore("jobs", () => {
     runs,
     runsTotal,
     runsHasMore,
+    jobsTotal,
+    jobsHasMore,
+    loadMoreJobs,
     loadingMore,
     loading,
     error,
@@ -230,6 +286,7 @@ export const useJobsStore = defineStore("jobs", () => {
     previewReuse,
     previewCalibration,
     captureFor,
+    turnFor,
     inspectCapture,
     cancel,
     restart,

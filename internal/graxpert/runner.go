@@ -24,6 +24,12 @@ import (
 // Runner executes GraXpert via its command-line interface.
 type Runner struct {
 	bin string
+
+	// Deep-health memo (see health.go). Guarded by healthMu; a probe can take minutes on first
+	// run (model download), so callers needing a non-blocking answer use HealthCached.
+	healthMu   sync.Mutex
+	healthDone bool
+	healthErr  error
 }
 
 // New returns a Runner for the given GraXpert binary path. An empty path yields a Runner that

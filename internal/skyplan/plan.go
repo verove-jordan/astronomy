@@ -26,11 +26,10 @@ func New(catalogDir string) *Planner { return &Planner{catalogDir: catalogDir} }
 // Plan scores every catalog object for the night bracketing prm.At, returning the ranked top-`Limit`
 // targets plus tonight's darkness summary.
 func (p *Planner) Plan(ctx context.Context, prm Params) (*Result, error) {
-	cat, err := skycat.LoadCatalog(p.catalogDir)
-	if err != nil {
-		return nil, fmt.Errorf("load catalog: %w", err)
-	}
-	records := cat.Records()
+	// Load prefers the on-disk Siril catalogue and falls back to the embedded snapshot when the
+	// engine can't read one (the Docker image's distro Siril ships a foreign catalogue format), so
+	// the planner always has objects to score.
+	records := skycat.Load(p.catalogDir).Records()
 
 	res := &Result{}
 	if len(records) == 0 {
