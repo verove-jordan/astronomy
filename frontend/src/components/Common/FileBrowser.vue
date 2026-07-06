@@ -145,7 +145,10 @@ const colLoading = reactive(new Set<string>());
 watch(
   () => [props.path, props.entries] as const,
   ([p, e]) => {
-    if (p) childrenCache.set(p, e);
+    // Seed the active directory's children from the parent-provided entries — including the S3
+    // bucket root (p===""), whose entries are already loaded, so its column doesn't flash empty and
+    // refetch while descending.
+    childrenCache.set(p, e);
   },
   { immediate: true },
 );
@@ -247,8 +250,13 @@ function goPath(e: Event) {
   emit("navigate", (e.target as HTMLInputElement).value.trim());
 }
 function up() {
-  const parent = props.path.replace(/\/[^/]+$/, "");
-  if (parent) emit("navigate", parent);
+  const p = (props.path || "").replace(/\/+$/, "");
+  const r = (props.root || "").replace(/\/+$/, "");
+  if (!p || p === r) return; // already at the root (empty S3 bucket root, or the clamped local root)
+  // A slashless single segment (S3 one level below the bucket root, e.g. "M51") goes to the root "";
+  // an absolute/nested path strips its last segment. Never climb above the configured root.
+  const parent = p.includes("/") ? p.replace(/\/[^/]+$/, "") : "";
+  emit("navigate", r && parent.length < r.length ? r : parent);
 }
 </script>
 

@@ -105,8 +105,12 @@ services:
       - "${ENGINE_PORT:-8080}:8080"
     volumes:
       # Mirror each data dir at its SAME host path (${PWD} = repo root) so the absolute paths the host
-      # engine stored in Postgres + run.json resolve unchanged inside the container. input is read-only.
-      - ${PWD}/input:${PWD}/input:ro       # capture data (read-only)
+      # engine stored in Postgres + run.json resolve unchanged inside the container. input is
+      # read-WRITE: the pipeline never modifies raw captures (it writes only to work/ and output/),
+      # but the S3 "download & inspect" import writes downloaded capture folders INTO input, so a
+      # read-only mount broke it ("mkdir …/input/…: read-only file system"). Matches the host engine,
+      # where input is a normal writable folder.
+      - ${PWD}/input:${PWD}/input          # capture data (import writes here; pipeline only reads)
       - ${PWD}/library:${PWD}/library      # calibration masters (shared, read-write)
       - ${PWD}/output:${PWD}/output        # final stacks + reports
       - ${PWD}/work:${PWD}/work            # scratch

@@ -222,8 +222,7 @@ export const useJobsStore = defineStore("jobs", () => {
     const list = Array.isArray(paths) ? paths.filter(Boolean) : [paths];
     if (list.length === 0) return null;
     try {
-      const body =
-        list.length > 1 ? { paths: list } : { path: list[0] };
+      const body = list.length > 1 ? { paths: list } : { path: list[0] };
       return await apiPost<Inventory>("/api/inspect", body);
     } catch {
       return null;
