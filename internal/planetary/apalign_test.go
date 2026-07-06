@@ -70,7 +70,7 @@ func TestWarpToSharpest_CorrectsLocalDistortion(t *testing.T) {
 
 	before := ssd(ref, shifted)
 	// Frame 0 is sharpest → reference (written unresampled); frame 1 is measured and warped once.
-	out, _, err := warpToSharpest([]string{refPath, shPath}, []float64{9, 1}, dir, "w", true)
+	out, _, _, err := warpToSharpest([]string{refPath, shPath}, []float64{9, 1}, dir, "w", true)
 	require.NoError(t, err)
 	require.Len(t, out, 2)
 

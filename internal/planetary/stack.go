@@ -25,16 +25,28 @@ const (
 // unchanged). scores are the frames' sharpness (higher = sharper); paths and scores are 1:1. It streams
 // one frame at a time (two disk passes) so memory stays at a few accumulators, not the whole cube.
 func stackWeightedFile(paths []string, scores []float64, masterPath string) error {
+	return stackWeightedFileAP(paths, scores, nil, masterPath)
+}
+
+// stackWeightedFileAP is stackWeightedFile with optional per-frame MULTI-POINT quality weights
+// (apFields, one apGridN×apGridN grid per frame, from apWeightFields): each pixel's weight becomes
+// globalFrameWeight × the bilinear interpolation of the frame's local-quality grid — so every region
+// of the master is dominated by the frames that were sharpest THERE (a globally-good frame with one
+// seeing-smeared quadrant contributes everywhere else, not in the smear). nil apFields = global only.
+func stackWeightedFileAP(paths []string, scores []float64, apFields [][]float64, masterPath string) error {
 	if len(paths) == 0 {
 		return fmt.Errorf("no frames to stack")
+	}
+	if apFields != nil && len(apFields) != len(paths) {
+		return fmt.Errorf("stack: %d AP weight fields for %d frames", len(apFields), len(paths))
 	}
 	first, err := fits.ReadImage(paths[0])
 	if err != nil {
 		return fmt.Errorf("stack: read %s: %w", paths[0], err)
 	}
 	weights := sharpnessWeights(scores)
-	mean, std := weightedMoments(paths, weights, first.W, first.H, first.C)
-	master := clippedWeightedMean(paths, weights, mean, std, first.W, first.H, first.C)
+	mean, std := weightedMoments(paths, weights, apFields, first.W, first.H, first.C)
+	master := clippedWeightedMean(paths, weights, apFields, mean, std, first.W, first.H, first.C)
 	normalize(master, stackNormPct)
 	return master.WriteFITS(masterPath + ".fits")
 }
@@ -64,17 +76,19 @@ func sharpnessWeights(scores []float64) []float64 {
 }
 
 // weightedMoments accumulates the per-pixel weighted mean and standard deviation over all frames (pass 1).
-func weightedMoments(paths []string, weights []float64, w, h, c int) (mean, std [][]float64) {
+func weightedMoments(paths []string, weights []float64, apFields [][]float64, w, h, c int) (mean, std [][]float64) {
 	n := w * h
 	sum := newPlanes(c, n)
 	wsum := newPlanes(c, n)
 	sumSq := newPlanes(c, n)
+	wplane := make([]float64, n) // reused per-frame pixel-weight buffer
 	for i, p := range paths {
 		im, rerr := fits.ReadImage(p)
 		if rerr != nil || im.W != w || im.H != h || im.C != c {
 			continue
 		}
-		accumulate(sum, wsum, sumSq, im, weights[i])
+		pixelWeights(wplane, weights[i], frameField(apFields, i), w, h)
+		accumulate(sum, wsum, sumSq, im, wplane)
 	}
 	mean = newPlanes(c, n)
 	std = newPlanes(c, n)
@@ -93,13 +107,38 @@ func weightedMoments(paths []string, weights []float64, w, h, c int) (mean, std 
 	return mean, std
 }
 
-// accumulate adds one weighted frame into the running sum / weight / sum-of-squares planes.
-func accumulate(sum, wsum, sumSq [][]float64, im *fits.Image, wt float64) {
+// frameField returns frame i's AP weight grid, or nil when multi-point weighting is off.
+func frameField(apFields [][]float64, i int) []float64 {
+	if apFields == nil {
+		return nil
+	}
+	return apFields[i]
+}
+
+// pixelWeights fills dst with the frame's per-pixel stacking weight: the global frame weight,
+// modulated by the bilinear interpolation of its AP quality grid when present.
+func pixelWeights(dst []float64, frameW float64, field []float64, w, h int) {
+	if field == nil {
+		for j := range dst {
+			dst[j] = frameW
+		}
+		return
+	}
+	for y := 0; y < h; y++ {
+		row := y * w
+		for x := 0; x < w; x++ {
+			dst[row+x] = frameW * sampleWeightField(field, w, h, x, y)
+		}
+	}
+}
+
+// accumulate adds one frame into the running sum / weight / sum-of-squares planes with per-pixel weights.
+func accumulate(sum, wsum, sumSq [][]float64, im *fits.Image, wplane []float64) {
 	for ch := 0; ch < im.C; ch++ {
 		px := im.Pix[ch]
 		s, ws, sq := sum[ch], wsum[ch], sumSq[ch]
 		for j := range px {
-			v := float64(px[j])
+			v, wt := float64(px[j]), wplane[j]
 			s[j] += wt * v
 			ws[j] += wt
 			sq[j] += wt * v * v
@@ -109,22 +148,24 @@ func accumulate(sum, wsum, sumSq [][]float64, im *fits.Image, wt float64) {
 
 // clippedWeightedMean re-accumulates the weighted mean over pass 2, rejecting per-pixel outliers beyond
 // stackClipSigma of the pass-1 mean (transients). Pixels with no surviving samples fall back to the mean.
-func clippedWeightedMean(paths []string, weights []float64, mean, std [][]float64, w, h, c int) *fits.Image {
+func clippedWeightedMean(paths []string, weights []float64, apFields [][]float64, mean, std [][]float64, w, h, c int) *fits.Image {
 	n := w * h
 	csum := newPlanes(c, n)
 	cw := newPlanes(c, n)
+	wplane := make([]float64, n)
 	for i, p := range paths {
 		im, rerr := fits.ReadImage(p)
 		if rerr != nil || im.W != w || im.H != h || im.C != c {
 			continue
 		}
+		pixelWeights(wplane, weights[i], frameField(apFields, i), w, h)
 		for ch := 0; ch < c; ch++ {
 			px := im.Pix[ch]
 			for j := range px {
 				v := float64(px[j])
 				if std[ch][j] == 0 || math.Abs(v-mean[ch][j]) <= stackClipSigma*std[ch][j] {
-					csum[ch][j] += weights[i] * v
-					cw[ch][j] += weights[i]
+					csum[ch][j] += wplane[j] * v
+					cw[ch][j] += wplane[j]
 				}
 			}
 		}

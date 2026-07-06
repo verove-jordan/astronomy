@@ -29,16 +29,24 @@ import (
 
 // Options tunes the lucky-imaging run.
 type Options struct {
-	BestPercent int                   // keep this percent of the sharpest frames (default 50)
+	BestPercent int                   // keep this percent of the sharpest frames (default 15 — real lucky imaging)
 	Sharpen     bool                  // apply wavelet sharpening + CLAHE to the final image
 	APAlign     bool                  // run multi-point (alignment-point) warping to correct atmospheric distortion
+	APWeights   bool                  // multi-point QUALITY weighting: each region dominated by the frames sharpest there
 	Formats     []string              // output formats: png, tif, fits
 	Finish      siril.PlanetaryFinish // stretch/sharpen/contrast/saturation of the finish (tuned by the supervisor)
+
+	// Richardson-Lucy deconvolution of the luminance (0 → the package defaults 2.8 / 18 / 700).
+	// The old constants (FWHM 3, 10 iters, alpha 1800) were so strongly regularized the deconv was
+	// nearly a no-op — the stack looked soft even when the master was sharp.
+	DeconvFWHM  float64
+	DeconvIters int
+	DeconvAlpha float64
 }
 
 // DefaultOptions returns sensible defaults.
 func DefaultOptions() Options {
-	return Options{BestPercent: 50, Sharpen: true, APAlign: true, Formats: []string{"png", "tif"}, Finish: DefaultFinish()}
+	return Options{BestPercent: 15, Sharpen: true, APAlign: true, APWeights: true, Formats: []string{"png", "tif"}, Finish: DefaultFinish()}
 }
 
 // DefaultFinish is the original mineral-Moon finish tuning (see siril.DefaultPlanetaryFinish).
@@ -66,8 +74,13 @@ type Result struct {
 	// base path (no extension) in the output dir — the re-finish inputs the supervised finish and a
 	// post-run refine re-run the finish over (no re-stack, no re-deconvolution).
 	Masters map[string]string `json:"masters,omitempty"`
-	Sharpen bool              `json:"sharpen,omitempty"`  // whether the finish sharpens (from Options.Sharpen)
-	OutBase string            `json:"out_base,omitempty"` // canonical final base path (<outDir>/<object>_stack)
+	// BestFrameLapVar / MasterLapVar are the scale-invariant disk sharpness of the best kept input
+	// frame vs the finished detail master — the objective "the stack must out-detail the best single
+	// frame" acceptance (pass: master ≥ 1.05× best frame; a miss lands in Notes as a warning).
+	BestFrameLapVar float64 `json:"best_frame_lapvar,omitempty"`
+	MasterLapVar    float64 `json:"master_lapvar,omitempty"`
+	Sharpen         bool    `json:"sharpen,omitempty"`  // whether the finish sharpens (from Options.Sharpen)
+	OutBase         string  `json:"out_base,omitempty"` // canonical final base path (<outDir>/<object>_stack)
 	// Run identity (mirrors pipeline.Result) so the run lives at output/<object>/<run_id> and a post-run
 	// refine + full-S3 push can resolve it. json tags match pipeline.Result / job.s3ResultTarget.
 	Object    string `json:"object,omitempty"`
@@ -164,7 +177,7 @@ func Process(ctx context.Context, runner *siril.Runner, ffmpegBin, inputPath, wo
 		// LRGB: sharp luminance, smooth chroma).
 		if opts.Sharpen && l != "" {
 			report(onProgress, "deconvolving luminance")
-			if derr := deconvolveMaster(ctx, runner, l, onProgress); derr != nil {
+			if derr := deconvolveMaster(ctx, runner, l, opts, onProgress); derr != nil {
 				return nil, fmt.Errorf("deconvolve luminance: %w", derr)
 			}
 			if serr := smoothChroma(masters, chromaBlur); serr != nil {
@@ -176,7 +189,7 @@ func Process(ctx context.Context, runner *siril.Runner, ffmpegBin, inputPath, wo
 		mono = masters[order[0]]
 		if opts.Sharpen && mono != "" {
 			report(onProgress, "deconvolving")
-			if derr := deconvolveMaster(ctx, runner, mono, onProgress); derr != nil {
+			if derr := deconvolveMaster(ctx, runner, mono, opts, onProgress); derr != nil {
 				return nil, fmt.Errorf("deconvolve: %w", derr)
 			}
 		}
@@ -199,6 +212,33 @@ func Process(ctx context.Context, runner *siril.Runner, ffmpegBin, inputPath, wo
 		res.Masters = persisted
 	}
 	res.Sharpen, res.OutBase = opts.Sharpen, outBase
+
+	// Objective acceptance: the detail master must out-resolve the best single kept frame — the whole
+	// point of lucky imaging. Both sides use the same scale-invariant disk metric, so the comparison
+	// is meaningful across the master's normalization.
+	detailFilter := ""
+	if l != "" {
+		detailFilter = "L"
+	} else if mono != "" {
+		detailFilter = order[0]
+	}
+	detailMaster := l
+	if detailMaster == "" {
+		detailMaster = mono
+	}
+	if detailMaster != "" {
+		for _, fr := range res.Frames {
+			if fr.Kept && fr.Filter == detailFilter && fr.Score > res.BestFrameLapVar {
+				res.BestFrameLapVar = fr.Score
+			}
+		}
+		res.MasterLapVar = frameSharpness(detailMaster + ".fits")
+		if res.BestFrameLapVar > 0 && res.MasterLapVar > 0 && res.MasterLapVar < 1.05*res.BestFrameLapVar {
+			res.Notes = append(res.Notes, fmt.Sprintf(
+				"warning: stacked master sharpness (%.3g) below 1.05x the best single frame (%.3g) — check alignment/selection",
+				res.MasterLapVar, res.BestFrameLapVar))
+		}
+	}
 
 	script := siril.PlanetaryFinishScript(r, g, b, l, mono, outBase, opts.Sharpen, opts.Finish, opts.Formats)
 	if _, err := runner.Run(ctx, runDir, script, onProgress); err != nil {
@@ -435,7 +475,7 @@ func stackChannel(ctx context.Context, runner *siril.Runner, frames []string, fi
 	if apAlign {
 		report(onProgress, "multi-point aligning "+channelLabel(filter))
 	}
-	aligned, _, err := warpToSharpest(keptPaths, keptScores, alignDir, "f", apAlign)
+	aligned, _, cellSharp, err := warpToSharpest(keptPaths, keptScores, alignDir, "f", apAlign)
 	if err != nil {
 		return "", frameReport, 0, err
 	}
@@ -444,30 +484,53 @@ func stackChannel(ctx context.Context, runner *siril.Runner, frames []string, fi
 	}
 	// Sharpness-weighted stack (Go, not Siril): weight each aligned frame by its own sharpness so the
 	// lucky-sharp frames dominate and the master rivals a single frame, instead of the blurry average a
-	// plain mean produces. Siril can't weight a starless stack, so this is done in-process (stack.go).
+	// plain mean produces — and, with APWeights, each REGION is dominated by the frames sharpest there
+	// (AutoStakkert-style multi-point quality). Siril can't weight a starless stack, so this is done
+	// in-process (stack.go).
 	master := filepath.Join(chDir, "master_"+channelLabel(filter)) // no extension; .fits added on write
 	alignedScores := make([]float64, len(aligned))
 	for i, a := range aligned {
 		alignedScores[i] = frameSharpness(a)
 	}
-	if serr := stackWeightedFile(aligned, alignedScores, master); serr != nil {
+	var apFields [][]float64
+	if opts.APWeights && len(cellSharp) == len(aligned) && len(cellSharp) > 1 {
+		apFields = apWeightFields(cellSharp)
+	}
+	if serr := stackWeightedFileAP(aligned, alignedScores, apFields, master); serr != nil {
 		return "", frameReport, 0, fmt.Errorf("weighted stack %s: %w", channelLabel(filter), serr)
 	}
 	return master, frameReport, len(aligned), nil
 }
 
-// Richardson-Lucy deconvolution defaults tuned for a "detailed but natural" Moon (see the finish plan):
-// a small Gaussian PSF approximating the seeing/optics blur, a few iterations with total-variation
-// regularization (higher alpha = gentler).
+// Richardson-Lucy deconvolution defaults: a small Gaussian PSF approximating the seeing/optics blur,
+// enough iterations to actually recover detail, and moderate total-variation regularization (higher
+// alpha = gentler). The previous 10 iters / alpha 1800 were so regularized the deconv barely moved a
+// pixel — the finish then had nothing to reveal and the stack read soft.
 const (
-	deconvFWHM  = 3.0
-	deconvIters = 10
-	deconvAlpha = 1800
+	deconvFWHMDefault  = 2.8
+	deconvItersDefault = 18
+	deconvAlphaDefault = 700
 )
 
+// deconvParams resolves the run's Richardson-Lucy settings (Options overrides, else the defaults).
+func deconvParams(opts Options) (fwhm float64, iters int, alpha float64) {
+	fwhm, iters, alpha = deconvFWHMDefault, deconvItersDefault, deconvAlphaDefault
+	if opts.DeconvFWHM > 0 {
+		fwhm = opts.DeconvFWHM
+	}
+	if opts.DeconvIters > 0 {
+		iters = opts.DeconvIters
+	}
+	if opts.DeconvAlpha > 0 {
+		alpha = opts.DeconvAlpha
+	}
+	return fwhm, iters, alpha
+}
+
 // deconvolveMaster sharpens a linear master (its .fits) in place via Siril Richardson-Lucy deconvolution.
-func deconvolveMaster(ctx context.Context, runner *siril.Runner, master string, onProgress func(siril.Progress)) error {
-	_, err := runner.Run(ctx, filepath.Dir(master), siril.DeconvolveLuminanceScript(master, deconvFWHM, deconvIters, deconvAlpha), onProgress)
+func deconvolveMaster(ctx context.Context, runner *siril.Runner, master string, opts Options, onProgress func(siril.Progress)) error {
+	fwhm, iters, alpha := deconvParams(opts)
+	_, err := runner.Run(ctx, filepath.Dir(master), siril.DeconvolveLuminanceScript(master, fwhm, iters, int(alpha)), onProgress)
 	return err
 }
 
@@ -671,16 +734,54 @@ func rejectLeastSharp(scores []float64, bestPercent int) []int {
 	return rejected
 }
 
+// frameSharpness ranks a frame by FULL-RESOLUTION Laplacian variance over the lit disk only,
+// normalized by the disk's own dynamic range (scale-invariant). The previous ranking measured a
+// 512-px downsample — at that scale crater-level detail is gone, so "keep the best N%" selected on
+// coarse contrast, nearly noise with respect to seeing. Full-res on-disk variance ranks by exactly
+// the detail the stack must preserve; one frame in memory at a time.
 func frameSharpness(path string) float64 {
-	f, err := fits.Open(path)
+	im, err := fits.ReadImage(path)
 	if err != nil {
 		return 0
 	}
-	grid, w, h, err := f.ReadDownsampled(512, fits.Mean)
-	if err != nil {
+	return diskSharpness(im)
+}
+
+// diskSharpness is the scale-invariant Laplacian variance over the lit disk of a frame's first
+// plane (off-disk sky/limb pixels contribute nothing but noise to the metric).
+func diskSharpness(im *fits.Image) float64 {
+	p := im.Pix[0]
+	w, h := im.W, im.H
+	if w < 3 || h < 3 {
 		return 0
 	}
-	return laplacianVariance(grid, w, h)
+	bg := lowPercentile(p, 0.2)
+	pk := lowPercentile(p, 0.999)
+	if pk-bg <= 1e-9 {
+		return 0
+	}
+	thr := float32(bg + apDiskFrac*(pk-bg))
+	var sum, sum2 float64
+	n := 0
+	for y := 1; y < h-1; y++ {
+		row := y * w
+		for x := 1; x < w-1; x++ {
+			c := p[row+x]
+			if c <= thr {
+				continue
+			}
+			lap := float64(4*c - p[row+x-1] - p[row+x+1] - p[row-w+x] - p[row+w+x])
+			sum += lap
+			sum2 += lap * lap
+			n++
+		}
+	}
+	if n < 100 {
+		return 0
+	}
+	mean := sum / float64(n)
+	v := sum2/float64(n) - mean*mean
+	return v / ((pk - bg) * (pk - bg))
 }
 
 // laplacianVariance is a standard focus/sharpness metric: higher means sharper.

@@ -10,32 +10,38 @@ import (
 )
 
 // Surface-alignment tuning. The Moon/planets have no stars, so frames are registered by a per-point warp:
-// a coarse brightness-centroid seed (gross drift) refined by sub-pixel ZNCC on the surface detail, then a
-// single Catmull-Rom resample. warpBlur is small — it denoises the correlation without flattening the
-// peak; a heavy blur would broaden the peak and spoil the parabolic sub-pixel fit.
+// a coarse downsampled ZNCC (large drifts the centroid alone can misjudge under clouds/limb clipping),
+// a fine full-res seeded ZNCC, then — per AP — the local field, applied by a single Catmull-Rom
+// resample. warpBlur is small — it denoises the correlation without flattening the peak; a heavy blur
+// would broaden the peak and spoil the parabolic sub-pixel fit.
 const (
 	warpBlur        = 1  // pre-blur radius for the ZNCC measurement (px) — denoise, keep the peak sharp
-	surfaceMaxShift = 5  // residual search around the centroid seed (px); the centroid does the heavy lifting
+	surfaceMaxShift = 8  // fine full-res residual search around the coarse seed (px)
 	alignWinFrac    = 12 // ZNCC window half-size as a percent of the smaller axis (a feature-rich central patch)
+	coarseDown      = 4  // downsample factor of the coarse pre-alignment stage
+	coarseMaxShift  = 16 // coarse search in DOWNSAMPLED px — ±64 full-res px of drift coverage
 )
 
 // warpToSharpest reads the FITS frames at paths, registers each onto the sharpest one (highest score),
 // and writes the aligned 32-bit FITS into outDir as <prefix>_00001.fits, _00002.fits, … (1-based, input
-// order). It returns the written paths and the reference frame's written path. Each non-reference frame
-// is measured (global centroid + seeded parabolic ZNCC, then — when apAlign — a per-AP local field over
-// the lit disk) and resampled EXACTLY ONCE with a Catmull-Rom bicubic warp of its ORIGINAL pixels; the
-// reference is written unresampled. Frames that fail to read are skipped (the sequence stays gap-free).
-func warpToSharpest(paths []string, scores []float64, outDir, prefix string, apAlign bool) ([]string, string, error) {
+// order). It returns the written paths, the reference frame's written path, and each aligned frame's
+// per-AP-cell local sharpness (for the multi-point stacking weights; nil when apAlign is off). Each
+// non-reference frame is measured (coarse downsampled ZNCC → fine seeded parabolic ZNCC, then — when
+// apAlign — a per-AP local field over the lit disk) and resampled EXACTLY ONCE with a Catmull-Rom
+// bicubic warp of its ORIGINAL pixels; the reference is written unresampled. Frames that fail to read
+// are skipped (the sequence stays gap-free).
+func warpToSharpest(paths []string, scores []float64, outDir, prefix string, apAlign bool) ([]string, string, [][]float64, error) {
 	if len(paths) == 0 {
-		return nil, "", nil
+		return nil, "", nil, nil
 	}
 	refIdx := argmax(scores)
 	ref, err := fits.ReadImage(paths[refIdx])
 	if err != nil {
-		return nil, "", fmt.Errorf("warp: read reference %s: %w", paths[refIdx], err)
+		return nil, "", nil, fmt.Errorf("warp: read reference %s: %w", paths[refIdx], err)
 	}
 	refX, refY := brightCentroid(ref)
 	refBlur := blurPlane(ref, warpBlur)
+	refSmall := downPlane(refBlur, coarseDown)
 	gWin := centerPoint(refX, refY) // window over the bright disk, not the (possibly off-centre) frame
 	gRadius := min(ref.W, ref.H) * alignWinFrac / 100
 	cx, cy := apCenters(ref.W, ref.H)
@@ -44,6 +50,7 @@ func warpToSharpest(paths []string, scores []float64, outDir, prefix string, apA
 
 	var out []string
 	var refPath string
+	var cellSharp [][]float64
 	for _, p := range paths {
 		im, rerr := fits.ReadImage(p)
 		if rerr != nil {
@@ -52,36 +59,79 @@ func warpToSharpest(paths []string, scores []float64, outDir, prefix string, apA
 		aligned := im
 		isRef := p == paths[refIdx]
 		if !isRef {
-			aligned = warpFrameToRef(im, refBlur, refX, refY, gWin, gRadius, cx, cy, onDisk, apRadius, apAlign)
+			aligned = warpFrameToRef(im, refBlur, refSmall, refX, refY, gWin, gRadius, cx, cy, onDisk, apRadius, apAlign)
 		}
 		outPath := filepath.Join(outDir, fmt.Sprintf("%s_%05d.fits", prefix, len(out)+1))
 		if werr := aligned.WriteFITS(outPath); werr != nil {
-			return out, refPath, fmt.Errorf("warp: write %s: %w", outPath, werr)
+			return out, refPath, cellSharp, fmt.Errorf("warp: write %s: %w", outPath, werr)
 		}
 		out = append(out, outPath)
+		if apAlign {
+			cellSharp = append(cellSharp, apCellSharpness(aligned, cx, cy, onDisk))
+		}
 		if isRef {
 			refPath = outPath
 		}
 	}
-	return out, refPath, nil
+	return out, refPath, cellSharp, nil
 }
 
 // warpFrameToRef measures im's displacement onto the reference and returns a single Catmull-Rom warp of
-// im. The global drift (centroid seed refined by one seeded parabolic ZNCC) is the field's baseline
-// EVERYWHERE — including the dark limb — and, when apAlign is set, on-disk alignment points overwrite it
-// with their absolute local shift before the field is smoothed and applied. One measurement, one resample.
-func warpFrameToRef(im, refBlur *fits.Image, refX, refY float64, gWin comet.Point, gRadius int,
+// im. The global drift — a centroid seed, checked by a coarse DOWNSAMPLED ZNCC covering ±64 px (clouds
+// or a clipped limb can bias the centroid), then refined by one full-res seeded parabolic ZNCC — is the
+// field's baseline EVERYWHERE, including the dark limb; when apAlign is set, on-disk alignment points
+// overwrite it with their absolute local shift before the field is smoothed and applied. One
+// measurement, one resample.
+func warpFrameToRef(im, refBlur, refSmall *fits.Image, refX, refY float64, gWin comet.Point, gRadius int,
 	cx, cy []float64, onDisk []bool, apRadius int, apAlign bool) *fits.Image {
 	tgtBlur := blurPlane(im, warpBlur)
 	icx, icy := brightCentroid(im)
-	gdx, gdy := comet.AlignSeeded(refBlur, tgtBlur, gWin, gRadius, surfaceMaxShift, 0, refX-icx, refY-icy)
+	seedX, seedY := refX-icx, refY-icy
+	// Coarse stage: verify/correct the centroid seed on 4x-downsampled planes (±coarseMaxShift
+	// small-px ≈ ±64 full-res px). A correlation is only trustworthy when its window is at least as
+	// large as its search range — on smaller frames the centroid seed + fine stage cover the drift,
+	// so the coarse stage is skipped rather than risking a huge mislocked seed.
+	fineSeedX, fineSeedY := seedX, seedY
+	if smallRadius := gRadius / coarseDown; smallRadius >= coarseMaxShift && refSmall.W < refBlur.W {
+		tgtSmall := downPlane(tgtBlur, coarseDown)
+		smallWin := comet.Point{X: gWin.X / coarseDown, Y: gWin.Y / coarseDown}
+		cdx, cdy := comet.AlignSeeded(refSmall, tgtSmall, smallWin, smallRadius, coarseMaxShift, 0,
+			seedX/coarseDown, seedY/coarseDown)
+		fineSeedX, fineSeedY = cdx*coarseDown, cdy*coarseDown
+	}
+	gdx, gdy := comet.AlignSeeded(refBlur, tgtBlur, gWin, gRadius, surfaceMaxShift, 0, fineSeedX, fineSeedY)
 	dxGrid, dyGrid := uniformGrid(gdx, gdy)
 	if apAlign {
 		measureAPField(refBlur, tgtBlur, cx, cy, onDisk, apRadius, gdx, gdy, dxGrid, dyGrid)
+		rejectAPOutliers(dxGrid, dyGrid, onDisk, gdx, gdy) // a mislocked AP must not bend the field
 		smoothGrid(dxGrid)
 		smoothGrid(dyGrid)
 	}
 	return warpByGrid(im, dxGrid, dyGrid)
+}
+
+// downPlane box-downsamples a 1-plane image by factor f (mean of each f×f block) for the coarse
+// alignment stage.
+func downPlane(im *fits.Image, f int) *fits.Image {
+	w, h := im.W/f, im.H/f
+	if w < 8 || h < 8 {
+		return im
+	}
+	out := fits.NewImage(w, h, 1)
+	src, dst := im.Pix[0], out.Pix[0]
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			var s float64
+			for dy := 0; dy < f; dy++ {
+				row := (y*f + dy) * im.W
+				for dx := 0; dx < f; dx++ {
+					s += float64(src[row+x*f+dx])
+				}
+			}
+			dst[y*w+x] = float32(s / float64(f*f))
+		}
+	}
+	return out
 }
 
 // brightCentroid is the brightness-weighted center of mass of an image's first plane, weighting each

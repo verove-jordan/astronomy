@@ -271,7 +271,7 @@ func For(m Mode) Preset {
 	case Planetary:
 		return Preset{
 			Mode:      Planetary,
-			Planetary: planetary.Options{BestPercent: 40, Sharpen: true, APAlign: true, Formats: []string{"png", "tif"}, Finish: planetary.DefaultFinish()},
+			Planetary: planetary.Options{BestPercent: 15, Sharpen: true, APAlign: true, APWeights: true, Formats: []string{"png", "tif"}, Finish: planetary.DefaultFinish()},
 			Curve:     []float64{0, 0, 0.5, 0.52, 1, 1},
 			Previews:  true, // lucky-imaging sharpens; no denoise/color-cal
 		}

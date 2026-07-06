@@ -50,7 +50,7 @@ func TestWarpToSharpest_RecoversShift(t *testing.T) {
 	}
 	scores := []float64{10, 5, 4} // frame 0 sharpest → alignment reference
 
-	out, refPath, err := warpToSharpest(paths, scores, dir, "al", true)
+	out, refPath, _, err := warpToSharpest(paths, scores, dir, "al", true)
 	require.NoError(t, err)
 	require.Len(t, out, 3)
 	assert.Equal(t, out[0], refPath, "frame 0 is the sharpest → the reference")
@@ -71,7 +71,7 @@ func TestWarpToSharpest_SkipsUnreadableAndKeepsSequenceGapFree(t *testing.T) {
 	ref := diskImage(120, 120, 60, 60, 25)
 	good := filepath.Join(dir, "g.fits")
 	require.NoError(t, ref.WriteFITS(good))
-	out, _, err := warpToSharpest(
+	out, _, _, err := warpToSharpest(
 		[]string{good, filepath.Join(dir, "missing.fits"), good},
 		[]float64{9, 1, 5}, dir, "al", true)
 	require.NoError(t, err)
