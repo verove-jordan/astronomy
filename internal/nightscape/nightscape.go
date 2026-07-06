@@ -196,7 +196,13 @@ func Process(ctx context.Context, o Options) (*Result, error) {
 		lights, _ := filepath.Glob(filepath.Join(seqDir, "light_*.fit*"))
 		sort.Strings(lights)
 		res.note(calibrateLights(ctx, o, plan, seqDir, lights))
-		if _, err := o.Siril.Run(ctx, seqDir, hdr+fmt.Sprintf("setref light %d\nregister light -2pass\nseqapplyreg light\n", refIndex), o.OnProgress); err != nil {
+		// The register runs in a SEPARATE Siril session (the calibration happened in Go between the
+		// two), so it must load the sequence from disk by its real name. `convert light` writes the
+		// sequence as `light_` (files light_00001.fits, sequence file light_.seq) — Siril's standard
+		// underscore suffix. In the single-session non-cal path below, `register light` works because
+		// the just-converted sequence stays loaded in memory; a fresh session opening `light.seq`
+		// would fail ("cannot be opened"), so here we reference `light_` explicitly.
+		if _, err := o.Siril.Run(ctx, seqDir, hdr+fmt.Sprintf("setref light_ %d\nregister light_ -2pass\nseqapplyreg light_\n", refIndex), o.OnProgress); err != nil {
 			return nil, fmt.Errorf("register: %w", err)
 		}
 	} else {
@@ -255,11 +261,14 @@ func compose(ctx context.Context, o Options, aligned []string, fgPath string, re
 	}
 	outDir := o.OutDir
 
-	// Foreground: the unaligned reference frame, linearised + hot-pixel cleaned.
+	// Foreground: the unaligned reference frame, linearised + hot-pixel cleaned. It is a Siril convert
+	// output (0..65535 ADU), so normalize it to [0,1] first — otherwise linearizeSRGB blows the ADU
+	// values up and the landscape washes out to white (the aligned sky frames are already float [0,1]).
 	fg, err := fits.ReadImage(fgPath)
 	if err != nil {
 		return nil, fmt.Errorf("read foreground frame: %w", err)
 	}
+	normalizeADU(fg)
 	linearizeSRGB(fg)
 	cleanHotPixels(fg, 5.0)
 

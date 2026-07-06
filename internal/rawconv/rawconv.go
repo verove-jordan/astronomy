@@ -151,6 +151,13 @@ func transcodeDcraw(ctx context.Context, src, dst string) error {
 // has no output-path flag — and the capture volume is read-only — so we point it at a symlink in the
 // (writable) destination dir and rename the result to dst. `-T` forces TIFF output.
 func dcrawDevelop(ctx context.Context, src, dst string, opts ...string) error {
+	// The symlink must point at an ABSOLUTE source: a relative src (e.g. the CLI's "input/…") would be
+	// resolved relative to the symlink's own directory (dstDir), not the caller's CWD, so dcraw_emu
+	// opens the wrong path and fails with "Input/output error". (sips took the path directly, so this
+	// only bites the dcraw path.)
+	if abs, err := filepath.Abs(src); err == nil {
+		src = abs
+	}
 	link := dst + strings.ToLower(filepath.Ext(src)) // e.g. frame_00001.tif.dng, in the writable dstDir
 	_ = os.Remove(link)
 	if err := os.Symlink(src, link); err != nil {

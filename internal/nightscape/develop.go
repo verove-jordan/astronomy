@@ -44,10 +44,39 @@ func mdlsFloat(path, attr string) float64 {
 	return v
 }
 
+// normalizeADU scales a frame that is still in 16-bit ADU range (Siril's `convert` output is
+// 0..65535, NOT normalized) down to the [0,1] display range the linear recipe assumes — a no-op for
+// frames already in [0,1] (Siril's REGISTERED output is float 0..1). Without this, linearizeSRGB
+// treats an ADU value like 62914 as an sRGB level and blows it up to ~1e11, and encodeSRGB then
+// clamps the whole frame to uniform white — no stars, so `register` fails, and any convert-output
+// foreground washes out. A FIXED divisor (65535) is used, not a per-frame max, so relative
+// brightness between frames (which calibration and stacking depend on) is preserved.
+func normalizeADU(im *fits.Image) {
+	var mx float32
+	for c := 0; c < im.C; c++ {
+		for _, v := range im.Pix[c] {
+			if v > mx {
+				mx = v
+			}
+		}
+	}
+	if mx <= 1.5 { // already [0,1] (a registered/float frame)
+		return
+	}
+	const full = 65535.0
+	for c := 0; c < im.C; c++ {
+		p := im.Pix[c]
+		for i := range p {
+			p[i] /= full
+		}
+	}
+}
+
 // linearizeSRGB converts a display-referred (sRGB/Display-P3 transfer) image to linear light, in
 // place. The frames reach us through `sips` (which writes a gamma-encoded TIFF) then Siril, so the
 // whole linear-domain recipe needs them linearised first — mirroring the reference pipeline, which
-// linearised its JPG inputs the same way (main.py _srgb_to_linear_u16).
+// linearised its JPG inputs the same way (main.py _srgb_to_linear_u16). Inputs must be [0,1]
+// (normalizeADU brings Siril's 16-bit convert output into range first).
 func linearizeSRGB(im *fits.Image) {
 	for c := 0; c < im.C; c++ {
 		p := im.Pix[c]

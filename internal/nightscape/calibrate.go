@@ -91,6 +91,7 @@ func calibrateLights(ctx context.Context, o Options, plan calPlan, seqDir string
 		if err != nil {
 			return fmt.Sprintf("calibration aborted (read %s: %v); %d lights done", filepath.Base(name), err, done)
 		}
+		normalizeADU(im) // Siril convert output is 0..65535 ADU; bring it to [0,1] before linearize
 		linearizeSRGB(im)
 		switch {
 		case dark != nil:
@@ -226,6 +227,7 @@ func medianMaster(paths []string) (*fits.Image, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", filepath.Base(p), err)
 		}
+		normalizeADU(im) // cal frames are Siril convert output (0..65535 ADU)
 		linearizeSRGB(im)
 		imgs = append(imgs, im)
 	}
