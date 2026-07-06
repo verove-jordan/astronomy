@@ -2,10 +2,14 @@ package calib
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/inspect"
@@ -117,6 +121,20 @@ func stackPooled(ctx context.Context, runner *siril.Runner, mt MasterType, key i
 	paths []string, mastersDir, workDir string, onProgress func(siril.Progress)) (Master, error) {
 	name := masterName(mt, key)
 	outBase := filepath.Join(mastersDir, name)
+	master := Master{
+		Type: mt, Filter: key.Filter, ExposureMs: key.ExposureMs,
+		Gain: key.Gain, Offset: key.Offset, Bin: key.Bin,
+		FrameCount: len(paths), Path: outBase + ".fits",
+	}
+	// Reuse an existing master whose exact raw pool is unchanged (same frames, sizes, mtimes): the
+	// Siril stack would be byte-identical, so a reprocess of the same session skips it (minutes on a
+	// large dark/flat pool). The .sig sidecar records the pool that produced the on-disk master.
+	sig := poolSignature(paths)
+	if fileExists(outBase + ".fits") {
+		if b, err := os.ReadFile(outBase + ".sig"); err == nil && string(b) == sig {
+			return master, nil
+		}
+	}
 	seqDir := filepath.Join(workDir, "cal_"+name)
 	if _, err := fsutil.LinkFrames(seqDir, paths); err != nil {
 		return Master{}, err
@@ -131,15 +149,24 @@ func stackPooled(ctx context.Context, runner *siril.Runner, mt MasterType, key i
 	if err := os.Rename(tmpBase+".fits", outBase+".fits"); err != nil {
 		return Master{}, fmt.Errorf("publish master %s: %w", name, err)
 	}
+	_ = os.WriteFile(outBase+".sig", []byte(sig), 0o644) // record the pool for the next run's reuse check
 	_ = os.RemoveAll(seqDir)
-	return Master{
-		Type:       mt,
-		Filter:     key.Filter,
-		ExposureMs: key.ExposureMs,
-		Gain:       key.Gain,
-		Offset:     key.Offset,
-		Bin:        key.Bin,
-		FrameCount: len(paths),
-		Path:       outBase + ".fits",
-	}, nil
+	return master, nil
+}
+
+// poolSignature is a stable content signature of a raw calibration pool: each frame's path, size and
+// mtime, sorted. Unchanged frames → identical signature → an identical stacked master, so it can be
+// reused instead of re-stacked.
+func poolSignature(paths []string) string {
+	parts := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if fi, err := os.Stat(p); err == nil {
+			parts = append(parts, fmt.Sprintf("%s|%d|%d", p, fi.Size(), fi.ModTime().UnixNano()))
+		} else {
+			parts = append(parts, p+"|?")
+		}
+	}
+	sort.Strings(parts)
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return hex.EncodeToString(sum[:])
 }

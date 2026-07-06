@@ -7,9 +7,13 @@ package nightscape
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/fits"
@@ -62,6 +66,12 @@ func libraryHasCandidate(p calPlan) bool {
 // neither is available; a note also carries any (soft-fail) persistence problem.
 func buildOrReusePhoneMaster(ctx context.Context, o Options, tag string, key calib.PhoneKey, libSel *calib.PhoneMaster) (*fits.Image, string) {
 	if raws := calFrames(o, tag); len(raws) > 0 {
+		// Reuse a previously-built master whose SOURCE frames are byte-for-byte unchanged (same paths,
+		// sizes and mtimes): the develop → convert → median would produce an identical file, so on a
+		// reprocess of the same capture we skip that (minutes of dcraw per cal frame). See reusePhoneMaster.
+		if im, note := reusePhoneMaster(o, tag, raws); im != nil {
+			return im, note
+		}
 		master, note := buildMaster(ctx, o, raws, tag)
 		if master == nil {
 			return nil, note
@@ -101,11 +111,56 @@ func persistPhoneMaster(ctx context.Context, o Options, tag string, master *fits
 	if err := writeMasterAtomic(master, path); err != nil {
 		return tag + ": save master: " + err.Error()
 	}
+	// A source-signature sidecar so a later reprocess with the same cal frames reuses this master
+	// instead of rebuilding it (see reusePhoneMaster). Best-effort — a missing sidecar just rebuilds.
+	_ = os.WriteFile(path+".sig", []byte(calFramesSignature(tag, raws)), 0o644)
 	pm.Path = path
 	if err := o.PhoneCalib.SavePhoneMaster(ctx, pm); err != nil {
 		return tag + ": index master: " + err.Error()
 	}
 	return ""
+}
+
+// calFramesSignature is a stable content signature of a calibration set: the tag plus each frame's
+// path, size and mtime (sorted). Identical frames unchanged on disk → identical signature → the
+// built master would be byte-identical, so it can be reused. mtime+size is cheap and catches any
+// edit/replacement without hashing gigabytes of raws.
+func calFramesSignature(tag string, raws []string) string {
+	parts := make([]string, 0, len(raws))
+	for _, p := range raws {
+		if fi, err := os.Stat(p); err == nil {
+			parts = append(parts, fmt.Sprintf("%s|%d|%d", p, fi.Size(), fi.ModTime().UnixNano()))
+		} else {
+			parts = append(parts, p+"|?")
+		}
+	}
+	sort.Strings(parts)
+	sum := sha256.Sum256([]byte(tag + "\x00" + strings.Join(parts, "\n")))
+	return hex.EncodeToString(sum[:])
+}
+
+// reusePhoneMaster returns a library master built from an identical, unchanged cal-frame set (matched
+// by calFramesSignature via a .sig sidecar), or nil to rebuild. Scans the few sidecars in the library
+// dir — cheap, and correct across the dims-in-filename uncertainty (the sidecar, not the name, decides).
+func reusePhoneMaster(o Options, tag string, raws []string) (*fits.Image, string) {
+	if o.LibraryDir == "" {
+		return nil, ""
+	}
+	want := calFramesSignature(tag, raws)
+	sigs, _ := filepath.Glob(filepath.Join(o.LibraryDir, "phone_master_*.sig"))
+	for _, sf := range sigs {
+		b, err := os.ReadFile(sf)
+		if err != nil || strings.TrimSpace(string(b)) != want {
+			continue
+		}
+		masterPath := strings.TrimSuffix(sf, ".sig")
+		im, err := fits.ReadImage(masterPath)
+		if err != nil {
+			continue
+		}
+		return im, fmt.Sprintf("%s reused (unchanged source frames, %d)", tag, len(raws))
+	}
+	return nil, ""
 }
 
 // phoneMasterName is the library filename for a phone master, e.g.
