@@ -2,7 +2,10 @@
   "app": {
     "title": "AstroStack",
     "subtitle": "Tri et empilement astrophoto automatiques",
-    "logoAlt": "Logo AstroStack"
+    "logoAlt": "Logo AstroStack",
+    "openMenu": "Ouvrir le menu",
+    "closeMenu": "Fermer le menu",
+    "language": "Langue"
   },
   "nav": {
     "tonight": "Ce soir",
@@ -14,7 +17,9 @@
     "runs": "Traitements",
     "library": "Bibliothèque de calibration",
     "processing": "Traitement",
-    "astroAgent": "AstroAgent"
+    "astroAgent": "AstroAgent",
+    "collapse": "Réduire",
+    "expand": "Agrandir"
   },
   "astroAgent": {
     "title": "AstroAgent",
@@ -249,6 +254,8 @@
   "calib": {
     "title": "Calibration · depuis votre bibliothèque",
     "subtitle": "Ces maîtres de votre bibliothèque correspondent à vos poses et seront appliqués. Décochez-en un pour l'ignorer.",
+    "selectAll": "Tout sélectionner",
+    "deselectAll": "Tout désélectionner",
     "frames": "{n} images",
     "role": { "dark": "Dark", "flat": "Flat", "bias": "Bias" }
   },
@@ -456,6 +463,10 @@
     "cancel": "Annuler le traitement",
     "cancelling": "Annulation…",
     "stopFinalize": "Arrêter & finaliser",
+    "pause": "Mettre en pause",
+    "pausing": "Mise en pause…",
+    "continue": "Reprendre",
+    "continuing": "Reprise…",
     "restart": "Relancer",
     "restarting": "Relancement…",
     "remove": "Retirer",
@@ -566,7 +577,8 @@
     "running": "En cours",
     "succeeded": "Réussi",
     "failed": "Échoué",
-    "cancelled": "Annulé"
+    "cancelled": "Annulé",
+    "paused": "En pause"
   },
   "darksky": {
     "hint": "Dessinez une zone sur la carte, choisissez un Bortle maximum, puis recherchez les endroits les plus sombres — classés selon la noirceur du ciel et l'ouverture de l'horizon (relief + arbres), avec la distance routière depuis votre position.",

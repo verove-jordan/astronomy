@@ -39,6 +39,9 @@ type lightGroup struct {
 type ReusePlan struct {
 	byFilter map[string][]lightGroup
 	Summary  ReuseSummary
+	// MissingPrior counts catalogued prior frames skipped because their file is gone from disk (e.g.
+	// freed after an S3 mirror) — one ghost path would otherwise sink its whole group's Siril link.
+	MissingPrior int
 }
 
 // ReuseSummary describes the prior data added to a run (surfaced in the API preview and run result).
@@ -158,6 +161,10 @@ func addPriorGroups(plan *ReusePlan, cfg ReuseConfig, rows []store.FrameRow, cur
 			continue
 		}
 		if cfg.Sessions != nil && !cfg.Sessions[r.SessionID] {
+			continue
+		}
+		if !fileExists(r.Path) { // freed to S3 (or moved) — linking the ghost would fail the whole group
+			plan.MissingPrior++
 			continue
 		}
 		seen[r.Path] = true

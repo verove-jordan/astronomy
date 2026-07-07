@@ -94,6 +94,27 @@ type Preset struct {
 	DenoiseLum    float64
 	DenoiseVST    bool
 	DenoiseDA3D   bool
+	// DenoiseStarlet replaces Siril's opaque, spatially-uniform `denoise` with the Go à-trous
+	// (starlet) multiscale denoiser (internal/noise): per-tile sigma-adaptive soft-thresholds with an
+	// explicit high-SNR protection mask, so stars/cores stay untouched while the sky is cleaned. Soft-
+	// fail: on any error the linear master is left as-is. false → the legacy Siril denoise path.
+	DenoiseStarlet bool
+	// DenoiseAuto scales the denoise strength (starlet or Siril) by the master's MEASURED noise + the
+	// stacked-frame count: a noisy/shallow master is denoised harder, a clean/deep one gently, around
+	// the DenoiseChroma/DenoiseLum baselines. false → the baselines apply verbatim.
+	DenoiseAuto bool
+
+	// StackWeight sets the Siril stack weighting mode ("" | noise | wfwhm | nbstars | nbstack). wfwhm
+	// weights each sub by its star sharpness, so the deeper/sharper subs dominate — the cross-session
+	// merge already uses it; single-session and OSC stacks were previously unweighted. "" → unweighted.
+	StackWeight string
+
+	// PhotomNorm photometrically normalizes heterogeneous calibration groups (sessions shot at
+	// different exposure/gain/temperature) in Go before the cross-session merge: each group's linear
+	// curve is measured and mapped onto the reference group's scale/offset, so Siril's addscale only
+	// mops up per-frame drift. Default false — on real mixed-gain data it mis-measured the scale
+	// (clamped at 5×); off until validated. See internal/photom.
+	PhotomNorm bool
 
 	// DropFilterWheelTransition drops the first frame of a run when its brightness is off (the
 	// wheel was still moving). Conditional — only off-brightness frames are dropped.
@@ -244,9 +265,15 @@ func For(m Mode) Preset {
 			Curve:            []float64{0, 0, 0.20, 0.27, 0.5, 0.58, 0.8, 0.85, 1, 1}, // lift faint nebulosity
 
 			DenoiseChroma: 0.85, DenoiseLum: 0.30, DenoiseVST: true, DenoiseDA3D: true,
-			BackgroundAI: true, StarReduce: 0.5, // emission nebulae benefit most from star reduction
-			TrailMaskK:                3.0,  // cross-frame transient mask: clean satellite trails / cosmic rays pre-stack
-			CoreHighlightKnee:         0.64, // roll off the L luminance core highlights → structured pink knot
+			DenoiseStarlet: false, DenoiseAuto: false, // proven Siril denoise; the Go starlet over-cleaned real masters (σ÷7, unnatural texture) — validate before re-enabling
+			StackWeight:               "wfwhm", // weight subs by star sharpness (was unweighted for single-session)
+			PhotomNorm:                false,   // off: mis-measured real cross-gain groups (Ha clamped at 5×) — validate before re-enabling
+			BackgroundAI:              true,    // per-channel GraXpert background extraction
+			CombinedBackgroundAI:      true,    // parity with deepsky: 2nd GraXpert pass on combined RGB → homogeneous sky
+			ColorDenoiseAI:            true,    // parity with deepsky: GraXpert AI denoise on combined colour
+			StarReduce:                0.5,     // emission nebulae benefit most from star reduction
+			TrailMaskK:                3.0,     // cross-frame transient mask: clean satellite trails / cosmic rays pre-stack
+			CoreHighlightKnee:         0.64,    // roll off the L luminance core highlights → structured pink knot
 			CoreHighlightCeil:         0.76,
 			HighlightKnee:             0.85, // star-safe highlight cap: bright star cores stay coloured, never burn white
 			HighlightCeil:             0.96,
@@ -285,10 +312,16 @@ func For(m Mode) Preset {
 		}
 	case Planetary:
 		return Preset{
-			Mode:      Planetary,
-			Planetary: planetary.Options{BestPercent: 15, Sharpen: true, APAlign: true, APWeights: true, Formats: []string{"png", "tif"}, Finish: planetary.DefaultFinish()},
-			Curve:     []float64{0, 0, 0.5, 0.52, 1, 1},
-			Previews:  true, // lucky-imaging sharpens; no denoise/color-cal
+			Mode: Planetary,
+			// Seeing-compensation knobs (RefRefine/APSelectFrac/SeeingCull) stay at their zero values:
+			// on real Moon data the translation-only synthetic reference stacked SOFTER than the best
+			// single frame (lapvar gate failed), so AP fields measure against the sharpest frame instead.
+			Planetary: planetary.Options{
+				BestPercent: 15, Sharpen: true, APAlign: true, APWeights: true,
+				Formats: []string{"png", "tif"}, Finish: planetary.DefaultFinish(),
+			},
+			Curve:    []float64{0, 0, 0.5, 0.52, 1, 1},
+			Previews: true, // lucky-imaging sharpens; no denoise/color-cal
 		}
 	case Livestack:
 		// Live stacking finalizes through the standard deep-sky path; the per-batch live preview reads
@@ -318,12 +351,15 @@ func For(m Mode) Preset {
 			// then smooths residual colour noise in the finish — kept modest (6) so it doesn't smear
 			// colour into star halos.
 			DenoiseChroma: 0.85, DenoiseLum: 0.50, DenoiseVST: true, DenoiseDA3D: true,
-			ChromaBlur:                0,     // 0: GraXpert AI denoise handles colour noise; no blur → crisp star halos
-			CropFrac:                  0.035, // trim ragged stacking-edge bands off the export
-			TrailMaskK:                3.0,   // cross-frame transient mask: clean satellite trails / cosmic rays pre-stack
-			CoreHighlightKnee:         0.64,  // roll off the L luminance above this so the blown nebula core dims
-			CoreHighlightCeil:         0.76,  // ...to this asymptote → structured pink knot, outer tones untouched
-			HighlightKnee:             0.85,  // star-safe highlight cap: bright star cores stay coloured, never burn white
+			DenoiseStarlet: false, DenoiseAuto: false, // proven Siril denoise; the Go starlet over-cleaned real masters (σ÷7, unnatural texture) — validate before re-enabling
+			StackWeight:               "wfwhm", // weight subs by star sharpness (was unweighted for single-session)
+			PhotomNorm:                false,   // off: mis-measured real cross-gain groups (Ha clamped at 5×) — validate before re-enabling
+			ChromaBlur:                0,       // 0: GraXpert AI denoise handles colour noise; no blur → crisp star halos
+			CropFrac:                  0.035,   // trim ragged stacking-edge bands off the export
+			TrailMaskK:                3.0,     // cross-frame transient mask: clean satellite trails / cosmic rays pre-stack
+			CoreHighlightKnee:         0.64,    // roll off the L luminance above this so the blown nebula core dims
+			CoreHighlightCeil:         0.76,    // ...to this asymptote → structured pink knot, outer tones untouched
+			HighlightKnee:             0.85,    // star-safe highlight cap: bright star cores stay coloured, never burn white
 			HighlightCeil:             0.96,
 			BackgroundAI:              true, // per-channel GraXpert background extraction
 			CombinedBackgroundAI:      true, // 2nd GraXpert pass on the combined RGB + RBF subsky → homogeneous sky

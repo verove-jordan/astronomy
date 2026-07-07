@@ -1,0 +1,32 @@
+package planetary
+
+import (
+	"math"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// TestWeightFields_SoftLocalSelection: with selection on, the frames below a cell's cross-frame P(1−frac)
+// sharpness are floored out of that cell while the survivors fall off with the steeper pow=3; disabling it
+// (frac≥1) restores the classic pow=2 falloff with no gate.
+func TestWeightFields_SoftLocalSelection(t *testing.T) {
+	// One cell, four frames of decreasing local sharpness.
+	cs := [][]float64{{1.0}, {0.9}, {0.5}, {0.1}}
+	g := apGrid{N: 1}
+
+	sel := g.weightFields(cs, 0.35) // keep top 35% → per-cell threshold at P65 = 0.9
+	require.Len(t, sel, 4)
+	assert.InDelta(t, 1.0, sel[0][0], 1e-9, "sharpest → (1/1)^3")
+	assert.InDelta(t, math.Pow(0.9, 3), sel[1][0], 1e-9, "second survivor → (0.9)^3")
+	assert.Equal(t, apWeightMin, sel[2][0], "below P65 → floored out of the cell")
+	assert.Equal(t, apWeightMin, sel[3][0], "below P65 → floored out of the cell")
+
+	off := g.weightFields(cs, 1.0) // disabled → classic pow=2, no selection gate
+	assert.InDelta(t, math.Pow(0.5, 2), off[2][0], 1e-9, "no selection keeps the mid frame at (0.5)^2")
+	assert.Equal(t, apWeightMin, off[3][0], "the weak frame's (0.1)^2 is below the floor → apWeightMin")
+
+	// A zero/negative frac is treated as disabled too (mode/preset.go's literal Options{} stays safe).
+	assert.Equal(t, off, g.weightFields(cs, 0), "selectFrac<=0 == disabled")
+}

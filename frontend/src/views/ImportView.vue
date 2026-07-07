@@ -19,6 +19,7 @@ import ReusePanel from "@/components/Capture/ReusePanel.vue";
 import CalibrationPanel from "@/components/Capture/CalibrationPanel.vue";
 import FilePreviewButton from "@/components/Common/FilePreviewButton.vue";
 import CollapsibleCard from "@/components/Common/CollapsibleCard.vue";
+import TwoPane from "@/components/Common/TwoPane.vue";
 import StatusPill from "@/components/Common/StatusPill.vue";
 import EnvWarnings from "@/components/Common/EnvWarnings.vue";
 import IconFolder from "@/components/Icons/IconFolder.vue";
@@ -719,18 +720,22 @@ function histChip(exists: boolean): string {
       />
     </div>
 
-    <ReusePanel
-      v-if="inv"
-      v-model:enabled="reuseEnabled"
-      v-model:selected="reuseSelected"
-      :preview="reusePreview"
-    />
-
-    <CalibrationPanel
-      v-if="inv"
-      v-model:excluded="calibExcluded"
-      :preview="calibPreview"
-    />
+    <!-- Reuse + calibration advisories sit side-by-side on wide screens (both fold prior data into the run). -->
+    <TwoPane v-if="inv" split="even">
+      <template #main>
+        <ReusePanel
+          v-model:enabled="reuseEnabled"
+          v-model:selected="reuseSelected"
+          :preview="reusePreview"
+        />
+      </template>
+      <template #aside>
+        <CalibrationPanel
+          v-model:excluded="calibExcluded"
+          :preview="calibPreview"
+        />
+      </template>
+    </TwoPane>
 
     <div ref="runControls" :class="card">
       <!-- Environment warnings (missing/broken tools, catalogues) — warn before the run, not after. -->
@@ -1004,7 +1009,11 @@ function histChip(exists: boolean): string {
 
       <section v-if="lightRows.length">
         <h2 class="mb-2 text-lg font-medium">{{ t("import.lightSets") }}</h2>
-        <GenericTable :columns="lightColumns" :rows="lightRows">
+        <GenericTable
+          :columns="lightColumns"
+          :rows="lightRows"
+          max-height="20rem"
+        >
           <template #cell-filter="{ value }">
             <FilterChip v-if="value" :filter="String(value)" />
             <span v-else class="text-slate-400">—</span>
@@ -1014,7 +1023,11 @@ function histChip(exists: boolean): string {
 
       <section v-if="calibRows.length">
         <h2 class="mb-2 text-lg font-medium">{{ t("import.calibSets") }}</h2>
-        <GenericTable :columns="calibColumns" :rows="calibRows">
+        <GenericTable
+          :columns="calibColumns"
+          :rows="calibRows"
+          max-height="20rem"
+        >
           <template #cell-filter="{ value }">
             <FilterChip v-if="value" :filter="String(value)" />
             <span v-else class="text-slate-400">—</span>

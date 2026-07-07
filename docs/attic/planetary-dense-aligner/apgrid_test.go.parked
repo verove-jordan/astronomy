@@ -1,0 +1,78 @@
+package planetary
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+
+	"github.com/verove-jordan/astronomy/internal/fits"
+)
+
+// Contract change (2026-07-07): the auto-DENSE default regressed a real full-Moon run (small per-node
+// windows locked noisily on low-contrast maria → the stack came out softer than the best frame), so
+// spacing 0 now means the CLASSIC 10×10 and dense lattices are opt-in via an explicit APSpacing.
+func TestGridForFrame_ClassicDefaultDenseOptIn(t *testing.T) {
+	cases := []struct {
+		w, h, spacing, want int
+	}{
+		{200, 200, 0, 10},    // default → classic 10×10
+		{4656, 3520, 0, 10},  // default stays classic even on a full-res Moon (dense is opt-in)
+		{1024, 768, 48, 16},  // explicit spacing → dense: 768/48 = 16
+		{4656, 3520, 48, 73}, // opt-in dense full-res Moon (min axis 3520/48 ≈ 73)
+		{9000, 9000, 48, 80}, // capped at apGridMax
+		{4656, 3520, 24, 80}, // finer spacing → more nodes (3520/24 ≈ 147 → capped 80)
+		{4656, 3520, 96, 37}, // coarser spacing → fewer nodes
+	}
+	for _, c := range cases {
+		assert.Equal(t, c.want, gridForFrame(c.w, c.h, c.spacing),
+			"gridForFrame(%d,%d,spacing=%d)", c.w, c.h, c.spacing)
+	}
+}
+
+func TestApWindowRadius_ClassicAndDense(t *testing.T) {
+	// Classic grid (n ≤ apGridN): the original 5%-of-axis window — a robust ZNCC lock on the maria.
+	assert.Equal(t, 10, apWindowRadius(200, 200, 10), "classic: 5%% of 200")
+	assert.Equal(t, 176, apWindowRadius(4656, 3520, 10), "classic: 5%% of 3520")
+	// Opt-in dense lattices: the node spacing clamped to [apWinMin, apWinMax].
+	assert.Equal(t, 48, apWindowRadius(4656, 3520, 73), "48-px spacing kept")
+	assert.Equal(t, apWinMax, apWindowRadius(9000, 9000, 80), "wide spacing capped at 64")
+	assert.Equal(t, apWinMin, apWindowRadius(300, 300, 15), "20-px spacing floored to 24")
+}
+
+// TestGateValidNodes_DropsSmoothPatches: a half-textured frame (structured left, flat right) must gate out
+// the featureless nodes while keeping the structured ones.
+func TestGateValidNodes_DropsSmoothPatches(t *testing.T) {
+	const w, h = 200, 200
+	im := fits.NewImage(w, h, 1)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if x < w/2 && (x/4+y/4)%2 == 0 { // high-frequency texture on the left half only
+				im.Pix[0][y*w+x] = 1
+			} else {
+				im.Pix[0][y*w+x] = 0.3
+			}
+		}
+	}
+	g := apGrid{N: 10, W: w, H: h}
+	cx, cy := g.centers()
+	onDisk := make([]bool, len(cx))
+	for k := range onDisk {
+		onDisk[k] = true // treat the whole frame as on-disk so the gate is what decides
+	}
+	band := bandpass(im, bandLo, bandHi)
+	valid := gateValidNodes(band, cx, cy, onDisk, 12)
+
+	var left, right int
+	for k := range cx {
+		if !valid[k] {
+			continue
+		}
+		if cx[k] < w/2 {
+			left++
+		} else {
+			right++
+		}
+	}
+	assert.Greater(t, left, right, "textured (left) nodes survive the gate; flat (right) nodes are dropped")
+	assert.Less(t, right, left/2+1, "most flat-side nodes are gated out")
+}

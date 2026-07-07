@@ -61,7 +61,8 @@ func BuildMasters(ctx context.Context, runner *siril.Runner, inv *inspect.Invent
 	var warnings []string
 	for _, ft := range order {
 		for _, set := range inv.SetsOfType(ft) {
-			m, err := buildOne(ctx, runner, set, masters, mastersDir, workDir, onProgress)
+			m, qc, err := buildOne(ctx, runner, set, masters, mastersDir, workDir, onProgress)
+			warnings = append(warnings, qc...)
 			if err != nil {
 				warnings = append(warnings, err.Error())
 				continue
@@ -72,8 +73,11 @@ func BuildMasters(ctx context.Context, runner *siril.Runner, inv *inspect.Invent
 	return masters, warnings, nil
 }
 
+// buildOne stacks one calibration set into a master. For a master FLAT it also runs optical-defect +
+// quality analysis (dust donuts, saturation, vignetting), returning any QC warnings; other master
+// types return no warnings.
 func buildOne(ctx context.Context, runner *siril.Runner, set inspect.Set, built []Master,
-	mastersDir, workDir string, onProgress func(siril.Progress)) (Master, error) {
+	mastersDir, workDir string, onProgress func(siril.Progress)) (Master, []string, error) {
 	mt := masterByFrameType[set.Key.Type]
 	name := masterName(mt, set.Key)
 	outBase := filepath.Join(mastersDir, name)
@@ -81,7 +85,7 @@ func buildOne(ctx context.Context, runner *siril.Runner, set inspect.Set, built 
 
 	paths := framePaths(set.Frames)
 	if _, err := fsutil.LinkFrames(seqDir, paths); err != nil {
-		return Master{}, err
+		return Master{}, nil, err
 	}
 
 	var script string
@@ -92,7 +96,12 @@ func buildOne(ctx context.Context, runner *siril.Runner, set inspect.Set, built 
 		script = siril.StackMasterScript("cal", outBase)
 	}
 	if _, err := runner.Run(ctx, seqDir, script, onProgress); err != nil {
-		return Master{}, fmt.Errorf("stack master %s: %w", name, err)
+		return Master{}, nil, fmt.Errorf("stack master %s: %w", name, err)
+	}
+
+	var qcWarn []string
+	if mt == MasterFlat {
+		qcWarn = analyzeFlatMaster(outBase+".fits", paths)
 	}
 	_ = os.RemoveAll(seqDir) // master is saved to mastersDir; drop the per-set scratch
 
@@ -108,7 +117,7 @@ func buildOne(ctx context.Context, runner *siril.Runner, set inspect.Set, built 
 		Bin:        set.Key.Bin,
 		FrameCount: set.Count,
 		Path:       outBase + ".fits",
-	}, nil
+	}, qcWarn, nil
 }
 
 // flatBias finds a bias (or dark-flat) master matching a flat set's gain/offset/bin.

@@ -108,24 +108,33 @@ func extractCombinedBackground(ctx context.Context, opts Options, runner *siril.
 	if opts.Preset == nil || !opts.Preset.CombinedBackgroundAI {
 		return ""
 	}
-	rbf := func() string { // RBF subsky flattens the asymmetric amp-glow/light-pollution residual
+	rbf := func() (string, bool) { // RBF subsky flattens the asymmetric amp-glow/light-pollution residual
 		if _, err := runner.Run(ctx, outDir, hdr+"load "+base+"\n"+siril.SubskyRBFCmd()+"save "+base+"\n", nil); err != nil {
-			return "combined RBF subsky skipped: " + err.Error()
+			return "combined RBF subsky skipped: " + err.Error(), false
 		}
-		return ""
+		return "", true
 	}
+	// Every branch reports what actually flattened the combined RGB, so run.json always records whether
+	// the gradient removal ran (a silent "" made a left-behind gradient indistinguishable from a pass
+	// that worked).
 	if opts.Graxpert != nil && opts.Graxpert.Healthy(ctx) == nil {
 		if n := extractBackgroundAI(ctx, opts, filepath.Join(outDir, base+".fits"), nil); n != "" {
 			// The AI pass failed at runtime — the RBF pass below is now the ONLY gradient removal,
 			// so it must still run (returning early here shipped un-flattened, blotchy skies).
-			if rn := rbf(); rn != "" {
+			if rn, ok := rbf(); !ok {
 				return "combined " + n + "; " + rn
 			}
 			return "combined " + n + " — RBF subsky fallback applied"
 		}
-		return rbf() // GraXpert removes most; the follow-up RBF cleans the residual it leaves
+		if rn, ok := rbf(); !ok { // GraXpert removes most; the follow-up RBF cleans the residual it leaves
+			return "combined background: GraXpert applied; " + rn
+		}
+		return "combined background extracted (GraXpert + RBF residual pass)"
 	}
-	return rbf() // GraXpert absent/broken → RBF alone (deterministic, better than a polynomial here)
+	if rn, ok := rbf(); !ok { // GraXpert absent/broken → RBF alone (deterministic, better than a polynomial here)
+		return rn
+	}
+	return "combined background flattened (RBF subsky; GraXpert unavailable)"
 }
 
 // denoiseAI runs GraXpert AI denoising in place on a linear FITS (the combined RGB colour base). It is
@@ -148,7 +157,9 @@ func denoiseAI(ctx context.Context, opts Options, path string, onProgress func(s
 	if err := os.Rename(out, path); err != nil {
 		return "GraXpert denoise skipped: " + err.Error()
 	}
-	return ""
+	// Success is reported too — a silent "" made "denoise never ran" indistinguishable from "denoise
+	// ran fine" when chasing chroma-noise blotches in the final.
+	return "denoise applied (GraXpert AI)"
 }
 
 // aiStars reports whether StarNet++ star reduction is enabled by the preset (StarReduce > 0) and

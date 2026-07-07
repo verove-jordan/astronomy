@@ -19,7 +19,11 @@ func TestComposeScript_HaLRGB(t *testing.T) {
 	assert.Contains(t, s, "LAYER-MODE-SCREEN")
 	assert.Contains(t, s, "(gimp-layer-set-opacity ha 30)")
 	assert.Contains(t, s, "gimp-drawable-curves-spline d HISTOGRAM-VALUE 6 #(0.0000 0.0000 0.5000 0.5500 1.0000 1.0000)")
-	assert.Contains(t, s, "gimp-drawable-hue-saturation d HUE-RANGE-ALL 0 0 15 0")
+	// Saturation is shadow-protected: boosted on a luminosity-masked copy so near-black chroma noise
+	// is never saturated into blotches (the mask levels ramp protects <12% luminance).
+	assert.Contains(t, s, "gimp-drawable-hue-saturation sat HUE-RANGE-ALL 0 0 15 0")
+	assert.Contains(t, s, "gimp-layer-create-mask sat ADD-MASK-COPY")
+	assert.Contains(t, s, "(gimp-drawable-levels m HISTOGRAM-VALUE 0.12 0.60 TRUE 1 0 1 TRUE)")
 	assert.Contains(t, s, `"/o/final.xcf"`)
 	assert.Contains(t, s, `"/o/final.tif"`)
 	assert.Contains(t, s, `"/o/final.png"`)

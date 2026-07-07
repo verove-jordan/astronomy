@@ -92,6 +92,7 @@ func MatchForLightExcluding(light inspect.SetKey, masters []Master, excluded []s
 	}
 	if sel.Dark != nil && skip[SuggestID(light, RoleDark)] {
 		sel.Dark = nil
+		sel.DarkOptimize = false
 		sel.Notes = append(sel.Notes, "dark excluded — skipped on your request")
 	}
 	if sel.Flat != nil && skip[SuggestID(light, RoleFlat)] {
@@ -100,6 +101,7 @@ func MatchForLightExcluding(light inspect.SetKey, masters []Master, excluded []s
 	}
 	if sel.Bias != nil && skip[SuggestID(light, RoleBias)] {
 		sel.Bias = nil
+		sel.DarkOptimize = false // -opt needs the bias to isolate the thermal signal
 		sel.Notes = append(sel.Notes, "bias excluded — skipped on your request")
 	}
 	return sel

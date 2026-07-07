@@ -129,7 +129,19 @@ func composeScript(in Inputs, curve []float64, haScreen, saturation float64, res
 			b.WriteString("    (gimp-drawable-hue-saturation d HUE-RANGE-GREEN 0 0 -12 0)\n")
 		}
 		if saturation > 0 {
-			fmt.Fprintf(&b, "    (gimp-drawable-hue-saturation d HUE-RANGE-ALL 0 0 %.0f 0)\n", clamp(saturation*100, 0, 100))
+			// Shadow-protected saturation: boost a COPY of the flattened image and blend it back through a
+			// LUMINOSITY mask, so near-black regions (sky, dust lanes) keep their original neutral chroma.
+			// A global boost saturates the residual chroma noise of the thin colour channels there into
+			// red/blue blotches — luminance carries no such noise, which is why only colour showed it. The
+			// levels ramp keeps pixels under ~12% luminance fully protected, blending to the full boost by
+			// ~60%; galaxy cores, arms and stars sit above that and keep the intended colour.
+			b.WriteString("    (let* ((sat (car (gimp-layer-copy d FALSE))))\n")
+			b.WriteString("      (gimp-image-insert-layer dup sat 0 -1)\n")
+			fmt.Fprintf(&b, "      (gimp-drawable-hue-saturation sat HUE-RANGE-ALL 0 0 %.0f 0)\n", clamp(saturation*100, 0, 100))
+			b.WriteString("      (let ((m (car (gimp-layer-create-mask sat ADD-MASK-COPY))))\n")
+			b.WriteString("        (gimp-layer-add-mask sat m)\n")
+			b.WriteString("        (gimp-drawable-levels m HISTOGRAM-VALUE 0.12 0.60 TRUE 1 0 1 TRUE))\n")
+			b.WriteString("      (set! d (car (gimp-image-flatten dup))))\n")
 		}
 	}
 	// Star-safe highlight roll-off — the LAST tone op. A per-channel tanh shoulder (identity below knee,

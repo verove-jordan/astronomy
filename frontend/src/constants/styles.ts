@@ -84,7 +84,7 @@ export const frameTypeCardFallback = "border-l-4 border-l-slate-400";
 export const frameTypeCardClass = (t?: string): string =>
   frameTypeCard[t ?? ""] ?? frameTypeCardFallback;
 
-// statusPill: job status chip colors (incl. cancelled).
+// statusPill: job status chip colors (incl. cancelled + paused).
 export const statusPill: Record<string, string> = {
   queued:
     "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
@@ -95,6 +95,7 @@ export const statusPill: Record<string, string> = {
   failed: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
   cancelled:
     "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300",
+  paused: "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300",
 };
 
 // Folder entry pill: base vs selected (the capture chosen to process).

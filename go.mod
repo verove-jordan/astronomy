@@ -11,6 +11,7 @@ require (
 	github.com/soniakeys/meeus/v3 v3.0.1
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/image v0.18.0
+	golang.org/x/sync v0.13.0
 )
 
 require (
@@ -33,7 +34,6 @@ require (
 	github.com/soniakeys/unit v1.0.0 // indirect
 	golang.org/x/crypto v0.37.0 // indirect
 	golang.org/x/net v0.28.0 // indirect
-	golang.org/x/sync v0.13.0 // indirect
 	golang.org/x/sys v0.32.0 // indirect
 	golang.org/x/text v0.24.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

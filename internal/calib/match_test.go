@@ -102,3 +102,26 @@ func TestMatchForLight_NoCameraMatch(t *testing.T) {
 	assert.Nil(t, sel.Dark)
 	assert.Nil(t, sel.Bias)
 }
+
+func TestMatchForLight_DarkOptimizeFallback(t *testing.T) {
+	// No 60s dark exists, but a bias + same-camera darks of other exposures do: the longest dark is
+	// selected for Siril dark optimization (-opt) instead of skipping dark calibration entirely.
+	sel := MatchForLight(light("L", 60000, 139, -15), masters())
+	if assert.NotNil(t, sel.Dark) {
+		assert.Equal(t, "dark300.fits", sel.Dark.Path, "the longest scalable dark wins")
+	}
+	assert.True(t, sel.DarkOptimize)
+	assert.True(t, anyContains(sel.Notes, "dark-optimized"), "expected a dark-optimization note, got %v", sel.Notes)
+}
+
+func TestMatchForLight_NoDarkOptimizeWithoutBias(t *testing.T) {
+	// Dark optimization needs the bias to isolate the thermal signal: without one the mismatched
+	// dark must NOT be applied.
+	ms := []Master{
+		{Type: MasterDark, ExposureMs: 300000, Gain: 139, Offset: 21, Bin: 1, TempMilliC: -15000, HasTemp: true, FrameCount: 5, Path: "dark300.fits"},
+	}
+	sel := MatchForLight(light("L", 60000, 139, -15), ms)
+	assert.Nil(t, sel.Dark)
+	assert.False(t, sel.DarkOptimize)
+	assert.True(t, anyContains(sel.Notes, "no matching dark"), "got %v", sel.Notes)
+}

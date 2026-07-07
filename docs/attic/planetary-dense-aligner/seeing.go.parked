@@ -1,0 +1,247 @@
+package planetary
+
+import (
+	"math"
+	"sort"
+)
+
+// maxDecorrLag bounds the temporal-decorrelation search (frames): how many frames apart the seeing warp
+// fields are still compared before we call them uncorrelated.
+const maxDecorrLag = 5
+
+// Seeing ("waves") detection. After the global lock, each frame's per-node AP residual IS the local
+// atmospheric warp field for that instant. Its magnitude (rms), its divergence/shear, and how fast it
+// decorrelates frame-to-frame quantify the seeing — and let the stacker drop or down-weight the frames
+// caught in the worst turbulence. The residual is captured during warping (align.go); the report,
+// per-frame cull, and soft weighting live below (Phase 6).
+
+// frameResidual is one frame's raw AP residual field relative to its global drift — the seeing signal:
+// u = dx_node − gdx, v = dy_node − gdy at each VALID on-disk node (invalid/off-disk nodes carry 0 and
+// valid=false). gdx,gdy retain the global drift so the ABSOLUTE node field can be reconstructed. rms is
+// precomputed for the cull/weight; the full field is kept for the divergence/shear and temporal-
+// decorrelation reductions.
+type frameResidual struct {
+	u, v     []float64 // per node (row-major N*N); 0 at invalid nodes
+	valid    []bool    // node measured on-disk (contributes to the seeing reductions)
+	rms      float64   // sqrt(mean(u²+v²)) over valid nodes (0 when none)
+	gdx, gdy float64   // the frame's global drift (absolute node field = u+gdx, v+gdy)
+}
+
+// residualOf extracts the seeing residual from a measured (pre-smooth) AP field: the per-node local shift
+// minus the frame's global drift, over the on-disk nodes.
+func residualOf(g apGrid, dxGrid, dyGrid []float64, onDisk []bool, gdx, gdy float64) frameResidual {
+	n := len(dxGrid)
+	fr := frameResidual{u: make([]float64, n), v: make([]float64, n), valid: make([]bool, n), gdx: gdx, gdy: gdy}
+	var s2 float64
+	var cnt int
+	for k := 0; k < n && k < len(onDisk); k++ {
+		if !onDisk[k] {
+			continue
+		}
+		fr.u[k] = dxGrid[k] - gdx
+		fr.v[k] = dyGrid[k] - gdy
+		fr.valid[k] = true
+		s2 += fr.u[k]*fr.u[k] + fr.v[k]*fr.v[k]
+		cnt++
+	}
+	if cnt > 0 {
+		fr.rms = math.Sqrt(s2 / float64(cnt))
+	}
+	return fr
+}
+
+// FrameSeeing is one frame's atmospheric-warp summary: the residual-field magnitude (rms), its divergence
+// (breathing/scale wander) and shear (differential smear).
+type FrameSeeing struct {
+	Index int     `json:"index"`
+	RMS   float64 `json:"rms"`
+	Div   float64 `json:"div"`
+	Shear float64 `json:"shear"`
+}
+
+// SeeingReport summarizes a channel's atmospheric seeing across its frames: the residual-field magnitude
+// distribution (median, P90), the median divergence/shear, and DecorrFrames — how many frames apart the
+// warp fields stay correlated (small = fast, boiling seeing).
+type SeeingReport struct {
+	RMSMedian      float64       `json:"rms_median"`
+	RMSP90         float64       `json:"rms_p90"`
+	DivRMSMedian   float64       `json:"div_rms_median"`
+	ShearRMSMedian float64       `json:"shear_rms_median"`
+	DecorrFrames   int           `json:"decorr_frames"`
+	Trace          []FrameSeeing `json:"trace,omitempty"`
+}
+
+// seeingReport reduces an aligned sequence's per-frame residual fields to a SeeingReport (nil when there
+// are no residuals — apAlign off — or the node spacing is unknown). Trace.Index is the kept-frame index.
+func seeingReport(res *alignResult) *SeeingReport {
+	if res == nil || len(res.residual) == 0 || res.gSpacing <= 0 {
+		return nil
+	}
+	nodes := 0 // the reference frame's residual is empty (it isn't warped); size from a measured one
+	for _, fr := range res.residual {
+		if len(fr.u) > nodes {
+			nodes = len(fr.u)
+		}
+	}
+	g := apGrid{N: gridDim(nodes)}
+	rep := &SeeingReport{}
+	var rms, divs, shears []float64
+	for s, fr := range res.residual {
+		div, shear := divShearRMS(g, fr, res.gSpacing)
+		idx := s
+		if s < len(res.inputIdx) {
+			idx = res.inputIdx[s]
+		}
+		rep.Trace = append(rep.Trace, FrameSeeing{Index: idx, RMS: fr.rms, Div: div, Shear: shear})
+		rms, divs, shears = append(rms, fr.rms), append(divs, div), append(shears, shear)
+	}
+	rep.RMSMedian = medianOf(append([]float64(nil), rms...))
+	rep.RMSP90 = percentileOf(rms, 0.9)
+	rep.DivRMSMedian = medianOf(append([]float64(nil), divs...))
+	rep.ShearRMSMedian = medianOf(append([]float64(nil), shears...))
+	rep.DecorrFrames = decorrFrames(res.residual)
+	return rep
+}
+
+// divShearRMS is one residual field's RMS divergence (∂u/∂x+∂v/∂y) and RMS shear-strain
+// (√((∂u/∂x−∂v/∂y)²+(∂u/∂y+∂v/∂x)²)) over its interior nodes with all four neighbours valid, via central
+// differences over the node lattice (spacing h px).
+func divShearRMS(g apGrid, fr frameResidual, h float64) (divRMS, shearRMS float64) {
+	n := g.N
+	if len(fr.valid) < n*n || len(fr.u) < n*n || len(fr.v) < n*n {
+		return 0, 0 // an empty residual (e.g. the reference frame) contributes no gradient
+	}
+	var d2, s2 float64
+	var cnt int
+	for j := 1; j < n-1; j++ {
+		for i := 1; i < n-1; i++ {
+			k, kl, kr, ku, kd := j*n+i, j*n+i-1, j*n+i+1, (j-1)*n+i, (j+1)*n+i
+			if !fr.valid[k] || !fr.valid[kl] || !fr.valid[kr] || !fr.valid[ku] || !fr.valid[kd] {
+				continue
+			}
+			dudx, dudy := (fr.u[kr]-fr.u[kl])/(2*h), (fr.u[kd]-fr.u[ku])/(2*h)
+			dvdx, dvdy := (fr.v[kr]-fr.v[kl])/(2*h), (fr.v[kd]-fr.v[ku])/(2*h)
+			div, shear := dudx+dvdy, math.Hypot(dudx-dvdy, dudy+dvdx)
+			d2, s2, cnt = d2+div*div, s2+shear*shear, cnt+1
+		}
+	}
+	if cnt == 0 {
+		return 0, 0
+	}
+	return math.Sqrt(d2 / float64(cnt)), math.Sqrt(s2 / float64(cnt))
+}
+
+// decorrFrames is the first lag (1..maxDecorrLag) at which the median frame-to-frame residual-field
+// Pearson correlation drops below 0.5; maxDecorrLag+1 when the fields stay correlated across the window.
+func decorrFrames(res []frameResidual) int {
+	for lag := 1; lag <= maxDecorrLag; lag++ {
+		var rs []float64
+		for i := 0; i+lag < len(res); i++ {
+			a, b := commonField(res[i], res[i+lag])
+			if len(a) >= 6 {
+				rs = append(rs, pearson(a, b))
+			}
+		}
+		if len(rs) > 0 && medianOf(rs) < 0.5 {
+			return lag
+		}
+	}
+	return maxDecorrLag + 1
+}
+
+// commonField returns the (u,v)-concatenated residual vectors of two frames over the nodes valid in BOTH.
+func commonField(a, b frameResidual) (av, bv []float64) {
+	for k := range a.valid {
+		if k < len(b.valid) && a.valid[k] && b.valid[k] {
+			av = append(av, a.u[k], a.v[k])
+			bv = append(bv, b.u[k], b.v[k])
+		}
+	}
+	return av, bv
+}
+
+// pearson is the Pearson correlation of two equal-length vectors (0 for degenerate input).
+func pearson(a, b []float64) float64 {
+	if len(a) < 2 {
+		return 0
+	}
+	var sa, sb, saa, sbb, sab float64
+	for i := range a {
+		sa, sb = sa+a[i], sb+b[i]
+		saa, sbb, sab = saa+a[i]*a[i], sbb+b[i]*b[i], sab+a[i]*b[i]
+	}
+	na := float64(len(a))
+	den := (na*saa - sa*sa) * (na*sbb - sb*sb)
+	if den <= 0 {
+		return 0
+	}
+	return (na*sab - sa*sb) / math.Sqrt(den)
+}
+
+// percentileOf returns the q-quantile (0..1) of v (v is not mutated).
+func percentileOf(v []float64, q float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	s := append([]float64(nil), v...)
+	sort.Float64s(s)
+	idx := int(q*float64(len(s)-1) + 0.5)
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(s) {
+		idx = len(s) - 1
+	}
+	return s[idx]
+}
+
+// seeingWeights maps each frame's residual rms to a soft stacking weight 1/(1+(rms/(2·median))²) clamped
+// to [0.2,1] — the frames caught in worse-than-typical turbulence are down-weighted without being dropped.
+func seeingWeights(rep *SeeingReport) []float64 {
+	w := make([]float64, len(rep.Trace))
+	for s, fs := range rep.Trace {
+		if rep.RMSMedian <= 0 {
+			w[s] = 1
+			continue
+		}
+		r := fs.RMS / (2 * rep.RMSMedian)
+		wt := 1.0 / (1.0 + r*r)
+		if wt < 0.2 {
+			wt = 0.2
+		}
+		if wt > 1 {
+			wt = 1
+		}
+		w[s] = wt
+	}
+	return w
+}
+
+// seeingCull returns the survivor positions to DROP from the stack: frames whose residual rms exceeds
+// cull×median AND 1.0 px, worst-first, capped at 25% of the frames. cull<=0 disables it.
+func seeingCull(rep *SeeingReport, cull float64) map[int]bool {
+	drop := map[int]bool{}
+	if rep == nil || cull <= 0 || rep.RMSMedian <= 0 {
+		return drop
+	}
+	thr := cull * rep.RMSMedian
+	type cand struct {
+		s   int
+		rms float64
+	}
+	var cands []cand
+	for s, fs := range rep.Trace {
+		if fs.RMS > thr && fs.RMS > 1.0 {
+			cands = append(cands, cand{s, fs.RMS})
+		}
+	}
+	sort.Slice(cands, func(a, b int) bool { return cands[a].rms > cands[b].rms })
+	maxDrop := len(rep.Trace) / 4
+	for i, c := range cands {
+		if i >= maxDrop {
+			break
+		}
+		drop[c.s] = true
+	}
+	return drop
+}

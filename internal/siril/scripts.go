@@ -10,10 +10,18 @@ import (
 const scriptHeader = "requires 1.2.0\nsetext fits\n"
 
 // CalibMasters holds absolute paths to the master calibration frames to apply (any may be empty).
+// CFA marks a one-shot-color (Bayer) light sequence: cosmetic correction and flat division run in
+// CFA-aware mode, the flat's per-channel transmission is equalized, and the frames are debayered
+// after calibration (so the convert step must NOT debayer).
 type CalibMasters struct {
 	Bias string
 	Dark string
 	Flat string
+	CFA  bool
+	// DarkOptimize enables Siril dark optimization (calibrate -opt): Dark is a same-camera master of a
+	// DIFFERENT exposure whose thermal signal is scaled onto the lights. Requires both Dark and Bias —
+	// calibrateArgs ignores it otherwise.
+	DarkOptimize bool
 }
 
 // StackMasterScript links the FITS already in the work dir as sequence `seq` and stacks them
@@ -60,11 +68,32 @@ func LightStackScript(seq string, m CalibMasters, outName string) string {
 }
 
 // AlignMastersScript links the per-channel master stacks in the work dir as sequence `seq` and
-// registers them together (global star alignment), co-registering the channels to one reference.
+// co-registers them to one reference, CROPPED to the common field of view (2-pass register +
+// seqapplyreg -framing=min). Without the min framing, a channel whose pointing/footprint differs
+// (e.g. an Ha set shot at an offset) leaves a zero-coverage strip in its registered image, which the
+// layer stretch then amplifies into a coloured band across the composite.
 func AlignMastersScript(seq string) string {
 	var b strings.Builder
 	b.WriteString(scriptHeader)
 	fmt.Fprintf(&b, "link %s -out=.\n", seq)
+	fmt.Fprintf(&b, "register %s -2pass\n", seq)
+	fmt.Fprintf(&b, "seqapplyreg %s -framing=min\n", seq)
+	return b.String()
+}
+
+// AlignPairScript links a 2-image sequence (index 1 = an already-aligned reference, index 2 = the
+// image to align) and registers it with the reference PINNED to image 1 via setref — so r_<seq>_00002
+// lands on the reference's pixel grid no matter which image Siril would have ranked better. Star
+// detection is RELAXED (setfindstar half-sigma + relax) because this rescue exists precisely for a
+// weak channel master — thin subs or a moonlit sky — whose dim stars the default detection misses
+// (the cause of a real G-channel joint-registration failure). Used only after the joint cross-channel
+// registration failed for this channel.
+func AlignPairScript(seq string) string {
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	fmt.Fprintf(&b, "link %s -out=.\n", seq)
+	b.WriteString("setfindstar -sigma=0.5 -roundness=0.42 -relax=on\n")
+	fmt.Fprintf(&b, "setref %s 1\n", seq)
 	fmt.Fprintf(&b, "register %s\n", seq)
 	return b.String()
 }
@@ -95,6 +124,13 @@ func CalibrateRegisterScript(seq string, m CalibMasters) string {
 	}
 	fmt.Fprintf(&b, "register %s\n", target)
 	return b.String()
+}
+
+// RegisterOnlyScript registers an already-linked (and already-calibrated) sequence in place, without
+// re-linking or re-calibrating. It is used when calibration and registration are split around a
+// Go-side step (e.g. flat-residual repair on the calibrated pp_ frames): calibrate → repair → this.
+func RegisterOnlyScript(seq string) string {
+	return scriptHeader + fmt.Sprintf("register %s\n", seq)
 }
 
 // CalibrateRegisterFramedScript calibrates (if masters are given), computes registration in two passes
@@ -369,6 +405,19 @@ func calibrateArgs(m CalibMasters) []string {
 	}
 	if m.Dark != "" {
 		args = append(args, "-cc=dark") // cosmetic hot/cold pixel correction from the dark
+	}
+	if m.DarkOptimize && m.Dark != "" && m.Bias != "" {
+		args = append(args, "-opt") // scale the different-exposure dark onto the lights' thermal signal
+	}
+	// One-shot-color: only meaningful when there is at least one master to apply. -cfa makes the
+	// cosmetic/flat maths CFA-aware, -equalize_cfa balances the flat's Bayer channels, and -debayer
+	// demosaics after calibration (the convert step stays raw Bayer).
+	if m.CFA && len(args) > 0 {
+		args = append(args, "-cfa")
+		if m.Flat != "" {
+			args = append(args, "-equalize_cfa")
+		}
+		args = append(args, "-debayer")
 	}
 	return args
 }

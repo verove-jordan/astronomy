@@ -82,6 +82,41 @@ func TestPixelMathScript(t *testing.T) {
 	assert.Contains(t, screen, "save final")
 }
 
+func TestCalibrateArgs_CFAOneShotColor(t *testing.T) {
+	// One-shot-color with a full master set: CFA-aware cosmetics + flat equalization + debayer.
+	s := CalibrateOnlyScript("osc", CalibMasters{Dark: "/m/d.fits", Flat: "/m/f.fits", Bias: "/m/b.fits", CFA: true})
+	assert.Contains(t, s, "calibrate osc -dark=/m/d.fits -flat=/m/f.fits -bias=/m/b.fits -cc=dark -cfa -equalize_cfa -debayer -prefix=pp_")
+}
+
+func TestCalibrateArgs_CFANoFlatOmitsEqualize(t *testing.T) {
+	s := CalibrateOnlyScript("osc", CalibMasters{Dark: "/m/d.fits", CFA: true})
+	assert.Contains(t, s, "calibrate osc -dark=/m/d.fits -cc=dark -cfa -debayer -prefix=pp_")
+	assert.NotContains(t, s, "-equalize_cfa")
+}
+
+func TestCalibrateArgs_CFAWithoutMastersEmitsNothing(t *testing.T) {
+	// CFA only makes sense when there is a master to apply; with none, calibrate is skipped entirely.
+	s := CalibrateOnlyScript("osc", CalibMasters{CFA: true})
+	assert.NotContains(t, s, "calibrate")
+	assert.NotContains(t, s, "-cfa")
+}
+
+func TestCalibrateArgs_MonoUnaffectedByCFAField(t *testing.T) {
+	// A mono set (CFA false) must be byte-identical to before.
+	s := CalibrateOnlyScript("light", CalibMasters{Dark: "/m/d.fits", Flat: "/m/f.fits"})
+	assert.Contains(t, s, "calibrate light -dark=/m/d.fits -flat=/m/f.fits -cc=dark -prefix=pp_")
+	assert.NotContains(t, s, "-cfa")
+	assert.NotContains(t, s, "-debayer")
+}
+
+func TestRegisterOnlyScript(t *testing.T) {
+	s := RegisterOnlyScript("pp_light")
+	assert.True(t, strings.HasPrefix(s, "requires"))
+	assert.Contains(t, s, "register pp_light\n")
+	assert.NotContains(t, s, "link ")
+	assert.NotContains(t, s, "calibrate")
+}
+
 func TestStackSelectedScript_Weighted(t *testing.T) {
 	s := StackSelectedScript("r_light", 10, []int{3}, "/out/master_L", "wfwhm")
 	assert.Contains(t, s, "select r_light 1 10")
@@ -227,4 +262,36 @@ func TestColorCalibrateScript_ExplicitCatalogWins(t *testing.T) {
 		SolveOptions{Catalog: "nomad", AstroCat: "/lib/cat.dat"}, SpccOptions{})
 	assert.Contains(t, s, "-catalog=nomad")
 	assert.NotContains(t, s, "-catalog=localgaia")
+}
+
+func TestAlignPairScript_PinsReference(t *testing.T) {
+	// The pair rescue must land the failed master on the ALREADY-ALIGNED reference's grid, so the
+	// reference is pinned to image 1 — never left to Siril's quality-based choice — and star
+	// detection is relaxed (the rescue targets weak masters whose dim stars the defaults miss).
+	s := AlignPairScript("pair")
+	assert.Contains(t, s, "link pair -out=.")
+	assert.Contains(t, s, "setfindstar -sigma=0.5 -roundness=0.42 -relax=on")
+	assert.Contains(t, s, "setref pair 1")
+	assert.Contains(t, s, "register pair")
+}
+
+func TestCalibrateArgs_DarkOptimize(t *testing.T) {
+	// A different-exposure dark is scaled with -opt — only when BOTH dark and bias are present.
+	s := CalibrateOnlyScript("light", CalibMasters{Dark: "/m/d300.fits", Bias: "/m/b.fits", DarkOptimize: true})
+	assert.Contains(t, s, "calibrate light -dark=/m/d300.fits -bias=/m/b.fits -cc=dark -opt -prefix=pp_")
+}
+
+func TestCalibrateArgs_DarkOptimizeNeedsBias(t *testing.T) {
+	s := CalibrateOnlyScript("light", CalibMasters{Dark: "/m/d300.fits", DarkOptimize: true})
+	assert.NotContains(t, s, "-opt")
+}
+
+func TestAlignMastersScript_CommonFOV(t *testing.T) {
+	// Channel masters register 2-pass and are applied with -framing=min: a channel with an offset
+	// footprint (e.g. Ha) must not leave a zero-coverage strip that the layer stretch would turn into
+	// a coloured band across the composite.
+	s := AlignMastersScript("ch")
+	assert.Contains(t, s, "link ch -out=.")
+	assert.Contains(t, s, "register ch -2pass")
+	assert.Contains(t, s, "seqapplyreg ch -framing=min")
 }

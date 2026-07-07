@@ -13,6 +13,10 @@ type Selection struct {
 	Flat  *Master  `json:"flat,omitempty"`
 	Bias  *Master  `json:"bias,omitempty"`
 	Notes []string `json:"notes,omitempty"`
+	// DarkOptimize marks Dark as a DIFFERENT-exposure master to be scaled onto the light's thermal
+	// signal by Siril dark optimization (calibrate -opt). Only ever set together with a Bias master —
+	// the optimization needs the bias to isolate the thermal signal.
+	DarkOptimize bool `json:"dark_optimize,omitempty"`
 }
 
 // Siril paths for the selection.
@@ -30,7 +34,9 @@ func (s Selection) Masters() (dark, flat, bias string) {
 }
 
 // MatchForLight picks the most appropriate dark, flat and bias masters for a light set:
-//   - dark  — same gain/offset/bin and exposure, nearest sensor temperature (within tolerance);
+//   - dark  — same gain/offset/bin and exposure, nearest sensor temperature (within tolerance); when
+//     none exists but a same-camera dark of a DIFFERENT exposure + a bias are available, that dark is
+//     selected with DarkOptimize (Siril -opt scales its thermal signal to the light's exposure);
 //   - flat  — same filter (preferring matching gain/offset/bin);
 //   - bias  — same gain/offset/bin.
 //
@@ -38,8 +44,15 @@ func (s Selection) Masters() (dark, flat, bias string) {
 func MatchForLight(light inspect.SetKey, masters []Master) Selection {
 	var sel Selection
 
+	sel.Bias = bestBias(light, masters)
 	if d := bestDark(light, masters); d != nil {
 		sel.Dark = d
+	} else if d := bestScalableDark(light, masters); d != nil && sel.Bias != nil {
+		sel.Dark = d
+		sel.DarkOptimize = true
+		sel.Notes = append(sel.Notes, fmt.Sprintf(
+			"no %dms dark — dark-optimized from the %dms master (thermal signal bias-scaled)",
+			light.ExposureMs, d.ExposureMs))
 	} else {
 		sel.Notes = append(sel.Notes, "no matching dark — dark calibration skipped")
 	}
@@ -52,9 +65,7 @@ func MatchForLight(light inspect.SetKey, masters []Master) Selection {
 	} else {
 		sel.Notes = append(sel.Notes, "no flat available — flat correction skipped")
 	}
-	if b := bestBias(light, masters); b != nil {
-		sel.Bias = b
-	} else if sel.Dark == nil {
+	if sel.Bias == nil && sel.Dark == nil {
 		sel.Notes = append(sel.Notes, "no bias or dark — no read-noise calibration available")
 	}
 	return sel
@@ -73,6 +84,32 @@ func bestDark(light inspect.SetKey, masters []Master) *Master {
 			continue
 		}
 		if best == nil || delta < bestTempDelta || (delta == bestTempDelta && m.FrameCount > best.FrameCount) {
+			best, bestTempDelta = m, delta
+		}
+	}
+	return best
+}
+
+// bestScalableDark picks a same-camera dark of a DIFFERENT exposure for Siril dark optimization
+// (-opt): nearest temperature within tolerance, then the longest exposure (scaling a deep thermal
+// signal down beats amplifying a shallow one), then the deepest stack. The caller only uses it when a
+// bias master is also available (the optimization needs it).
+func bestScalableDark(light inspect.SetKey, masters []Master) *Master {
+	var best *Master
+	bestTempDelta := math.MaxFloat64
+	for i := range masters {
+		m := &masters[i]
+		if m.Type != MasterDark || !sameCamera(light, m) || m.ExposureMs == light.ExposureMs {
+			continue
+		}
+		delta := math.Abs(float64(m.TempMilliC-int64(light.TempBucket)*1000)) / 1000
+		if delta > tempTolC {
+			continue
+		}
+		better := best == nil || delta < bestTempDelta ||
+			(delta == bestTempDelta && (m.ExposureMs > best.ExposureMs ||
+				(m.ExposureMs == best.ExposureMs && m.FrameCount > best.FrameCount)))
+		if better {
 			best, bestTempDelta = m, delta
 		}
 	}

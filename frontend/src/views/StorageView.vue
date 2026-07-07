@@ -565,7 +565,10 @@ onMounted(() => store.list());
         >
           {{ t("storage.emptyFolder") }}
         </p>
-        <ul v-else class="divide-y divide-slate-200 dark:divide-slate-700">
+        <ul
+          v-else
+          class="max-h-[28rem] divide-y divide-slate-200 overflow-y-auto dark:divide-slate-700"
+        >
           <li
             v-for="o in objectList"
             :key="o.key"

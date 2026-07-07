@@ -1,0 +1,321 @@
+package planetary
+
+import (
+	"math"
+	"path/filepath"
+	"sort"
+
+	"golang.org/x/sync/errgroup"
+
+	"github.com/verove-jordan/astronomy/internal/comet"
+	"github.com/verove-jordan/astronomy/internal/fits"
+)
+
+// Grid tuning. The DEFAULT (APSpacing 0) is the classic apGridN×apGridN lattice with the original
+// large apPatchFrac%-of-axis correlation windows — the configuration validated on real Moon data. The
+// dense auto lattice is OPT-IN via APSpacing: on a real full Moon its small per-node windows locked
+// noisily on the low-contrast maria and the stack came out SOFTER than the best single frame, so
+// density must be chosen deliberately, never defaulted.
+const (
+	apPatchFrac   = 5  // classic per-node correlation half-window, as a percent of the smaller axis
+	apAutoSpacing = 48 // dense-lattice reference spacing (px) → N = min(W,H)/48 (opt-in via APSpacing)
+	apGridMax     = 80 // densest lattice (a 4656×3520 Moon → N≈73)
+	apWinMin      = 24 // dense-lattice per-node correlation half-window floor (px)
+	apWinMax      = 64 // dense-lattice per-node correlation half-window ceiling (px)
+	apGateFrac    = 0.15
+)
+
+// refContext bundles everything the per-frame alignment goroutines read (all immutable after build), so
+// the parallel passes share one prepared reference instead of recomputing centroid/blur/grid per frame.
+type refContext struct {
+	refX, refY        float64
+	refBlur, refSmall *fits.Image // sharpest-frame blur + its coarse downsample (GLOBAL drift target)
+	measBlur          *fits.Image // AP-measurement target (blur): the sharpest frame, or the synthetic reference (Phase 4)
+	measBand          *fits.Image // AP-measurement target (bandpass): the illumination-robust matching plane (Phase 5)
+	gWin              comet.Point
+	gRadius           int
+	g                 apGrid
+	cx, cy            []float64
+	onDisk            []bool // contrast-gated valid nodes (on-disk AND enough bandpass structure to lock)
+	apRadius          int
+}
+
+// newRefContext prepares the reference geometry from the sharpest frame: an adaptive grid, its per-node
+// correlation window, and the contrast-gated valid-node mask. The AP-measurement target starts as the
+// sharpest frame itself; buildReference (Phase 4) swaps in a synthetic reference when enabled.
+func newRefContext(ref *fits.Image, cfg alignCfg) *refContext {
+	refX, refY := brightCentroid(ref)
+	refBlur := blurPlane(ref, warpBlur)
+	n := gridForFrame(ref.W, ref.H, cfg.apSpacing)
+	g := apGrid{N: n, W: ref.W, H: ref.H}
+	cx, cy := g.centers()
+	apRadius := apWindowRadius(ref.W, ref.H, n)
+	measBand := bandpass(ref, bandLo, bandHi)
+	onDisk := gateValidNodes(measBand, cx, cy, g.diskMask(ref, cx, cy), apRadius)
+	return &refContext{
+		refX: refX, refY: refY,
+		refBlur: refBlur, refSmall: downPlane(refBlur, coarseDown), measBlur: refBlur, measBand: measBand,
+		gWin: centerPoint(refX, refY), gRadius: min(ref.W, ref.H) * alignWinFrac / 100,
+		g: g, cx: cx, cy: cy, onDisk: onDisk, apRadius: apRadius,
+	}
+}
+
+// gridForFrame chooses the alignment-point grid side length. APSpacing 0 → the classic apGridN×apGridN
+// lattice (every Options zero value reproduces the verified pre-refinement path). An explicit APSpacing
+// opts into a denser lattice: N = clamp(round(min(W,H)/spacing), apGridN, apGridMax) — e.g. 48 → N≈73
+// on a 4656×3520 Moon.
+func gridForFrame(w, h, spacing int) int {
+	if spacing <= 0 {
+		return apGridN // classic 10×10
+	}
+	n := int(math.Round(float64(min(w, h)) / float64(spacing)))
+	if n < apGridN {
+		n = apGridN
+	}
+	if n > apGridMax {
+		n = apGridMax
+	}
+	return n
+}
+
+// apWindowRadius is the per-node correlation half-window. The classic grid (n ≤ apGridN) keeps the
+// original apPatchFrac%-of-axis window — big enough for a robust ZNCC lock on low-contrast maria —
+// while opt-in denser lattices use the node spacing clamped to [apWinMin, apWinMax] px.
+func apWindowRadius(w, h, n int) int {
+	if n <= apGridN {
+		return min(w, h) * apPatchFrac / 100
+	}
+	sp := float64(min(w, h)) / float64(n)
+	if sp < apWinMin {
+		sp = apWinMin
+	}
+	if sp > apWinMax {
+		sp = apWinMax
+	}
+	return int(sp)
+}
+
+// spacing is the AP node spacing in px (min(W,H)/N) — the denominator for the seeing divergence/shear
+// central differences.
+func (rc *refContext) spacing() float64 {
+	if rc.g.N <= 0 {
+		return 0
+	}
+	return float64(min(rc.g.W, rc.g.H)) / float64(rc.g.N)
+}
+
+// cullFrames selects the survivors that reach the stack, in input order (an unreadable / pre-culled frame
+// simply doesn't appear, keeping the aligned sequence gap-free). When refinement is on, frames whose
+// global-lock correlation is far below the median (peak < max(0.5, 0.8·median)) are pre-culled — they
+// registered poorly and would only inject blur. The reference frame always survives.
+func cullFrames(shifts []frameShift, refIdx int, cfg alignCfg) (survivors []int, culled int) {
+	if !cfg.refRefine {
+		return survivorList(shifts), 0
+	}
+	var peaks []float64
+	for _, sh := range shifts {
+		if sh.ok {
+			peaks = append(peaks, sh.peak)
+		}
+	}
+	if len(peaks) == 0 {
+		return nil, 0
+	}
+	thr := math.Max(0.5, 0.8*medianOf(append([]float64(nil), peaks...)))
+	for i, sh := range shifts {
+		if !sh.ok {
+			continue
+		}
+		if i != refIdx && sh.peak < thr {
+			culled++
+			continue
+		}
+		survivors = append(survivors, i)
+	}
+	return survivors, culled
+}
+
+// refK is the synthetic-reference frame count: clamp(len/3, 8, 30), never more than are available.
+func refK(n int) int {
+	k := n / 3
+	if k < 8 {
+		k = 8
+	}
+	if k > 30 {
+		k = 30
+	}
+	if k > n {
+		k = n
+	}
+	return k
+}
+
+// buildReference replaces the AP-measurement target (rc.measBlur/measBand) with a SYNTHETIC reference —
+// the mean of the K sharpest survivors, each cubic-shifted onto the reference frame's coordinates — a far
+// cleaner correlation target than any single noisy frame (this is where seeing compensation earns its
+// SNR). RefIters>1 re-measures the sharp frames' drift against the fresh synthetic ref and rebuilds once.
+// A no-op when refinement is off or there are too few frames; the reference frame's own coordinate system
+// is preserved (built from the same global shifts), so the sharpest frame still writes unresampled.
+func buildReference(rc *refContext, outDir string, paths []string, scores []float64, shifts []frameShift,
+	survivors []int, cfg alignCfg) {
+	if !cfg.refRefine || len(survivors) < 2 {
+		return
+	}
+	topK := topKSurvivors(scores, survivors, refK(len(survivors)))
+	shiftOf := make(map[int][2]float64, len(topK))
+	for _, i := range topK {
+		shiftOf[i] = [2]float64{shifts[i].dx, shifts[i].dy}
+	}
+	iters := cfg.refIters
+	if iters < 1 {
+		iters = 1
+	}
+	for it := 0; it < iters; it++ {
+		synth := accumulateSynth(paths, topK, shiftOf)
+		if synth == nil {
+			return
+		}
+		rc.measBlur = blurPlane(synth, warpBlur)
+		rc.measBand = bandpass(synth, bandLo, bandHi)
+		if it == iters-1 {
+			_ = synth.WriteFITS(filepath.Join(outDir, "ref_synth.fits")) // side artifact for inspection
+			return
+		}
+		for _, i := range topK { // re-register the sharp frames against the fresh synthetic reference
+			s := shiftOf[i]
+			shiftOf[i] = fineShiftAgainst(rc, paths[i], s[0], s[1])
+		}
+	}
+}
+
+// topKSurvivors returns the K sharpest survivors (stable order on ties → deterministic).
+func topKSurvivors(scores []float64, survivors []int, k int) []int {
+	s := append([]int(nil), survivors...)
+	sort.SliceStable(s, func(a, b int) bool { return scores[s[a]] > scores[s[b]] })
+	if k > len(s) {
+		k = len(s)
+	}
+	return s[:k]
+}
+
+// accumulateSynth cubic-shifts each top-K frame's luminance onto the reference coordinates and returns
+// their mean. Summed SEQUENTIALLY in a float64 accumulator so the synthetic reference is bit-for-bit
+// reproducible regardless of worker count (the parallel passes never touch it).
+func accumulateSynth(paths []string, topK []int, shiftOf map[int][2]float64) *fits.Image {
+	var acc []float64
+	var w, h, cnt int
+	for _, i := range topK {
+		im, err := fits.ReadImage(paths[i])
+		if err != nil {
+			continue
+		}
+		if acc == nil {
+			w, h, acc = im.W, im.H, make([]float64, im.W*im.H)
+		}
+		if im.W != w || im.H != h {
+			continue
+		}
+		s := shiftOf[i]
+		mono := &fits.Image{W: im.W, H: im.H, C: 1, Pix: [][]float32{im.Pix[0]}}
+		sh := cubicShift(mono, s[0], s[1]) // register onto ref coords — the sanctioned Catmull-Rom resampler
+		for j := 0; j < w*h; j++ {
+			acc[j] += float64(sh.Pix[0][j])
+		}
+		cnt++
+	}
+	if cnt == 0 {
+		return nil
+	}
+	out := fits.NewImage(w, h, 1)
+	inv := 1.0 / float64(cnt)
+	for j := range out.Pix[0] {
+		out.Pix[0][j] = float32(acc[j] * inv)
+	}
+	return out
+}
+
+// fineShiftAgainst re-measures one frame's global drift against the current (synthetic) reference with a
+// single seeded parabolic ZNCC — the RefIters>1 refinement step.
+func fineShiftAgainst(rc *refContext, path string, seedX, seedY float64) [2]float64 {
+	im, err := fits.ReadImage(path)
+	if err != nil {
+		return [2]float64{seedX, seedY}
+	}
+	dx, dy := comet.AlignSeeded(rc.measBlur, blurPlane(im, warpBlur), rc.gWin, rc.gRadius, surfaceMaxShift, 0, seedX, seedY)
+	return [2]float64{dx, dy}
+}
+
+// frameShift is one input frame's global drift onto the reference, with the correlation peak (a frame
+// quality gate for the Phase-4 pre-cull) and a readable flag (false → the frame dropped out).
+type frameShift struct {
+	dx, dy float64
+	peak   float64
+	ok     bool
+}
+
+// globalShifts measures every input frame's global drift onto the reference IN PARALLEL, returning a
+// per-input-index frameShift (ok=false for unreadable frames). The reference frame locks at (0,0). Results
+// are stored by index, never by completion order, so the output is identical for any worker count.
+func globalShifts(paths []string, refIdx int, rc *refContext, workers int) []frameShift {
+	shifts := make([]frameShift, len(paths))
+	var grp errgroup.Group
+	grp.SetLimit(workers)
+	for i := range paths {
+		i := i
+		if i == refIdx {
+			shifts[i] = frameShift{ok: true, peak: 1}
+			continue
+		}
+		grp.Go(func() error {
+			shifts[i] = globalShiftOf(paths[i], rc)
+			return nil
+		})
+	}
+	_ = grp.Wait() // per-frame soft-fail: an unreadable frame is recorded ok=false, never an error
+	return shifts
+}
+
+// globalShiftOf measures one frame's global drift onto the reference: a centroid seed, verified by a
+// coarse DOWNSAMPLED ZNCC (clouds/limb clipping can bias the centroid), then refined by one full-res
+// seeded parabolic ZNCC. The peak is the full-res correlation value at the lock (Phase-4 quality gate).
+func globalShiftOf(path string, rc *refContext) frameShift {
+	im, err := fits.ReadImage(path)
+	if err != nil {
+		return frameShift{ok: false}
+	}
+	tgtBlur := blurPlane(im, warpBlur)
+	icx, icy := brightCentroid(im)
+	seedX, seedY := rc.refX-icx, rc.refY-icy
+	fineSeedX, fineSeedY := seedX, seedY
+	if smallRadius := rc.gRadius / coarseDown; smallRadius >= coarseMaxShift && rc.refSmall.W < rc.refBlur.W {
+		tgtSmall := downPlane(tgtBlur, coarseDown)
+		smallWin := comet.Point{X: rc.gWin.X / coarseDown, Y: rc.gWin.Y / coarseDown}
+		cdx, cdy := comet.AlignSeeded(rc.refSmall, tgtSmall, smallWin, smallRadius, coarseMaxShift, 0,
+			seedX/coarseDown, seedY/coarseDown)
+		fineSeedX, fineSeedY = cdx*coarseDown, cdy*coarseDown
+	}
+	gdx, gdy := comet.AlignSeeded(rc.refBlur, tgtBlur, rc.gWin, rc.gRadius, surfaceMaxShift, 0, fineSeedX, fineSeedY)
+	return frameShift{dx: gdx, dy: gdy, peak: znccAt(rc.refBlur, tgtBlur, rc.gWin, rc.gRadius, gdx, gdy), ok: true}
+}
+
+// survivorList returns the input indices of the frames that survive to the stack, in input order, so the
+// aligned sequence is contiguous and gap-free (an unreadable / pre-culled frame simply doesn't appear).
+func survivorList(shifts []frameShift) []int {
+	var s []int
+	for i, sh := range shifts {
+		if sh.ok {
+			s = append(s, i)
+		}
+	}
+	return s
+}
+
+// refPos returns the position of the reference frame within the survivor list (it always survives).
+func refPos(survivors []int, refIdx int) int {
+	for s, i := range survivors {
+		if i == refIdx {
+			return s
+		}
+	}
+	return 0
+}

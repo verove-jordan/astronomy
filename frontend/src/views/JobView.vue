@@ -21,7 +21,9 @@ import SupervisorChat from "@/components/Common/SupervisorChat.vue";
 import StagePreviewTimeline from "@/components/Common/StagePreviewTimeline.vue";
 import SeriesTimeline from "@/components/Common/SeriesTimeline.vue";
 import EnvWarnings from "@/components/Common/EnvWarnings.vue";
-import { btnDanger, btnPrimary, card } from "@/constants/styles";
+import TwoPane from "@/components/Common/TwoPane.vue";
+import StatGrid from "@/components/Common/StatGrid.vue";
+import { btnDanger, btnGhost, btnPrimary, card } from "@/constants/styles";
 import { baseName, formatBytes } from "@/utils/format";
 import type { Inventory } from "@/types";
 
@@ -52,10 +54,22 @@ const {
   iterations,
   stagePreviews,
   seed,
+  reconnect,
 } = useJobStream(jobId, () => jobsStore.get(jobId));
 
 const reInv = ref<Inventory | null>(null);
 const cancelling = ref(false);
+
+// Live resource readouts for the running job, packed into a compact StatGrid.
+const progressStats = computed(() => {
+  const s = [
+    { label: t("job.cpu"), value: `${Math.round(cpuPercent.value)}%` },
+    { label: t("job.memory"), value: formatBytes(rssBytes.value) },
+  ];
+  if (peakRssBytes.value)
+    s.push({ label: t("job.peak"), value: formatBytes(peakRssBytes.value) });
+  return s;
+});
 
 onMounted(async () => {
   // A supervised/refine run started this session has a live conversation turn — open it so its previews,
@@ -107,6 +121,21 @@ const canRestart = computed(() => {
 const restarting = ref(false);
 // Live-stacking jobs run until stopped; the "cancel" affordance is really "stop & finalize".
 const isLive = computed(() => job.value?.params?.mode === "livestack");
+
+// A paused job (manual pause, or auto-paused on a transient S3 error) can be continued from where it
+// left off. Not terminal — it shows Continue + Cancel.
+const isPaused = computed(() => liveStatus.value === "paused");
+// Manual mid-run pause is honored by the multi-channel deep-sky path (deepsky/nebula); other modes only
+// pause at S3 boundaries (automatic), so we don't offer a manual Pause button that would look like a no-op.
+const PAUSABLE_MODES = ["deepsky", "nebula"];
+const canPause = computed(
+  () =>
+    running.value &&
+    !isLive.value &&
+    PAUSABLE_MODES.includes(job.value?.params?.mode ?? ""),
+);
+const pausing = ref(false);
+const continuing = ref(false);
 
 // Improvement series this job belongs to: series_id lives on the job row itself and is echoed in its
 // persisted params (the RunRequest) — read both so every row resolves. 0 = not part of a series.
@@ -217,6 +246,26 @@ async function restartJob() {
     restarting.value = false; // stay on the failed job so the error remains visible
   }
 }
+
+async function pauseJobAction() {
+  pausing.value = true;
+  try {
+    await jobsStore.pause(jobId);
+  } finally {
+    pausing.value = false;
+  }
+}
+
+async function continueJobAction() {
+  continuing.value = true;
+  try {
+    await jobsStore.continueJob(jobId);
+    await jobsStore.get(jobId); // reflect running again
+    reconnect(); // the stream closed on pause — re-open it to follow the resumed run
+  } finally {
+    continuing.value = false;
+  }
+}
 </script>
 
 <template>
@@ -237,14 +286,31 @@ async function restartJob() {
       >
         {{ t("job.duration") }} {{ fmtElapsed(elapsedMs) }}
       </span>
-      <button
-        v-if="running"
-        :class="[btnDanger, 'ml-auto']"
-        :disabled="cancelling"
-        @click="cancelJob"
-      >
-        {{ isLive ? t("job.stopFinalize") : t("job.cancel") }}
-      </button>
+      <div v-if="running" class="ml-auto flex gap-2">
+        <button
+          v-if="canPause"
+          :class="btnGhost"
+          :disabled="pausing"
+          @click="pauseJobAction"
+        >
+          {{ pausing ? t("job.pausing") : t("job.pause") }}
+        </button>
+        <button :class="btnDanger" :disabled="cancelling" @click="cancelJob">
+          {{ isLive ? t("job.stopFinalize") : t("job.cancel") }}
+        </button>
+      </div>
+      <div v-else-if="isPaused" class="ml-auto flex gap-2">
+        <button
+          :class="btnPrimary"
+          :disabled="continuing"
+          @click="continueJobAction"
+        >
+          {{ continuing ? t("job.continuing") : t("job.continue") }}
+        </button>
+        <button :class="btnDanger" :disabled="cancelling" @click="cancelJob">
+          {{ t("job.cancel") }}
+        </button>
+      </div>
       <button
         v-else-if="canRestart"
         :class="[btnPrimary, 'ml-auto']"
@@ -273,67 +339,59 @@ async function restartJob() {
          attempt (each a job) as a horizontal timeline, with Continue/Stop controls. -->
     <SeriesTimeline v-if="seriesId" :series-id="seriesId" />
 
-    <!-- While processing: keep capture context visible + live progress, logs and preview -->
+    <!-- While processing: a compact context rail (progress, capture summary, channel mapping) beside a
+         wide live-feed column (preview + tailing log). The log fills to the viewport bottom in its own
+         column, so it stays tall while the page barely scrolls. Stacks context-first on mobile. -->
     <template v-if="running">
-      <div :class="card">
-        <div class="mb-2 flex items-center justify-between gap-3 text-sm">
-          <span class="min-w-0 truncate">{{
-            step || t("common.loading")
-          }}</span>
-          <span
-            class="flex shrink-0 items-center gap-3 text-slate-500 dark:text-slate-400"
-          >
-            <span class="tabular-nums">{{ fmtElapsed(elapsedMs) }}</span>
-            <span class="font-medium text-slate-700 dark:text-slate-200"
-              >{{ progress }}%</span
-            >
-          </span>
-        </div>
-        <ProgressBar :percent="progress" :active="running" />
-        <div
-          v-if="rssBytes || cpuPercent"
-          class="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-slate-500 dark:text-slate-400"
-        >
-          <span
-            >{{ t("job.cpu") }}
-            <span class="font-medium text-slate-700 dark:text-slate-200"
-              >{{ Math.round(cpuPercent) }}%</span
-            ></span
-          >
-          <span
-            >{{ t("job.memory") }}
-            <span class="font-medium text-slate-700 dark:text-slate-200">{{
-              formatBytes(rssBytes)
-            }}</span></span
-          >
-          <span v-if="peakRssBytes"
-            >{{ t("job.peak") }}
-            <span class="font-medium text-slate-700 dark:text-slate-200">{{
-              formatBytes(peakRssBytes)
-            }}</span></span
-          >
-        </div>
-      </div>
-
-      <div class="grid gap-4 lg:grid-cols-2">
-        <CaptureSummary v-if="summary" :summary="summary" />
-        <ChannelMappingList v-if="detection" :detection="detection" />
-      </div>
-
-      <section v-if="previewUrl" :class="card">
-        <h2 class="mb-3 text-lg font-medium">{{ t("job.livePreview") }}</h2>
-        <img
-          :src="previewUrl"
-          alt="live preview"
-          class="block max-h-[28rem] w-full max-w-full rounded-md border border-slate-200 object-contain dark:border-slate-700"
-        />
-      </section>
+      <TwoPane split="even">
+        <template #main>
+          <div class="space-y-4">
+            <div :class="card">
+              <div class="mb-2 flex items-center justify-between gap-3 text-sm">
+                <span class="min-w-0 truncate">{{
+                  step || t("common.loading")
+                }}</span>
+                <span
+                  class="flex shrink-0 items-center gap-3 text-slate-500 dark:text-slate-400"
+                >
+                  <span class="tabular-nums">{{ fmtElapsed(elapsedMs) }}</span>
+                  <span class="font-medium text-slate-700 dark:text-slate-200"
+                    >{{ progress }}%</span
+                  >
+                </span>
+              </div>
+              <ProgressBar :percent="progress" :active="running" />
+              <StatGrid
+                v-if="rssBytes || cpuPercent"
+                class="mt-3"
+                :cols="3"
+                :items="progressStats"
+              />
+            </div>
+            <CaptureSummary v-if="summary" :summary="summary" />
+            <ChannelMappingList v-if="detection" :detection="detection" />
+          </div>
+        </template>
+        <template #aside>
+          <div class="space-y-4">
+            <section v-if="previewUrl" :class="card">
+              <h2 class="mb-3 text-lg font-medium">
+                {{ t("job.livePreview") }}
+              </h2>
+              <img
+                :src="previewUrl"
+                alt="live preview"
+                class="block max-h-[28rem] w-full max-w-full rounded-md border border-slate-200 object-contain dark:border-slate-700"
+              />
+            </section>
+            <LogConsole :lines="lines" />
+          </div>
+        </template>
+      </TwoPane>
 
       <!-- Supervised finish: stream the agent's iterations (preview + defects + scores) as they land. -->
       <StagePreviewTimeline :live="stagePreviews" />
       <SupervisorPanel v-if="iterations.length" :live="iterations" />
-
-      <LogConsole :lines="lines" />
     </template>
 
     <!-- After completion: the full result panels + the supervisor iteration timeline. `outputs` covers

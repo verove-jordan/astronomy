@@ -117,6 +117,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/jobs", s.listJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.getJob)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.cancelJob)
+	mux.HandleFunc("POST /api/jobs/{id}/pause", s.pauseJob)
+	mux.HandleFunc("POST /api/jobs/{id}/continue", s.continueJob)
 	mux.HandleFunc("POST /api/jobs/{id}/restart", s.restartJob)
 	mux.HandleFunc("POST /api/jobs/{id}/refine", s.refineJob)
 	mux.HandleFunc("GET /api/jobs/{id}/iterations", s.jobIterations)
@@ -391,6 +393,32 @@ func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"cancelled": s.mgr.Cancel(id)})
+}
+
+// pauseJob asks a running job to pause at its next safe boundary so it can be resumed later. Returns
+// {"paused": bool} — false when the job is not running in this process. POST /api/jobs/{id}/pause
+func (s *Server) pauseJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		badRequest(w, "invalid job id")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"paused": s.mgr.Pause(id)})
+}
+
+// continueJob resumes a paused job from its checkpoint (re-pushing a kept result, or reusing the channel
+// masters already stacked). POST /api/jobs/{id}/continue
+func (s *Server) continueJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		badRequest(w, "invalid job id")
+		return
+	}
+	if err := s.mgr.Continue(r.Context(), id); err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"id": id})
 }
 
 // restartJob re-runs a finished (failed/cancelled) job as a new job with the same parameters and returns

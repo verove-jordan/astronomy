@@ -55,8 +55,21 @@ export function useJobStream(jobId: number, onDone?: () => void) {
     lines.value = initial.filter((l) => l.length > 0).map(parseLogRow);
   }
 
-  const source = new EventSource(eventsUrl(jobId));
-  source.onmessage = (ev: MessageEvent<string>) => {
+  // The stream closes itself when the job reaches a done/paused event. reconnect() re-opens it — used
+  // after Continue, so a resumed (previously paused) run streams live progress again without a remount.
+  let source: EventSource | null = null;
+  function connect() {
+    source?.close();
+    done.value = false;
+    const es = new EventSource(eventsUrl(jobId));
+    source = es;
+    es.onmessage = handleMessage(es);
+    es.onerror = () => {
+      // The browser auto-reconnects; nothing to do.
+    };
+  }
+
+  const handleMessage = (es: EventSource) => (ev: MessageEvent<string>) => {
     const e = JSON.parse(ev.data) as JobEvent;
     progress.value = e.progress;
     step.value = e.step;
@@ -91,15 +104,13 @@ export function useJobStream(jobId: number, onDone?: () => void) {
     if (e.preview) preview.value = e.preview;
     if (e.done) {
       done.value = true;
-      source.close();
+      es.close();
       onDone?.();
     }
   };
-  source.onerror = () => {
-    // The browser auto-reconnects; nothing to do.
-  };
 
-  onUnmounted(() => source.close());
+  connect();
+  onUnmounted(() => source?.close());
 
   return {
     progress,
@@ -114,5 +125,6 @@ export function useJobStream(jobId: number, onDone?: () => void) {
     iterations,
     stagePreviews,
     seed,
+    reconnect: connect,
   };
 }

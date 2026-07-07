@@ -124,8 +124,19 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 		Metrics: metrics, OutputPath: masterBase + ".fits",
 	}}
 
+	// Line-aware satellite/aircraft-trail masking on the registered subs before stacking (no-op unless
+	// the preset enables it — milkyway leaves it off). Soft-fail: stack as-is on any error.
+	if opts.Preset != nil && opts.Preset.TrailMaskK > 0 {
+		if summary, note, err := maskChannelTrails(seqDir, "r_osc", opts.Preset.TrailMaskK); err != nil {
+			res.Warnings = append(res.Warnings, "trail mask skipped: "+err.Error())
+		} else if summary != nil {
+			res.Channels[0].TrailMask = summary
+			res.Warnings = append(res.Warnings, note)
+		}
+	}
+
 	opts.report(Progress{Step: "stacking", Index: 2, Total: 3})
-	if st, err := opts.Runner.Run(ctx, seqDir, siril.StackSelectedScript("r_osc", regCount, rejectedReg, masterBase, ""), opts.sirilLines("stacking")); err != nil {
+	if st, err := opts.Runner.Run(ctx, seqDir, siril.StackSelectedScript("r_osc", regCount, rejectedReg, masterBase, opts.stackWeight()), opts.sirilLines("stacking")); err != nil {
 		return nil, fmt.Errorf("stacking: %w\n%s", err, sirilTail(st))
 	}
 
@@ -137,12 +148,8 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
-	// Denoise the linear OSC master (color noise) before finishing, then write a preview.
-	if d := denoiseFor("RGB", opts.Preset); d.Enabled() {
-		if _, err := opts.Runner.Run(ctx, outDir, siril.DenoiseScript("osc_master.fits", "osc_master", d), opts.sirilLines("denoise")); err != nil {
-			res.Warnings = append(res.Warnings, "denoise skipped: "+err.Error())
-		}
-	}
+	// Measure + denoise the linear OSC master (starlet when enabled, else Siril) before finishing.
+	denoiseLinearMaster(ctx, opts, &res.Channels[0], "osc_master", outDir, "RGB", opts.sirilLines("denoise"))
 	if opts.Preset != nil && opts.Preset.Previews {
 		if _, err := opts.Runner.Run(ctx, outDir, siril.PreviewScript("osc_master.fits", "osc_master_preview", 0.5), nil); err == nil {
 			res.Channels[0].PreviewPath = filepath.Join(outDir, "osc_master_preview.png")

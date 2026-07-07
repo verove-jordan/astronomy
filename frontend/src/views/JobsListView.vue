@@ -138,6 +138,13 @@ async function restart(id: unknown) {
     restartingId.value = null;
   }
 }
+
+// Continue resumes a paused job (same id) and opens it so its resumed progress is visible.
+async function continueJob(id: unknown) {
+  const jid = Number(id);
+  await jobsStore.continueJob(jid);
+  router.push({ name: "job", params: { id: String(jid) } });
+}
 </script>
 
 <template>
@@ -191,6 +198,14 @@ async function restart(id: unknown) {
           @click="cancel(row.id)"
         >
           {{ row.status === "running" ? t("job.cancel") : t("job.remove") }}
+        </button>
+        <button
+          v-else-if="row.status === 'paused'"
+          :class="btnPrimary"
+          class="!px-2 !py-1 !text-xs"
+          @click="continueJob(row.id)"
+        >
+          {{ t("job.continue") }}
         </button>
         <button
           v-else-if="row.status === 'failed' || row.status === 'cancelled'"

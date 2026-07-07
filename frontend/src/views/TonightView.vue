@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, computed, ref, watch } from "vue";
+import { onMounted, computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useSkyStore } from "@/stores/sky";
 import { useAutoRefresh } from "@/composables/useAutoRefresh";
@@ -16,12 +16,14 @@ import SkyMap from "@/components/Dataviz/SkyMap.vue";
 import AltitudeChart from "@/components/Dataviz/AltitudeChart.vue";
 import AstroWeatherPanel from "@/components/Sky/AstroWeatherPanel.vue";
 import CollapsibleCard from "@/components/Common/CollapsibleCard.vue";
+import TwoPane from "@/components/Common/TwoPane.vue";
 import TabBar from "@/components/Common/TabBar.vue";
 import IconStar from "@/components/Icons/IconStar.vue";
 import PolarScopeReticle from "@/components/Polar/PolarScopeReticle.vue";
 import PolarAlignPanel from "@/components/Polar/PolarAlignPanel.vue";
 import PolarTutorial from "@/components/Polar/PolarTutorial.vue";
 import { card, input, btnGhost, skyTypePillClass } from "@/constants/styles";
+import { scrollElementToTop } from "@/utils/scroll";
 import {
   tzForLocation,
   fmtClock,
@@ -52,6 +54,20 @@ function useDarkSite(lat: number, lon: number) {
   tab.value = "targets";
 }
 const { enabled: autoRefresh } = useAutoRefresh(() => store.refresh(), 90_000);
+
+// Clicking a target in the table selects it and reveals its visibility chart: scroll the chart card
+// up so it sits just below the sticky header (topbar + page-tabs band), bringing chart + preview
+// into focus. Waits a tick so the chart has re-rendered for the newly selected target.
+const chartCard = ref<HTMLElement | null>(null);
+function stickyOffset(): number {
+  const tabs = document.getElementById("page-tabs");
+  return (tabs ? tabs.getBoundingClientRect().bottom : 0) + 8;
+}
+async function selectTarget(name: string) {
+  store.select(name);
+  await nextTick();
+  if (chartCard.value) scrollElementToTop(chartCard.value, stickyOffset());
+}
 
 // All "tonight" times display in the SELECTED LOCATION's timezone (from its coordinates), not the browser's.
 const tz = computed(() => {
@@ -516,7 +532,7 @@ const fovH = computed(() => store.query?.equipment.fov_h_deg ?? 1);
           <button
             class="font-medium text-brand-600 hover:underline dark:text-brand-300"
             :aria-pressed="row.name === store.selectedName"
-            @click="store.select(String(row.name))"
+            @click="selectTarget(String(row.name))"
           >
             {{ row.name }}
           </button>
@@ -531,23 +547,28 @@ const fovH = computed(() => store.query?.equipment.fov_h_deg ?? 1);
         </template>
       </GenericTable>
 
-      <!-- Night chart: Sun + Moon + the selected object's altitude over the night -->
-      <div v-if="store.darkWindow" :class="card">
-        <h3
-          class="mb-1 text-sm font-semibold text-slate-700 dark:text-slate-200"
-        >
-          {{ t("tonight.chart.title") }}
-        </h3>
-        <AltitudeChart
-          :target="store.selected"
-          :dark-window="store.darkWindow"
-          :min-alt-deg="minAlt"
-          :now-ms="nowMs"
-          :tz="tz"
-        />
-      </div>
-
-      <AstroWeatherPanel />
+      <!-- Night chart (Sun + Moon + the selected object's altitude) beside tonight's conditions. -->
+      <TwoPane split="even">
+        <template #main>
+          <div v-if="store.darkWindow" ref="chartCard" :class="card">
+            <h3
+              class="mb-1 text-sm font-semibold text-slate-700 dark:text-slate-200"
+            >
+              {{ t("tonight.chart.title") }}
+            </h3>
+            <AltitudeChart
+              :target="store.selected"
+              :dark-window="store.darkWindow"
+              :min-alt-deg="minAlt"
+              :now-ms="nowMs"
+              :tz="tz"
+            />
+          </div>
+        </template>
+        <template #aside>
+          <AstroWeatherPanel />
+        </template>
+      </TwoPane>
 
       <div class="grid gap-4 lg:grid-cols-2">
         <TargetDetailPanel

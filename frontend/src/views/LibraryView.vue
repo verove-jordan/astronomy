@@ -121,12 +121,16 @@ const phoneColumns: Column<Row>[] = [
 
       <div v-if="rows.length" class="space-y-2">
         <h2 class="text-lg font-semibold">{{ t("library.deepskyTitle") }}</h2>
-        <GenericTable :columns="columns" :rows="rows" />
+        <GenericTable :columns="columns" :rows="rows" max-height="28rem" />
       </div>
 
       <div v-if="phoneRows.length" class="space-y-2">
         <h2 class="text-lg font-semibold">{{ t("library.phoneTitle") }}</h2>
-        <GenericTable :columns="phoneColumns" :rows="phoneRows" />
+        <GenericTable
+          :columns="phoneColumns"
+          :rows="phoneRows"
+          max-height="28rem"
+        />
       </div>
     </template>
   </div>

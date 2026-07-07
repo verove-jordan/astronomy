@@ -14,6 +14,10 @@ const (
 	JobSucceeded = "succeeded"
 	JobFailed    = "failed"
 	JobCancelled = "cancelled"
+	// JobPaused is a non-terminal rest state: the run stopped at a safe boundary (manually, or on a
+	// transient S3 error) and can be resumed from its `resume` checkpoint. Not "running" (so a restart
+	// won't force-fail it) and not terminal (it isn't done).
+	JobPaused = "paused"
 )
 
 // Job is a unit of background work (a pipeline or video run).
@@ -28,6 +32,7 @@ type Job struct {
 	Error        string          `json:"error" db:"error"`
 	Params       json.RawMessage `json:"params" db:"params"`
 	Result       json.RawMessage `json:"result" db:"result"`
+	Resume       json.RawMessage `json:"resume" db:"resume"` // pause/resume checkpoint ({} when not paused)
 	StartedAtMs  int64           `json:"started_at_ms" db:"started_at_ms"`
 	FinishedAtMs int64           `json:"finished_at_ms" db:"finished_at_ms"`
 	SeriesID     int64           `json:"series_id" db:"series_id"` // agent improvement series (0 = none)
@@ -76,7 +81,8 @@ func (s *Store) UpdateJobProgress(ctx context.Context, id int64, progress int, s
 	return err
 }
 
-// FinishJob records the terminal status, result and error of a job.
+// FinishJob records the terminal status, result and error of a job. It clears any resume checkpoint —
+// a finished job is never resumed.
 func (s *Store) FinishJob(ctx context.Context, id int64, status string, result json.RawMessage, errMsg string) error {
 	if len(result) == 0 {
 		result = json.RawMessage("{}")
@@ -88,8 +94,29 @@ func (s *Store) FinishJob(ctx context.Context, id int64, status string, result j
 	}
 	_, err := s.pool.Exec(ctx,
 		`UPDATE jobs SET status=$2, result=$3, error=$4, progress=COALESCE(NULLIF($5,0), progress),
-		    finished_at_ms=$6, updated_at=$6 WHERE id=$1`,
+		    resume='{}', finished_at_ms=$6, updated_at=$6 WHERE id=$1`,
 		id, status, result, errMsg, progress, now)
+	return err
+}
+
+// SetJobPaused parks a job in the resumable "paused" state, storing its resume checkpoint and (optionally)
+// the result produced so far. Unlike FinishJob it PRESERVES progress/current_step so the UI keeps showing
+// how far the run got, and it does not stamp finished_at_ms (the job isn't finished). A nil result leaves
+// the existing result untouched (e.g. a compute-phase pause has no final result yet).
+func (s *Store) SetJobPaused(ctx context.Context, id int64, resume, result json.RawMessage, reason string) error {
+	if len(resume) == 0 {
+		resume = json.RawMessage("{}")
+	}
+	now := nowMs()
+	if result == nil { // leave the stored result untouched (e.g. a compute-phase pause has no final result)
+		_, err := s.pool.Exec(ctx,
+			`UPDATE jobs SET status=$2, resume=$3, error=$4, updated_at=$5 WHERE id=$1`,
+			id, JobPaused, resume, reason, now)
+		return err
+	}
+	_, err := s.pool.Exec(ctx,
+		`UPDATE jobs SET status=$2, resume=$3, error=$4, result=$5, updated_at=$6 WHERE id=$1`,
+		id, JobPaused, resume, reason, result, now)
 	return err
 }
 
@@ -147,4 +174,4 @@ func (s *Store) CountJobs(ctx context.Context) (int, error) {
 }
 
 const jobSelect = `SELECT id, session_id, kind, status, progress, current_step, log_tail, error,
-	params, result, started_at_ms, finished_at_ms, series_id, created_at, updated_at FROM jobs`
+	params, result, resume, started_at_ms, finished_at_ms, series_id, created_at, updated_at FROM jobs`

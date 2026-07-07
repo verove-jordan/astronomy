@@ -2,7 +2,10 @@
   "app": {
     "title": "AstroStack",
     "subtitle": "Automated astrophotography sorting & stacking",
-    "logoAlt": "AstroStack logo"
+    "logoAlt": "AstroStack logo",
+    "openMenu": "Open menu",
+    "closeMenu": "Close menu",
+    "language": "Language"
   },
   "nav": {
     "tonight": "Tonight",
@@ -14,7 +17,9 @@
     "runs": "Runs",
     "library": "Calibration library",
     "processing": "Processing",
-    "astroAgent": "AstroAgent"
+    "astroAgent": "AstroAgent",
+    "collapse": "Collapse",
+    "expand": "Expand"
   },
   "astroAgent": {
     "title": "AstroAgent",
@@ -249,6 +254,8 @@
   "calib": {
     "title": "Calibration · matched from your library",
     "subtitle": "These library masters match your lights and will be applied. Uncheck any to skip it.",
+    "selectAll": "Select all",
+    "deselectAll": "Deselect all",
     "frames": "{n} frames",
     "role": { "dark": "Dark", "flat": "Flat", "bias": "Bias" }
   },
@@ -456,6 +463,10 @@
     "cancel": "Cancel run",
     "cancelling": "Cancelling…",
     "stopFinalize": "Stop & finalize",
+    "pause": "Pause",
+    "pausing": "Pausing…",
+    "continue": "Continue",
+    "continuing": "Continuing…",
     "restart": "Restart",
     "restarting": "Restarting…",
     "remove": "Remove",
@@ -566,7 +577,8 @@
     "running": "Running",
     "succeeded": "Succeeded",
     "failed": "Failed",
-    "cancelled": "Cancelled"
+    "cancelled": "Cancelled",
+    "paused": "Paused"
   },
   "darksky": {
     "hint": "Draw an area on the map, set a maximum Bortle, then search for the darkest spots — ranked by sky darkness and how open the horizon is (terrain + nearby trees), with driving distance from your location.",

@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -42,11 +44,23 @@ func priorRow(session int64, path, filter string) store.FrameRow {
 	}
 }
 
+// priorFile creates a real (empty) frame file for a prior row: buildReusePlan verifies prior paths
+// still exist on disk (a freed/ghost path would sink its whole group's Siril link), so prior-frame
+// fixtures must be real files. Current-session paths stay fake — the inventory is trusted as scanned.
+func priorFile(t *testing.T, dir, name string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	require.NoError(t, os.WriteFile(p, []byte("fits"), 0o644))
+	return p
+}
+
 func TestBuildReusePlan_FoldsPriorFrames(t *testing.T) {
+	dir := t.TempDir()
 	prov := &fakeProvider{lights: []store.FrameRow{
-		priorRow(2, "/s2/L_001.fits", "L"),
-		priorRow(2, "/s2/L_002.fits", "L"),
-		priorRow(3, "/s3/R_001.fits", "R"),
+		priorRow(2, priorFile(t, dir, "s2/L_001.fits"), "L"),
+		priorRow(2, priorFile(t, dir, "s2/L_002.fits"), "L"),
+		priorRow(3, priorFile(t, dir, "s3/R_001.fits"), "R"),
 		priorRow(2, "/cur/L_001.fits", "L"), // duplicate of a current frame → must be dropped
 	}}
 	cfg := ReuseConfig{Provider: prov, ConeDeg: 0.5}
@@ -65,9 +79,10 @@ func TestBuildReusePlan_FoldsPriorFrames(t *testing.T) {
 }
 
 func TestBuildReusePlan_SessionSelection(t *testing.T) {
+	dir := t.TempDir()
 	prov := &fakeProvider{lights: []store.FrameRow{
-		priorRow(2, "/s2/L_001.fits", "L"),
-		priorRow(3, "/s3/L_001.fits", "L"),
+		priorRow(2, priorFile(t, dir, "s2/L_001.fits"), "L"),
+		priorRow(3, priorFile(t, dir, "s3/L_001.fits"), "L"),
 	}}
 	cfg := ReuseConfig{Provider: prov, ConeDeg: 0.5, Sessions: map[int64]bool{2: true}} // only session 2
 
@@ -77,6 +92,23 @@ func TestBuildReusePlan_SessionSelection(t *testing.T) {
 	assert.Equal(t, 1, plan.Summary.PriorSessions)
 	assert.Equal(t, 1, plan.Summary.PriorFrames)
 	assert.Len(t, plan.byFilter["L"], 2) // current + session-2 only (session 3 excluded)
+}
+
+func TestBuildReusePlan_SkipsMissingPriorFrames(t *testing.T) {
+	// A catalogued prior frame whose file is gone (e.g. freed after an S3 mirror) must be skipped AND
+	// counted — one dangling path would otherwise sink its whole group's Siril link.
+	dir := t.TempDir()
+	prov := &fakeProvider{lights: []store.FrameRow{
+		priorRow(2, priorFile(t, dir, "s2/L_001.fits"), "L"),
+		priorRow(2, filepath.Join(dir, "s2/GONE.fits"), "L"),
+	}}
+	cfg := ReuseConfig{Provider: prov, ConeDeg: 0.5}
+
+	plan, err := buildReusePlan(context.Background(), cfg, currentInv(), 1, targetQuery{Object: "M51"})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, plan.Summary.PriorFrames, "only the frame that exists on disk is folded in")
+	assert.Equal(t, 1, plan.MissingPrior, "the ghost is counted for the run warning")
 }
 
 func TestBuildReusePlan_NoProvider(t *testing.T) {

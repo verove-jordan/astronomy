@@ -133,6 +133,7 @@ type Manager struct {
 	mu        sync.Mutex
 	subs      map[int64][]chan Event
 	cancels   map[int64]context.CancelFunc // cancel funcs for in-flight jobs (kill support)
+	pauses    map[int64]*pauseGate         // cooperative pause signals for in-flight jobs (guarded by mu)
 	jobTurns  map[int64]string             // supervised jobs → their conversation turn id (guarded by mu)
 
 	confirmSeq int64 // monotonic counter for unique expensive-step confirmation call ids
@@ -328,6 +329,7 @@ func NewManager(st *store.Store, runner *siril.Runner, cfg *config.Config, hub T
 		xferQueue: make(chan int64, 256),
 		subs:      map[int64][]chan Event{},
 		cancels:   map[int64]context.CancelFunc{},
+		pauses:    map[int64]*pauseGate{},
 		jobTurns:  map[int64]string{},
 		locker:    newPathLocker(),
 	}
@@ -404,15 +406,8 @@ func (m *Manager) Enqueue(ctx context.Context, req RunRequest) (int64, error) {
 		m.jobTurns[id] = turnID
 		m.mu.Unlock()
 	}
-	target := m.queue
-	switch {
-	case req.Transfer != nil || req.Backup != nil || req.Restore != nil:
-		target = m.xferQueue // S3 transfers / backups / restores run in their own lane
-	case req.Sequential:
-		target = m.seqQueue // run after the rest of the chain, one-at-a-time
-	}
 	select {
-	case target <- id:
+	case m.laneFor(req) <- id:
 	default:
 		return 0, fmt.Errorf("job queue is full")
 	}
@@ -431,6 +426,9 @@ func (m *Manager) Restart(ctx context.Context, id int64) (int64, error) {
 	}
 	if j.Status == store.JobQueued || j.Status == store.JobRunning {
 		return 0, fmt.Errorf("job %d is still %s", id, j.Status)
+	}
+	if j.Status == store.JobPaused {
+		return 0, fmt.Errorf("job %d is paused — continue it instead of restarting", id)
 	}
 	var req RunRequest
 	if err := json.Unmarshal(j.Params, &req); err != nil {
@@ -549,8 +547,9 @@ func (m *Manager) Cancel(id int64) bool {
 		return false
 	}
 	switch job.Status {
-	case store.JobQueued:
-		if err := m.store.FinishJob(context.Background(), id, store.JobCancelled, nil, "cancelled before start"); err != nil {
+	case store.JobQueued, store.JobPaused:
+		// Queued (not started) or paused (parked, no live worker) → mark cancelled directly.
+		if err := m.store.FinishJob(context.Background(), id, store.JobCancelled, nil, "cancelled"); err != nil {
 			return false
 		}
 		m.publish(Event{JobID: id, Status: store.JobCancelled, Step: "cancelled", Done: true})
@@ -623,6 +622,12 @@ func (m *Manager) run(ctx context.Context, id int64) {
 		return
 	}
 
+	// A resume checkpoint left by a prior pause (zero value for a fresh job).
+	var cp resumeCheckpoint
+	if len(job.Resume) > 0 {
+		_ = json.Unmarshal(job.Resume, &cp)
+	}
+
 	// Serialize against any other job whose input roots overlap — ALL of them, not only the primary
 	// (a transfer/free over a secondary multi-select folder must not race the stack), and
 	// prefix-aware (a parent-folder transfer conflicts with a child-folder run).
@@ -630,58 +635,79 @@ func (m *Manager) run(ctx context.Context, id int64) {
 	defer unlock()
 
 	runCtx, cancel := context.WithCancel(ctx)
+	gate := &pauseGate{}
 	m.mu.Lock()
 	m.cancels[id] = cancel
+	m.pauses[id] = gate
 	m.mu.Unlock()
 	defer func() {
 		cancel()
 		m.mu.Lock()
 		delete(m.cancels, id)
+		delete(m.pauses, id)
 		m.mu.Unlock()
 	}()
 
 	_ = m.store.SetJobRunning(ctx, id)
 	m.publish(Event{JobID: id, Status: store.JobRunning, Progress: 0, Step: "starting"})
 
-	// Full-S3 storage: pull the capture folders from S3 before processing so a run can work from files
-	// that live only on S3 (idempotent — same-size local files are skipped). A pull failure fails the job.
+	// Resume fast path: a job paused after a SUCCESSFUL compute (only the S3 push failed) just re-pushes
+	// the kept result — no recompute.
+	if cp.Phase == phasePush {
+		res := json.RawMessage(job.Result)
+		if err := m.pushAndFreeS3Run(runCtx, id, p, res); err != nil {
+			m.settleS3Error(id, runCtx, phasePush, res, err)
+			return
+		}
+		m.finishSucceeded(id, p, job.Result)
+		return
+	}
+
+	// Full-S3 storage: pull the capture folders from S3 before processing so a run can work from files that
+	// live only on S3 (idempotent — same-size local files are skipped, so a resumed pull is cheap). A
+	// transient network failure PAUSES the job (resumable) rather than failing it.
 	if p.wantsS3Storage() {
 		if err := m.pullS3Inputs(runCtx, id, p); err != nil {
-			_ = m.store.FinishJob(context.Background(), id, store.JobFailed, nil, err.Error())
-			m.publish(Event{JobID: id, Status: store.JobFailed, Step: err.Error(), Done: true})
-			m.closeTurn(id, store.JobFailed, err.Error())
+			m.settleS3Error(id, runCtx, phasePull, nil, err)
 			return
 		}
 	}
 
-	res, runErr := m.execute(runCtx, id, turnID, job.Kind, p)
+	res, runErr := m.execute(runCtx, id, turnID, job.Kind, p, cp.pipelineResume(), gate)
 
-	// Full-S3 storage: after a successful run, push inputs+outputs to S3 and free the local copies
-	// (verified). A push failure fails the job (nothing was freed); a partial free is non-fatal.
-	if runErr == nil && p.wantsS3Storage() {
-		if err := m.pushAndFreeS3Run(runCtx, id, p, res); err != nil {
-			runErr = err
-		}
-	}
-	// Terminal writes use a fresh context so they persist even if the run was cancelled.
+	// A cooperative mid-stack pause returns *PausedError: park the job (its finished channels are on disk,
+	// reused on Continue) rather than failing it.
 	if runErr != nil {
+		var pe *pipeline.PausedError
+		if errors.As(runErr, &pe) {
+			m.pauseJob(id, resumeCheckpoint{Phase: phaseCompute, RunID: pe.RunID, OutDir: pe.OutDir,
+				Reason: "paused — will continue the remaining channels"}, nil)
+			return
+		}
+		// Terminal writes use a fresh context so they persist even if the run was cancelled.
 		status := store.JobFailed
 		if runCtx.Err() != nil || errors.Is(runErr, context.Canceled) {
 			status = store.JobCancelled
 		}
-		_ = m.store.FinishJob(context.Background(), id, status, nil, runErr.Error())
-		m.publish(Event{JobID: id, Status: status, Step: runErr.Error(), Done: true})
-		m.closeTurn(id, status, runErr.Error())
+		m.finishTerminal(id, status, runErr)
 		return
 	}
-	result, _ := json.Marshal(res)
-	_ = m.store.FinishJob(context.Background(), id, store.JobSucceeded, result, "")
-	m.publish(Event{JobID: id, Status: store.JobSucceeded, Progress: 100, Step: "done", Done: true})
-	m.closeTurn(id, store.JobSucceeded, "Finished — kept the best pass as the final image.")
-	m.maybeContinueSeries(id, p) // agent series: record the attempt + maybe launch the next one
+
+	// Full-S3 storage: after a successful run, push inputs+outputs to S3 and free the local copies
+	// (verified). A transient push failure PAUSES (results stay safe locally) so Continue re-uploads; a
+	// partial free is non-fatal.
+	if p.wantsS3Storage() {
+		if err := m.pushAndFreeS3Run(runCtx, id, p, res); err != nil {
+			m.settleS3Error(id, runCtx, phasePush, res, err)
+			return
+		}
+	}
+
+	m.finishSucceeded(id, p, resultBlob(res))
 }
 
-func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p RunRequest) (any, error) {
+func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p RunRequest,
+	resume *pipeline.ResumeState, gate *pauseGate) (any, error) {
 	// S3 transfer / backup / restore jobs are intercepted before pipeline-mode parsing — they reuse the
 	// whole progress/SSE stack but do not run Siril.
 	if p.Transfer != nil {
@@ -964,6 +990,10 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir,
 			Catalog:      m.store, // always record the run so its frames become reusable
 			CalibExclude: p.CalibExclude,
+			// Pause/resume: reuse a paused run's output dir (skip already-stacked channels) and let the user
+			// pause mid-stack at a channel boundary. Only the deep-sky path honors mid-stack pause.
+			Resume:         resume,
+			PauseRequested: gate.requested,
 		}
 		if m.cfg.ReuseEnabled && !p.ReuseDisabled {
 			opts.RawCalib = m.store // pool raw bias/darks across sessions into deep masters

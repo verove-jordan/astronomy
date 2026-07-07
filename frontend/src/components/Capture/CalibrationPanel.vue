@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watchEffect } from "vue";
 import { useI18n } from "vue-i18n";
 import { card, frameTypeAccentClass } from "@/constants/styles";
 import { humanizeMs, tempC } from "@/utils/format";
@@ -33,6 +33,29 @@ function toggle(id: string, on: boolean) {
   excluded.value = [...set];
 }
 
+// Single "select all / deselect all" control over every matched master. Every suggestion id across
+// all channels; a master is "on" (applied) when it is NOT in the excluded list.
+const allIds = computed<string[]>(() =>
+  channels.value.flatMap((c) => c.suggestions.map((s) => s.id)),
+);
+const allOn = computed(
+  () => allIds.value.length > 0 && allIds.value.every((id) => included(id)),
+);
+const noneOn = computed(() => allIds.value.every((id) => !included(id)));
+function toggleAll(on: boolean) {
+  if (on) {
+    excluded.value = excluded.value.filter((id) => !allIds.value.includes(id));
+  } else {
+    excluded.value = [...new Set([...excluded.value, ...allIds.value])];
+  }
+}
+
+// Vue can't bind the tri-state `indeterminate` property declaratively — drive it from a ref.
+const allBox = ref<HTMLInputElement | null>(null);
+watchEffect(() => {
+  if (allBox.value) allBox.value.indeterminate = !allOn.value && !noneOn.value;
+});
+
 function channelLine(c: CalibChannel): string {
   return [
     humanizeMs(c.exposure_ms),
@@ -62,6 +85,19 @@ function channelKey(c: CalibChannel): string {
     <p class="text-xs text-slate-500 dark:text-slate-400">
       {{ t("calib.subtitle") }}
     </p>
+
+    <label
+      class="mt-2 flex w-max cursor-pointer items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300"
+    >
+      <input
+        ref="allBox"
+        type="checkbox"
+        class="accent-brand-500"
+        :checked="allOn"
+        @change="toggleAll(($event.target as HTMLInputElement).checked)"
+      />
+      {{ allOn ? t("calib.deselectAll") : t("calib.selectAll") }}
+    </label>
 
     <ul class="mt-3 space-y-3">
       <li v-for="c in channels" :key="channelKey(c)">

@@ -56,3 +56,8 @@ tools/demo/assets/music/*
 # --- Claude Code ---
 .claude/settings.local.json
 .gitnexus
+# Machine-local calibration-library sidecars (pool signatures, flat-QC artifacts)
+/library/*.sig
+/library/*.defects.json
+/library/*_defects.png
+/library/*master*

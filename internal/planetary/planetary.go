@@ -536,22 +536,51 @@ func deconvolveMaster(ctx context.Context, runner *siril.Runner, master string, 
 	return err
 }
 
-// chromaBlur is the box-blur radius applied to the R/G/B (chroma) masters before the LRGB combine.
-const chromaBlur = 3
+// chromaBlur is the smoothing radius for the R/G/B COLOUR DIFFERENCES before the LRGB combine. Each
+// channel stack aligns to its OWN sharpest frame, so their atmospheric micro-warps disagree coherently
+// over ~10–15px regions — on a real full-Moon LRGB that reads as green/magenta mottling across the
+// surface, so the radius must cover that scale. Only the differences are smoothed (see smoothChroma):
+// a plain per-channel blur at this radius visibly softened the FINAL image (Siril's `rgbcomp -lum`
+// leaks RGB detail into the output lightness), while the mean-preserving smooth keeps it crisp.
+const chromaBlur = 12
 
-// smoothChroma box-blurs the colour channels (R/G/B) in place. The luminance (L) supplies the detail,
-// so softening chroma removes colour speckle without losing sharpness — the classic LRGB trade.
+// smoothChroma smooths the COLOUR of the R/G/B masters in place while preserving their per-pixel mean
+// exactly: m = (R+G+B)/3, then c' = m + blur(c − m). By linearity blur(ΣΔ)=Σblur(Δ)=0, so (R'+G'+B')/3
+// is byte-for-byte m — every detail the combine may take from the RGB trio survives; only the mutual
+// channel disagreements (the colour mottle from per-channel seeing warps) are flattened.
 func smoothChroma(masters map[string]string, radius int) error {
+	ims := map[string]*fits.Image{}
 	for _, f := range []string{"R", "G", "B"} {
 		base, ok := masters[f]
 		if !ok {
-			continue
+			return nil // colour smoothing only makes sense with the full trio
 		}
 		im, err := fits.ReadImage(base + ".fits")
 		if err != nil {
 			return err
 		}
-		if err := blurPlane(im, radius).WriteFITS(base + ".fits"); err != nil {
+		ims[f] = im
+	}
+	r, g, b := ims["R"].Pix[0], ims["G"].Pix[0], ims["B"].Pix[0]
+	if len(g) != len(r) || len(b) != len(r) {
+		return fmt.Errorf("smooth chroma: master dimensions differ")
+	}
+	mean := make([]float32, len(r))
+	for i := range mean {
+		mean[i] = (r[i] + g[i] + b[i]) / 3
+	}
+	for _, f := range []string{"R", "G", "B"} {
+		im := ims[f]
+		pix := im.Pix[0]
+		diff := make([]float32, len(pix))
+		for i := range diff {
+			diff[i] = pix[i] - mean[i]
+		}
+		sm := comet.BoxBlur(diff, im.W, im.H, radius)
+		for i := range pix {
+			pix[i] = mean[i] + sm[i]
+		}
+		if err := im.WriteFITS(masters[f] + ".fits"); err != nil {
 			return err
 		}
 	}

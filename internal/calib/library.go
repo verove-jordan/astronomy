@@ -39,7 +39,8 @@ func BuildOrReuseMasters(ctx context.Context, runner *siril.Runner, inv *inspect
 				warnings = append(warnings, fmt.Sprintf("reused library master %s (%d frames)", masterByFrameType[set.Key.Type], existing.FrameCount))
 				continue
 			}
-			built, err := buildOne(ctx, runner, set, masters, libDir, workDir, onProgress)
+			built, qc, err := buildOne(ctx, runner, set, masters, libDir, workDir, onProgress)
+			warnings = append(warnings, qc...)
 			if err != nil {
 				warnings = append(warnings, err.Error())
 				continue

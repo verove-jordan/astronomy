@@ -29,16 +29,17 @@ func buildDeepBias(ctx context.Context, runner *siril.Runner, inv *inspect.Inven
 		return Master{}, false, "pool bias: " + err.Error()
 	}
 	paths = mergePaths(paths, pool, func(RawFrame) bool { return true })
+	paths, warn := dropMissing(paths, "bias pool")
 	if len(paths) == 0 {
-		return Master{}, false, "" // no bias is a valid setup; nothing to warn about
+		return Master{}, false, warn // no bias is a valid setup; only the ghost count (if any) is worth a note
 	}
 
 	key := inspect.SetKey{Type: inspect.Bias, Gain: sig.Gain, Offset: sig.Offset, Bin: sig.Bin}
 	m, err := stackPooled(ctx, runner, MasterBias, key, paths, mastersDir, workDir, onProgress)
 	if err != nil {
-		return Master{}, false, err.Error()
+		return Master{}, false, joinWarn(warn, err.Error())
 	}
-	return m, true, ""
+	return m, true, warn
 }
 
 // buildDeepDark pools this session's darks for one signature with every matching dark from prior
@@ -69,9 +70,10 @@ func buildDeepDark(ctx context.Context, runner *siril.Runner, inv *inspect.Inven
 		return Master{}, false, "pool darks: " + err.Error()
 	}
 	paths = mergePaths(paths, pool, matchesTemp)
+	paths, warn := dropMissing(paths, "dark pool")
 	if len(paths) == 0 {
-		return Master{}, false, fmt.Sprintf("no darks available for %dms g%do%d b%d @%dC",
-			sig.ExposureMs, sig.Gain, sig.Offset, sig.Bin, sig.TempBucket)
+		return Master{}, false, joinWarn(warn, fmt.Sprintf("no darks available for %dms g%do%d b%d @%dC",
+			sig.ExposureMs, sig.Gain, sig.Offset, sig.Bin, sig.TempBucket))
 	}
 
 	key := inspect.SetKey{
@@ -80,7 +82,7 @@ func buildDeepDark(ctx context.Context, runner *siril.Runner, inv *inspect.Inven
 	}
 	m, err := stackPooled(ctx, runner, MasterDark, key, paths, mastersDir, workDir, onProgress)
 	if err != nil {
-		return Master{}, false, err.Error()
+		return Master{}, false, joinWarn(warn, err.Error())
 	}
 	m.TempMilliC = int64(sig.TempBucket) * 1000
 	m.HasTemp = true
@@ -96,6 +98,38 @@ func localCalibPaths(inv *inspect.Inventory, ft inspect.FrameType, pred func(ins
 		}
 	}
 	return out
+}
+
+// dropMissing filters out pooled paths whose file is no longer on disk — e.g. raw frames freed after an
+// S3 mirror, whose catalog rows survive. A single ghost would sink the whole Siril stack (LinkFrames
+// symlinks blindly, and Siril aborts on "Opening image N failed"), losing every healthy frame with it.
+// It returns the surviving paths plus a warning naming the ghost count ("" when none).
+func dropMissing(paths []string, what string) ([]string, string) {
+	ok := paths[:0]
+	missing := 0
+	for _, p := range paths {
+		if fileExists(p) {
+			ok = append(ok, p)
+		} else {
+			missing++
+		}
+	}
+	if missing == 0 {
+		return ok, ""
+	}
+	return ok, fmt.Sprintf("%s: skipped %d frame(s) missing on disk (freed to S3?)", what, missing)
+}
+
+// joinWarn joins two optional warning strings with "; ", tolerating either being empty.
+func joinWarn(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	default:
+		return a + "; " + b
+	}
 }
 
 // mergePaths appends pool frames (passing keep) to base, de-duplicating by path.

@@ -236,6 +236,18 @@ export const useJobsStore = defineStore("jobs", () => {
     return data.cancelled;
   }
 
+  // pause asks a running job to stop at its next safe boundary so it can be continued later. Returns
+  // false when the job is not running (queued/terminal).
+  async function pause(id: number): Promise<boolean> {
+    const data = await apiPost<{ paused: boolean }>(`/api/jobs/${id}/pause`);
+    return data.paused;
+  }
+
+  // continueJob resumes a paused job from its checkpoint (same job id — no new job is created).
+  async function continueJob(id: number): Promise<void> {
+    await apiPost(`/api/jobs/${id}/continue`);
+  }
+
   // restart re-runs a finished (failed/cancelled) job as a brand-new job with the same parameters,
   // returning the new job id so the caller can navigate to it.
   async function restart(id: number): Promise<number> {
@@ -343,6 +355,8 @@ export const useJobsStore = defineStore("jobs", () => {
     turnFor,
     inspectCapture,
     cancel,
+    pause,
+    continueJob,
     restart,
     refine,
     listRuns,

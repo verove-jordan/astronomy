@@ -15,22 +15,25 @@ import (
 // and writes the cleaned pixels back in place (preserving each frame's header). This catches a slow
 // satellite that lands in many subs at marching positions — which per-frame trail rejection cannot drop
 // without losing the whole channel, and a normal stack sigma-clip is too loose to remove — at no global
-// SNR cost (only outlier pixels are touched).
+// SNR cost (only outlier pixels are touched). The line-aware transient.MaskSequence variant stays in
+// the tree but is deliberately NOT used here: on real masters its swath painting replaced whole
+// percents of the frame (walking-noise false positives) and broke cross-channel registration.
 //
 // All registered frames are masked, including any later graded out of the stack: masking them is
-// harmless and a larger sample makes the per-pixel median more robust. Returns a human-readable note
-// (empty when it did nothing). Memory: holds the channel's registered frames at once (~64 MB each);
-// channels are processed sequentially so only one channel is resident.
-func maskChannelTrails(seqDir, regSeq string, k float64) (string, error) {
+// harmless and a larger sample makes the per-pixel median more robust. Returns a compact summary (for
+// run.json) and a human-readable note (nil/"" when it did nothing). Memory: holds the channel's
+// registered frames at once (~64 MB each); channels are processed sequentially so only one channel is
+// resident.
+func maskChannelTrails(seqDir, regSeq string, k float64) (*transient.Summary, string, error) {
 	if k <= 0 {
-		return "", nil
+		return nil, "", nil
 	}
 	paths, err := filepath.Glob(filepath.Join(seqDir, regSeq+"_*.fits"))
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	if len(paths) < transient.MinFrames {
-		return "", nil // too few frames for a robust per-pixel statistic
+		return nil, "", nil // too few frames for a robust per-pixel statistic
 	}
 	sort.Strings(paths)
 
@@ -38,23 +41,25 @@ func maskChannelTrails(seqDir, regSeq string, k float64) (string, error) {
 	for i, p := range paths {
 		im, err := fits.ReadImage(p)
 		if err != nil {
-			return "", fmt.Errorf("read %s: %w", filepath.Base(p), err)
+			return nil, "", fmt.Errorf("read %s: %w", filepath.Base(p), err)
 		}
 		frames[i] = im
 	}
 	masked, err := transient.MaskCrossFrame(frames, k)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	if masked == 0 {
-		return "", nil
+		return nil, "", nil
 	}
 	for i, p := range paths {
 		if err := frames[i].OverwriteData(p); err != nil {
-			return "", fmt.Errorf("write %s: %w", filepath.Base(p), err)
+			return nil, "", fmt.Errorf("write %s: %w", filepath.Base(p), err)
 		}
 	}
+	s := &transient.Summary{Frames: len(frames), MaskedPx: masked}
 	pct := 100 * float64(masked) / float64(len(frames)*frames[0].W*frames[0].H)
-	return fmt.Sprintf("cross-frame trail mask: cleaned %d transient pixels (%.2f%%) across %d registered frames",
-		masked, pct, len(frames)), nil
+	note := fmt.Sprintf("cross-frame trail mask: cleaned %d transient pixels (%.2f%%) across %d registered frames",
+		masked, pct, len(frames))
+	return s, note, nil
 }

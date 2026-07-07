@@ -22,11 +22,14 @@ import (
 	"github.com/verove-jordan/astronomy/internal/inspect"
 	"github.com/verove-jordan/astronomy/internal/llm"
 	"github.com/verove-jordan/astronomy/internal/mode"
+	"github.com/verove-jordan/astronomy/internal/noise"
+	"github.com/verove-jordan/astronomy/internal/photom"
 	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/skycat"
 	"github.com/verove-jordan/astronomy/internal/starnet"
 	"github.com/verove-jordan/astronomy/internal/sysmon"
+	"github.com/verove-jordan/astronomy/internal/transient"
 )
 
 // trailDownsample is the working size (larger axis) for the trail detector.
@@ -116,6 +119,13 @@ type Options struct {
 	// CalibExclude holds SuggestID keys (per light-set, per role) the user unchecked in the Import
 	// "Calibration" panel; the matcher drops those darks/flats/bias from each channel's selection.
 	CalibExclude []string
+
+	// Resume, when set, continues a previously paused run: the run reuses Resume.RunID/OutDir so the
+	// per-channel masters already stacked on disk are found and those channels skipped. nil → a fresh run.
+	Resume *ResumeState
+	// PauseRequested lets the job layer ask a run to pause cooperatively at the next channel boundary;
+	// when it returns true the run stops and returns a *PausedError. nil → never pauses (CLI/MCP unchanged).
+	PauseRequested func() bool
 }
 
 // scanRoots returns the capture folders to merge for this run: the explicit InputDirs when set,
@@ -195,7 +205,15 @@ type ChannelResult struct {
 	PreviewPath   string          `json:"preview_path,omitempty"`
 	Selection     calib.Selection `json:"selection"`
 	Metrics       []grade.Metric  `json:"metrics,omitempty"`
-	Err           string          `json:"error,omitempty"`
+	// Photom records the per-group photometric normalization applied before a heterogeneous merge
+	// (different exposure/gain/temperature sessions), so run.json shows how each group was scaled.
+	Photom []photom.GroupRecord `json:"photom,omitempty"`
+	// Noise is the measured sky noise/SNR of the linear master before and after denoising, so the UI
+	// and supervisor can see how much noise was present and how much the denoiser removed.
+	Noise *noise.Summary `json:"noise,omitempty"`
+	// TrailMask summarizes the line-aware satellite/aircraft-trail masking applied before stacking.
+	TrailMask *transient.Summary `json:"trail_mask,omitempty"`
+	Err       string             `json:"error,omitempty"`
 }
 
 // Result summarizes a completed run. It is both the API/DB job result and the durable on-disk
@@ -250,7 +268,12 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	// On resume, reuse the paused run's id + output dir so the per-channel masters it already stacked
+	// (output/<object>/<run_id>/master_<tag>.fits) are found and skipped; a fresh run stamps a new id.
 	runID := time.Now().Format("20060102_150405")
+	if opts.Resume != nil && opts.Resume.RunID != "" {
+		runID = opts.Resume.RunID
+	}
 	workRun := filepath.Join(workAbs, "run_"+runID)
 	mastersDir := filepath.Join(workRun, "masters")
 	object := sanitize(dominantObject(inv))
@@ -260,6 +283,9 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 	outDir := filepath.Join(outAbs, object, runID)
+	if opts.Resume != nil && opts.Resume.OutDir != "" {
+		outDir = opts.Resume.OutDir
+	}
 	if err := fsutil.EnsureDir(outDir); err != nil {
 		return nil, err
 	}
@@ -354,12 +380,27 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("reuse: +%d prior frames from %d session(s) folded in",
 			s.PriorFrames, s.PriorSessions))
 	}
+	if plan.MissingPrior > 0 {
+		res.Warnings = append(res.Warnings, fmt.Sprintf(
+			"reuse: skipped %d catalogued prior frame(s) missing on disk (freed to S3?)", plan.MissingPrior))
+	}
 	flats := newFlatCache(opts.Reuse.Provider)
 	// Detects + corrects a mirror/parity flip when a session was shot through a different optical train;
 	// shared across channels so each session is plate-solved only once.
 	parity := newParityCache(opts.Runner, opts.Solve)
 
 	for chIdx, filter := range orderedPlanFilters(plan) {
+		// Resume: a channel already stacked in a prior (paused) attempt is reused from disk, skipping the
+		// expensive calibrate+register+stack.
+		if reused, ok := reuseStackedChannel(opts, object, filter, outDir); ok {
+			res.Channels = append(res.Channels, reused)
+			if reused.PreviewPath != "" {
+				opts.report(Progress{Step: "reused " + filter, Index: step, Total: total, Preview: reused.PreviewPath})
+				capturePreview(ctx, opts, outDir, ordStacked+chIdx, stageStacked, filter, reused.PreviewPath, false)
+			}
+			continue
+		}
+
 		groups := plan.byFilter[filter]
 		var ch ChannelResult
 		if len(groups) == 1 && groups[0].Current { // no prior data → proven single-session path
@@ -378,6 +419,12 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 			opts.report(Progress{Step: "preview " + filter, Index: step, Total: total, Preview: ch.PreviewPath})
 			// Milestone timeline: the stacked+extracted master for this channel (copy the ready PNG).
 			capturePreview(ctx, opts, outDir, ordStacked+chIdx, stageStacked, filter, ch.PreviewPath, false)
+		}
+
+		// Cooperative pause boundary: the user asked to pause — stop here with the channels done so far
+		// persisted on disk. Continue re-enters, reuses them, and finishes the rest.
+		if opts.pauseRequested() {
+			return nil, &PausedError{RunID: runID, OutDir: outDir}
 		}
 	}
 
@@ -450,7 +497,7 @@ func combine(ctx context.Context, opts Options, res *Result, workRun, outDir str
 		res.Warnings = append(res.Warnings, "no channels available to combine")
 		return
 	}
-	channels := alignChannels(ctx, opts.Runner, masters, filepath.Join(workRun, "04_aligned"), outDir, res)
+	channels := alignChannels(ctx, opts, masters, filepath.Join(workRun, "04_aligned"), outDir, res)
 	finishAligned(ctx, opts, channels, res, workRun, outDir, onProgress)
 }
 
@@ -484,7 +531,7 @@ func reStack(ctx context.Context, opts Options, preset *mode.Preset, inv *inspec
 	if len(channels) == 0 {
 		return nil, fmt.Errorf("re-stack produced no channel masters")
 	}
-	aligned := alignChannels(ctx, ro.Runner, channels, filepath.Join(workRun, "04_aligned"), outDir, rres)
+	aligned := alignChannels(ctx, ro, channels, filepath.Join(workRun, "04_aligned"), outDir, rres)
 	if len(aligned) == 0 {
 		return nil, fmt.Errorf("re-stack alignment produced no channels")
 	}
@@ -741,51 +788,6 @@ func filterList(channels map[string]string) []string {
 // alignChannels co-registers the channel masters to a common reference (Siril global star
 // alignment) and returns a filter->basename map (in outDir) for the finishing stage. If alignment
 // does not produce one frame per channel, it falls back to the unaligned masters with a warning.
-func alignChannels(ctx context.Context, runner *siril.Runner, masters map[string]string,
-	alignDir, outDir string, res *Result) map[string]string {
-	unaligned := map[string]string{}
-	for f := range masters {
-		unaligned[f] = "master_" + filterTag(f)
-	}
-	if len(masters) < 2 {
-		return unaligned // single channel: nothing to co-register
-	}
-
-	ordered := orderedFilters(masters)
-	if err := fsutil.EnsureDir(alignDir); err != nil {
-		res.Warnings = append(res.Warnings, "alignment skipped: "+err.Error())
-		return unaligned
-	}
-	for i, f := range ordered {
-		link := filepath.Join(alignDir, fmt.Sprintf("%d_%s.fits", i, f))
-		_ = removeIfExists(link)
-		if err := os.Symlink(masters[f], link); err != nil {
-			res.Warnings = append(res.Warnings, "alignment skipped: "+err.Error())
-			return unaligned
-		}
-	}
-	if _, err := runner.Run(ctx, alignDir, siril.AlignMastersScript("ch"), nil); err != nil {
-		res.Warnings = append(res.Warnings, "cross-channel alignment failed, using unaligned channels: "+err.Error())
-		return unaligned
-	}
-
-	aligned := map[string]string{}
-	for i, f := range ordered {
-		reg := filepath.Join(alignDir, fmt.Sprintf("r_ch_%05d.fits", i+1))
-		if !fileExists(reg) {
-			res.Warnings = append(res.Warnings, "cross-channel alignment incomplete, using unaligned channels")
-			return unaligned
-		}
-		dst := "aligned_" + filterTag(f)
-		if err := fsutil.CopyFile(reg, filepath.Join(outDir, dst+".fits")); err != nil {
-			res.Warnings = append(res.Warnings, "alignment copy failed, using unaligned channels: "+err.Error())
-			return unaligned
-		}
-		aligned[f] = dst
-	}
-	return aligned
-}
-
 func orderedFilters(masters map[string]string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -815,6 +817,21 @@ func removeIfExists(p string) error {
 	return nil
 }
 
+// stackWeight returns the Siril stack weighting mode from the preset, validated against the modes
+// Siril accepts (noise|wfwhm|nbstars|nbstack). An unset or unknown value yields "" (unweighted), so
+// the stack command stays byte-identical to the legacy path.
+func (o Options) stackWeight() string {
+	if o.Preset == nil {
+		return ""
+	}
+	switch o.Preset.StackWeight {
+	case "noise", "wfwhm", "nbstars", "nbstack":
+		return o.Preset.StackWeight
+	default:
+		return ""
+	}
+}
+
 func processChannel(ctx context.Context, opts Options, set inspect.Set, masters []calib.Master,
 	workRun, outDir string, gradeOpts grade.Options, onProgress func(siril.Progress)) ChannelResult {
 	sel := calib.MatchForLightExcluding(set.Key, masters, opts.CalibExclude)
@@ -832,7 +849,7 @@ func processChannel(ctx context.Context, opts Options, set inspect.Set, masters 
 		return ch
 	}
 	dark, flat, bias := sel.Masters()
-	cm := siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias}
+	cm := siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias, DarkOptimize: sel.DarkOptimize}
 
 	// Calibrate + register (writes per-frame metrics to the calibrated sequence's .seq), then grade
 	// and stack the survivors.
@@ -841,7 +858,7 @@ func processChannel(ctx context.Context, opts Options, set inspect.Set, masters 
 		return ch
 	}
 	finishStackedChannel(ctx, opts, seqDir, siril.CalibratedSeq("light", cm), siril.RegisteredSeq("light", cm),
-		set.Key.Filter, set.Frames, outDir, gradeOpts, "", onProgress, &ch)
+		set.Key.Filter, set.Frames, outDir, gradeOpts, opts.stackWeight(), onProgress, &ch)
 	return ch
 }
 
@@ -869,9 +886,11 @@ func finishStackedChannel(ctx context.Context, opts Options, seqDir, baseSeq, re
 	// trail detector can't drop without losing the channel and a normal stack sigma-clip is too loose to
 	// remove). Soft-fail: on error, note it and stack the frames as-is.
 	if opts.Preset != nil && opts.Preset.TrailMaskK > 0 {
-		if note, err := maskChannelTrails(seqDir, regSeq, opts.Preset.TrailMaskK); err != nil {
+		summary, note, err := maskChannelTrails(seqDir, regSeq, opts.Preset.TrailMaskK)
+		if err != nil {
 			ch.Selection.Notes = append(ch.Selection.Notes, "trail mask skipped: "+err.Error())
-		} else if note != "" {
+		} else if summary != nil {
+			ch.TrailMask = summary
 			ch.Selection.Notes = append(ch.Selection.Notes, note)
 		}
 	}
@@ -899,12 +918,9 @@ func finishStackedChannel(ctx context.Context, opts Options, seqDir, baseSeq, re
 			ch.Selection.Notes = append(ch.Selection.Notes, note)
 		}
 	}
-	// Denoise the linear master in place (chroma harder than luminance to keep detail).
-	if d := denoiseFor(filter, opts.Preset); d.Enabled() {
-		if _, err := opts.Runner.Run(ctx, outDir, siril.DenoiseScript(masterName+".fits", masterName, d), onProgress); err != nil {
-			ch.Selection.Notes = append(ch.Selection.Notes, "denoise skipped: "+err.Error())
-		}
-	}
+	// Measure the linear master's noise and denoise it in place — the Go starlet denoiser (adaptive,
+	// star-safe) when enabled, else Siril's denoise — recording before/after sigma. Soft-fail inside.
+	denoiseLinearMaster(ctx, opts, ch, masterName, outDir, filter, onProgress)
 	// Quick preview PNG for the UI.
 	if opts.Preset != nil && opts.Preset.Previews {
 		if _, err := opts.Runner.Run(ctx, outDir, siril.PreviewScript(masterName+".fits", masterName+"_preview", 0.5), nil); err == nil {

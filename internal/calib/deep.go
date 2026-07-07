@@ -74,7 +74,8 @@ func BuildDeepMasters(ctx context.Context, runner *siril.Runner, inv *inspect.In
 		add(m, ok, warn)
 	}
 	for _, set := range inv.SetsOfType(inspect.DarkFlat) { // session-local (used to calibrate flats)
-		m, err := buildOne(ctx, runner, set, masters, mastersDir, workDir, onProgress)
+		m, qc, err := buildOne(ctx, runner, set, masters, mastersDir, workDir, onProgress)
+		warnings = append(warnings, qc...)
 		add(m, err == nil, errString(err))
 	}
 	for _, sig := range darkSigs(inv) {
@@ -82,7 +83,8 @@ func BuildDeepMasters(ctx context.Context, runner *siril.Runner, inv *inspect.In
 		add(m, ok, warn)
 	}
 	for _, set := range inv.SetsOfType(inspect.Flat) { // session-local: this night's dust/vignetting
-		m, err := buildOne(ctx, runner, set, masters, mastersDir, workDir, onProgress)
+		m, qc, err := buildOne(ctx, runner, set, masters, mastersDir, workDir, onProgress)
+		warnings = append(warnings, qc...)
 		add(m, err == nil, errString(err))
 	}
 
