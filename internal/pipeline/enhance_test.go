@@ -47,7 +47,7 @@ func TestBackgroundDegree_AlwaysInSirilRange(t *testing.T) {
 		{"preset degree above range → 4", Options{Preset: &mode.Preset{BackgroundDegree: 9}}, 4},
 		{
 			"GraXpert healthy → gentle 1, never 0",
-			Options{Preset: &mode.Preset{BackgroundAI: true, BackgroundDegree: 3}, Graxpert: graxpert.New(fakeHealthyGraxpert(t))},
+			Options{Preset: &mode.Preset{BackgroundAI: true, BackgroundDegree: 3}, Graxpert: graxpert.New(fakeHealthyGraxpert(t), "")},
 			1,
 		},
 		{
@@ -55,7 +55,7 @@ func TestBackgroundDegree_AlwaysInSirilRange(t *testing.T) {
 			// a present-but-broken GraXpert must NOT capture the gradient path — the preset degree
 			// stays in charge so Siril's subsky compensates.
 			"GraXpert present but broken → preset degree",
-			Options{Preset: &mode.Preset{BackgroundAI: true, BackgroundDegree: 3}, Graxpert: graxpert.New("/bin/echo")},
+			Options{Preset: &mode.Preset{BackgroundAI: true, BackgroundDegree: 3}, Graxpert: graxpert.New("/bin/echo", "")},
 			3,
 		},
 	}

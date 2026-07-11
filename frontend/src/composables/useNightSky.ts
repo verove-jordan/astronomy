@@ -64,9 +64,15 @@ function pickStarTint(): string {
   return pick(NIGHT_SKY.starBlue); // ~7% distinct blue (B)
 }
 
+// FRAME_MIN_MS throttles the loop to ~30fps — imperceptible for a slow starfield/comet, half the work.
+const FRAME_MIN_MS = 1000 / 30;
+
+// active is an optional reactive predicate: while it returns false (e.g. on a live-work route) the loop
+// is stopped, composed with the tab-visibility pause. Omitted → always run when visible.
 export function useNightSky(
   canvasRef: Ref<HTMLCanvasElement | null>,
   isDark: () => boolean,
+  active?: () => boolean,
 ) {
   const reduced =
     typeof window !== "undefined" &&
@@ -82,6 +88,7 @@ export function useNightSky(
   let nextMeteorAt = 0;
   let raf = 0;
   let last = 0;
+  let lastDraw = 0; // ts of the last drawn frame, for the fps throttle
   let ro: ResizeObserver | null = null;
   let running = false;
 
@@ -307,6 +314,12 @@ export function useNightSky(
       raf = requestAnimationFrame(frame);
       return;
     }
+    // Throttle to ~30fps: skip drawing this frame if too soon, but keep the loop alive.
+    if (ts - lastDraw < FRAME_MIN_MS) {
+      raf = requestAnimationFrame(frame);
+      return;
+    }
+    lastDraw = ts;
     if (!last) last = ts;
     const dt = Math.min(ts - last, 50);
     last = ts;
@@ -444,9 +457,16 @@ export function useNightSky(
     if (raf) cancelAnimationFrame(raf);
     raf = 0;
   }
+  // Run only when the tab is visible AND the caller's predicate (route) allows it.
+  function shouldRun(): boolean {
+    return !document.hidden && (active ? active() : true);
+  }
+  function apply() {
+    if (shouldRun()) start();
+    else stop();
+  }
   function onVisibility() {
-    if (document.hidden) stop();
-    else start();
+    apply();
   }
 
   onMounted(() => {
@@ -454,7 +474,8 @@ export function useNightSky(
     ro = new ResizeObserver(() => resize());
     if (canvasRef.value) ro.observe(canvasRef.value);
     document.addEventListener("visibilitychange", onVisibility);
-    start();
+    if (active) watch(active, apply);
+    apply();
   });
 
   // Theme toggle: rebuild the field (alpha ranges differ) and re-enable/disable comets.

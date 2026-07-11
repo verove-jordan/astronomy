@@ -20,7 +20,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/starnet"
 )
 
-const cometHdr = "requires 1.2.0\nsetext fits\n"
+const cometHdr = "requires 1.2.0\nsetext fits\nset32bits\n"
 
 // ProcessComet stacks a moving comet twice over the SAME calibrated frames — once star-aligned and once
 // comet-aligned — then recomposites them so the final image has a sharp comet AND sharp pinpoint stars.
@@ -188,7 +188,7 @@ func calibrateAndMergeComet(ctx context.Context, opts Options, inv *inspect.Inve
 	for _, set := range inv.SetsOfType(inspect.Light) {
 		sel := calib.MatchForLight(set.Key, masters)
 		dark, flat, bias := sel.Masters()
-		cm := siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias}
+		cm := siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias, BadPixelMap: calib.DefectsListFor(dark)}
 		setDir := filepath.Join(workRun, "cal_"+sanitize(set.Key.Filter)+"_"+fmt.Sprint(set.Key.ExposureMs))
 		if _, err := fsutil.LinkFrames(setDir, framePaths(set.Frames)); err != nil {
 			warnings = append(warnings, "comet: link "+set.Key.Filter+": "+err.Error())
@@ -417,11 +417,11 @@ func stackAligned(ctx context.Context, opts Options, paths []string, seqDir, out
 		res.Warnings = append(res.Warnings, "comet: link "+label+": "+err.Error())
 		return false
 	}
-	return stackAlignedDir(ctx, opts, seqDir, outBase, res, label)
+	return stackAlignedDir(ctx, opts, seqDir, outBase, len(paths), res, label)
 }
 
-func stackAlignedDir(ctx context.Context, opts Options, seqDir, outBase string, res *Result, label string) bool {
-	return stackAlignedDirScript(ctx, opts, seqDir, siril.StackAlignedScript("s", outBase), res, label)
+func stackAlignedDir(ctx context.Context, opts Options, seqDir, outBase string, frames int, res *Result, label string) bool {
+	return stackAlignedDirScript(ctx, opts, seqDir, siril.StackAlignedScript("s", outBase, frames), res, label)
 }
 
 func stackAlignedDirScript(ctx context.Context, opts Options, seqDir, script string, res *Result, label string) bool {

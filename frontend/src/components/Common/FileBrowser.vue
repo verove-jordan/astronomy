@@ -37,6 +37,11 @@ const props = withDefaults(
     sourceFilter?: "local" | "s3";
     // downloading: an S3-sourced selection is being pulled to local before inspect (drives the button).
     downloading?: boolean;
+    // busyLabel: overrides the busy-button label (e.g. "Inspecting…" once the download finishes).
+    busyLabel?: string;
+    // manage: object-manager mode (the Storage explorer) — files are selectable too, each row exposes a
+    // #row-actions slot, and rows can be dragged onto a folder to emit a "move". Off (default) = picker.
+    manage?: boolean;
   }>(),
   { selected: () => [], multiSelect: true },
 );
@@ -47,7 +52,53 @@ const emit = defineEmits<{
   (e: "toggle", entry: BrowseEntry): void;
   (e: "clearSelection"): void;
   (e: "transfer", op: "upload" | "sync" | "download" | "removeLocal"): void;
+  (e: "move", payload: { src: string; dst: string; srcIsDir: boolean }): void;
 }>();
+
+// selectable: which rows get a checkbox. Folders always (the picker); files too in manage mode (so the
+// Storage explorer can multi-select files for a move).
+function selectable(e: BrowseEntry): boolean {
+  return props.multiSelect && (e.is_dir || props.manage === true);
+}
+
+// Drag-and-drop move (manage mode only): a row is dragged onto a folder to relocate it there. dragSrc is the
+// dragged path; dragOver highlights the hovered drop-target folder. The actual move is the parent's job (it
+// rewrites the S3 object + the ledger), triggered by the "move" emit.
+const dragSrc = ref<{ path: string; isDir: boolean } | null>(null);
+const dragOver = ref<string | null>(null);
+function onDragStart(ev: DragEvent, entry: BrowseEntry) {
+  if (!props.manage) return;
+  dragSrc.value = { path: entry.path, isDir: entry.is_dir };
+  if (ev.dataTransfer) {
+    ev.dataTransfer.effectAllowed = "move";
+    ev.dataTransfer.setData("text/plain", entry.path); // some browsers won't start a drag without data
+  }
+}
+function onDragEnd() {
+  dragSrc.value = null;
+  dragOver.value = null;
+}
+function onDragOver(ev: DragEvent, entry: BrowseEntry) {
+  if (
+    !props.manage ||
+    !entry.is_dir ||
+    !dragSrc.value ||
+    dragSrc.value.path === entry.path
+  )
+    return;
+  ev.preventDefault(); // required so the row becomes a valid drop target
+  dragOver.value = entry.path;
+}
+function onDrop(entry: BrowseEntry) {
+  if (!props.manage || !entry.is_dir || !dragSrc.value) return;
+  if (dragSrc.value.path !== entry.path)
+    emit("move", {
+      src: dragSrc.value.path,
+      dst: entry.path,
+      srcIsDir: dragSrc.value.isDir,
+    });
+  onDragEnd();
+}
 
 const { t } = useI18n();
 
@@ -78,7 +129,7 @@ const hasRemoteOnly = computed(() =>
 // inspectLabel adapts the primary button: downloading state, "Download & inspect" when the selection has
 // S3-only folders, else the normal inspect/use-folder labels.
 const inspectLabel = computed(() => {
-  if (props.downloading) return t("import.downloadingBtn");
+  if (props.downloading) return props.busyLabel || t("import.downloadingBtn");
   if (props.multiSelect && props.selected.length) {
     return hasRemoteOnly.value
       ? t("import.downloadInspect", { n: props.selected.length })
@@ -280,14 +331,6 @@ function up() {
       <button :class="btnGhost" :disabled="loading" @click="up">
         <IconArrowUp /> {{ t("common.up") }}
       </button>
-      <button
-        :class="btnPrimary"
-        :disabled="loading || downloading || (!path && !selected.length)"
-        data-demo="browse-inspect"
-        @click="inspectAction"
-      >
-        {{ inspectLabel }}
-      </button>
     </div>
 
     <Breadcrumb
@@ -369,6 +412,22 @@ function up() {
       </span>
     </div>
 
+    <!-- primary action, kept right above the columns (next to the selection) so it's where the eye lands
+         after checking folders — not stranded up in the address bar. Hidden in manage mode (no inspect). -->
+    <div
+      v-if="!manage && (path || (multiSelect && selected.length))"
+      class="flex justify-end"
+    >
+      <button
+        :class="btnPrimary"
+        :disabled="loading || downloading || (!path && !selected.length)"
+        data-demo="browse-inspect"
+        @click="inspectAction"
+      >
+        {{ inspectLabel }}
+      </button>
+    </div>
+
     <!-- macOS-style cascading columns: each directory's subfolders sit in their own column; clicking a
          folder reveals its children in the next column to the right. -->
     <div
@@ -407,17 +466,25 @@ function up() {
             v-for="e in col.entries"
             :key="e.path"
             class="flex items-center"
-            :class="
+            :draggable="manage || undefined"
+            :class="[
               e.path === col.active
                 ? 'bg-brand-100 dark:bg-brand-900/30'
                 : isSelected(e.path)
                   ? 'bg-brand-50 dark:bg-brand-900/15'
-                  : ''
-            "
+                  : '',
+              manage && dragOver === e.path
+                ? 'ring-2 ring-inset ring-brand-400'
+                : '',
+            ]"
+            @dragstart="onDragStart($event, e)"
+            @dragend="onDragEnd"
+            @dragover="onDragOver($event, e)"
+            @drop="onDrop(e)"
           >
-            <!-- selection checkbox (folders only); files get a spacer so their name stays aligned -->
+            <!-- selection checkbox (folders always; files too in manage mode); other rows get a spacer -->
             <label
-              v-if="multiSelect && e.is_dir"
+              v-if="selectable(e)"
               class="flex shrink-0 cursor-pointer items-center py-2 pl-2 pr-1"
               :title="t('import.selectFolder')"
             >
@@ -474,16 +541,31 @@ function up() {
               />
               <IconChevronRight class="shrink-0 text-slate-400" />
             </button>
-            <!-- file: shown for context, not selectable; hover reveals the full name immediately -->
+            <!-- file: context only in picker mode (greyed); a first-class row in manage mode. Hover reveals
+                 the full name immediately -->
             <div
               v-else
-              class="flex min-w-0 grow items-center gap-1.5 px-2 py-2 text-sm text-slate-400 dark:text-slate-500"
+              class="flex min-w-0 grow items-center gap-1.5 px-2 py-2 text-sm"
+              :class="
+                manage
+                  ? 'text-slate-700 dark:text-slate-200'
+                  : 'text-slate-400 dark:text-slate-500'
+              "
               @mouseenter="showTip($event, e.name)"
               @mouseleave="hideTip"
             >
               <IconFile class="shrink-0" />
               <span class="min-w-0 grow truncate">{{ e.name }}</span>
             </div>
+
+            <!-- per-row management actions (download / delete / move…), manage mode only -->
+            <span
+              v-if="manage"
+              class="flex shrink-0 items-center gap-0.5 pr-1"
+              @click.stop
+            >
+              <slot name="rowActions" :entry="e" />
+            </span>
           </li>
         </ul>
         <p v-else class="px-3 py-6 text-center text-xs text-slate-400">

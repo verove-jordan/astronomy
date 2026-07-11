@@ -58,7 +58,7 @@ func TestReuseStackedChannel_SurvivesChannelMastersMap(t *testing.T) {
 	ch, ok := reuseStackedChannel(Options{Resume: &ResumeState{}}, "M101", "L", outDir)
 	require.True(t, ok)
 
-	masters := channelMastersMap(&Result{Channels: []ChannelResult{ch}}, outDir)
+	masters := channelMastersMap(&Result{Channels: []ChannelResult{ch}}, outDir, true)
 	assert.Equal(t, filepath.Join(outDir, "master_L.fits"), masters["L"])
 }
 

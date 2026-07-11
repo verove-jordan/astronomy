@@ -24,7 +24,7 @@ const router = createRouter({
       name: "astroagent",
       component: () => import("@/views/AstroAgentView.vue"),
     },
-    // The "Processing" hub: one page, five tabs as child routes. Names are preserved from the old flat
+    // The "Processing" hub: one page, six tabs as child routes. Names are preserved from the old flat
     // routes so existing `router.push({ name: "job" })` calls keep working.
     {
       path: "/processing",
@@ -67,6 +67,8 @@ const router = createRouter({
           name: "storage",
           component: () => import("@/views/StorageView.vue"),
         },
+        // Drives merged into Storage — keep the old path working (bookmarks / in-app links).
+        { path: "drives", redirect: { name: "storage" } },
       ],
     },
 

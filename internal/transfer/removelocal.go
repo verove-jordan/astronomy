@@ -16,21 +16,26 @@ import (
 // that could only be verified by size (legacy multipart uploads without our MD5 metadata) are still
 // deleted, but each is reported in Result.Warnings.
 func runRemoveLocal(ctx context.Context, client s3API, req Request) (Result, error) {
-	files, _, err := walkLocalFiles(req.folderDir())
+	files, _, err := walkLocalFiles(req.folderDir(), req.ExcludeDirs)
 	if err != nil {
 		return Result{}, err
 	}
+	pm := req.planMap()
+	if req.PlannedOnly { // staged free: verify + delete only this wave's files (named in the plan)
+		files = filterPlanned(files, req, pm)
+	}
 	var warnings []string
 	for _, f := range files {
-		key, err := req.keyFor(f.path)
+		rel, err := req.relOf(f.path)
 		if err != nil {
 			return Result{}, err
 		}
+		// Verify against the classified key when the plan has one, else the legacy mirror key.
+		key := req.keyForRel(rel, pm)
 		ok, legacy, err := verifyMirrored(ctx, client, req.Bucket, key, f)
 		if err != nil {
 			return Result{}, err
 		}
-		rel, _ := filepath.Rel(req.folderDir(), f.path)
 		if !ok {
 			return Result{}, fmt.Errorf("remove-local aborted — %s is not safely backed up on S3 (nothing deleted)", rel)
 		}
@@ -39,6 +44,9 @@ func runRemoveLocal(ctx context.Context, client s3API, req Request) (Result, err
 		}
 	}
 	for _, f := range files {
+		if req.paused() { // deletion is idempotent — a resumed remove-local re-verifies and deletes the rest
+			return Result{}, ErrPaused
+		}
 		if err := ctx.Err(); err != nil {
 			return Result{}, fmt.Errorf("remove-local interrupted: %w", err)
 		}
@@ -48,6 +56,26 @@ func runRemoveLocal(ctx context.Context, client s3API, req Request) (Result, err
 	}
 	removeEmptyDirs(req.folderDir())
 	return Result{Op: req.Op, Files: len(files), Warnings: warnings}, nil
+}
+
+// filterPlanned keeps only the files whose folder-relative path is named in the plan map — the staged
+// remove-local (PlannedOnly) frees just the current wave's files and leaves the rest of the folder. With
+// no plan it returns nothing, so an unplanned file is never deleted.
+func filterPlanned(files []localFile, req Request, pm map[string]string) []localFile {
+	if pm == nil {
+		return nil
+	}
+	out := make([]localFile, 0, len(files))
+	for _, f := range files {
+		rel, err := req.relOf(f.path)
+		if err != nil {
+			continue
+		}
+		if _, ok := pm[rel]; ok {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // verifyMirrored reports whether local file f is safely mirrored at bucket/key, in tiers of strength:

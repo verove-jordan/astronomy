@@ -86,7 +86,8 @@ export const useS3Store = defineStore("s3", () => {
 
   // s3Query builds the /api/s3/browse query for the current bucket/prefix at a sub-path, tagged with the
   // connection the pair was chosen under (backend falls back to the default connection without it).
-  function s3Query(rel: string): string {
+  // `fresh` appends the cache-bypass flag the backend honours on an explicit refresh (not a cache key).
+  function s3Query(rel: string, fresh = false): string {
     const params = new URLSearchParams({
       bucket: bucket.value,
       prefix: prefix.value,
@@ -94,18 +95,50 @@ export const useS3Store = defineStore("s3", () => {
     });
     const conn = localStorage.getItem(CONN_KEY) || "";
     if (conn) params.set("conn", conn);
+    if (fresh) params.set("fresh", "1");
     return params.toString();
   }
 
+  // Listing cache + in-flight de-duplication (keyed by the bucket/prefix/conn-aware query, minus the
+  // fresh flag) so the Miller-column ancestor fan-out and re-navigation don't re-hit S3. `force`
+  // bypasses it and re-lists live (Refresh / bucket / prefix change).
+  type S3Listing = { rel: string; entries: BrowseEntry[] };
+  const s3Cache = new Map<string, S3Listing>();
+  const s3InFlight = new Map<string, Promise<S3Listing>>();
+
+  function clearS3Cache() {
+    s3Cache.clear();
+    s3InFlight.clear();
+  }
+
+  async function fetchS3(rel: string, force = false): Promise<S3Listing> {
+    const key = s3Query(rel);
+    if (!force) {
+      const cached = s3Cache.get(key);
+      if (cached) return cached;
+      const pending = s3InFlight.get(key);
+      if (pending) return pending;
+    }
+    const req = apiGet<{ rel: string; entries: BrowseEntry[] }>(
+      `/api/s3/browse?${s3Query(rel, force)}`,
+    )
+      .then((data) => {
+        const listing = { rel: data.rel ?? rel, entries: data.entries ?? [] };
+        s3Cache.set(key, listing);
+        return listing;
+      })
+      .finally(() => s3InFlight.delete(key));
+    s3InFlight.set(key, req);
+    return req;
+  }
+
   // s3Browse lists the real bucket at <prefix>/<rel> (default connection) into s3Rel/s3Entries.
-  async function s3Browse(rel: string): Promise<void> {
+  async function s3Browse(rel: string, force = false): Promise<void> {
     loading.value = true;
     try {
-      const data = await apiGet<{ rel: string; entries: BrowseEntry[] }>(
-        `/api/s3/browse?${s3Query(rel)}`,
-      );
-      s3Rel.value = data.rel ?? rel;
-      s3Entries.value = data.entries ?? [];
+      const data = await fetchS3(rel, force);
+      s3Rel.value = data.rel;
+      s3Entries.value = data.entries;
     } catch (e) {
       error.value = (e as Error).message;
       s3Entries.value = [];
@@ -115,11 +148,8 @@ export const useS3Store = defineStore("s3", () => {
   }
 
   // s3ListDir fetches one S3 sub-path's entries without touching current state (FileBrowser ancestors).
-  async function s3ListDir(rel: string): Promise<BrowseEntry[]> {
-    const data = await apiGet<{ entries: BrowseEntry[] }>(
-      `/api/s3/browse?${s3Query(rel)}`,
-    );
-    return data.entries ?? [];
+  async function s3ListDir(rel: string, force = false): Promise<BrowseEntry[]> {
+    return (await fetchS3(rel, force)).entries;
   }
 
   function toggleS3(entry: BrowseEntry): void {
@@ -134,7 +164,10 @@ export const useS3Store = defineStore("s3", () => {
   // importFolders downloads each selected real-bucket folder (<prefix>/<rel>) to <DataDir>/<rel> and
   // resolves once every download finishes, so the caller can inspect/run them as local captures. Throws
   // if any fails. Byte progress streams to the Tasks list.
-  async function importFolders(rels: string[]): Promise<void> {
+  async function importFolders(
+    rels: string[],
+    onEachDone?: () => void,
+  ): Promise<void> {
     const ids = await Promise.all(
       rels.map((rel) =>
         apiPost<{ id: number }>("/api/s3/import", {
@@ -144,15 +177,23 @@ export const useS3Store = defineStore("s3", () => {
         }).then((d) => d.id),
       ),
     );
-    await Promise.all(ids.map(waitForJob));
+    // Report each folder as it finishes so the caller can show X/N progress.
+    await Promise.all(
+      ids.map((id) => waitForJob(id).then(() => onEachDone?.())),
+    );
   }
 
   // downloadFolders pulls each S3 capture folder (by data-relative path) to local and resolves only once
   // every download finishes — so the caller can then inspect/run over local files. Throws if any fails.
   // Byte progress streams to the Tasks list via the transfer jobs.
-  async function downloadFolders(rels: string[]): Promise<void> {
+  async function downloadFolders(
+    rels: string[],
+    onEachDone?: () => void,
+  ): Promise<void> {
     const ids = await Promise.all(rels.map((rel) => transfer("download", rel)));
-    await Promise.all(ids.map(waitForJob));
+    await Promise.all(
+      ids.map((id) => waitForJob(id).then(() => onEachDone?.())),
+    );
   }
 
   async function waitForJob(id: number): Promise<void> {
@@ -190,6 +231,7 @@ export const useS3Store = defineStore("s3", () => {
     s3Selected,
     s3Browse,
     s3ListDir,
+    clearS3Cache,
     toggleS3,
     clearS3,
     importFolders,

@@ -61,3 +61,5 @@ tools/demo/assets/music/*
 /library/*.defects.json
 /library/*_defects.png
 /library/*master*
+/library/catalogues/
+/migrations/

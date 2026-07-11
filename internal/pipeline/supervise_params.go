@@ -62,10 +62,12 @@ type composeParams struct {
 	CropFrac          float64
 	Curve             []float64
 	LumCurve          []float64
+	LumOpacity        float64
 	CoreHighlightKnee float64
 	CoreHighlightCeil float64
 	HighlightKnee     float64
 	HighlightCeil     float64
+	StarDesat         float64
 	HaExcludeStars    bool
 }
 
@@ -78,10 +80,12 @@ func presetComposeParams(p *mode.Preset) composeParams {
 		CropFrac:          p.CropFrac,
 		Curve:             p.Curve,
 		LumCurve:          p.LumCurve,
+		LumOpacity:        p.LumOpacity,
 		CoreHighlightKnee: p.CoreHighlightKnee,
 		CoreHighlightCeil: p.CoreHighlightCeil,
 		HighlightKnee:     p.HighlightKnee,
 		HighlightCeil:     p.HighlightCeil,
+		StarDesat:         p.StarDesat,
 		HaExcludeStars:    p.HaExcludeStars,
 	}
 }
@@ -95,11 +99,13 @@ type supervisePatch struct {
 	HaScreen          *float64 `json:"ha_screen,omitempty"`
 	HaBlackPoint      *float64 `json:"ha_black_point,omitempty"`
 	ChromaBlur        *float64 `json:"chroma_blur,omitempty"`
+	LumOpacity        *float64 `json:"lum_opacity,omitempty"`
 	CropFrac          *float64 `json:"crop_frac,omitempty"`
 	CoreHighlightKnee *float64 `json:"core_highlight_knee,omitempty"`
 	CoreHighlightCeil *float64 `json:"core_highlight_ceil,omitempty"`
 	HighlightKnee     *float64 `json:"highlight_knee,omitempty"`
 	HighlightCeil     *float64 `json:"highlight_ceil,omitempty"`
+	StarDesat         *float64 `json:"star_desat,omitempty"`
 	HaExcludeStars    *bool    `json:"ha_exclude_stars,omitempty"`
 
 	// Tier B — linear finish prep (tens of s–min).
@@ -110,6 +116,8 @@ type supervisePatch struct {
 	BackgroundDegree     *int     `json:"background_degree,omitempty"`
 	ColorDenoiseAI       *bool    `json:"color_denoise_ai,omitempty"`
 	StarReduce           *float64 `json:"star_reduce,omitempty"`
+	StretchHeadroom      *float64 `json:"stretch_headroom,omitempty"`
+	Palette              *string  `json:"palette,omitempty"`
 
 	// Tier C — re-stack from the raw frames (min–hours).
 	RoundnessFloor  *float64 `json:"roundness_floor,omitempty"`
@@ -128,11 +136,13 @@ func (patch supervisePatch) apply(p mode.Preset) mode.Preset {
 	setF(&p.HaScreen, patch.HaScreen)
 	setF(&p.HaBlackPoint, patch.HaBlackPoint)
 	setF(&p.ChromaBlur, patch.ChromaBlur)
+	setF(&p.LumOpacity, patch.LumOpacity)
 	setF(&p.CropFrac, patch.CropFrac)
 	setF(&p.CoreHighlightKnee, patch.CoreHighlightKnee)
 	setF(&p.CoreHighlightCeil, patch.CoreHighlightCeil)
 	setF(&p.HighlightKnee, patch.HighlightKnee)
 	setF(&p.HighlightCeil, patch.HighlightCeil)
+	setF(&p.StarDesat, patch.StarDesat)
 	setB(&p.HaExcludeStars, patch.HaExcludeStars)
 
 	setF(&p.BackgroundLevel, patch.BackgroundLevel)
@@ -142,6 +152,12 @@ func (patch supervisePatch) apply(p mode.Preset) mode.Preset {
 	setI(&p.BackgroundDegree, patch.BackgroundDegree)
 	setB(&p.ColorDenoiseAI, patch.ColorDenoiseAI)
 	setF(&p.StarReduce, patch.StarReduce)
+	setF(&p.StretchHeadroom, patch.StretchHeadroom)
+	if patch.Palette != nil { // string enum — validate against the known palettes (like nightscape Look)
+		if s := strings.ToLower(strings.TrimSpace(*patch.Palette)); isPaletteName(s) {
+			p.Palette = s
+		}
+	}
 
 	setF(&p.Grade.RoundnessFloor, patch.RoundnessFloor)
 	setF(&p.Grade.FWHMSigma, patch.FWHMSigma)
@@ -162,6 +178,7 @@ func clampPreset(p mode.Preset) mode.Preset {
 	p.HaScreen = clampf(p.HaScreen, 0, 0.8)
 	p.HaBlackPoint = clampf(p.HaBlackPoint, 0, 0.3)
 	p.ChromaBlur = clampf(p.ChromaBlur, 0, 12)
+	p.LumOpacity = clampf(p.LumOpacity, 0, 1)
 	p.CropFrac = clampf(p.CropFrac, 0, 0.1)
 	if p.CoreHighlightKnee != 0 || p.CoreHighlightCeil != 0 {
 		p.CoreHighlightKnee = clampf(p.CoreHighlightKnee, 0, 0.95)
@@ -171,10 +188,20 @@ func clampPreset(p mode.Preset) mode.Preset {
 		p.HighlightKnee = clampf(p.HighlightKnee, 0, 0.98)
 		p.HighlightCeil = clampf(p.HighlightCeil, 0, 0.995)
 	}
+	p.StarDesat = clampf(p.StarDesat, 0, 1)
 	// Tier B.
 	p.BackgroundLevel = clampf(p.BackgroundLevel, 0.03, 0.2)
 	p.BackgroundDegree = clampi(p.BackgroundDegree, 1, 4)
 	p.StarReduce = clampf(p.StarReduce, 0, 1)
+	if p.StretchHeadroom != 0 { // 0 = off; otherwise keep it a genuine sub-1.0 cap with usable range
+		p.StretchHeadroom = clampf(p.StretchHeadroom, 0.7, 1.0)
+	}
+	if p.Palette != "" { // normalize + drop an unknown palette back to natural (safety net beyond apply)
+		p.Palette = strings.ToLower(strings.TrimSpace(p.Palette))
+		if !isPaletteName(p.Palette) {
+			p.Palette = ""
+		}
+	}
 	// Tier C.
 	p.Grade.RoundnessFloor = clampf(p.Grade.RoundnessFloor, 0.2, 0.95)
 	p.Grade.FWHMSigma = clampf(p.Grade.FWHMSigma, 1, 5)
@@ -202,7 +229,9 @@ func tierOf(prev, next mode.Preset) tier {
 		prev.CombinedBackgroundAI != next.CombinedBackgroundAI ||
 		prev.BackgroundDegree != next.BackgroundDegree ||
 		prev.ColorDenoiseAI != next.ColorDenoiseAI ||
-		floatChanged(prev.StarReduce, next.StarReduce) {
+		floatChanged(prev.StarReduce, next.StarReduce) ||
+		floatChanged(prev.StretchHeadroom, next.StretchHeadroom) ||
+		prev.Palette != next.Palette {
 		return tierB
 	}
 	return tierA
@@ -215,11 +244,13 @@ func composeChanged(prev, next mode.Preset) bool {
 		floatChanged(prev.HaScreen, next.HaScreen) ||
 		floatChanged(prev.HaBlackPoint, next.HaBlackPoint) ||
 		floatChanged(prev.ChromaBlur, next.ChromaBlur) ||
+		floatChanged(prev.LumOpacity, next.LumOpacity) ||
 		floatChanged(prev.CropFrac, next.CropFrac) ||
 		floatChanged(prev.CoreHighlightKnee, next.CoreHighlightKnee) ||
 		floatChanged(prev.CoreHighlightCeil, next.CoreHighlightCeil) ||
 		floatChanged(prev.HighlightKnee, next.HighlightKnee) ||
 		floatChanged(prev.HighlightCeil, next.HighlightCeil) ||
+		floatChanged(prev.StarDesat, next.StarDesat) ||
 		prev.HaExcludeStars != next.HaExcludeStars
 }
 
@@ -239,9 +270,11 @@ func paramsMap(p mode.Preset) map[string]float64 {
 		"ha_black_point":    p.HaBlackPoint,
 		"chroma_blur":       p.ChromaBlur,
 		"crop_frac":         p.CropFrac,
+		"star_desat":        p.StarDesat,
 		"background_level":  p.BackgroundLevel,
 		"background_degree": float64(p.BackgroundDegree),
 		"star_reduce":       p.StarReduce,
+		"stretch_headroom":  p.StretchHeadroom,
 	}
 }
 
@@ -277,6 +310,8 @@ func capToTier(base, cand mode.Preset, t tier) mode.Preset {
 		cand.BackgroundDegree = base.BackgroundDegree
 		cand.ColorDenoiseAI = base.ColorDenoiseAI
 		cand.StarReduce = base.StarReduce
+		cand.StretchHeadroom = base.StretchHeadroom
+		cand.Palette = base.Palette
 	}
 	return cand
 }

@@ -60,6 +60,44 @@ func TestSkyAlign_BadLatLon(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestSkyAlign_CelestronPhasesAndHCNames(t *testing.T) {
+	h := alignTestServer(t).Handler()
+	resp := getAlign(t, h, "/api/sky/align?at=2026-01-15T21:00:00Z&profile=celestron-eq&count=6")
+
+	require.Len(t, resp.Result.Stars, 6)
+	for i, s := range resp.Result.Stars {
+		assert.NotEmpty(t, s.HCName, "star %d must carry its hand-controller label", i+1)
+		if i < 2 {
+			assert.Equal(t, "align", s.Phase)
+		} else {
+			assert.Equal(t, "calibration", s.Phase)
+		}
+	}
+}
+
+func TestSkyAlignProfiles_ListsRegistry(t *testing.T) {
+	h := alignTestServer(t).Handler()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sky/align/profiles", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var body struct {
+		Profiles []align.Profile `json:"profiles"`
+	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
+	require.Len(t, body.Profiles, len(align.Profiles()))
+
+	byKey := map[string]align.Profile{}
+	for _, p := range body.Profiles {
+		byKey[p.Key] = p
+	}
+	celestron := byKey["celestron-eq"]
+	assert.Equal(t, 2, celestron.AlignStars)
+	assert.Equal(t, "celestron", celestron.StarList)
+	assert.Equal(t, 6, celestron.DefaultStars)
+	assert.Empty(t, byKey["celestron-altaz"].StarList, "SkyAlign stays unfiltered")
+}
+
 func getAlign(t *testing.T, h http.Handler, path string) alignResponse {
 	t.Helper()
 	rec := httptest.NewRecorder()

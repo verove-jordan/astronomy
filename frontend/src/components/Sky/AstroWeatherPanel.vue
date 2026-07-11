@@ -7,6 +7,7 @@ import { tzForLocation, fmtClock } from "@/utils/tz";
 import {
   WEATHER_METRICS,
   verdictColor,
+  verdictLabel,
   auroraColor,
   type WeatherMetric,
 } from "@/utils/weather";
@@ -18,6 +19,7 @@ import IconTransparency from "@/components/Icons/IconTransparency.vue";
 import IconDroplet from "@/components/Icons/IconDroplet.vue";
 import IconWind from "@/components/Icons/IconWind.vue";
 import IconHaze from "@/components/Icons/IconHaze.vue";
+import IconThermometer from "@/components/Icons/IconThermometer.vue";
 import type { WeatherHour } from "@/types";
 
 const { t } = useI18n();
@@ -31,6 +33,7 @@ const ICONS: Record<string, unknown> = {
   droplet: IconDroplet,
   wind: IconWind,
   haze: IconHaze,
+  thermo: IconThermometer,
 };
 
 onMounted(() => wx.fetch());
@@ -84,14 +87,36 @@ const bestLabel = computed(() => {
   if (!b) return t("tonight.weather.noWindow");
   return `${fmtClock(b.start_ms, tz.value)}–${fmtClock(b.end_ms, tz.value)}`;
 });
+
+// nightVerdict is the at-a-glance rating for tonight: the best clear window's score when there is one,
+// else the mean of the shown hours (a fully-clouded night has no window but should still read "poor").
+const nightVerdict = computed(() => {
+  const b = wx.best;
+  if (b) return Math.round(b.verdict);
+  const hs = hours.value;
+  if (!hs.length) return 0;
+  return Math.round(hs.reduce((s, h) => s + h.verdict, 0) / hs.length);
+});
+const nightLabel = computed(() => verdictLabel(nightVerdict.value));
 </script>
 
 <template>
   <div :class="card">
     <div class="flex flex-wrap items-center justify-between gap-2">
-      <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200">
-        {{ t("tonight.weather.title") }}
-      </h3>
+      <div class="flex items-center gap-2">
+        <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200">
+          {{ t("tonight.weather.title") }}
+        </h3>
+        <span
+          v-if="hours.length"
+          class="rounded-full px-2 py-0.5 text-xs font-semibold text-white"
+          :style="{ backgroundColor: verdictColor(nightVerdict) }"
+          :title="t('tonight.weather.verdict')"
+        >
+          {{ t("tonight.weather.tonightLabel") }} ·
+          {{ t(`tonight.weather.verdictLabel.${nightLabel}`) }}
+        </span>
+      </div>
       <div v-if="wx.best" class="flex items-center gap-2 text-xs">
         <span class="text-slate-400">{{ t("tonight.weather.best") }}</span>
         <span class="font-medium text-slate-700 dark:text-slate-200">{{

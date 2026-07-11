@@ -38,6 +38,15 @@ func (r *Runner) Healthy(ctx context.Context) error {
 	if err := r.Available(ctx); err != nil {
 		return err
 	}
+	if r.url != "" {
+		// Offload mode: Available already confirmed the host service is reachable (its /health checks the
+		// host binary). Treat that as healthy and memoize so the pipeline gate doesn't re-ping per channel;
+		// a genuinely broken host GraXpert surfaces on the real Denoise/ExtractBackground call (soft-fail).
+		r.healthMu.Lock()
+		defer r.healthMu.Unlock()
+		r.healthDone, r.healthErr = true, nil
+		return nil
+	}
 	r.healthMu.Lock()
 	defer r.healthMu.Unlock()
 	if r.healthDone {
@@ -60,7 +69,10 @@ func (r *Runner) Healthy(ctx context.Context) error {
 // HealthCached returns the last known health verdict without probing (for UI/status paths that
 // cannot block). known=false means no verdict exists yet or a probe is currently in flight.
 func (r *Runner) HealthCached() (verdict error, known bool) {
-	if r == nil || r.bin == "" {
+	if r == nil {
+		return fmt.Errorf("graxpert runner is nil"), true
+	}
+	if r.url == "" && r.bin == "" {
 		return fmt.Errorf("graxpert binary path is empty (set GRAXPERT_BIN)"), true
 	}
 	if !r.healthMu.TryLock() {
@@ -70,9 +82,11 @@ func (r *Runner) HealthCached() (verdict error, known bool) {
 	if r.healthDone {
 		return r.healthErr, true
 	}
-	if err, ok := readHealthCache(r.bin); ok {
-		r.healthDone, r.healthErr = true, err
-		return err, true
+	if r.url == "" { // the on-disk cache is keyed on the local binary; offload mode has no local probe
+		if err, ok := readHealthCache(r.bin); ok {
+			r.healthDone, r.healthErr = true, err
+			return err, true
+		}
 	}
 	return nil, false
 }

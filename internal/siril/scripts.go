@@ -5,9 +5,35 @@ import (
 	"strings"
 )
 
-// scriptHeader requires a modern Siril and fixes the output extension so produced masters and
-// stacks are predictably named `<name>.fits`.
-const scriptHeader = "requires 1.2.0\nsetext fits\n"
+// scriptHeader requires a modern Siril, fixes the output extension so produced masters and stacks
+// are predictably named `<name>.fits`, and pins 32-bit float processing regardless of host
+// preferences: dark subtraction must keep negative pixels (16-bit clips them at zero, biasing the
+// background statistics rejection relies on), and the Go readers (fits.ReadPlaneBand) require
+// Siril's outputs to be BITPIX -32.
+const scriptHeader = "requires 1.2.0\nsetext fits\nset32bits\n"
+
+// Frame-count bounds for Rejection. Verified against Siril 1.4.3 (see live syntax test): percentile
+// logs "percentile clipping low/high", generalized logs "GESDT clipping outliers/significance".
+const (
+	rejPercentileMax = 7  // ≤7 frames: sigma estimates are too unstable to clip on
+	rejGESDMin       = 50 // ≥50 frames: GESD markedly outperforms winsorized on outlier tails
+)
+
+// Rejection returns the stack rejection clause best suited to the number of frames being stacked:
+// percentile clipping for tiny stacks, Winsorized sigma clipping for the common mid range, and the
+// Generalized Extreme Studentized Deviate test for large stacks — where it removes the correlated
+// outliers (walking noise from drifting fixed-pattern residuals, trail remnants) that a 3σ
+// winsorized clip leaves behind. n <= 0 (count unknown) keeps the long-proven winsorized default.
+func Rejection(n int) string {
+	switch {
+	case n > 0 && n <= rejPercentileMax:
+		return "rej percentile 0.2 0.1"
+	case n >= rejGESDMin:
+		return "rej generalized 0.3 0.05"
+	default:
+		return "rej winsorized 3 3"
+	}
+}
 
 // CalibMasters holds absolute paths to the master calibration frames to apply (any may be empty).
 // CFA marks a one-shot-color (Bayer) light sequence: cosmetic correction and flat division run in
@@ -22,31 +48,41 @@ type CalibMasters struct {
 	// DIFFERENT exposure whose thermal signal is scaled onto the lights. Requires both Dark and Bias —
 	// calibrateArgs ignores it otherwise.
 	DarkOptimize bool
+	// BadPixelMap is the absolute path of a Siril defect list ("P x y H|C", find_hot format) measured
+	// from the matched dark pool (internal/calib defect scan). When set, cosmetic correction uses this
+	// map (-cc=bpm) instead of -cc=dark: it also repairs the warm and unstable/flickering (RTS) pixels
+	// a master-dark sigma clip cannot see — the pixels that smear into walking noise on undithered
+	// drifting sequences.
+	BadPixelMap string
 }
 
-// StackMasterScript links the FITS already in the work dir as sequence `seq` and stacks them
-// with Winsorized sigma rejection into outName (extension added by Siril). Used for darks/bias:
-// no normalization.
-func StackMasterScript(seq, outName string) string {
+// StackMasterScript converts the frames already in the work dir into sequence `seq` and stacks
+// them into outName (extension added by Siril) with count-adaptive rejection (see Rejection;
+// frames is the frame count). `convert` — not `link` — so a calibration set captured as 16-bit
+// TIFF (SharpCap lunar darks/flats) stacks exactly like FITS; for FITS inputs convert symlinks,
+// which is what link did.
+func StackMasterScript(seq, outName string, frames int) string {
 	var b strings.Builder
 	b.WriteString(scriptHeader)
-	fmt.Fprintf(&b, "link %s -out=.\n", seq)
-	fmt.Fprintf(&b, "stack %s rej winsorized 3 3 -nonorm -out=%s\n", seq, outName)
+	fmt.Fprintf(&b, "convert %s -out=.\n", seq)
+	fmt.Fprintf(&b, "stack %s %s -nonorm -out=%s\n", seq, Rejection(frames), outName)
 	return b.String()
 }
 
 // StackFlatScript builds a master flat: optionally bias-calibrate the flats, then stack with
-// multiplicative normalization (the correct normalization for flat fields).
-func StackFlatScript(seq, outName, biasPath string) string {
+// multiplicative normalization (the correct normalization for flat fields) and count-adaptive
+// rejection (frames is the flat count). Uses `convert` for the same TIFF-tolerance as
+// StackMasterScript.
+func StackFlatScript(seq, outName, biasPath string, frames int) string {
 	var b strings.Builder
 	b.WriteString(scriptHeader)
-	fmt.Fprintf(&b, "link %s -out=.\n", seq)
+	fmt.Fprintf(&b, "convert %s -out=.\n", seq)
 	target := seq
 	if biasPath != "" {
 		fmt.Fprintf(&b, "calibrate %s -bias=%s -prefix=pp_\n", seq, biasPath)
 		target = "pp_" + seq
 	}
-	fmt.Fprintf(&b, "stack %s rej winsorized 3 3 -norm=mul -out=%s\n", target, outName)
+	fmt.Fprintf(&b, "stack %s %s -norm=mul -out=%s\n", target, Rejection(frames), outName)
 	return b.String()
 }
 
@@ -186,15 +222,15 @@ func CalibrateStarAlignToRefScript(seq string, m CalibMasters, refIndex int) str
 }
 
 // StackAlignedScript links already-aligned frames in the work dir as sequence `seq` and stacks them with
-// Winsorized sigma rejection + light (addscale) normalization into outName — no calibration or
+// count-adaptive rejection + light (addscale) normalization into outName — no calibration or
 // registration. Used for the comet-mode per-channel stacks (the frames are already globally star-aligned,
 // or comet-translated): the rejection clips the *moving* feature (stars in the comet stack, the comet in
 // the star stack), leaving the fixed one sharp.
-func StackAlignedScript(seq, outName string) string {
+func StackAlignedScript(seq, outName string, frames int) string {
 	var b strings.Builder
 	b.WriteString(scriptHeader)
 	fmt.Fprintf(&b, "link %s -out=.\n", seq)
-	fmt.Fprintf(&b, "stack %s rej winsorized 3 3 -norm=addscale -output_norm -out=%s\n", seq, outName)
+	fmt.Fprintf(&b, "stack %s %s -norm=addscale -output_norm -out=%s\n", seq, Rejection(frames), outName)
 	return b.String()
 }
 
@@ -238,8 +274,9 @@ func RegisteredSeq(seq string, m CalibMasters) string {
 }
 
 // StackSelectedScript resets the registered sequence to all-included, unselects our graded-out
-// frames (1-based registered indices), then stacks only the survivors. Winsorized sigma rejection
-// additionally clips residual satellite/plane trail pixels.
+// frames (1-based registered indices), then stacks only the survivors with count-adaptive rejection
+// (sized to the frames actually stacked), which additionally clips residual satellite/plane trail
+// pixels and — on large stacks (GESD) — the walking-noise outliers of drifting sequences.
 // weight (if non-empty) is a Siril stack weighting mode (noise|wfwhm|nbstars|nbstack); it favors the
 // sharper/deeper subs and is used for the cross-session merge. Empty leaves the stack unweighted.
 func StackSelectedScript(regSeq string, regCount int, rejected []int, outName, weight string) string {
@@ -251,8 +288,8 @@ func StackSelectedScript(regSeq string, regCount int, rejected []int, outName, w
 	for _, idx := range rejected {
 		fmt.Fprintf(&b, "unselect %s %d %d\n", regSeq, idx, idx)
 	}
-	fmt.Fprintf(&b, "stack %s rej winsorized 3 3 -norm=addscale -output_norm%s -filter-incl -out=%s\n",
-		regSeq, weightArg(weight), outName)
+	fmt.Fprintf(&b, "stack %s %s -norm=addscale -output_norm%s -filter-incl -out=%s\n",
+		regSeq, Rejection(regCount-len(rejected)), weightArg(weight), outName)
 	return b.String()
 }
 
@@ -333,12 +370,18 @@ type PlanetaryFinish struct {
 	Sharpen    float64 // à-trous mid-layer boost scalar (1 = default; 0 = none, >1 sharper); ignored when sharpen=false
 	Clahe      float64 // CLAHE clip limit (local relief)
 	Saturation float64 // colour saturation boost (colour path only)
+	// Headroom scales the linear image down by this factor (fmul) BEFORE the stretch/sharpen, so the
+	// brightest real detail lands at HP and there is ~(1−Headroom) room above for the wavelet/CLAHE
+	// overshoot before it clips to white — this is what stops the bright full-Moon disk "burning". Only
+	// applied when 0 < Headroom < 1; 1 or 0 → no scaling (a refine/agent can disable it).
+	Headroom float64
 }
 
 // DefaultPlanetaryFinish is the original mineral-Moon finish (ght -D=0.6 -HP=0.85, wrecons 1 2.2 1.8 1.1
-// 1 1 = Sharpen 1.0, clahe 1.2, satu 0.8).
+// 1 1 = Sharpen 1.0, clahe 1.2, satu 0.8), with a 0.85 headroom so the bright disk keeps structure
+// instead of clipping to white after the sharpen/CLAHE boost.
 func DefaultPlanetaryFinish() PlanetaryFinish {
-	return PlanetaryFinish{Stretch: 0.6, Highlight: 0.85, Sharpen: 1.0, Clahe: 1.2, Saturation: 0.8}
+	return PlanetaryFinish{Stretch: 0.6, Highlight: 0.85, Sharpen: 1.0, Clahe: 1.2, Saturation: 0.8, Headroom: 0.85}
 }
 
 func PlanetaryFinishScript(r, g, b, l, mono, outBase string, sharpen bool, fin PlanetaryFinish, formats []string) string {
@@ -356,6 +399,11 @@ func PlanetaryFinishScript(r, g, b, l, mono, outBase string, sharpen bool, fin P
 		color = true
 	default:
 		fmt.Fprintf(&sb, "load %s\n", mono)
+	}
+	// Scale down first so the brightest detail lands at HP with room to spare: the sharpen + CLAHE that
+	// follow overshoot the highlights, and without this headroom the bright disk clips to a burned white.
+	if fin.Headroom > 0 && fin.Headroom < 1 {
+		fmt.Fprintf(&sb, "fmul %.3f\n", fin.Headroom)
 	}
 	// Highlight-safe stretch: everything above HP stays linear, so the Moon's bright ray-craters and
 	// highlands keep their structure instead of clipping to white.
@@ -403,7 +451,13 @@ func calibrateArgs(m CalibMasters) []string {
 	if m.Bias != "" {
 		args = append(args, "-bias="+m.Bias)
 	}
-	if m.Dark != "" {
+	switch {
+	case m.BadPixelMap != "":
+		// Per-frame cosmetic repair from the measured defect map (hot/cold + warm + unstable/RTS
+		// pixels found across the raw dark pool) — strictly stronger than -cc=dark, which only sees
+		// the master's static outliers. Verified syntax on Siril 1.4.3: `-cc=bpm <file>`.
+		args = append(args, "-cc=bpm "+m.BadPixelMap)
+	case m.Dark != "":
 		args = append(args, "-cc=dark") // cosmetic hot/cold pixel correction from the dark
 	}
 	if m.DarkOptimize && m.Dark != "" && m.Bias != "" {

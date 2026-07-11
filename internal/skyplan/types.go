@@ -77,6 +77,8 @@ type Target struct {
 	Aliases           []string    `json:"aliases,omitempty"`
 	Catalog           string      `json:"catalog"`
 	Type              string      `json:"type"`
+	CommonName        string      `json:"common_name,omitempty"` // friendly name from OpenNGC ("Fireworks Galaxy")
+	Morphology        string      `json:"morphology,omitempty"`  // Hubble class from OpenNGC (galaxies: "SABc", …)
 	RADeg             float64     `json:"ra_deg"`
 	DecDeg            float64     `json:"dec_deg"`
 	AltNowDeg         float64     `json:"alt_now_deg"`
@@ -87,6 +89,7 @@ type Target struct {
 	TransitLocal      string      `json:"transit_local"`
 	DarkHoursAboveMin float64     `json:"dark_hours_above_min"`
 	SizeArcmin        float64     `json:"size_arcmin"`
+	SizeMinorArcmin   float64     `json:"size_minor_arcmin,omitempty"` // minor axis (OpenNGC) → true ellipse with SizeArcmin
 	MagV              float64     `json:"mag_v"`
 	SurfaceBrightness float64     `json:"surface_brightness"`
 	FovFillPct        float64     `json:"fov_fill_pct"`

@@ -35,6 +35,18 @@ const openSet = ref<Set<string>>(
 function isOpen(key: string): boolean {
   return openSet.value.has(key);
 }
+function persist(next: Set<string>) {
+  if (!props.storageKey) return;
+  try {
+    for (const it of props.items)
+      localStorage.setItem(
+        `${props.storageKey}:${it.key}`,
+        next.has(it.key) ? "1" : "0",
+      );
+  } catch {
+    // ignore quota / private-mode errors
+  }
+}
 function toggle(key: string) {
   const next = new Set(openSet.value);
   if (next.has(key)) {
@@ -44,18 +56,19 @@ function toggle(key: string) {
     next.add(key);
   }
   openSet.value = next;
-  if (props.storageKey) {
-    try {
-      for (const it of props.items)
-        localStorage.setItem(
-          `${props.storageKey}:${it.key}`,
-          next.has(it.key) ? "1" : "0",
-        );
-    } catch {
-      // ignore quota / private-mode errors
-    }
-  }
+  persist(next);
 }
+// open expands a section programmatically (e.g. reveal "Browse" when a connection's Browse is clicked).
+function open(key: string) {
+  if (openSet.value.has(key)) return;
+  const next = new Set(openSet.value);
+  if (props.exclusive) next.clear();
+  next.add(key);
+  openSet.value = next;
+  persist(next);
+}
+
+defineExpose({ open, toggle, isOpen });
 </script>
 
 <template>

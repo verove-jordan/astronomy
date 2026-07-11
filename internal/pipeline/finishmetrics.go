@@ -29,6 +29,13 @@ type finishMetrics struct {
 	// high warm fraction means the finish painted them one colour.
 	StarWarmFrac    float64 `json:"star_warm_frac"`
 	StarColorSpread float64 `json:"star_color_spread"`
+	// StarSatFrac is the fraction of the brightest cores whose colour saturation (max−min)/max exceeds
+	// starSatHigh — a dense field of solid, over-saturated colour DISCS (the cluster failure: the thin RGB
+	// base's per-star chroma spread over the L star profile by LAYER-MODE-LUMINANCE). BgChroma is the mean
+	// chroma of the darkest ~quarter of pixels — the purple-green background MOTTLE of shallow colour subs
+	// a dark stretch amplifies. Neither is visible to the sky-median casts above.
+	StarSatFrac float64 `json:"star_sat_frac"`
+	BgChroma    float64 `json:"bg_chroma"`
 	// DetailIndex is the Laplacian variance of the sampled luma — an acutance proxy scored RELATIVE
 	// to the run's first pass (absolute values are scene-dependent). Drives the planetary bonus.
 	DetailIndex float64 `json:"detail_index"`
@@ -69,6 +76,7 @@ func metricsFromImage(img image.Image) finishMetrics {
 	}
 	var hist [3][256]uint64
 	var lumHist [256]uint64
+	var chromaByLum [256]float64 // Σ per-pixel chroma, binned by luma → BgChroma without a 2nd image pass
 	var n uint64
 	// The strided walk also builds a decimated luma grid (for the Laplacian detail index) and the
 	// bottom-rows foreground mean, so the extra metrics cost no extra image pass.
@@ -89,6 +97,7 @@ func metricsFromImage(img image.Image) finishMetrics {
 			hist[2][b8]++
 			lum := (299*r8 + 587*g8 + 114*b8) / 1000 // Rec.601 luma
 			lumHist[uint8(lum)]++
+			chromaByLum[uint8(lum)] += (absU(r8, g8) + absU(g8, b8) + absU(b8, r8)) / (3 * 255) // 0..~0.67
 			if gy < gh && gx < gw {
 				lumGrid[gy*gw+gx] = float64(lum) / 255
 			}
@@ -109,7 +118,19 @@ func metricsFromImage(img image.Image) finishMetrics {
 	if fgN > 0 {
 		m.FgLumaMean = fgSum / float64(fgN)
 	}
-	m.StarWarmFrac, m.StarColorSpread = starCoreColor(img, b, step, lumHist[:], n)
+	m.StarWarmFrac, m.StarColorSpread, m.StarSatFrac = starCoreColor(img, b, step, lumHist[:], n)
+	// Background chroma mottle: mean per-pixel chroma over the darkest quarter of the frame (luma at/below
+	// the 25th percentile) — coloured noise a dark stretch amplifies where the sky should be neutral grey.
+	thr25 := percentile(lumHist[:], n, 0.25)
+	var chSum float64
+	var chN uint64
+	for v := 0; v <= thr25; v++ {
+		chSum += chromaByLum[v]
+		chN += lumHist[v]
+	}
+	if chN > 0 {
+		m.BgChroma = chSum / float64(chN)
+	}
 	for c := 0; c < 3; c++ {
 		m.BlackClip[c] = float64(hist[c][0]) / float64(n)
 		m.WhiteClip[c] = float64(hist[c][255]) / float64(n)
@@ -242,16 +263,21 @@ func laplacianVar(grid []float64, w, h int) float64 {
 	return sum2/float64(n) - mean*mean
 }
 
+// starSatHigh is the colour-saturation (max−min)/max above which a bright star core reads as a solid
+// colour DISC rather than a naturally tinted star — the threshold behind StarSatFrac.
+const starSatHigh = 0.45
+
 // starCoreColor samples the brightest cores (≥99.5th-pct luma) and reports how many read warm
-// (red-dominant) plus the spread of their red−blue balance. A capped second strided pass.
-func starCoreColor(img image.Image, b image.Rectangle, step int, lumHist []uint64, n uint64) (warmFrac, spread float64) {
+// (red-dominant), the spread of their red−blue balance, and the fraction that are over-saturated colour
+// discs (saturation above starSatHigh). A capped second strided pass.
+func starCoreColor(img image.Image, b image.Rectangle, step int, lumHist []uint64, n uint64) (warmFrac, spread, satFrac float64) {
 	thr := uint32(percentile(lumHist, n, 0.995))
 	if thr < 32 {
-		return 0, 0 // a near-black frame has no meaningful "bright cores"
+		return 0, 0, 0 // a near-black frame has no meaningful "bright cores"
 	}
 	const maxSamples = 50_000
 	var balances []float64
-	warm := 0
+	warm, satHigh := 0, 0
 	for y := b.Min.Y; y < b.Max.Y && len(balances) < maxSamples; y += step {
 		for x := b.Min.X; x < b.Max.X && len(balances) < maxSamples; x += step {
 			r, g, bl, _ := img.At(x, y).RGBA()
@@ -265,12 +291,18 @@ func starCoreColor(img image.Image, b image.Rectangle, step int, lumHist []uint6
 			if bal > 0.08 && r8 > g8 {
 				warm++
 			}
+			hi := max(r8, max(g8, b8))
+			lo := min(r8, min(g8, b8))
+			if hi > 0 && (float64(hi)-float64(lo))/float64(hi) > starSatHigh {
+				satHigh++
+			}
 		}
 	}
 	if len(balances) < 20 {
-		return 0, 0
+		return 0, 0, 0
 	}
 	warmFrac = float64(warm) / float64(len(balances))
+	satFrac = float64(satHigh) / float64(len(balances))
 	var mean float64
 	for _, v := range balances {
 		mean += v
@@ -281,5 +313,13 @@ func starCoreColor(img image.Image, b image.Rectangle, step int, lumHist []uint6
 		varr += (v - mean) * (v - mean)
 	}
 	spread = math.Sqrt(varr / float64(len(balances)))
-	return warmFrac, spread
+	return warmFrac, spread, satFrac
+}
+
+// absU is the absolute difference of two uint32 channel values as a float (chroma accumulation).
+func absU(a, b uint32) float64 {
+	if a > b {
+		return float64(a - b)
+	}
+	return float64(b - a)
 }

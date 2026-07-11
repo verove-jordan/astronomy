@@ -1,5 +1,5 @@
 <script setup lang="ts" generic="T extends Record<string, unknown>">
-import { reactive, ref, computed } from "vue";
+import { reactive, ref, computed, nextTick } from "vue";
 import { th, td, input } from "@/constants/styles";
 
 export interface Column<R> {
@@ -15,8 +15,25 @@ const props = defineProps<{
   columns: Column<T>[];
   rows: T[];
   rowClass?: (row: T) => string;
+  rowKey?: (row: T) => string | number; // stable per-row id; enables scrollToKey + row-click correlation
   maxHeight?: string; // when set, the body scrolls vertically within this height and the header sticks
 }>();
+
+const emit = defineEmits<{ "row-click": [row: T] }>();
+
+const rootRef = ref<HTMLElement | null>(null);
+
+// Scroll the row carrying this rowKey into view, but only when it is off-screen (block: "nearest"). Lets a
+// parent reveal a row it selected elsewhere (e.g. by clicking a linked map marker). No-op without rowKey.
+function scrollToKey(key: string | number) {
+  nextTick(() => {
+    const el = rootRef.value?.querySelector<HTMLElement>(
+      `[data-row-key="${CSS.escape(String(key))}"]`,
+    );
+    el?.scrollIntoView({ block: "nearest" });
+  });
+}
+defineExpose({ scrollToKey });
 
 interface SortKey {
   key: string;
@@ -83,6 +100,7 @@ function display(col: Column<T>, row: T): string {
 
 <template>
   <div
+    ref="rootRef"
     :class="[
       'rounded-lg border border-slate-200 dark:border-slate-700',
       maxHeight ? 'overflow-auto' : 'overflow-x-auto',
@@ -131,12 +149,14 @@ function display(col: Column<T>, row: T): string {
       <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
         <tr
           v-for="(row, i) in processed"
-          :key="i"
+          :key="rowKey ? rowKey(row) : i"
+          :data-row-key="rowKey ? rowKey(row) : i"
           :class="
             rowClass
               ? rowClass(row)
               : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
           "
+          @click="emit('row-click', row)"
         >
           <td
             v-for="col in columns"

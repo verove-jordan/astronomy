@@ -5,7 +5,7 @@
 // (`live`), falling back to the completed run's persisted iterations (`result.final.iterations`).
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
-import { fileUrl } from "@/services/api";
+import { thumbUrl } from "@/services/api";
 import { card } from "@/constants/styles";
 import MarkdownText from "@/components/Common/MarkdownText.vue";
 import type { RunResult, IterationRecord } from "@/types";
@@ -65,8 +65,10 @@ function defectLabel(kind: string): string {
       >
         <div class="relative bg-slate-900">
           <img
-            :src="fileUrl(it.png_path)"
+            :src="thumbUrl(it.png_path, 320)"
             :alt="t('supervisor.iteration', { n: it.index + 1 })"
+            loading="lazy"
+            decoding="async"
             class="h-40 w-full object-contain"
           />
           <span

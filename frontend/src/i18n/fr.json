@@ -73,11 +73,12 @@
   },
   "goto": {
     "title": "Assistant d'alignement GoTo",
-    "subtitle": "Choisissez les meilleures étoiles — dans le bon ordre — pour calibrer le GoTo de la monture depuis l'emplacement du télescope. Ignorez une étoile masquée par une maison ou un arbre : elle est aussitôt remplacée.",
+    "subtitle": "Mettez la monture en station, puis calibrez son GoTo avec les meilleures étoiles dans le bon ordre — uniquement celles proposées par votre raquette. Ignorez une étoile masquée par une maison ou un arbre : elle est aussitôt remplacée.",
     "controls": {
       "location": "Site d'observation",
       "mount": "Monture / procédure",
       "count": "Étoiles d'alignement",
+      "phaseHint": "{align} alignement + {calib} calibration",
       "time": "Heure",
       "specific": "Heure précise",
       "reset": "Réinitialiser la séquence"
@@ -93,7 +94,7 @@
       },
       "celestron-eq": {
         "label": "Celestron NexStar / AVX (ÉQ)",
-        "note": "Deux étoiles d'alignement éloignées, d'un même côté du méridien (étoiles de calibration ensuite)."
+        "note": "Deux étoiles d'alignement d'un même côté du méridien, puis jusqu'à quatre étoiles de calibration du côté opposé (modélise l'erreur de cône). Seules les étoiles de la raquette sont proposées."
       },
       "altaz-generic": {
         "label": "Azimutale (générique)",
@@ -114,14 +115,19 @@
       "skip": "Ignorer — masquée",
       "undo": "Annuler",
       "accepted": "Centrée",
-      "empty": "Aucune étoile disponible pour l'instant — réduisez le nombre, attendez que d'autres se lèvent, ou changez de profil de monture."
+      "empty": "Aucune étoile disponible pour l'instant — réduisez le nombre, attendez que d'autres se lèvent, ou changez de profil de monture.",
+      "phase": {
+        "align": "Étoiles d'alignement",
+        "calibration": "Étoiles de calibration"
+      }
     },
     "card": {
       "look": "Regardez {dir} · {alt}° de hauteur",
       "meridian": "{side} du méridien",
       "east": "est",
       "west": "ouest",
-      "magnitude": "mag {mag}"
+      "magnitude": "mag {mag}",
+      "catalogName": "catalogue : {name}"
     },
     "quality": {
       "label": "Qualité de la séquence"
@@ -130,10 +136,130 @@
       "title": "Carte du ciel",
       "legend": "Numérotées = vos étoiles d'alignement dans l'ordre ; le tracé en pointillés montre leur répartition."
     },
+    "sky": {
+      "title": "La repérer dans le ciel",
+      "subtitle": "Une carte interactive centrée sur l'étoile à centrer — déplacez et zoomez pour reconnaître le ciel réel.",
+      "loading": "Chargement du ciel…",
+      "empty": "Toutes les étoiles sont centrées — aucune cible suivante.",
+      "face": "Tournez-vous vers {dir}, regardez à environ {alt}° de hauteur",
+      "hint": "glisser pour déplacer · molette pour zoomer",
+      "controls": {
+        "zoomIn": "Zoomer",
+        "zoomOut": "Dézoomer",
+        "reset": "Centrer sur la cible",
+        "wholeSky": "Tout le ciel"
+      },
+      "bodies": {
+        "moon": "Lune",
+        "mercury": "Mercure",
+        "venus": "Vénus",
+        "mars": "Mars",
+        "jupiter": "Jupiter",
+        "saturn": "Saturne"
+      }
+    },
     "why": {
       "title": "Pourquoi c'est important",
-      "body": "Centrer des étoiles bien réparties construit un modèle de pointage précis : la monture suit et pointe avec exactitude. Combiné à une bonne mise en station, cela permet d'allonger les poses.",
-      "polarLink": "La mise en station est sur la page Ce soir →"
+      "body": "Centrer des étoiles bien réparties construit un modèle de pointage précis : la monture suit et pointe avec exactitude. Combiné à la mise en station ci-dessus, cela permet d'allonger les poses."
+    }
+  },
+  "polar": {
+    "title": "Mise en station",
+    "subtitle": "Placez l'étoile polaire au bon endroit sur le réticule de votre viseur polaire, pour maintenant.",
+    "hemisphere": {
+      "north": "Nord",
+      "south": "Sud"
+    },
+    "reticle": {
+      "placeHere": "Placez l'étoile dans le cercle orange",
+      "truePole": "pôle vrai",
+      "polaris": "Polaris",
+      "sigmaOct": "σ Octantis",
+      "cassiopeia": "Cassiopée",
+      "bigDipper": "Grande Ourse",
+      "crux": "Croix du Sud",
+      "octans": "Octant",
+      "invertedView": "Vue dans le viseur (inversée)",
+      "erectView": "Vue à l'œil nu (droite)",
+      "mirrored": "Miroir (renvoi coudé)"
+    },
+    "panel": {
+      "clock": "Position horaire",
+      "poleStar": "Étoile polaire",
+      "hemisphere": "Hémisphère",
+      "ha": "Angle horaire",
+      "separation": "Écart au pôle",
+      "alt": "Hauteur",
+      "az": "Azimut",
+      "lst": "Temps sidéral",
+      "latTooLow": "Le pôle céleste est trop bas ici pour un viseur polaire.",
+      "notVisible": "L'étoile polaire est sous l'horizon en ce moment."
+    },
+    "orientation": {
+      "inverting": "Inversée (viseur)",
+      "erect": "Droite (œil nu)",
+      "mirror": "Miroir (renvoi)",
+      "hint": "La plupart des viseurs polaires inversent l'image. Faites correspondre le réticule à l'écran à ce que vous voyez réellement."
+    },
+    "time": {
+      "specific": "Heure précise",
+      "autoRefresh": "Rafraîchir auto"
+    },
+    "tutorial": {
+      "title": "Comment régler et utiliser votre viseur polaire",
+      "intro": "Un guide pratique pour un viseur polaire SkyWatcher sur une Celestron Advanced VX — du réglage initial à l'utilisation sous un ciel sombre.",
+      "s1": {
+        "title": "À quoi sert la mise en station",
+        "body": "L'axe AD de la monture doit pointer le pôle céleste pour qu'un seul moteur suive le ciel. Le viseur polaire permet de viser l'étoile polaire et de la placer précisément.",
+        "tips": [
+          "Le pôle est proche — mais pas exactement — de l'étoile polaire.",
+          "Une bonne mise en station = poses longues à étoiles rondes et go-to fiable."
+        ]
+      },
+      "s2": {
+        "title": "Une fois : aligner le viseur sur l'axe AD",
+        "body": "Centrez un objet lointain sur le réticule, tournez l'axe AD de 180°, puis ajustez les trois vis pour corriger la moitié de l'écart. Répétez jusqu'à ce que l'objet reste fixe pendant la rotation.",
+        "tips": [
+          "À faire une fois, de jour sur un repère lointain (ou sur Polaris la nuit).",
+          "Réglez les vis du réticule, jamais les boulons alt/az de la monture.",
+          "De très petits réglages — les vis sont sensibles."
+        ]
+      },
+      "s3": {
+        "title": "Installer la monture (Advanced VX)",
+        "body": "Mettez le trépied de niveau, réglez l'échelle de latitude sur votre latitude, et visez le nord VRAI (ou sud), pas le nord magnétique.",
+        "tips": [
+          "Utilisez un niveau à bulle ; un trépied non nivelé fausse la latitude.",
+          "Corrigez la déclinaison magnétique entre nord boussole et nord vrai.",
+          "Pré-réglez le boulon de latitude proche de votre latitude avant de commencer."
+        ]
+      },
+      "s4": {
+        "title": "Voir le réticule la nuit",
+        "body": "La nuit, on voit les étoiles mais pas le réticule gravé. Éclairez-le faiblement : dirigez une lumière ROUGE en biais dans l'avant (objectif), ou utilisez l'illuminateur de la monture s'il existe.",
+        "tips": [
+          "Rouge uniquement — la lumière blanche ruine l'adaptation à l'obscurité.",
+          "Un écran de téléphone en rouge près de l'objectif dépanne très bien.",
+          "Restez faible ; trop fort masque la faible Polaris."
+        ]
+      },
+      "s5": {
+        "title": "Placer l'étoile polaire",
+        "body": "Tournez l'axe AD jusqu'à ce que le repère de l'étoile sur le réticule soit à la position horaire indiquée ci-dessus, puis utilisez les boulons ALT et AZ (pas l'AD) pour amener l'étoile dans le repère.",
+        "tips": [
+          "Faites correspondre l'orientation à l'écran (inversée/droite) à votre viseur.",
+          "Bougez avec les boulons alt/az ; laissez l'AD où vous l'avez réglé.",
+          "Centrez l'étoile dans le petit cercle, pas sur la croix du pôle vrai."
+        ]
+      },
+      "s6": {
+        "title": "Vérifier et affiner",
+        "body": "Recoupez avec la mise en station All-Star de la raquette Advanced VX, ou faites un contrôle de dérive rapide sur une étoile près du méridien et ajustez les boulons alt/az.",
+        "tips": [
+          "All-Star utilise n'importe quelle étoile brillante — pratique si Polaris est cachée.",
+          "Revérifiez après stabilisation de la monture ou si vous heurtez le trépied."
+        ]
+      }
     }
   },
   "processing": {
@@ -143,13 +269,42 @@
       "tasks": "Tâches",
       "runs": "Traitements",
       "library": "Bibliothèque",
-      "storage": "Stockage"
+      "storage": "Stockage",
+      "drives": "Disques"
     }
   },
+  "drives": {
+    "title": "Disques externes",
+    "subtitle": "Parcourez un disque connecté et copiez un dossier directement vers S3 — une copie intelligente qui analyse d'abord et n'envoie que les fichiers manquants ou corrompus.",
+    "target": "Destination S3",
+    "noS3": "Aucune connexion S3 pour l'instant.",
+    "openStorage": "Configurez-en une dans Stockage →",
+    "connectHere": "Ajoutez-en une (et définissez-la par défaut) dans la section Connexions ci-dessus.",
+    "bucket": "Bucket",
+    "pickBucket": "Choisir un bucket…",
+    "prefix": "Préfixe",
+    "smartHint": "Copié sous votre préfixe, dans un dossier au nom de la source. Relancer n'envoie que ce qui a changé.",
+    "noBuckets": "Cette connexion est injoignable ou n'a aucun bucket — vérifiez-la dans Stockage.",
+    "drivesHeading": "Disques montés",
+    "up": "Remonter",
+    "refresh": "Actualiser",
+    "copyThisFolder": "Copier ce dossier vers S3",
+    "copyFolderHint": "Copie intelligente vers S3 — seuls les fichiers manquants ou corrompus sont envoyés",
+    "pickBucketFirst": "Choisissez d'abord un bucket S3",
+    "copy": "Copier vers S3",
+    "copying": "Mise en file…",
+    "capacity": "{free} libres sur {total}",
+    "noDrives": "Aucun disque externe trouvé. Branchez-en un, puis Actualisez.",
+    "emptyFolder": "Ce dossier est vide."
+  },
   "storage": {
-    "title": "Gestionnaire de stockage S3",
-    "subtitle": "Connectez n'importe quel stockage compatible S3, parcourez et gérez ses objets. La connexion par défaut alimente aussi l'import, le traitement, les résultats et les sauvegardes.",
+    "title": "Stockage",
+    "subtitle": "Gérez les connexions S3, parcourez les objets, copiez des disques locaux vers S3 et sauvegardez vos données. La connexion par défaut alimente aussi l'import, le traitement et les résultats.",
     "connections": "Connexions",
+    "browseObjects": "Parcourir les objets",
+    "drivesSection": "Disques locaux → S3",
+    "browseHint": "Choisissez une connexion ci-dessus puis cliquez sur Parcourir pour voir ses buckets et objets.",
+    "backupNeedsS3": "Choisissez une connexion par défaut et un bucket (dans les sections ci-dessus) pour activer les sauvegardes.",
     "addConnection": "Ajouter une connexion",
     "newConnection": "Nouvelle connexion",
     "editConnection": "Modifier la connexion",
@@ -189,8 +344,100 @@
     "confirmDeleteBucket": "Supprimer le bucket « {name} » ?",
     "forceDeleteBucket": "Supprimer d'abord TOUS ses objets ? (OK = vider puis supprimer, Annuler = seulement s'il est déjà vide)",
     "newFolderPrompt": "Nom du nouveau dossier :",
+    "move": {
+      "moveSelected": "Déplacer la sélection…",
+      "hint": "Glissez une ligne sur un dossier pour la déplacer, ou cochez des lignes puis « Déplacer la sélection… ».",
+      "title": "Déplacer {n} vers…",
+      "moveHere": "Déplacer ici",
+      "noSubfolders": "Aucun sous-dossier"
+    },
     "confirmDeleteObject": "Supprimer « {name} » ?",
     "confirmDeleteFolder": "Supprimer le dossier « {name} » et tout son contenu ?"
+  },
+  "preset": {
+    "label": "Préréglage",
+    "custom": "Personnalisé",
+    "my": "Mes préréglages",
+    "save": "Enregistrer…",
+    "saveBtn": "Enregistrer",
+    "saveName": "Nom du préréglage",
+    "rename": "Renommer",
+    "delete": "Supprimer",
+    "cancel": "Annuler",
+    "category": {
+      "deepsky": "Ciel profond",
+      "nebula": "Nébuleuse",
+      "narrowband": "Bande étroite",
+      "solar": "Système solaire",
+      "comet": "Comète",
+      "milkyway": "Voie lactée"
+    },
+    "builtin": {
+      "galaxy-lrgb": {
+        "label": "Galaxie (LRVB)",
+        "desc": "Galaxie large bande — cœur brillant et bras faibles ; couleur naturelle."
+      },
+      "galaxy-faint": {
+        "label": "Galaxie (faible)",
+        "desc": "Galaxie à faible RSB — débruitage renforcé et extraction IA du fond."
+      },
+      "star-cluster": {
+        "label": "Amas d'étoiles",
+        "desc": "Amas globulaire ou ouvert — préserve chaque étoile et sa couleur."
+      },
+      "reflection-nebula": {
+        "label": "Nébuleuse par réflexion",
+        "desc": "Nébuleuse bleue large bande — préserve les bleus, sans voile Hα."
+      },
+      "emission-hargb": {
+        "label": "Nébuleuse en émission (HaRVB)",
+        "desc": "Hα mêlé au RVB — nébuleuse marquée sur un fond propre."
+      },
+      "emission-broadband": {
+        "label": "Nébuleuse en émission (large bande)",
+        "desc": "Nébuleuse en émission large bande avec un léger renfort Hα."
+      },
+      "planetary-nebula": {
+        "label": "Nébuleuse planétaire",
+        "desc": "Petite coquille brillante — garde toutes les étoiles, plus de couleur, étirement doux."
+      },
+      "narrowband-sho": {
+        "label": "Bande étroite SHO (Hubble)",
+        "desc": "SII/Hα/OIII → RVB (palette Hubble) ; SPCC désactivé, étoiles magenta atténuées."
+      },
+      "narrowband-hoo": {
+        "label": "Bande étroite HOO",
+        "desc": "Palette bicolore Hα/OIII ; SPCC désactivé."
+      },
+      "narrowband-foraxx": {
+        "label": "Bande étroite Foraxx",
+        "desc": "Palette Hα/OIII dynamique (Foraxx) ; SPCC désactivé."
+      },
+      "moon": {
+        "label": "Lune",
+        "desc": "Imagerie chanceuse lunaire — réserve de hautes lumières anti-brûlure, cratères nets."
+      },
+      "planet": {
+        "label": "Planète",
+        "desc": "Jupiter/Saturne/Mars — sélection stricte des trames, alignement AP, légère déconvolution."
+      },
+      "comet": {
+        "label": "Comète",
+        "desc": "Comète mobile — double empilement étoiles/comète et nettoyage doux du gradient de coma."
+      },
+      "milkyway-natural": {
+        "label": "Voie lactée (naturel)",
+        "desc": "Paysage nocturne grand champ, rendu naturel équilibré."
+      },
+      "milkyway-iphone": {
+        "label": "Voie lactée (iPhone)",
+        "desc": "Paysage nocturne optimisé pour les captures iPhone/ProRAW."
+      },
+      "milkyway-deep": {
+        "label": "Voie lactée (spectaculaire)",
+        "desc": "Rendu nocturne plus lumineux, style ciel profond."
+      }
+    }
   },
   "run": {
     "mode": "Mode",
@@ -200,21 +447,43 @@
     "haExcludeStars": "Hα sur la nébulosité seule (exclure les étoiles)",
     "dropTransition": "Écarter les images de transition du filtre",
     "supervise": "Lancer avec l'agent IA local (expérimental)",
+    "chips": {
+      "s3": "S3 complet",
+      "s3LowDisk": "Disque réduit",
+      "palette": "Palette · {name}",
+      "spcc": "SPCC",
+      "denoise": "Débruitage",
+      "ha": "Hα nébulosité",
+      "dropTransition": "Sans transitions",
+      "ai": "Agent IA",
+      "sequential": "En file",
+      "goal": "Objectif : {goal}",
+      "tier": "Niveau {tier}",
+      "iters": "≤{n} itér."
+    },
     "superviseHint": "Optionnel : un modèle de vision local ajuste automatiquement la finition sur quelques itérations et garde la meilleure — pour tous les modes d'empilement (composite ciel profond/nébuleuse, comète, rendu voie lactée, netteté planétaire). Nécessite un serveur de modèle local (ASTRO_LLM_URL).",
     "modes": {
       "deepsky": "Ciel profond",
       "nebula": "Nébuleuse",
       "milkyway": "Voie lactée",
       "planetary": "Planétaire",
-      "comet": "Comète"
+      "comet": "Comète",
+      "transfer": "Transfert",
+      "backup": "Sauvegarde"
     },
-    "formats": { "image": "Image", "video": "Vidéo", "both": "Image + vidéo" },
+    "formats": {
+      "image": "Image",
+      "video": "Vidéo",
+      "both": "Image + vidéo"
+    },
     "look": "Rendu",
     "looks": {
       "natural": "Naturel",
       "iphone": "iPhone (cœur chaud)",
       "deepsky": "Punchy"
     },
+    "palette": "Palette de couleurs",
+    "paletteNeeds": "nécessite {filters}",
     "brightness": "Luminosité",
     "brightnesses": {
       "darker": "Plus sombre",
@@ -223,12 +492,12 @@
     },
     "orientation": "Orientation",
     "orientations": {
+      "180": "Rotation 180°",
       "exif": "Comme la photo (EXIF)",
       "auto": "Auto (contenu)",
       "none": "Original",
       "cw": "Rotation 90° droite",
-      "ccw": "Rotation 90° gauche",
-      "180": "Rotation 180°"
+      "ccw": "Rotation 90° gauche"
     },
     "mirror": "Miroir horizontal",
     "calibration": "Images de calibration (optionnel)",
@@ -238,11 +507,18 @@
     "bias": "Bias / offset",
     "addToQueue": "Ajouter à la file",
     "addToQueueHint": "Mettre ce traitement en file pour l'exécuter après les autres, un à la fois.",
-    "advancedParams": "Paramètres IA avancés",
+    "advancedParams": "Paramètres avancés",
+    "aiSection": "Guidage IA",
+    "aiSectionHint": "Utilisé uniquement quand « Superviser la finition » est activé — un objectif en langage naturel pour l'agent IA de finition.",
+    "pipelineSection": "Paramètres du pipeline",
+    "pipelineSectionHint": "Réglage fin appliqué à chaque traitement, avec ou sans IA. Pré-rempli avec les valeurs effectives du mode sélectionné.",
     "goal": "Objectif",
     "goalHint": "ex. faire ressortir les nébulosités externes faibles",
     "paramsJson": "Paramètres fins (JSON)",
-    "paramsInvalid": "JSON invalide — objet attendu, ex. {\"denoise_lum\": 0.6}"
+    "paramsInvalid": "JSON invalide — objet attendu, ex. {'{'}\"denoise_lum\": 0.6{'}'}",
+    "paramsPlaceholder": "Paramètres effectifs pour le mode sélectionné…",
+    "paramsReset": "Réinitialiser",
+    "paramsCheckboxNote": "Le SPCC, la réduction de bruit et « Hα sur la nébulosité » sont gérés par les cases à cocher ci-dessus."
   },
   "reuse": {
     "title": "Réutiliser des données antérieures",
@@ -254,10 +530,16 @@
   "calib": {
     "title": "Calibration · depuis votre bibliothèque",
     "subtitle": "Ces maîtres de votre bibliothèque correspondent à vos poses et seront appliqués. Décochez-en un pour l'ignorer.",
+    "includedTitle": "Calibration incluse",
+    "includedSubtitle": "Darks, flats et bias/offsets appliqués à cette capture, avec leurs paramètres.",
     "selectAll": "Tout sélectionner",
     "deselectAll": "Tout désélectionner",
     "frames": "{n} images",
-    "role": { "dark": "Dark", "flat": "Flat", "bias": "Bias" }
+    "role": {
+      "dark": "Dark",
+      "flat": "Flat",
+      "bias": "Bias"
+    }
   },
   "s3": {
     "title": "Stockage S3",
@@ -272,6 +554,8 @@
     "storageHint": "Full S3 : récupère les entrées depuis S3, traite en local, renvoie les entrées + résultats, puis libère le disque local (seulement une fois chaque fichier vérifié sur S3).",
     "storageLocal": "Full local",
     "storageS3": "Full S3 (libère le local ensuite)",
+    "lowDisk": "Disque local réduit",
+    "lowDiskHint": "Récupère les captures depuis S3 un canal à la fois et libère chacun après empilement — limite le pic de disque local à environ les images d'un seul canal au lieu de tout le jeu de données (ciel profond/nébuleuse).",
     "badge": {
       "synced": "Sur S3 (synchronisé avec le local)",
       "cloudOnly": "Uniquement sur S3 — téléchargez-le pour l'utiliser en local"
@@ -342,8 +626,14 @@
     "useFolder": "Inspecter ce dossier",
     "downloadInspect": "Télécharger et inspecter {n}",
     "downloadingBtn": "Téléchargement…",
+    "inspectingBtn": "Inspection…",
     "downloadingS3": "Téléchargement de {n} dossier(s) depuis S3…",
-    "tabs": { "local": "Fichiers locaux", "s3": "Stockage S3" },
+    "downloadingS3Progress": "Téléchargement de {done}/{n} dossier(s) depuis S3…",
+    "inspectingS3": "Inspection des images…",
+    "tabs": {
+      "local": "Fichiers locaux",
+      "s3": "Stockage S3"
+    },
     "s3NotConfigured": "Configurez S3 sur la page Stockage pour le parcourir ici.",
     "inspectN": "Inspecter {n} dossiers",
     "selectedCount": "{n} sélectionné·s",
@@ -364,6 +654,8 @@
       "useAgain": "Réutiliser",
       "runs": "{n} fois",
       "deleted": "Dossier introuvable",
+      "onS3": "Sur S3 — téléchargé automatiquement lors de la réutilisation",
+      "needS3": "Ces fichiers ont été libérés vers S3. Sélectionnez d'abord leur bucket S3, puis réessayez.",
       "untitled": "Sans titre"
     }
   },
@@ -430,8 +722,10 @@
     "id": "ID",
     "kind": "Type",
     "progress": "Progression",
+    "options": "Options",
     "started": "Début",
-    "duration": "Durée"
+    "duration": "Durée",
+    "pointing": "Pointé"
   },
   "job": {
     "title": "Tâche",
@@ -455,6 +749,10 @@
     "cpu": "CPU",
     "memory": "RAM",
     "peak": "Pic",
+    "transferred": "Transféré",
+    "throughput": "Débit",
+    "remaining": "Temps restant",
+    "destination": "Destination",
     "followTail": "Suivre",
     "showLogs": "Afficher le journal",
     "hideLogs": "Masquer le journal",
@@ -467,8 +765,13 @@
     "pausing": "Mise en pause…",
     "continue": "Reprendre",
     "continuing": "Reprise…",
+    "pausedManual": "Mis en pause par vous — restera en pause jusqu'à ce que vous repreniez.",
+    "pausedError": "Mis en pause après une erreur de transfert — reprise automatique (tentative {n}/{max}).",
     "restart": "Relancer",
     "restarting": "Relancement…",
+    "freeLocal": "Supprimer les fichiers locaux",
+    "freeLocalHint": "Supprime les copies locales des fichiers de ce traitement — sans risque, chaque fichier est d'abord vérifié sur S3.",
+    "freeLocalConfirm": "Supprimer les copies locales des fichiers de ce traitement ? Ils restent sur S3 (chacun est vérifié avant suppression) et pourront être récupérés lors d'une relance.",
     "remove": "Retirer",
     "queueBadge": "{n} en attente"
   },
@@ -509,6 +812,130 @@
       "final": "Final"
     }
   },
+  "rerun": {
+    "title": "Modifier et relancer depuis « {stage} »",
+    "editStage": "Modifier et relancer",
+    "run": "Relancer depuis ici",
+    "running": "Relance en cours…",
+    "cancel": "Annuler",
+    "noChange": "Aucune modification — relance cette étape telle quelle",
+    "changedCount": "{n} modification(s) — relance cette étape et les suivantes",
+    "failed": "Échec de la relance",
+    "tier": {
+      "stack": "Réempile depuis les images brutes, puis reconstruit tout ce qui suit (minutes à heures).",
+      "prep": "Reconstruit la préparation linéaire (combinaison, fond, couleur, étirement), puis le composite (dizaines de secondes à minutes).",
+      "composite": "Recalcule uniquement le composite final (secondes)."
+    },
+    "knobs": {
+      "lum_opacity": "Opacité de la luminance",
+      "saturation": "Saturation",
+      "star_desat": "Désaturation du cœur des étoiles",
+      "palette": "Palette de couleurs",
+      "paletteOptions": {
+        "natural": "Naturelle (LRVB)",
+        "hargb": "HaRVB",
+        "hoo": "HOO (bicouleur)",
+        "sho": "SHO — Hubble",
+        "hos": "HOS — CFHT",
+        "foraxx": "Foraxx (style Webb)",
+        "mono": "Monochrome"
+      },
+      "ha_screen": "Opacité du calque Hα",
+      "ha_black_point": "Point noir Hα",
+      "chroma_blur": "Flou chroma (px)",
+      "crop_frac": "Rognage des bords",
+      "ha_exclude_stars": "Hα sur la nébulosité seule",
+      "color_calibration": "Calibration des couleurs (SPCC)",
+      "linked_stretch": "Étirement lié",
+      "background_level": "Niveau du fond de ciel",
+      "stretch_headroom": "Marge des hautes lumières d’étoiles",
+      "background_degree": "Degré du fond",
+      "combined_background_ai": "Fond IA (combiné)",
+      "color_denoise_ai": "Débruitage couleur IA",
+      "star_reduce": "Réduction d’étoiles",
+      "fwhm_sigma": "σ de rejet FWHM",
+      "roundness_floor": "Rondeur minimale",
+      "background_sigma": "σ de rejet du fond",
+      "star_count_frac": "Fraction du nombre d’étoiles",
+      "trail_mask_k": "Masque de traînées k",
+      "denoise_lum": "Débruitage luminance",
+      "denoise_chroma": "Débruitage chroma",
+      "background_ai": "Fond IA (par canal)"
+    }
+  },
+  "paramDocs": {
+    "title": "À quoi sert chaque paramètre",
+    "activeLegend": "Tous les réglages du mode sélectionné. Ceux définis dans le JSON ci-dessus sont surlignés avec leur valeur actuelle ; ajoutez les autres pour les régler.",
+    "set": "défini",
+    "groups": {
+      "composite": "Composite",
+      "compositeHint": "Niveau A · recalcule l'image finale en quelques secondes",
+      "prep": "Couleur & étirement",
+      "prepHint": "Niveau B · reconstruit la préparation linéaire (dizaines de secondes)",
+      "stack": "Sélection des poses & empilement",
+      "stackHint": "Niveau C · ré-empile depuis les poses brutes (minutes)",
+      "planetaryFinish": "Finition & netteté",
+      "planetaryFinishHint": "recalcule l'image en quelques secondes",
+      "planetaryStack": "Sélection des poses & déconvolution",
+      "planetaryStackHint": "ré-empile depuis les poses source (plus lent)",
+      "cometFinish": "Finition couleur",
+      "cometFinishHint": "recombine le composite de la comète en quelques secondes",
+      "cometStack": "Sélection des poses & empilement",
+      "cometStackHint": "ré-empile depuis les poses calibrées (plus lent)",
+      "milkywayGrade": "Étalonnage",
+      "milkywayGradeHint": "recalcule le paysage nocturne en quelques secondes"
+    },
+    "saturation": "Saturation globale des couleurs de l'image finale. Plus élevé = plus vif ; trop élevé rend les étoiles criardes.",
+    "star_desat": "Ramène le cœur des étoiles les plus brillantes vers le blanc. Corrige les disques de couleur pleins sur les amas denses et les étoiles magenta en SHO. 0 = désactivé.",
+    "lum_opacity": "Opacité de la couche L (luminance) dans un composite LRVB. 1 = tout le détail vient de L ; plus bas = plus doux et davantage piloté par la couleur.",
+    "ha_screen": "Opacité de la couche Hα rouge superposée (uniquement si un canal Hα est présent). Plus élevé = nébulosité rouge plus marquée.",
+    "ha_black_point": "Écrête le fond de la couche Hα au noir pour que son rouge ne relève que les nœuds HII brillants, pas tout le ciel.",
+    "ha_exclude_stars": "Applique le Hα à la seule nébulosité (étoiles retirées d'abord) pour que le rouge ne teinte pas les étoiles en orange/rose.",
+    "chroma_blur": "Floute le bruit de couleur du composite LRVB (pixels) ; la couche L garde tout le détail. Plus élevé = couleur plus lisse, marbrures aplanies.",
+    "core_highlight_knee": "Seuil où commence l'atténuation des hautes lumières du CŒUR de nébuleuse (sur la luminance). En dessous rien ne change — pour les cœurs de nébuleuse cramés, pas les amas.",
+    "core_highlight_ceil": "Jusqu'où sous le blanc un cœur de nébuleuse cramé est plafonné (avec core_highlight_knee). Plus bas = cœur plus profond et structuré.",
+    "highlight_knee": "Seuil où commence le plafond d'étoiles sur l'image finale — empêche le cœur des étoiles brillantes de saturer au blanc.",
+    "highlight_ceil": "Jusqu'où sous le blanc le cœur des étoiles brillantes est plafonné (avec highlight_knee). Plus bas = cœurs plus colorés, moins cramés.",
+    "crop_frac": "Fraction rognée sur chaque bord pour retirer les bandes de bord d'empilement (dithering).",
+    "palette": "Correspondance canaux→RVB : natural, hargb, hoo, sho, hos, foraxx ou mono. Les palettes bande étroite nécessitent des données OIII/SII.",
+    "color_calibration": "Calibration photométrique des couleurs (SPCC) pour des teintes d'étoiles/nébuleuses naturelles ; repli sur un équilibre neutre hors ligne.",
+    "linked_stretch": "Étire tous les canaux ensemble pour préserver l'équilibre de couleur calibré (vs par canal, qui reteinte).",
+    "background_level": "Luminosité cible du fond de ciel pour l'auto-étirement. Plus bas = ciel plus sombre.",
+    "stretch_headroom": "Plafonne le cœur des étoiles brillantes sous le blanc AVANT l'étirement pour qu'elles gardent leur couleur au lieu de cramer. 0 = désactivé ; plus bas = plus de protection.",
+    "background_degree": "Degré du polynôme Siril utilisé pour modéliser et soustraire le fond de ciel / gradient.",
+    "combined_background_ai": "Deuxième passe d'extraction de gradient sur le RVB combiné — retire le gradient à grande échelle / ciel brun que la passe par canal laisse.",
+    "color_denoise_ai": "Débruitage IA de la couleur sur le RVB linéaire — réduit le bruit de chrominance sans flouter le détail (contrairement à un flou).",
+    "star_reduce": "Opacité de réduction d'étoiles StarNet++ à la finition : 1 = étoiles pleines, 0,5 = réduites de moitié, 0 = tout garder.",
+    "fwhm_sigma": "Rejet de poses : écarte les poses dont la netteté d'étoile (FWHM) est plus mauvaise que ce nombre de σ. Plus bas = rejet plus sévère.",
+    "roundness_floor": "Rejet de poses : rondeur d'étoile minimale pour garder une pose — écarte les poses filées / secouées par le vent. Plus haut = ne garde que les étoiles plus rondes.",
+    "background_sigma": "Rejet de poses : écarte les poses dont le fond est à ce nombre de σ au-dessus de la médiane (nuages, lune, gradients).",
+    "star_count_frac": "Rejet de poses : ne garde que les poses ayant au moins cette fraction du nombre d'étoiles détectées de la meilleure pose.",
+    "trail_mask_k": "Masquage inter-poses des traînées satellite/avion : un pixel au-dessus de la médiane par pixel + k·σ est remplacé. Plus bas = plus agressif ; 0 = désactivé.",
+    "denoise_lum": "Force de débruitage sur le master de LUMINANCE linéaire — doux, pour préserver le détail galaxie/nébuleuse.",
+    "denoise_chroma": "Force de débruitage sur les canaux de COULEUR linéaires — généralement plus élevée, car les sous-piles R/V/B fines sont bruitées.",
+    "background_ai": "Extraction de fond/gradient par IA GraXpert sur chaque master linéaire (au lieu du subsky polynomial de Siril).",
+    "stretch": "Étirement global luminosité/contraste de la planète ou de la Lune. Plus élevé relève les tons moyens.",
+    "highlight": "Point de protection des hautes lumières — plus élevé empêche les cratères brillants et le limbe de saturer au blanc.",
+    "sharpen": "Renforcement des détails par ondelettes. 1.0 par défaut ; augmentez pour plus de détails, baissez si ça sonne ou paraît craquelé.",
+    "clahe": "Contraste local / relief de surface. Plus élevé = plus contrasté ; trop élevé paraît dur.",
+    "headroom": "Réduit le disque brillant avant l'étirement pour éviter de brûler les hautes lumières. 0 ou 1 = aucune réduction ; entre les deux réserve plus de marge.",
+    "best_percent": "Sélection « lucky imaging » : ne garde que ce % des poses les plus nettes avant l'empilement. Plus bas = plus strict.",
+    "ap_align": "Alignement multi-points (planétaire) — corrige les distorsions locales de turbulence sur le disque, pas seulement un décalage global.",
+    "deconv_fwhm": "Largeur de la PSF de déconvolution (pixels) — à régler près de la taille du flou pour récupérer du détail. 0 = désactivé.",
+    "deconv_iters": "Itérations de déconvolution. Plus il y en a, plus c'est net, mais des halos peuvent apparaître autour des bords vifs.",
+    "deconv_alpha": "Régularisation de la déconvolution — plus élevé supprime bruit/halos, plus bas est plus agressif.",
+    "per_frame_starnet": "Lance StarNet++ sur chaque pose avant l'empilement de la comète (champs denses). Plus lent, mais retrait d'étoiles plus propre.",
+    "look": "Style de rendu : natural (fidèle, doux), iphone (plus chaud, plus contrasté, ciel plus profond) ou deepsky (audacieux, dramatique, forte saturation).",
+    "brightness": "Niveau cible du fond de ciel. Plus bas = ciel plus sombre ; plus haut relève le cœur de la Voie lactée.",
+    "saturation_scale": "Module la saturation propre au style choisi. 1 = tel que conçu ; en dessous de 1 atténue les couleurs criardes ; jusqu'à 2 pour plus.",
+    "highlight_ceiling": "Plafond de luminosité du cœur de la Voie lactée. Plus bas = cœur plus sombre et mieux protégé ; 0 garde celui du style."
+  },
+  "denoiseFinal": {
+    "title": "Débruiter l'image finale (GraXpert)",
+    "hint": "Lance le débruitage IA GraXpert sur l'image finale à la demande — sur le service GraXpert natif de la machine hôte si configuré (plus rapide, non bloquant). Ouvre une nouvelle tâche avec le résultat débruité.",
+    "run": "Débruiter la finale",
+    "starting": "Démarrage…"
+  },
   "refine": {
     "title": "Améliorer ce run avec l'IA",
     "hint": "Le modèle de vision local observe le résultat, diagnostique ses défauts et refait la finition — en itérant jusqu'à obtenir une image propre.",
@@ -521,7 +948,9 @@
     "starting": "Démarrage…",
     "failed": "Impossible de lancer l'amélioration IA pour ce run."
   },
-  "log": { "empty": "Aucune sortie pour le moment." },
+  "log": {
+    "empty": "Aucune sortie pour le moment."
+  },
   "viewer": {
     "zoomIn": "Zoom avant",
     "zoomOut": "Zoom arrière",
@@ -570,7 +999,11 @@
     "title": "Bibliothèque de calibration",
     "deepskyTitle": "Masters caméra (refroidie)",
     "phoneTitle": "Masters téléphone / reflex (ISO)",
-    "empty": "La bibliothèque est vide. Lancez un traitement avec des images de calibration pour la remplir."
+    "empty": "La bibliothèque est vide. Lancez un traitement avec des images de calibration pour la remplir.",
+    "copyToS3": "Copier vers S3",
+    "copyToS3Hint": "Réplique chaque master de calibration vers S3 (conservé aussi en local). Les traitements suivants retéléchargent tout master absent en local, puis le suppriment après — pour stacker même avec peu d'espace disque.",
+    "copying": "Copie en cours…",
+    "copyQueued": "Copie de la bibliothèque vers S3 mise en file."
   },
   "status": {
     "queued": "En attente",
@@ -613,7 +1046,8 @@
       "gps": "📍 Ma position",
       "gpsLabel": "Ma position",
       "you": "Vous",
-      "notSet": "non définie — recherchez ou utilisez le GPS"
+      "notSet": "non définie — recherchez ou utilisez le GPS",
+      "favorites": "Favoris"
     },
     "canopy": {
       "title": "Données arbres/forêt",
@@ -651,7 +1085,9 @@
     "autoRefresh": "Rafraîchissement auto",
     "updated": "Mis à jour à {time}",
     "notVisible": "Pas visible ce soir",
-    "time": { "specific": "Heure précise" },
+    "time": {
+      "specific": "Heure précise"
+    },
     "location": {
       "title": "Lieu",
       "lat": "Latitude",
@@ -682,7 +1118,12 @@
       "cloudMid": "Nuages moyens",
       "cloudHigh": "Nuages élevés",
       "humidity": "Humidité",
-      "precip": "Risque de pluie"
+      "precip": "Risque de pluie",
+      "radar": "Radar de pluie",
+      "live": "en direct",
+      "radarLight": "faible",
+      "radarHeavy": "forte",
+      "liveNoData": "Radar en direct : pas de données pour cet instant"
     },
     "lp": {
       "uncovered": "Les données détaillées de pollution lumineuse ne sont pas téléchargées pour cette zone.",
@@ -696,10 +1137,20 @@
       "loading": "Chargement des prévisions…",
       "unavailable": "Météo indisponible pour le moment.",
       "verdict": "Observabilité",
+      "tonightLabel": "Cette nuit",
+      "verdictLabel": {
+        "excellent": "Excellent",
+        "good": "Bon",
+        "fair": "Moyen",
+        "poor": "Médiocre"
+      },
       "best": "Meilleure fenêtre dégagée",
       "noWindow": "Aucune fenêtre dégagée pendant la nuit.",
       "sources": "Source",
-      "legend": { "less": "moins", "more": "plus" },
+      "legend": {
+        "less": "moins",
+        "more": "plus"
+      },
       "timeline": {
         "play": "Lire / mettre en pause l'animation des nuages",
         "scrub": "Parcourir le temps",
@@ -711,6 +1162,7 @@
         "seeing": "Turbulence",
         "transparency": "Transparence",
         "humidity": "Humidité",
+        "temp": "Température",
         "dew": "Risque de buée",
         "wind": "Vent (km/h)",
         "jet": "Courant-jet (km/h)",
@@ -783,104 +1235,7 @@
     },
     "tabs": {
       "targets": "Cibles",
-      "polar": "Mise en station",
       "darksky": "Ciel sombre"
-    },
-    "polar": {
-      "title": "Mise en station",
-      "subtitle": "Placez l'étoile polaire au bon endroit sur le réticule de votre viseur polaire, pour maintenant.",
-      "hemisphere": { "north": "Nord", "south": "Sud" },
-      "reticle": {
-        "placeHere": "Placez l'étoile dans le cercle orange",
-        "truePole": "pôle vrai",
-        "polaris": "Polaris",
-        "sigmaOct": "σ Octantis",
-        "cassiopeia": "Cassiopée",
-        "bigDipper": "Grande Ourse",
-        "crux": "Croix du Sud",
-        "octans": "Octant",
-        "invertedView": "Vue dans le viseur (inversée)",
-        "erectView": "Vue à l'œil nu (droite)",
-        "mirrored": "Miroir (renvoi coudé)"
-      },
-      "panel": {
-        "clock": "Position horaire",
-        "poleStar": "Étoile polaire",
-        "hemisphere": "Hémisphère",
-        "ha": "Angle horaire",
-        "separation": "Écart au pôle",
-        "alt": "Hauteur",
-        "az": "Azimut",
-        "lst": "Temps sidéral",
-        "latTooLow": "Le pôle céleste est trop bas ici pour un viseur polaire.",
-        "notVisible": "L'étoile polaire est sous l'horizon en ce moment."
-      },
-      "orientation": {
-        "inverting": "Inversée (viseur)",
-        "erect": "Droite (œil nu)",
-        "mirror": "Miroir (renvoi)",
-        "hint": "La plupart des viseurs polaires inversent l'image. Faites correspondre le réticule à l'écran à ce que vous voyez réellement."
-      },
-      "time": {
-        "specific": "Heure précise",
-        "autoRefresh": "Rafraîchir auto"
-      },
-      "tutorial": {
-        "title": "Comment régler et utiliser votre viseur polaire",
-        "intro": "Un guide pratique pour un viseur polaire SkyWatcher sur une Celestron Advanced VX — du réglage initial à l'utilisation sous un ciel sombre.",
-        "s1": {
-          "title": "À quoi sert la mise en station",
-          "body": "L'axe AD de la monture doit pointer le pôle céleste pour qu'un seul moteur suive le ciel. Le viseur polaire permet de viser l'étoile polaire et de la placer précisément.",
-          "tips": [
-            "Le pôle est proche — mais pas exactement — de l'étoile polaire.",
-            "Une bonne mise en station = poses longues à étoiles rondes et go-to fiable."
-          ]
-        },
-        "s2": {
-          "title": "Une fois : aligner le viseur sur l'axe AD",
-          "body": "Centrez un objet lointain sur le réticule, tournez l'axe AD de 180°, puis ajustez les trois vis pour corriger la moitié de l'écart. Répétez jusqu'à ce que l'objet reste fixe pendant la rotation.",
-          "tips": [
-            "À faire une fois, de jour sur un repère lointain (ou sur Polaris la nuit).",
-            "Réglez les vis du réticule, jamais les boulons alt/az de la monture.",
-            "De très petits réglages — les vis sont sensibles."
-          ]
-        },
-        "s3": {
-          "title": "Installer la monture (Advanced VX)",
-          "body": "Mettez le trépied de niveau, réglez l'échelle de latitude sur votre latitude, et visez le nord VRAI (ou sud), pas le nord magnétique.",
-          "tips": [
-            "Utilisez un niveau à bulle ; un trépied non nivelé fausse la latitude.",
-            "Corrigez la déclinaison magnétique entre nord boussole et nord vrai.",
-            "Pré-réglez le boulon de latitude proche de votre latitude avant de commencer."
-          ]
-        },
-        "s4": {
-          "title": "Voir le réticule la nuit",
-          "body": "La nuit, on voit les étoiles mais pas le réticule gravé. Éclairez-le faiblement : dirigez une lumière ROUGE en biais dans l'avant (objectif), ou utilisez l'illuminateur de la monture s'il existe.",
-          "tips": [
-            "Rouge uniquement — la lumière blanche ruine l'adaptation à l'obscurité.",
-            "Un écran de téléphone en rouge près de l'objectif dépanne très bien.",
-            "Restez faible ; trop fort masque la faible Polaris."
-          ]
-        },
-        "s5": {
-          "title": "Placer l'étoile polaire",
-          "body": "Tournez l'axe AD jusqu'à ce que le repère de l'étoile sur le réticule soit à la position horaire indiquée ci-dessus, puis utilisez les boulons ALT et AZ (pas l'AD) pour amener l'étoile dans le repère.",
-          "tips": [
-            "Faites correspondre l'orientation à l'écran (inversée/droite) à votre viseur.",
-            "Bougez avec les boulons alt/az ; laissez l'AD où vous l'avez réglé.",
-            "Centrez l'étoile dans le petit cercle, pas sur la croix du pôle vrai."
-          ]
-        },
-        "s6": {
-          "title": "Vérifier et affiner",
-          "body": "Recoupez avec la mise en station All-Star de la raquette Advanced VX, ou faites un contrôle de dérive rapide sur une étoile près du méridien et ajustez les boulons alt/az.",
-          "tips": [
-            "All-Star utilise n'importe quelle étoile brillante — pratique si Polaris est cachée.",
-            "Revérifiez après stabilisation de la monture ou si vous heurtez le trépied."
-          ]
-        }
-      }
     },
     "controls": {
       "apply": "Appliquer",
@@ -946,8 +1301,10 @@
       "nebula": "Nébuleuse",
       "emission_nebula": "Nébuleuse en émission",
       "planetary_nebula": "Nébuleuse planétaire",
+      "reflection_nebula": "Nébuleuse par réflexion",
       "dark_nebula": "Nébuleuse obscure",
-      "cluster": "Amas ouvert",
+      "open_cluster": "Amas ouvert",
+      "cluster": "Amas d'étoiles",
       "globular": "Amas globulaire",
       "supernova_remnant": "Rémanent de supernova",
       "other": "Autre"
@@ -962,7 +1319,12 @@
       "title": "{name} — pourquoi ce score",
       "select": "Sélectionnez une cible pour voir sa courbe d'altitude et le détail du score.",
       "subScores": "Détail du score",
-      "reason": "Résumé"
+      "reason": "Résumé",
+      "type": "Type",
+      "commonName": "Nom commun",
+      "morphology": "Morphologie",
+      "surfaceBrightness": "Brillance de surface",
+      "size": "Taille"
     },
     "sub": {
       "max_alt": "Altitude",
@@ -999,7 +1361,10 @@
     "composition": {
       "title": "Filtres / émission",
       "load": "Charger",
-      "source": { "curated": "vérifié", "typical": "par type" }
+      "source": {
+        "curated": "vérifié",
+        "typical": "par type"
+      }
     },
     "lines": {
       "ha": "Hα",
@@ -1010,7 +1375,8 @@
     },
     "map": {
       "title": "Carte du ciel",
-      "hint": "Chaque point est une cible placée par altitude (centre = zénith) et azimut ; couleur = score."
+      "hint": "Chaque point est une cible placée par altitude (centre = zénith) et azimut ; couleur = score.",
+      "belowHorizon": "Sous l'horizon actuellement"
     }
   },
   "calendar": {
@@ -1020,7 +1386,10 @@
     "loading": "Calcul du calendrier du ciel…",
     "refresh": "Actualiser",
     "updated": "Mis à jour {time}",
-    "sections": { "location": "Lieu", "filters": "Filtres" },
+    "sections": {
+      "location": "Lieu",
+      "filters": "Filtres"
+    },
     "range": {
       "label": "Période",
       "d30": "30 prochains jours",
@@ -1160,6 +1529,7 @@
       "altitude": "Altitude",
       "sun_up": "Soleil levé",
       "moon": "Clair de Lune",
+      "light_pollution": "Pollution lumineuse",
       "brightness": "Éclat"
     },
     "contact": {

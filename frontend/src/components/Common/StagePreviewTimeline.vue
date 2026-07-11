@@ -12,12 +12,17 @@ import { card, btnGhost } from "@/constants/styles";
 import ImageViewer from "@/components/Common/ImageViewer.vue";
 import FilterChip from "@/components/Common/FilterChip.vue";
 import IconChevronRight from "@/components/Icons/IconChevronRight.vue";
+import IconSliders from "@/components/Icons/IconSliders.vue";
 import type { RunResult, StagePreview } from "@/types";
 
 const props = defineProps<{
   result?: RunResult | null;
   live?: StagePreview[];
+  // editable adds a per-card "edit & re-run" affordance (completed deepsky/nebula runs); clicking it
+  // emits the card's stage so the parent can open the param editor and re-run from that stage.
+  editable?: boolean;
 }>();
+const emit = defineEmits<{ edit: [stage: string] }>();
 const { t } = useI18n();
 
 // Prefer the live stream; fall back to the finished run's persisted previews. Sorted by index (the
@@ -42,7 +47,9 @@ function stageLabel(stage: string): string {
 // always drive the carousel and never reach ImageViewer's own arrow-to-pan handler.
 const activeIndex = ref<number | null>(null);
 const active = computed(() =>
-  activeIndex.value === null ? null : (previews.value[activeIndex.value] ?? null),
+  activeIndex.value === null
+    ? null
+    : (previews.value[activeIndex.value] ?? null),
 );
 
 function step(dir: number) {
@@ -84,28 +91,41 @@ const arrowBtn =
       {{ t("stagePreviews.hint") }}
     </p>
     <div class="flex gap-3 overflow-x-auto pb-2">
-      <button
+      <div
         v-for="(sp, idx) in previews"
         :key="sp.index"
-        class="group w-40 shrink-0 overflow-hidden rounded-lg border border-slate-200 text-left dark:border-slate-700"
-        :title="t('stagePreviews.enlarge')"
-        data-demo="stage-preview-frame"
-        @click="open(idx)"
+        class="w-40 shrink-0 overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700"
       >
-        <div class="bg-slate-900">
-          <img
-            :src="thumbUrl(sp.png_path, 320)"
-            :alt="stageLabel(sp.stage)"
-            class="h-28 w-full object-contain transition group-hover:opacity-90"
-          />
-        </div>
-        <div class="flex items-center justify-between gap-1 p-2">
-          <span class="truncate text-xs font-medium">{{
-            stageLabel(sp.stage)
-          }}</span>
-          <FilterChip v-if="sp.filter" :filter="sp.filter" />
-        </div>
-      </button>
+        <button
+          class="group block w-full text-left"
+          :title="t('stagePreviews.enlarge')"
+          data-demo="stage-preview-frame"
+          @click="open(idx)"
+        >
+          <div class="bg-slate-900">
+            <img
+              :src="thumbUrl(sp.png_path, 320)"
+              :alt="stageLabel(sp.stage)"
+              class="h-28 w-full object-contain transition group-hover:opacity-90"
+            />
+          </div>
+          <div class="flex items-center justify-between gap-1 p-2">
+            <span class="truncate text-xs font-medium">{{
+              stageLabel(sp.stage)
+            }}</span>
+            <FilterChip v-if="sp.filter" :filter="sp.filter" />
+          </div>
+        </button>
+        <button
+          v-if="editable"
+          class="flex w-full items-center justify-center gap-1 border-t border-slate-200 px-2 py-1.5 text-xs font-medium text-brand-600 transition hover:bg-brand-50 dark:border-slate-700 dark:text-brand-400 dark:hover:bg-brand-900/20"
+          data-demo="stage-edit"
+          @click="emit('edit', sp.stage)"
+        >
+          <IconSliders class="h-3.5 w-3.5" />
+          {{ t("rerun.editStage") }}
+        </button>
+      </div>
     </div>
 
     <!-- Enlarge carousel: a centred 80%-of-viewport panel over a dimmed backdrop; clicking the surrounding

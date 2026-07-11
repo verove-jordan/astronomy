@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/verove-jordan/astronomy/internal/geogrid"
 )
@@ -150,7 +151,8 @@ func (p *Provider) BuildAtlas(ctx context.Context, binPath string, b Bounds, res
 	}
 	defer func() { _ = os.RemoveAll(work) }()
 
-	// A file list of /vsicurl/ URLs → one VRT mosaic (no data downloaded yet; COGs are opened lazily).
+	// A file list of /vsicurl/ URLs → one VRT mosaic (no pixel data downloaded yet; the COGs are opened
+	// lazily and only the windows/overviews for b are fetched during the warp).
 	var list strings.Builder
 	for _, u := range tiles {
 		list.WriteString("/vsicurl/" + u + "\n")
@@ -160,8 +162,9 @@ func (p *Provider) BuildAtlas(ctx context.Context, binPath string, b Bounds, res
 		return Coverage{}, err
 	}
 	vrt := filepath.Join(work, "mosaic.vrt")
-	if out, err := runGDAL(ctx, "gdalbuildvrt", "-input_file_list", listPath, vrt); err != nil {
-		return Coverage{}, fmt.Errorf("gdalbuildvrt: %w: %s", err, strings.TrimSpace(out))
+	vrtArgs := []string{"-input_file_list", listPath, vrt}
+	if out, err := runGDALRetry(ctx, 2, "gdalbuildvrt", vrtArgs...); err != nil {
+		return Coverage{}, gdalError("gdalbuildvrt", vrtArgs, out, err)
 	}
 	if onProgress != nil {
 		onProgress(len(tiles), total)
@@ -170,19 +173,9 @@ func (p *Provider) BuildAtlas(ctx context.Context, binPath string, b Bounds, res
 	if err := os.MkdirAll(filepath.Dir(binPath), 0o755); err != nil {
 		return Coverage{}, err
 	}
-	// ENVI output is the flat north-up little-endian float32 blob the geogrid reader expects. -r max keeps
-	// the tallest canopy per output cell (obstruction is worst-case, not a mean).
-	warpArgs := []string{
-		"-overwrite", "-t_srs", "EPSG:4326",
-		"-te", ftoa(b.MinLon), ftoa(b.MinLat), ftoa(b.MaxLon), ftoa(b.MaxLat),
-		"-tr", ftoa(resDeg), ftoa(resDeg),
-		"-r", "max", "-ot", "Float32", "-of", "ENVI",
-		"--config", "GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR",
-		"--config", "GDAL_HTTP_MAX_RETRY", "3", "--config", "GDAL_HTTP_RETRY_DELAY", "2",
-		vrt, binPath,
-	}
-	if out, err := runGDAL(ctx, "gdalwarp", warpArgs...); err != nil {
-		return Coverage{}, fmt.Errorf("gdalwarp: %w: %s", err, strings.TrimSpace(out))
+	warpArgs := buildWarpArgs(b, resDeg, vrt, binPath)
+	if out, err := runGDALRetry(ctx, 2, "gdalwarp", warpArgs...); err != nil {
+		return Coverage{}, gdalError("gdalwarp", warpArgs, out, err)
 	}
 
 	meta, err := metaFromGDAL(ctx, binPath)
@@ -252,6 +245,53 @@ func coverageFromMeta(m geogrid.Meta, binPath string) Coverage {
 		cov.BuiltAtMs = fi.ModTime().UnixMilli()
 	}
 	return cov
+}
+
+// buildWarpArgs assembles the gdalwarp command that clips the ETH COG mosaic to b at resDeg and writes the
+// flat north-up little-endian float32 ENVI blob the geogrid reader expects. -te is minLon,minLat,maxLon,
+// maxLat (GDAL's xmin ymin xmax ymax order); -r max keeps the tallest canopy per output cell (obstruction
+// is worst-case, not a mean).
+//
+// Do NOT add `--config GDAL_DISABLE_READDIR_ON_OPEN EMPTY_DIR` here. It reads like a harmless /vsicurl/
+// speed-up, but it makes GDAL treat the source's directory as empty and then fail to open the VRT's
+// referenced COG — gdalwarp dies right after printing "Creating output file …" with no error line at all.
+// That single config was the download bug; leaving it out is the fix (verified: deterministic).
+func buildWarpArgs(b Bounds, resDeg float64, vrt, binPath string) []string {
+	return []string{
+		"-overwrite", "-t_srs", "EPSG:4326",
+		"-te", ftoa(b.MinLon), ftoa(b.MinLat), ftoa(b.MaxLon), ftoa(b.MaxLat),
+		"-tr", ftoa(resDeg), ftoa(resDeg),
+		"-r", "max", "-ot", "Float32", "-of", "ENVI",
+		"--config", "GDAL_HTTP_MAX_RETRY", "3", "--config", "GDAL_HTTP_RETRY_DELAY", "2",
+		vrt, binPath,
+	}
+}
+
+// runGDALRetry runs a gdal command, retrying a couple of times to ride out a transient network blip while
+// streaming the ETH COGs (GDAL_HTTP_MAX_RETRY only covers specific HTTP codes mid-read).
+func runGDALRetry(ctx context.Context, attempts int, bin string, args ...string) (string, error) {
+	var out string
+	var err error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return out, ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
+		}
+		if out, err = runGDAL(ctx, bin, args...); err == nil {
+			return out, nil
+		}
+	}
+	return out, err
+}
+
+// gdalError wraps a failed gdal invocation with its command + combined output, so a failure is diagnosable
+// instead of just gdal's terse stdout banner (which is all gdalwarp prints on a source-open failure).
+func gdalError(name string, args []string, out string, err error) error {
+	return fmt.Errorf("%s failed: %w\ncommand: %s %s\noutput: %s",
+		name, err, name, strings.Join(args, " "), strings.TrimSpace(out))
 }
 
 func runGDAL(ctx context.Context, bin string, args ...string) (string, error) {

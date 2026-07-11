@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -118,12 +119,16 @@ func TestGrid_ShapeAndCells(t *testing.T) {
 
 	g, warn := p.Grid(context.Background(), 48.86, 2.35, 0, []string{"clouds"})
 	require.Empty(t, warn)
-	assert.Equal(t, 4, g.Nx)
-	assert.Equal(t, 4, g.Ny)
+
+	// The grid is snapped to the fixed global lattice, so its shape is derived (not gridSize²); assert
+	// against the same snap the provider used (radiusDeg 0 → the provider's 2° default).
+	geom := p.snapGrid(48.86, 2.35, 2)
+	assert.Equal(t, geom.nx, g.Nx)
+	assert.Equal(t, geom.ny, g.Ny)
 	require.Len(t, g.Timesteps, 3)
 	frames := g.Layers["clouds"]
 	require.Len(t, frames, 3, "one frame per timestep")
-	require.Len(t, frames[0], 16, "nx*ny cells per frame")
+	require.Len(t, frames[0], geom.nx*geom.ny, "nx*ny cells per frame")
 	assert.InDelta(t, 10, frames[0][0], 0.01, "frame 0 cloud cover")
 	assert.InDelta(t, 80, frames[1][0], 0.01, "frame 1 cloud cover")
 
@@ -140,19 +145,20 @@ func TestGrid_CloudsExpandToBands(t *testing.T) {
 	g, warn := p.Grid(context.Background(), 48.86, 2.35, 0, []string{"clouds"})
 	require.Empty(t, warn)
 	require.Len(t, g.Layers, 4, "\"clouds\" expands to total + low/mid/high bands")
+	geom := p.snapGrid(48.86, 2.35, 2)
 	for layer, want := range map[string]float64{
 		"clouds": 10, "clouds_low": 5, "clouds_mid": 3, "clouds_high": 8,
 	} {
 		frames := g.Layers[layer]
 		require.Len(t, frames, 3, layer)
-		require.Len(t, frames[0], 16, layer)
+		require.Len(t, frames[0], geom.nx*geom.ny, layer)
 		assert.InDelta(t, want, frames[0][0], 0.01, layer)
 	}
 }
 
-// TestGrid_ChunksLargeGrids: a 32×32 grid (1024 coords) must arrive as several chunked GETs and be
-// reassembled cell-for-cell in request order. The fake echoes each coordinate's own lat·100+lon as its
-// cloud value, so a chunk (or cell) landing out of order shows up as a value mismatch — deterministic
+// TestGrid_ChunksLargeGrids: a dense snapped grid (hundreds of coords) must arrive as several chunked GETs
+// and be reassembled cell-for-cell in request order. The fake echoes each coordinate's own lat·100+lon as
+// its cloud value, so a chunk (or cell) landing out of order shows up as a value mismatch — deterministic
 // even though the chunks are fetched concurrently.
 func TestGrid_ChunksLargeGrids(t *testing.T) {
 	var requests atomic.Int32
@@ -185,20 +191,19 @@ func TestGrid_ChunksLargeGrids(t *testing.T) {
 
 	g, warn := p.Grid(context.Background(), 48.86, 2.35, 0, []string{"clouds"})
 	require.Empty(t, warn)
-	assert.Greater(t, requests.Load(), int32(1), "1024 coords cannot fit one GET")
+	assert.Greater(t, requests.Load(), int32(1), "a dense grid cannot fit one GET")
 	require.Len(t, g.Layers["clouds"], 1, "one frame per timestep")
 	frame := g.Layers["clouds"][0]
-	require.Len(t, frame, 1024)
 
-	// Recompute each cell's requested coordinate (the provider's grid maths + joinFloats' 3-decimal
-	// trim) and check the fake's echo landed in that exact cell.
-	west, east, south, north := 2.35-2.0, 2.35+2.0, 48.86-2.0, 48.86+2.0
-	for j := 0; j < 32; j++ {
-		la := parse3(t, north-(north-south)*float64(j)/31)
-		for i := 0; i < 32; i++ {
-			lo := parse3(t, west+(east-west)*float64(i)/31)
-			assert.InDelta(t, la*100+lo, float64(frame[j*32+i]), 0.005, "cell (%d,%d)", i, j)
-		}
+	// Recompute the snapped lattice the provider used and check the fake's per-coordinate echo landed in
+	// the matching cell (in request order). joinFloats' 3-decimal trim is mirrored by parse3.
+	geom := p.snapGrid(48.86, 2.35, 2)
+	lats, lons := geom.points()
+	require.Len(t, frame, geom.nx*geom.ny)
+	for c := range frame {
+		la := parse3(t, lats[c])
+		lo := parse3(t, lons[c])
+		assert.InDelta(t, la*100+lo, float64(frame[c]), 0.005, "cell %d", c)
 	}
 }
 
@@ -233,6 +238,37 @@ func TestExpandGridLayers(t *testing.T) {
 			assert.Equal(t, tt.want, expandGridLayers(tt.in))
 		})
 	}
+}
+
+func TestNiceStep(t *testing.T) {
+	cases := map[float64]float64{
+		0.03: 0.05, 0.1: 0.1, 0.11: 0.2, 0.2: 0.2, 0.3: 0.5, 0.7: 1, 1: 1, 1.5: 2, 3: 5, 6: 10,
+	}
+	for raw, want := range cases {
+		assert.InDelta(t, want, niceStep(raw), 1e-9, "niceStep(%v)", raw)
+	}
+}
+
+// TestSnapGrid_GlobalLattice is the heart of the fix: the sample points land on a FIXED global lattice
+// (integer multiples of the step), so two overlapping viewports sample identical geographic points and a
+// location's value cannot drift as the map pans — the old floating-box bug. A sub-step pan must keep the
+// same cell size and stay co-aligned to the same grid lines.
+func TestSnapGrid_GlobalLattice(t *testing.T) {
+	p := testProvider(t, "", "", "", "") // geometry only — snapGrid makes no HTTP calls
+	geom := p.snapGrid(48.86, 2.35, 2)
+	lats, lons := geom.points()
+	require.Equal(t, geom.nx*geom.ny, len(lats))
+	for i := range lats {
+		assert.InDelta(t, 0, math.Remainder(lats[i], geom.step), 1e-6, "lat %v on global lattice", lats[i])
+		assert.InDelta(t, 0, math.Remainder(lons[i], geom.step), 1e-6, "lon %v on global lattice", lons[i])
+	}
+
+	// Pan the centre by less than a cell: same step, and every edge stays a multiple of step away from the
+	// original — i.e. both boxes share the same global grid lines, so overlapping cells coincide exactly.
+	panned := p.snapGrid(48.86+geom.step*0.3, 2.35+geom.step*0.3, 2)
+	assert.InDelta(t, geom.step, panned.step, 1e-9, "a sub-step pan keeps the cell size")
+	assert.InDelta(t, 0, math.Remainder(panned.west-geom.west, geom.step), 1e-6, "co-aligned west")
+	assert.InDelta(t, 0, math.Remainder(panned.north-geom.north, geom.step), 1e-6, "co-aligned north")
 }
 
 func TestGridChunks(t *testing.T) {

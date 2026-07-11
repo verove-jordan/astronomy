@@ -31,6 +31,16 @@ const collapsed = computed(
   () => !!props.collapsible && props.modelValue === true,
 );
 
+// Only the last RENDER_CAP lines are put in the DOM — a live log's buffer runs to thousands of lines
+// (5000 in useJobStream), and rendering them all is the main heaviness on the job page. The header still
+// shows the full count; following/scroll math operates on the rendered tail.
+const RENDER_CAP = 800;
+const visible = computed(() =>
+  props.lines.length > RENDER_CAP
+    ? props.lines.slice(-RENDER_CAP)
+    : props.lines,
+);
+
 // The console fills from its own top to near the viewport bottom and scrolls INTERNALLY, so the page
 // itself never grows tall enough to scroll. BOTTOM_GAP leaves the card's + page's bottom padding plus a
 // little breathing room. Recomputed on mount, on resize, and whenever the content above it reflows.
@@ -129,7 +139,7 @@ function onScroll() {
       @scroll="onScroll"
     >
       <template v-if="lines.length">
-        <div v-for="(l, i) in lines" :key="i">
+        <div v-for="(l, i) in visible" :key="l.seq ?? i">
           <span v-if="l.ts" class="mr-2 text-slate-500">{{
             formatTimestamp(l.ts)
           }}</span

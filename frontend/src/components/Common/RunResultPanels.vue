@@ -19,7 +19,8 @@ import { card } from "@/constants/styles";
 import { humanizeMs, baseName, tempC } from "@/utils/format";
 import type { ChannelResult, RunResult } from "@/types";
 
-const props = defineProps<{ result: RunResult }>();
+const props = defineProps<{ result: RunResult; rerunnable?: boolean }>();
+const emit = defineEmits<{ "rerun-stage": [stage: string] }>();
 const { t } = useI18n();
 
 type Row = Record<string, unknown>;
@@ -138,6 +139,13 @@ const totalIntegrationMs = computed(() =>
   integrationByChannel.value.reduce((sum, c) => sum + c.ms, 0),
 );
 
+// Pointing-pattern verdict from the registration offsets (dither/drift diagnosis). "drift" and
+// "static" leave fixed-pattern residuals correlated (walking-noise risk) — flagged with ⚠.
+const pointingLabel = (p?: string) => {
+  if (!p) return "—";
+  return p === "drift" || p === "static" ? `⚠ ${p}` : p;
+};
+
 const channelRows = computed<Row[]>(() =>
   (props.result.channels ?? []).map((c) => ({
     filter: c.filter,
@@ -147,6 +155,7 @@ const channelRows = computed<Row[]>(() =>
     dark: c.selection?.dark ? "✓" : "—",
     flat: c.selection?.flat ? "✓" : "—",
     bias: c.selection?.bias ? "✓" : "—",
+    pointing: pointingLabel(c.dither?.pattern),
   })),
 );
 const channelColumns: Column<Row>[] = [
@@ -172,6 +181,7 @@ const channelColumns: Column<Row>[] = [
   { key: "dark", label: "Dark", align: "right" },
   { key: "flat", label: "Flat", align: "right" },
   { key: "bias", label: "Bias", align: "right" },
+  { key: "pointing", label: t("fields.pointing"), align: "right" },
 ];
 
 const masterRows = computed<Row[]>(() =>
@@ -406,7 +416,11 @@ const rejectedClass = (r: Row) =>
     </section>
 
     <!-- Processing-step filmstrip, directly below the final image (before the data tables). -->
-    <StagePreviewTimeline :result="props.result" />
+    <StagePreviewTimeline
+      :result="props.result"
+      :editable="rerunnable"
+      @edit="(s) => emit('rerun-stage', s)"
+    />
 
     <section v-if="planetaryFrames.length">
       <h2 class="mb-2 text-lg font-medium">{{ t("job.frameReview") }}</h2>

@@ -150,7 +150,21 @@ export interface ChannelResult {
   preview_path?: string;
   selection: Selection;
   metrics?: GradeMetric[];
+  dither?: DitherReport;
   error?: string;
+}
+
+// DitherReport classifies the capture-time pointing pattern from the registration offsets:
+// "dithered" (residual fixed-pattern noise decorrelates and is rejected), "drift"/"static"
+// (walking-noise risk — the run-level warning recommends dithering), or "mixed".
+export interface DitherReport {
+  pattern: string;
+  frames: number;
+  span_px: number;
+  step_median_px: number;
+  direction_r: number;
+  drift_px_per_frame: number;
+  note?: string;
 }
 
 // Defect is one issue the vision model diagnosed in a supervised render.
@@ -238,7 +252,43 @@ export interface JobParams {
   drop_wheel_transition?: boolean;
   color_calibration?: boolean;
   denoise?: boolean;
+  ha_exclude_stars?: boolean;
+  // Deep-sky colour palette (natural|hargb|hoo|sho|hos|foraxx|mono); empty/absent → natural.
+  palette?: string;
   supervise?: boolean;
+  // Gated deterministic star repair (deepsky/nebula; default on). The stretch_headroom knob it (and the
+  // supervisor/refine) tunes rides in `params` below, like the other fine knobs.
+  auto_fix_stars?: boolean;
+  sequential?: boolean;
+  live?: boolean;
+  // Storage: "local" | "s3" (full-S3 free-local-after), plus the target bucket/prefix.
+  storage_mode?: string;
+  s3?: { bucket?: string; prefix?: string };
+  low_disk?: boolean; // staged low-disk S3 processing (download/free one channel at a time)
+  // Standalone S3 transfer/backup job (upload|sync|download|removeLocal). Mirrors the Go TransferRequest
+  // JSON; the mirror destination base is `s3://<bucket>/<prefix>/<namespace>/<rel_path>`.
+  transfer?: {
+    op?: string;
+    bucket?: string;
+    prefix?: string;
+    namespace?: string; // "data" | "output" (empty for external-drive copies)
+    rel_path?: string;
+    local_root?: string;
+  };
+  // Milkyway (nightscape) run options.
+  look?: string;
+  brightness?: number;
+  orientation?: string;
+  dark_dir?: string;
+  flat_dir?: string;
+  bias_dir?: string;
+  // Cross-session reuse toggles.
+  reuse_disabled?: boolean;
+  reuse_sessions?: string[];
+  calib_exclude?: string[];
+  // Frozen snapshot of the calibration masters matched at queue time (which darks/flats/bias are included
+  // and with what params) — shown on the job page. See CalibrationPanel (readonly).
+  calib_plan?: CalibPreview;
   // Fine tunable-knob overrides (same whitelist/clamps as the supervisor) + the free-text objective
   // the agent carries, its re-entry ceiling and iteration cap.
   params?: Record<string, unknown>;
@@ -247,6 +297,47 @@ export interface JobParams {
   max_iters?: number;
   // Agent improvement series this job belongs to (0/absent = none).
   series_id?: number;
+}
+
+// PresetPayload is the situation recipe a processing preset carries: the subset of the /api/jobs body a
+// preset re-applies to the launch form (mirrors internal/preset.Payload). Input-specific fields (paths,
+// calibration, reuse, S3, orientation) are deliberately absent — a preset is a recipe, not a run.
+export interface PresetPayload {
+  mode?: string;
+  format?: string;
+  palette?: string;
+  look?: string;
+  brightness?: string;
+  goal?: string;
+  color_calibration?: boolean;
+  denoise?: boolean;
+  ha_exclude_stars?: boolean;
+  drop_wheel_transition?: boolean;
+  supervise?: boolean;
+  params?: Record<string, unknown>;
+}
+
+// PresetItem is one entry in the preset picker: a built-in (builtin=true, id=0, name is a slug the UI
+// translates, category set) or a user-saved preset (builtin=false, name is the user's text). Mirrors
+// internal/preset.Item.
+export interface PresetItem {
+  id: number;
+  name: string;
+  category?: string;
+  builtin: boolean;
+  payload: PresetPayload;
+  created_at?: number;
+  updated_at?: number;
+}
+
+// JobResume is the pause/resume checkpoint (jobs.resume). Cause distinguishes a manual pause (stays
+// paused until the user continues) from an error pause (auto-resumed with backoff).
+export interface JobResume {
+  phase?: string;
+  cause?: "manual" | "error";
+  attempts?: number;
+  next_retry_ms?: number;
+  reason?: string;
 }
 
 export interface Job {
@@ -258,6 +349,7 @@ export interface Job {
   current_step: string;
   error: string;
   params?: JobParams;
+  resume?: JobResume;
   log_tail?: string;
   result: RunResult;
   started_at_ms: number; // 0 until the job leaves the queue and starts processing
@@ -306,10 +398,15 @@ export interface S3Status {
   conn_id?: number;
 }
 
-// One capture folder of a past processing, with whether it still exists on disk (GET /api/processed).
+// One capture folder of a past processing (GET /api/processed). `exists` = usable (on local disk OR the
+// S3 mirror); `local` = present on local disk. `exists && !local` means it was freed after an S3 push and
+// must be pulled back from the mirror before it can be inspected/re-run. `rel` is the DataDir-relative slash
+// path — the authoritative ledger key the mirror pull uses (a client-side rel guess misses nested folders).
 export interface ProcessedPath {
   path: string;
   exists: boolean;
+  local: boolean;
+  rel: string;
 }
 
 // One past processing (a job) and the capture folders it consumed (GET /api/processed).
@@ -350,9 +447,12 @@ export interface ProcessingHistoryEntry {
 }
 
 // LogLine is one console line with the wall-clock time it was captured (null for legacy/untimed lines).
+// seq is a monotonic id assigned at produce time so the log list keeps stable :key across ring-buffer
+// trims (index keys would re-patch the whole list on every trimmed line).
 export interface LogLine {
   ts: number | null;
   text: string;
+  seq?: number;
 }
 
 // RunSummary is one durable on-disk run (GET /api/runs).
@@ -437,7 +537,9 @@ export type SkyObjectType =
   | "nebula"
   | "emission_nebula"
   | "planetary_nebula"
+  | "reflection_nebula"
   | "dark_nebula"
+  | "open_cluster"
   | "cluster"
   | "globular"
   | "supernova_remnant"
@@ -486,6 +588,8 @@ export interface SkyTarget {
   aliases?: string[];
   catalog: string;
   type: SkyObjectType;
+  common_name?: string; // friendly name from OpenNGC ("Fireworks Galaxy")
+  morphology?: string; // Hubble class from OpenNGC
   ra_deg: number;
   dec_deg: number;
   alt_now_deg: number;
@@ -496,6 +600,7 @@ export interface SkyTarget {
   transit_local: string;
   dark_hours_above_min: number;
   size_arcmin: number;
+  size_minor_arcmin?: number; // minor axis → true ellipse with size_arcmin
   mag_v: number;
   surface_brightness: number;
   fov_fill_pct: number; // NOT clamped: >100 means the target overflows the frame
@@ -832,8 +937,43 @@ export interface GotoStar {
   meridian_side: "east" | "west";
   order: number;
   status: "accepted" | "recommended" | "upcoming";
+  phase?: "align" | "calibration"; // two-phase routines (Celestron EQ); absent on single-phase
+  hc_name?: string; // the exact hand-controller label (profiles with a star list)
   suitability: number;
   reasons: string[];
+}
+
+// GotoProfile mirrors the backend align.Profile registry entry (GET /api/sky/align/profiles):
+// count bounds, phase structure and the hand-controller star-list key. Labels stay i18n-side.
+export interface GotoProfile {
+  key: string;
+  label: string;
+  mount_type: "eq" | "altaz";
+  min_alt_deg: number;
+  max_alt_deg: number;
+  default_stars: number;
+  min_stars: number;
+  max_stars: number;
+  mag_limit: number;
+  same_meridian_side: boolean;
+  avoid_meridian_deg: number;
+  zenith_bias: number;
+  star_list?: string;
+  align_stars?: number;
+  calib_opposite_side?: boolean;
+  note: string;
+}
+
+// SkyBody is the Moon or a naked-eye planet currently above the horizon, a landmark for the sky map.
+export interface SkyBody {
+  name: string; // lowercase key: "moon" | "venus" | … (i18n goto.sky.bodies.*)
+  kind: "moon" | "planet";
+  ra_deg: number;
+  dec_deg: number;
+  alt_deg: number;
+  az_deg: number;
+  mag: number;
+  phase?: number; // Moon illuminated fraction 0..1
 }
 
 export interface GotoResult {
@@ -844,6 +984,8 @@ export interface GotoResult {
   stars: GotoStar[];
   quality_score: number;
   warnings: string[];
+  // Moon + naked-eye planets currently up, for the sky map's landmarks.
+  sky_bodies?: SkyBody[];
 }
 
 export interface GotoQueryEcho {
@@ -925,5 +1067,14 @@ export interface WeatherGrid {
 
 export interface WeatherGridResponse {
   grid: WeatherGrid;
+  warning?: string;
+}
+
+// WeatherFrames is the animated cube's time axis + coverage WITHOUT the float data — the small payload the
+// map fetches to drive the scrubber and build server-rendered tile URLs (the tiles carry the heavy data).
+export interface WeatherFrames {
+  bbox: [number, number, number, number]; // [west, south, east, north]
+  timesteps: number[]; // epoch ms per frame
+  issued_ms: number;
   warning?: string;
 }

@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { apiGet, apiPost, apiPut, apiDelete, BASE } from "@/services/api";
+import type { BrowseEntry } from "@/types";
 
 // S3 connection manager: CRUD + test for encrypted S3 connections (credentials entered in the UI, stored
 // encrypted server-side), and the object-browser operations (buckets/objects, upload, download, delete,
@@ -142,6 +143,34 @@ export const useS3ConnStore = defineStore("s3conn", () => {
       `/api/s3/manage/object?conn=${conn}&bucket=${enc(bucket)}&key=${enc(key)}`,
     );
   }
+  // move relocates an object (or a whole folder — key ending "/") into destFolder (a folder key, "" = bucket
+  // root). The backend rewrites the s3_objects ledger so the inspector still resolves the moved file.
+  function move(
+    conn: number,
+    bucket: string,
+    src: string,
+    destFolder: string,
+  ): Promise<unknown> {
+    return apiPost(`/api/s3/manage/move?conn=${conn}`, {
+      bucket,
+      src,
+      dst: destFolder,
+    });
+  }
+  // browseChildren adapts the flat object lister to FileBrowser's Miller-column `fetchChildren`: given a
+  // clean folder path ("" = bucket root), it lists that folder's immediate children as BrowseEntry. Folder
+  // paths are the clean key (no trailing slash) so they match the breadcrumb's rel model; callers rebuild
+  // the real key as `path + "/"` for a folder when they need to act on it (download/delete/move).
+  function browseChildren(conn: number, bucket: string) {
+    return async (folder: string): Promise<BrowseEntry[]> => {
+      const objs = await objects(conn, bucket, folder ? folder + "/" : "");
+      return objs.map((o) => ({
+        name: o.name,
+        path: o.is_dir ? o.key.replace(/\/+$/, "") : o.key,
+        is_dir: o.is_dir,
+      }));
+    };
+  }
   function downloadUrl(conn: number, bucket: string, key: string): string {
     return `${BASE}/api/s3/manage/download?conn=${conn}&bucket=${enc(bucket)}&key=${enc(key)}`;
   }
@@ -176,6 +205,8 @@ export const useS3ConnStore = defineStore("s3conn", () => {
     objects,
     createFolder,
     deleteObject,
+    move,
+    browseChildren,
     downloadUrl,
     upload,
   };

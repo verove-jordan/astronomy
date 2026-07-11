@@ -55,17 +55,29 @@ func TestWalkLocalFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".hidden"), []byte("x"), 0o644))     // skipped
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "c.fits.part"), []byte("x"), 0o644)) // skipped
 
-	files, total, err := walkLocalFiles(dir)
+	files, total, err := walkLocalFiles(dir, nil)
 	require.NoError(t, err)
 	assert.Len(t, files, 2, "dotfiles and .part temps are skipped")
 	assert.Equal(t, int64(8), total, "5 + 3 bytes")
 }
 
 func TestWalkLocalFiles_MissingDirIsEmpty(t *testing.T) {
-	files, total, err := walkLocalFiles(filepath.Join(t.TempDir(), "nope"))
+	files, total, err := walkLocalFiles(filepath.Join(t.TempDir(), "nope"), nil)
 	require.NoError(t, err)
 	assert.Empty(t, files)
 	assert.Zero(t, total)
+}
+
+func TestWalkLocalFiles_ExcludeDirs(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "master_A.fits"), []byte("12345"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "catalogues"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "catalogues", "big.dat"), []byte("huge"), 0o644))
+
+	files, total, err := walkLocalFiles(dir, []string{"catalogues"})
+	require.NoError(t, err)
+	assert.Len(t, files, 1, "the excluded catalogues/ subtree is skipped")
+	assert.Equal(t, int64(5), total, "only master_A.fits counts")
 }
 
 func TestRemoveEmptyDirs(t *testing.T) {

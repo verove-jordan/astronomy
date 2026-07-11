@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onBeforeUnmount } from "vue";
 import { useI18n } from "vue-i18n";
 import { useWeatherStore } from "@/stores/weather";
 import { useSkyStore } from "@/stores/sky";
@@ -18,12 +18,13 @@ const tz = computed(() => {
     : Intl.DateTimeFormat().resolvedOptions().timeZone;
 });
 
-const count = computed(() => wx.timesteps.length);
+const count = computed(() => wx.frames.length);
 
-// The scrubber index ↔ the store playhead (dragging pauses playback; play advances the thumb).
+// The scrubber index ↔ the store playhead (dragging pauses playback; play advances the thumb). `frames`
+// is the union timeline of forecast-grid steps + live radar frames, so one scrubber drives both overlays.
 const idx = computed({
-  get: () => wx.frameIndex,
-  set: (v: number) => wx.setPlayhead(wx.timesteps[v] ?? wx.playhead),
+  get: () => wx.cursor,
+  set: (v: number) => wx.setPlayhead(wx.frames[v] ?? wx.playhead),
 });
 
 function frac(ms: number): number {
@@ -43,6 +44,10 @@ const nowLeft = computed(() => `${frac(Date.now()) * 100}%`);
 const playheadLabel = computed(() =>
   wx.playhead ? fmtClock(wx.playhead, tz.value) : "",
 );
+
+// Stop playback if the scrubber is torn down mid-animation (e.g. all animated layers toggled off), so the
+// store's frame interval never keeps ticking without a visible control. The map owner also pauses on leave.
+onBeforeUnmount(() => wx.pause());
 </script>
 
 <template>

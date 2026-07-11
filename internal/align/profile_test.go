@@ -44,6 +44,40 @@ func TestProfiles_RegistryIsSane(t *testing.T) {
 			assert.LessOrEqual(t, p.DefaultStars, p.MaxStars)
 			assert.Positive(t, p.MagLimit)
 			assert.NotEmpty(t, p.Note)
+			if p.StarList != "" {
+				assert.NotEmpty(t, starLists[p.StarList], "StarList key %q must exist", p.StarList)
+			}
+			if p.AlignStars > 0 {
+				// Two-phase routine: MinStars = align-only floor, the rest are calibration slots.
+				assert.LessOrEqual(t, p.AlignStars, p.MinStars)
+				assert.Less(t, p.AlignStars, p.MaxStars)
+			}
 		})
 	}
+}
+
+func TestProfiles_HandControllerWiring(t *testing.T) {
+	tests := []struct {
+		key           string
+		starList      string
+		alignStars    int
+		calibOpposite bool
+	}{
+		{"celestron-eq", "celestron", 2, true},
+		{"synscan-eq", "synscan", 0, false},
+		{"synscan-altaz", "synscan", 0, false},
+		{"celestron-altaz", "", 0, false}, // SkyAlign accepts any bright object — unfiltered
+		{"eq-generic", "", 0, false},
+		{"altaz-generic", "", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			p := Lookup(tt.key)
+			assert.Equal(t, tt.starList, p.StarList)
+			assert.Equal(t, tt.alignStars, p.AlignStars)
+			assert.Equal(t, tt.calibOpposite, p.CalibOppositeSide)
+		})
+	}
+	// The AVX default sequence is the full 2 align + 4 calibration.
+	assert.Equal(t, 6, Lookup("celestron-eq").DefaultStars)
 }

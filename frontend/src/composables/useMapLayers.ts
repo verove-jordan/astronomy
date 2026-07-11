@@ -1,24 +1,29 @@
 import { reactive } from "vue";
 import { BASE } from "@/services/api";
+import type { RvProduct } from "@/composables/useRainviewerLayer";
 
 // MapOverlay describes one toggleable map overlay. This registry is the extensibility seam: light
-// pollution is a backend-proxied XYZ tile layer (kind "tile"); the animated weather layers are gridded
-// canvas overlays (kind "grid") painted from the weather store's cube. The LocationPicker's layer
-// control and persistence handle both generically.
+// pollution is a backend-proxied static XYZ tile layer (kind "tile"); the animated forecast layers are
+// server-rendered weather-metric tiles (kind "weather") whose `{time}` frame is swapped by the scrubber;
+// live radar/satellite are direct RainViewer XYZ tiles swapped per frame (kind "rainviewer"). The
+// LocationPicker's layer control and persistence handle them generically.
 export interface MapOverlay {
   id: string;
   labelKey: string; // i18n key for the toggle label
-  kind?: "tile" | "grid"; // default "tile"
+  kind?: "tile" | "weather" | "rainviewer"; // default "tile"
   url?: string; // tile overlays: Leaflet XYZ tile template
-  metric?: string; // grid overlays: the weather grid layer key (clouds/humidity/precip)
+  metric?: string; // weather overlays: the metric rendered server-side (clouds/humidity/precip)
+  product?: RvProduct; // rainviewer overlays: which live product
+  live?: boolean; // real-time observation (vs forecast) — grouped + badged apart in the UI
   opacity: number;
   attribution: string;
-  legend?: "bortle"; // tile-overlay legend component the picker shows when on (grid → WeatherLegend)
+  legend?: "bortle" | "radar"; // tile-overlay legend the picker shows when on (weather → WeatherLegend)
   maxNativeZoom?: number; // tile overlays: highest zoom the source has tiles for
 }
 
-// Tiles are proxied through the backend so any provider API key stays server-side. Weather grid layers
-// are rendered client-side from a single Open-Meteo cube and animate over a shared time scrubber.
+// Tiles are proxied through the backend so any provider API key stays server-side. Weather-metric layers
+// are rendered into PNG map tiles by the backend (from one Open-Meteo cube) and animate over a shared time
+// scrubber — the browser only composites the tiles, doing zero per-pixel render work.
 const OVERLAYS: MapOverlay[] = [
   {
     id: "lightPollution",
@@ -34,15 +39,15 @@ const OVERLAYS: MapOverlay[] = [
   },
   {
     id: "clouds",
-    kind: "grid",
+    kind: "weather",
     metric: "clouds",
     labelKey: "tonight.layers.clouds",
-    opacity: 0.8,
+    opacity: 0.9,
     attribution: "Weather: Open-Meteo",
   },
   {
     id: "humidity",
-    kind: "grid",
+    kind: "weather",
     metric: "humidity",
     labelKey: "tonight.layers.humidity",
     opacity: 0.6,
@@ -50,11 +55,23 @@ const OVERLAYS: MapOverlay[] = [
   },
   {
     id: "precip",
-    kind: "grid",
+    kind: "weather",
     metric: "precip",
     labelKey: "tonight.layers.precip",
     opacity: 0.8,
     attribution: "Weather: Open-Meteo",
+  },
+  {
+    // Live precipitation radar (real observation, not forecast) — RainViewer past+nowcast frames, keyless
+    // and CORS-enabled, swapped per animation frame. Answers "is rain reaching me right now?".
+    id: "radar",
+    kind: "rainviewer",
+    product: "radar",
+    labelKey: "tonight.layers.radar",
+    live: true,
+    opacity: 0.75,
+    attribution: "Radar: RainViewer",
+    legend: "radar",
   },
 ];
 
@@ -85,9 +102,24 @@ export function useMapLayers() {
       // ignore quota / private-mode errors
     }
   }
-  // anyGridEnabled drives whether the time scrubber is shown (only the grid layers animate).
-  function anyGridEnabled(): boolean {
-    return OVERLAYS.some((o) => o.kind === "grid" && enabled.has(o.id));
+  // anyWeatherEnabled gates the lightweight frames-index fetch (only the animated weather layers need it).
+  function anyWeatherEnabled(): boolean {
+    return OVERLAYS.some((o) => o.kind === "weather" && enabled.has(o.id));
   }
-  return { overlays: OVERLAYS, isEnabled, toggle, anyGridEnabled };
+  // anyRainviewerEnabled gates the RainViewer live-frame fetch + refresh loop.
+  function anyRainviewerEnabled(): boolean {
+    return OVERLAYS.some((o) => o.kind === "rainviewer" && enabled.has(o.id));
+  }
+  // anyAnimatedEnabled drives whether the time scrubber is shown (weather + live layers both animate).
+  function anyAnimatedEnabled(): boolean {
+    return anyWeatherEnabled() || anyRainviewerEnabled();
+  }
+  return {
+    overlays: OVERLAYS,
+    isEnabled,
+    toggle,
+    anyWeatherEnabled,
+    anyRainviewerEnabled,
+    anyAnimatedEnabled,
+  };
 }

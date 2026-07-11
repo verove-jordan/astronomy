@@ -96,11 +96,20 @@ services:
       ASTRO_OUTPUT_DIR: ${PWD}/output
       ASTRO_LIBRARY_DIR: ${PWD}/library
       ASTRO_WORK_DIR: ${PWD}/work
+      # Confine the "Drives" browser to the mounted external-drive root (the /Volumes bind above). macOS
+      # host → /Volumes; Linux server → set ASTRO_DRIVES_DIR to your mount root (e.g. /media). The engine
+      # is Linux so its built-in roots are /media,/mnt,/run/media — this adds the macOS mount point.
+      ASTRO_BROWSE_ROOTS: ${ASTRO_DRIVES_DIR:-/Volumes}
       # Finish supervisor (opt-in, soft-fail). Default reaches a NATIVE mlx server on the host (macOS);
       # on Linux+GPU `just stack-ai` sets ASTRO_LLM_URL=http://ai:11434/v1 + ASTRO_LLM_MODEL=qwen2.5vl:32b.
       ASTRO_LLM_URL: ${ASTRO_LLM_URL:-http://host.docker.internal:1234/v1}
       ASTRO_LLM_MODEL: ${ASTRO_LLM_MODEL:-}
       ASTRO_LLM_IMAGE_FORMAT: ${ASTRO_LLM_IMAGE_FORMAT:-openai}
+      # Optional host GraXpert service (cmd/graxpert-host, `just run-graxpert-service`): offload denoise /
+      # background-extraction to a NATIVE macOS process — the container can't reach the host binary or GPU.
+      # Empty (default) → use the in-container CPU GraXpert (no regression). Set it (e.g. to the host
+      # service below) to run GraXpert natively, e.g. for the on-demand "Denoise final" action.
+      ASTRO_GRAXPERT_URL: ${ASTRO_GRAXPERT_URL:-}
     ports:
       - "${ENGINE_PORT:-8080}:8080"
     volumes:
@@ -114,6 +123,12 @@ services:
       - ${PWD}/library:${PWD}/library      # calibration masters (shared, read-write)
       - ${PWD}/output:${PWD}/output        # final stacks + reports
       - ${PWD}/work:${PWD}/work            # scratch
+      # External drives for the "Drives → Copy to S3" page. On a macOS host they live under /Volumes and
+      # Docker Desktop shares them (verified: nested drive mounts show through the parent bind). On a Linux
+      # server set ASTRO_DRIVES_DIR to your mount root (e.g. /media or /mnt). READ-ONLY — the copy only ever
+      # reads from the drive — and mounted at the SAME path so it matches ASTRO_BROWSE_ROOTS and the paths
+      # the UI shows. The host engine (just run) sees /Volumes natively, so this mount is stack-only.
+      - ${ASTRO_DRIVES_DIR:-/Volumes}:${ASTRO_DRIVES_DIR:-/Volumes}:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

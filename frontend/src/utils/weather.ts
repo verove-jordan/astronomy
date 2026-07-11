@@ -25,6 +25,26 @@ export function verdictColor(v: number): string {
   return goodBad(v, 0, 100, true);
 }
 
+// verdictLabel buckets a 0..100 observability score into a worded rating (i18n key suffix under
+// tonight.weather.verdictLabel.*) — the at-a-glance "is tonight any good?" answer.
+export function verdictLabel(
+  v: number,
+): "excellent" | "good" | "fair" | "poor" {
+  if (v >= 80) return "excellent";
+  if (v >= 60) return "good";
+  if (v >= 40) return "fair";
+  return "poor";
+}
+
+// tempColor is an INFORMATIONAL air-temperature ramp (cold blue → warm red), not a good/bad quality
+// scale: temperature doesn't make a night "better" or "worse" for observing, it just reports the value
+// (planning warm layers, frost/dew). −15 °C → blue, 40 °C → red.
+export function tempColor(c: number): string {
+  const t = clamp01((c + 15) / 55);
+  const hue = Math.round(210 * (1 - t)); // 210 = blue … 0 = red
+  return `hsl(${hue} 60% 45%)`;
+}
+
 const DEW_RISK_COLOR: Record<string, string> = {
   low: "hsl(140 70% 42%)",
   moderate: "hsl(40 85% 48%)",
@@ -87,6 +107,16 @@ export const WEATHER_METRICS: WeatherMetric[] = [
     has: (h) => h.humidity_pct > 0,
     text: (h) => `${Math.round(h.humidity_pct)}%`,
     color: (h) => goodBad(h.humidity_pct, 60, 100),
+  },
+  {
+    // Air temperature — supplied by Open-Meteo (the forecast backbone), so always present. Coloured on an
+    // informational cold→warm ramp, not the good/bad quality scale (see tempColor).
+    key: "temp",
+    labelKey: "tonight.weather.metrics.temp",
+    icon: "thermo",
+    has: () => true,
+    text: (h) => `${Math.round(h.temp_c)}°`,
+    color: (h) => tempColor(h.temp_c),
   },
   {
     key: "dew",
@@ -207,33 +237,33 @@ export const GRID_LAYERS: GridLayerDef[] = [
     metric: "clouds",
     labelKey: "tonight.layers.clouds",
     color: (pct) => {
-      const t = Math.pow(clamp01(pct / 100), 1.35);
+      const t = Math.pow(clamp01(pct / 100), 1.1);
       const lum = Math.round(210 + 40 * t);
-      return [lum, lum, lum, 0.9 * t];
+      return [lum, lum, lum, 0.95 * t];
     },
     gradient: [
       "rgba(210,210,210,0)",
-      "rgba(230,230,230,0.45)",
-      "rgba(250,250,250,0.9)",
+      "rgba(235,235,235,0.5)",
+      "rgba(250,250,250,0.95)",
     ],
     bands: [
       {
         metric: "clouds_high",
         labelKey: "tonight.layers.cloudHigh",
-        color: bandColor([190, 215, 235], 0.35, 1.3),
-        gradient: ["rgba(190,215,235,0)", "rgba(190,215,235,0.35)"],
+        color: bandColor([190, 215, 235], 0.45, 1.15),
+        gradient: ["rgba(190,215,235,0)", "rgba(190,215,235,0.45)"],
       },
       {
         metric: "clouds_mid",
         labelKey: "tonight.layers.cloudMid",
-        color: bandColor([205, 215, 228], 0.55, 1.25),
-        gradient: ["rgba(205,215,228,0)", "rgba(205,215,228,0.55)"],
+        color: bandColor([205, 215, 228], 0.7, 1.1),
+        gradient: ["rgba(205,215,228,0)", "rgba(205,215,228,0.7)"],
       },
       {
         metric: "clouds_low",
         labelKey: "tonight.layers.cloudLow",
-        color: bandColor([236, 240, 246], 0.85, 1.2),
-        gradient: ["rgba(236,240,246,0)", "rgba(236,240,246,0.85)"],
+        color: bandColor([236, 240, 246], 0.95, 1.05),
+        gradient: ["rgba(236,240,246,0)", "rgba(236,240,246,0.95)"],
       },
     ],
   },

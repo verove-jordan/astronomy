@@ -20,6 +20,11 @@ type Config struct {
 	OutputDir  string // where final stacks and reports are written
 	LibraryDir string // persistent master-calibration library
 
+	// BrowseRoots are EXTRA absolute roots the UI may browse for external drives, on top of the platform
+	// removable-media defaults (macOS /Volumes; Linux /media, /mnt, /run/media). Colon- or comma-separated
+	// in ASTRO_BROWSE_ROOTS. Every /api/local/* handler confines its paths to these roots + the defaults.
+	BrowseRoots []string
+
 	// PreviewMaxEdge caps the longest edge (px) of the in-browser file-preview buffer the API decodes
 	// for the file viewer; smaller = less memory/transfer, larger = more detail when zooming.
 	PreviewMaxEdge int
@@ -32,8 +37,11 @@ type Config struct {
 
 	// Optional astro-AI host tools (invoked like Siril/GIMP, never bundled). Empty/missing →
 	// the pipeline falls back to Siril (subsky) and skips star removal.
-	GraxpertBin string // GraXpert: AI background-gradient extraction + denoise
-	StarnetBin  string // StarNet++ v2: star removal (for star-reduced finishing)
+	GraxpertBin   string // GraXpert: AI background-gradient extraction + denoise
+	GraxpertURL   string // optional host GraXpert HTTP service (cmd/graxpert-host); empty → exec GraxpertBin locally
+	GraxpertGPU   bool   // pass -gpu true (helps background-extraction on Apple Silicon; denoise stays CPU — its model is CoreML-incompatible)
+	GraxpertBatch int    // GraXpert denoise -batch_size (tiles denoised in parallel; 0 → GraXpert's default of 4)
+	StarnetBin    string // StarNet++ v2: star removal (for star-reduced finishing)
 
 	// Optional local LLM "supervisor" (opt-in via the run request / --supervise). The engine drives a
 	// host-run, OpenAI-compatible model server (LM Studio / mlx-vlm) over HTTP to auto-tune the finish.
@@ -128,6 +136,15 @@ type Config struct {
 	S3AccessKeyID     string
 	S3SecretAccessKey string
 	S3UseSSL          bool
+	// S3Concurrency bounds how many files a transfer uploads/downloads in PARALLEL (0 → the transfer
+	// engine's default of 6). Raise it to saturate a fat uplink; lower it for a slow source drive whose
+	// parallel reads would thrash. Env ASTRO_S3_CONCURRENCY.
+	S3Concurrency int
+	// S3LowDisk enables the STAGED low-disk mode for full-S3 deep-sky/nebula processing runs: inputs are
+	// scanned remotely (ranged FITS-header reads) and downloaded/verified-freed one frame-type/channel wave
+	// at a time, so peak local disk ≈ one channel's frames instead of the whole dataset. The server default;
+	// a run can override it (RunRequest.LowDisk). Env ASTRO_S3_LOW_DISK (default true).
+	S3LowDisk bool
 
 	// EncryptionKey / SecretKeyFile secure the UI-managed S3 connections at rest (their secret access keys
 	// are AES-256-GCM encrypted in the DB). EncryptionKey (base64 std, 32 bytes) is the master key; when
@@ -230,6 +247,7 @@ func Load() *Config {
 		WorkDir:        env("ASTRO_WORK_DIR", "./work"),
 		OutputDir:      env("ASTRO_OUTPUT_DIR", "./output"),
 		LibraryDir:     libraryDir,
+		BrowseRoots:    envStrList("ASTRO_BROWSE_ROOTS"),
 		PreviewMaxEdge: envInt("PREVIEW_MAX_EDGE", 1500),
 		SirilBin:       sirilBin,
 		GimpBin:        env("GIMP_BIN", "/Applications/GIMP.app/Contents/MacOS/gimp-console-2.10"),
@@ -239,8 +257,11 @@ func Load() *Config {
 		// GraXpert/StarNet are resolved via PATH by default (pip/pipx installs land in PATH as
 		// `graxpert`); the old default pointed at a GraXpert.app that pip installs don't create, so AI
 		// background extraction was silently skipped. exec.LookPath accepts a bare name or an abs path.
-		GraxpertBin: env("GRAXPERT_BIN", "graxpert"),
-		StarnetBin:  env("STARNET_BIN", "starnet++"),
+		GraxpertBin:   env("GRAXPERT_BIN", "graxpert"),
+		GraxpertURL:   env("ASTRO_GRAXPERT_URL", ""),
+		GraxpertGPU:   envBool("ASTRO_GRAXPERT_GPU", false),
+		GraxpertBatch: envInt("ASTRO_GRAXPERT_BATCH", 0),
+		StarnetBin:    env("STARNET_BIN", "starnet++"),
 
 		LLMBaseURL:           env("ASTRO_LLM_URL", "http://127.0.0.1:1234/v1"),
 		LLMModel:             env("ASTRO_LLM_MODEL", ""),
@@ -298,6 +319,8 @@ func Load() *Config {
 		S3AccessKeyID:     env("ASTRO_S3_ACCESS_KEY_ID", ""),
 		S3SecretAccessKey: env("ASTRO_S3_SECRET_ACCESS_KEY", ""),
 		S3UseSSL:          envBool("ASTRO_S3_USE_SSL", true),
+		S3Concurrency:     envInt("ASTRO_S3_CONCURRENCY", 0),
+		S3LowDisk:         envBool("ASTRO_S3_LOW_DISK", true),
 		EncryptionKey:     env("ASTRO_ENCRYPTION_KEY", ""),
 		SecretKeyFile:     env("ASTRO_SECRET_KEY_FILE", ""),
 
@@ -376,6 +399,22 @@ func envInt(key string, def int) int {
 
 // envFloatList parses a comma-separated list of floats (e.g. "1000,2500"), falling back to def when the
 // var is unset, empty, or malformed.
+// envStrList splits key on ":" or "," into a trimmed, non-empty string slice (nil when unset) — used for
+// path lists like ASTRO_BROWSE_ROOTS.
+func envStrList(key string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.FieldsFunc(v, func(r rune) bool { return r == ':' || r == ',' }) {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func envFloatList(key string, def []float64) []float64 {
 	v := os.Getenv(key)
 	if v == "" {

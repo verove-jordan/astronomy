@@ -23,6 +23,7 @@ func runRefine(args []string) error {
 	fs := flag.NewFlagSet("refine", flag.ContinueOnError)
 	modeName := fs.String("mode", "deepsky", "finish preset: deepsky|nebula")
 	noAI := fs.Bool("no-ai", false, "skip GraXpert/StarNet (keep the supervisor + Siril/GIMP finish)")
+	noSupervise := fs.Bool("no-supervise", false, "run the deterministic finish only (no VLM agent) — re-finish a stored run with the current preset/params")
 	tierCeiling := fs.String("tier", "B", "how far the agent may reach: A=composite, B=+finish prep, C=+re-stack")
 	iters := fs.Int("iters", 0, "max supervisor iterations (0 → engine default of 4, hard max 8)")
 	verbose := fs.Bool("v", false, "stream progress log lines")
@@ -40,7 +41,7 @@ func runRefine(args []string) error {
 		return err
 	}
 	preset := mode.For(m)
-	preset.Supervise = true // refine drives the agent (soft-falls to the standard finish if the server is down)
+	preset.Supervise = !*noSupervise // refine drives the agent (soft-falls to the standard finish if the server is down); --no-supervise forces the plain deterministic finish
 	preset.SuperviseTier = *tierCeiling
 	preset.SuperviseMaxIters = *iters
 
@@ -49,7 +50,7 @@ func runRefine(args []string) error {
 	var graxRunner *graxpert.Runner
 	var starRunner *starnet.Runner
 	if !*noAI {
-		graxRunner = graxpert.New(cfg.GraxpertBin)
+		graxRunner = graxpert.New(cfg.GraxpertBin, cfg.GraxpertURL).SetDefaults(cfg.GraxpertGPU, cfg.GraxpertBatch)
 		starRunner = starnet.New(cfg.StarnetBin)
 	}
 	refineSolve, refineSpcc := postprocess.SolveSpccFromConfig(cfg)

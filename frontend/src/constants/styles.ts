@@ -142,8 +142,12 @@ export const skyTypePill: Record<string, string> = {
     "bg-rose-100 text-rose-800 ring-1 ring-rose-200 dark:bg-rose-900/40 dark:text-rose-300 dark:ring-rose-800/50",
   planetary_nebula:
     "bg-cyan-100 text-cyan-800 ring-1 ring-cyan-200 dark:bg-cyan-900/40 dark:text-cyan-300 dark:ring-cyan-800/50",
+  reflection_nebula:
+    "bg-sky-100 text-sky-800 ring-1 ring-sky-200 dark:bg-sky-900/40 dark:text-sky-300 dark:ring-sky-800/50",
   dark_nebula:
     "bg-slate-200 text-slate-700 ring-1 ring-slate-300 dark:bg-slate-700/50 dark:text-slate-200 dark:ring-slate-600",
+  open_cluster:
+    "bg-amber-100 text-amber-800 ring-1 ring-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:ring-amber-800/50",
   cluster:
     "bg-amber-100 text-amber-800 ring-1 ring-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:ring-amber-800/50",
   globular:

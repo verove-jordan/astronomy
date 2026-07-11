@@ -20,6 +20,18 @@ import (
 // remove-local a strong equality check even for multipart uploads, whose ETag is not a content MD5.
 const userMD5Key = "Astro-Md5"
 
+// Multipart tuning for large uploads. Above multipartThreshold, a file is split into multipartPartSize
+// parts uploaded multipartThreads-at-a-time (minio ConcurrentStreamParts) so ONE big file also uses the
+// full link instead of a single stream — complementary to the transfer layer's file-level parallelism,
+// which already keeps many normal-sized files in flight. ConcurrentStreamParts buffers
+// multipartThreads×multipartPartSize per large file in flight, so keep the part size/threads modest; the
+// threshold keeps typical (≤64 MiB) captures on a single fast PUT with no buffering.
+const (
+	multipartThreshold = 64 << 20 // only genuinely large files use parallel multipart
+	multipartPartSize  = 16 << 20 // 16 MiB parts (minio minimum is 5 MiB)
+	multipartThreads   = 4        // parallel part uploads per large file
+)
+
 // Upload streams localPath to bucket/key, recording the file's content MD5 as user metadata (one extra
 // disk pass — cheap next to the network transfer). onBytes (optional) is called with the delta of bytes
 // sent on each read, so the caller can drive a progress bar.
@@ -38,11 +50,18 @@ func (c *Client) Upload(ctx context.Context, bucket, key, localPath string, onBy
 		return fmt.Errorf("stat %s: %w", localPath, err)
 	}
 	r := &countReader{r: f, onBytes: onBytes}
-	_, err = c.mc.PutObject(ctx, bucket, key, r, fi.Size(), minio.PutObjectOptions{
+	opts := minio.PutObjectOptions{
 		ContentType:  contentType(localPath),
 		UserMetadata: map[string]string{userMD5Key: sum},
-	})
-	if err != nil {
+	}
+	// A large file is split into parts uploaded in parallel. ConcurrentStreamParts works on a plain stream
+	// (no ReaderAt), so the countReader still ticks progress; minio reads ahead into NumThreads buffers.
+	if fi.Size() > multipartThreshold {
+		opts.PartSize = multipartPartSize
+		opts.NumThreads = multipartThreads
+		opts.ConcurrentStreamParts = true
+	}
+	if _, err := c.mc.PutObject(ctx, bucket, key, r, fi.Size(), opts); err != nil {
 		return fmt.Errorf("s3 put %s: %w", key, err)
 	}
 	return nil

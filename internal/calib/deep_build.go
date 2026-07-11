@@ -30,6 +30,7 @@ func buildDeepBias(ctx context.Context, runner *siril.Runner, inv *inspect.Inven
 	}
 	paths = mergePaths(paths, pool, func(RawFrame) bool { return true })
 	paths, warn := dropMissing(paths, "bias pool")
+	paths, warn = dropNonFITS(paths, "bias pool", warn)
 	if len(paths) == 0 {
 		return Master{}, false, warn // no bias is a valid setup; only the ghost count (if any) is worth a note
 	}
@@ -71,6 +72,7 @@ func buildDeepDark(ctx context.Context, runner *siril.Runner, inv *inspect.Inven
 	}
 	paths = mergePaths(paths, pool, matchesTemp)
 	paths, warn := dropMissing(paths, "dark pool")
+	paths, warn = dropNonFITS(paths, "dark pool", warn)
 	if len(paths) == 0 {
 		return Master{}, false, joinWarn(warn, fmt.Sprintf("no darks available for %dms g%do%d b%d @%dC",
 			sig.ExposureMs, sig.Gain, sig.Offset, sig.Bin, sig.TempBucket))
@@ -120,6 +122,27 @@ func dropMissing(paths []string, what string) ([]string, string) {
 	return ok, fmt.Sprintf("%s: skipped %d frame(s) missing on disk (freed to S3?)", what, missing)
 }
 
+// dropNonFITS filters out pooled paths Siril cannot link into a master sequence (only FITS belongs
+// in the deep pools; a non-FITS row that slipped into the catalog — e.g. a processed TIFF once
+// misclassified as calibration — would sink the whole stack with a bare `link: generic error`).
+// The count is appended to warn so the run report says exactly what was excluded and why.
+func dropNonFITS(paths []string, what, warn string) ([]string, string) {
+	ok := paths[:0]
+	skipped := 0
+	for _, p := range paths {
+		switch strings.ToLower(filepath.Ext(p)) {
+		case ".fit", ".fits", ".fts":
+			ok = append(ok, p)
+		default:
+			skipped++
+		}
+	}
+	if skipped == 0 {
+		return ok, warn
+	}
+	return ok, joinWarn(warn, fmt.Sprintf("%s: skipped %d non-FITS file(s) (processed images are never stacked as calibration)", what, skipped))
+}
+
 // joinWarn joins two optional warning strings with "; ", tolerating either being empty.
 func joinWarn(a, b string) string {
 	switch {
@@ -166,6 +189,9 @@ func stackPooled(ctx context.Context, runner *siril.Runner, mt MasterType, key i
 	sig := poolSignature(paths)
 	if fileExists(outBase + ".fits") {
 		if b, err := os.ReadFile(outBase + ".sig"); err == nil && string(b) == sig {
+			if mt == MasterDark && !fileExists(DefectsListPath(master.Path)) {
+				_ = buildDefectList(master.Path, paths) // upgrade a pre-existing library master in place
+			}
 			return master, nil
 		}
 	}
@@ -177,13 +203,16 @@ func stackPooled(ctx context.Context, runner *siril.Runner, mt MasterType, key i
 	// shared library, two concurrent runs building the same-signature master must never let one read the
 	// other's half-written file; the rename publishes the whole master in one step (same filesystem).
 	tmpBase := filepath.Join(mastersDir, ".tmp_"+filepath.Base(workDir)+"_"+name)
-	if _, err := runner.Run(ctx, seqDir, siril.StackMasterScript("cal", tmpBase), onProgress); err != nil {
+	if _, err := runner.Run(ctx, seqDir, siril.StackMasterScript("cal", tmpBase, len(paths)), onProgress); err != nil {
 		return Master{}, fmt.Errorf("stack master %s: %w", name, err)
 	}
 	if err := os.Rename(tmpBase+".fits", outBase+".fits"); err != nil {
 		return Master{}, fmt.Errorf("publish master %s: %w", name, err)
 	}
 	_ = os.WriteFile(outBase+".sig", []byte(sig), 0o644) // record the pool for the next run's reuse check
+	if mt == MasterDark {
+		_ = buildDefectList(master.Path, paths) // soft: its note is user-visible on the session-build path
+	}
 	_ = os.RemoveAll(seqDir)
 	return master, nil
 }

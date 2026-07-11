@@ -32,6 +32,7 @@ interface MapPoint {
   name: string;
   value: [number, number]; // [radius = 90 − altitude, azimuth]
   order: number;
+  label: string; // marker text: "1","2"… align, "C1".."C4" calibration
   alt: number;
   az: number;
   itemStyle: { color: string };
@@ -41,9 +42,13 @@ const points = computed<MapPoint[]>(() =>
   store.stars
     .filter((s) => s.alt_deg > 0)
     .map((s) => ({
-      name: s.name,
+      name: s.hc_name || s.name,
       value: [90 - s.alt_deg, s.az_deg],
       order: s.order,
+      label:
+        s.phase === "calibration"
+          ? `C${s.order - store.alignCount}`
+          : String(s.order),
       alt: Math.round(s.alt_deg),
       az: Math.round(s.az_deg),
       itemStyle: { color: STATUS_HEX[s.status] ?? STATUS_HEX.upcoming },
@@ -55,7 +60,7 @@ const points = computed<MapPoint[]>(() =>
 const option = computed(() => ({
   tooltip: {
     formatter: (p: any) =>
-      `${p.data.order}. ${p.data.name}<br/>${p.data.alt}° · ${p.data.az}°`,
+      `${p.data.label}. ${p.data.name}<br/>${p.data.alt}° · ${p.data.az}°`,
   },
   polar: { center: ["50%", "54%"], radius: "76%" },
   angleAxis: {
@@ -97,7 +102,7 @@ const option = computed(() => ({
       encode: { radius: 0, angle: 1 },
       label: {
         show: true,
-        formatter: (p: any) => String(p.data.order),
+        formatter: (p: any) => String(p.data.label),
         color: "#fff",
         fontWeight: "bold",
         fontSize: 11,

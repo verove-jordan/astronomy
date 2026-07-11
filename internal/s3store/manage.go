@@ -69,6 +69,45 @@ func (c *Client) RemovePrefix(ctx context.Context, bucket, prefix string) error 
 	return nil
 }
 
+// Copy server-side copies one object from srcKey to dstKey within a bucket (minio CopyObject — the bytes
+// never transit the engine). The 5 GiB single-part CopyObject limit is irrelevant for capture frames; a
+// larger object would need ComposeObject.
+func (c *Client) Copy(ctx context.Context, bucket, srcKey, dstKey string) error {
+	err := withRetry(ctx, "copy", func() error {
+		_, e := c.mc.CopyObject(ctx,
+			minio.CopyDestOptions{Bucket: bucket, Object: dstKey},
+			minio.CopySrcOptions{Bucket: bucket, Object: srcKey})
+		return e
+	})
+	if err != nil {
+		return fmt.Errorf("s3 copy %s -> %s: %w", srcKey, dstKey, err)
+	}
+	return nil
+}
+
+// CopyPrefix server-side copies every object under srcPrefix to dstPrefix, preserving each object's sub-path
+// — the physical half of the explorer's "move folder". Both prefixes are normalized to end with "/". Folder
+// markers are not copied (List skips them); an empty destination folder is implied by its contained objects.
+func (c *Client) CopyPrefix(ctx context.Context, bucket, srcPrefix, dstPrefix string) error {
+	if !strings.HasSuffix(srcPrefix, "/") {
+		srcPrefix += "/"
+	}
+	if !strings.HasSuffix(dstPrefix, "/") {
+		dstPrefix += "/"
+	}
+	objs, err := c.List(ctx, bucket, srcPrefix)
+	if err != nil {
+		return err
+	}
+	for _, o := range objs {
+		rel := strings.TrimPrefix(o.Key, srcPrefix)
+		if err := c.Copy(ctx, bucket, o.Key, dstPrefix+rel); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Open streams an object for download, returning its size for the Content-Length. The caller closes the
 // reader.
 func (c *Client) Open(ctx context.Context, bucket, key string) (io.ReadCloser, int64, error) {

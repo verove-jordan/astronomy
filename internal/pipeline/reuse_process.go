@@ -35,6 +35,10 @@ func processChannelGroups(ctx context.Context, opts Options, object, filter stri
 	for gi, g := range groups {
 		cm, notes := flats.mastersFor(ctx, opts, g, masters, workRun)
 		ch.Selection.Notes = append(ch.Selection.Notes, notes...)
+		// Pull from the S3 library mirror if absent locally, then resolve the dark's defect sidecar —
+		// after the pull, so a mirrored map is found (missing map = soft -cc=dark fallback).
+		opts.ensureMasters(ctx, []string{cm.Dark, cm.Flat, cm.Bias, calib.DefectsListPath(cm.Dark)})
+		cm.BadPixelMap = calib.DefectsListFor(cm.Dark)
 
 		grpDir := filepath.Join(workRun, fmt.Sprintf("light_%s_g%d", sanitize(filter), gi))
 		if _, err := fsutil.LinkFrames(grpDir, framePaths(g.Frames)); err != nil {
@@ -176,7 +180,7 @@ func (c *flatCache) sessionFlat(ctx context.Context, opts Options, g lightGroup,
 	if _, err := fsutil.LinkFrames(buildDir, paths); err != nil {
 		return "", fmt.Sprintf("session %d: %v", g.SessionID, err)
 	}
-	if _, err := opts.Runner.Run(ctx, buildDir, siril.StackFlatScript("flat", outBase, biasPath), nil); err != nil {
+	if _, err := opts.Runner.Run(ctx, buildDir, siril.StackFlatScript("flat", outBase, biasPath, len(paths)), nil); err != nil {
 		return "", fmt.Sprintf("session %d: build flat failed: %v", g.SessionID, err)
 	}
 	c.built[key] = outBase + ".fits"

@@ -52,7 +52,7 @@ func countRuns(t *testing.T, countFile string) int {
 
 func TestHealthy_WorkingTool(t *testing.T) {
 	countFile := filepath.Join(t.TempDir(), "count")
-	r := New(copyingScript(t, countFile))
+	r := New(copyingScript(t, countFile), "")
 	assert.NoError(t, r.Healthy(context.Background()))
 	assert.Equal(t, 1, countRuns(t, countFile))
 }
@@ -61,13 +61,13 @@ func TestHealthy_MemoizesInProcessAndOnDisk(t *testing.T) {
 	countFile := filepath.Join(t.TempDir(), "count")
 	bin := copyingScript(t, countFile)
 
-	r := New(bin)
+	r := New(bin, "")
 	require.NoError(t, r.Healthy(context.Background()))
 	require.NoError(t, r.Healthy(context.Background())) // in-process memo
 	assert.Equal(t, 1, countRuns(t, countFile))
 
 	// A brand-new Runner (fresh process simulation) must hit the disk cache, not re-probe.
-	r2 := New(bin)
+	r2 := New(bin, "")
 	require.NoError(t, r2.Healthy(context.Background()))
 	assert.Equal(t, 1, countRuns(t, countFile))
 }
@@ -75,25 +75,25 @@ func TestHealthy_MemoizesInProcessAndOnDisk(t *testing.T) {
 func TestHealthy_CriticalErrorExitZero(t *testing.T) {
 	// GraXpert's signature failure mode: logs a critical ONNX error but exits 0.
 	bin := writeScript(t, `echo "Critical error! The required ONNX Runtime (AI library) package is misconfigured"`)
-	err := New(bin).Healthy(context.Background())
+	err := New(bin, "").Healthy(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ONNX")
 }
 
 func TestHealthy_NoOutputProduced(t *testing.T) {
-	err := New("/bin/echo").Healthy(context.Background())
+	err := New("/bin/echo", "").Healthy(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no output")
 }
 
 func TestHealthy_MissingBinary(t *testing.T) {
-	assert.Error(t, New("").Healthy(context.Background()))
-	assert.Error(t, New("/nonexistent/graxpert").Healthy(context.Background()))
+	assert.Error(t, New("", "").Healthy(context.Background()))
+	assert.Error(t, New("/nonexistent/graxpert", "").Healthy(context.Background()))
 }
 
 func TestHealthCached_UnknownThenKnown(t *testing.T) {
 	countFile := filepath.Join(t.TempDir(), "count")
-	r := New(copyingScript(t, countFile))
+	r := New(copyingScript(t, countFile), "")
 
 	_, known := r.HealthCached()
 	assert.False(t, known, "no verdict before any probe")

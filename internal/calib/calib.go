@@ -91,9 +91,9 @@ func buildOne(ctx context.Context, runner *siril.Runner, set inspect.Set, built 
 	var script string
 	if mt == MasterFlat {
 		biasPath := flatBias(set.Key, built)
-		script = siril.StackFlatScript("cal", outBase, biasPath)
+		script = siril.StackFlatScript("cal", outBase, biasPath, len(paths))
 	} else {
-		script = siril.StackMasterScript("cal", outBase)
+		script = siril.StackMasterScript("cal", outBase, len(paths))
 	}
 	if _, err := runner.Run(ctx, seqDir, script, onProgress); err != nil {
 		return Master{}, nil, fmt.Errorf("stack master %s: %w", name, err)
@@ -102,6 +102,11 @@ func buildOne(ctx context.Context, runner *siril.Runner, set inspect.Set, built 
 	var qcWarn []string
 	if mt == MasterFlat {
 		qcWarn = analyzeFlatMaster(outBase+".fits", paths)
+	}
+	if mt == MasterDark {
+		if note := buildDefectList(outBase+".fits", paths); note != "" {
+			qcWarn = append(qcWarn, note)
+		}
 	}
 	_ = os.RemoveAll(seqDir) // master is saved to mastersDir; drop the per-set scratch
 

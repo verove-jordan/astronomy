@@ -71,5 +71,6 @@ export const useLightPollutionStore = defineStore("lightpollution", () => {
     buildError,
     fetchStatus,
     build,
+    stopPolling, // callers clear the build poll on unmount so it never ticks after leaving the page
   };
 });

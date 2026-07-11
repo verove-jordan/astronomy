@@ -75,6 +75,19 @@ func scoreFinishMode(m mode.Mode, fm finishMetrics, targetBg float64, iter0 fini
 		// Star-tint guard: a field whose bright star cores are UNIFORMLY warm is a calibration/finish
 		// failure the sky-median metrics cannot see (the "all stars orange" look).
 		s -= 10 * maxf(0, fm.StarWarmFrac-0.6)
+		// Star-colour-variety guard: real fields mix white/blue/yellow/orange stars, so a bright-core
+		// population flattened to one hue (or to grey/white — the burnt look) is a defect. Gated on a
+		// positive spread so a frame with no bright cores sampled isn't penalised.
+		if fm.StarColorSpread > 0 {
+			s -= 12 * maxf(0, starColorSpreadMin-fm.StarColorSpread)
+		}
+		// Colour-disc guard: bright cores rendered as solid, over-saturated blue/magenta blobs (a dense
+		// star field / cluster — the thin RGB base's chroma spread over the L star profile). The sky-median
+		// and spread metrics can't see it (it's a per-core saturation, not a cast).
+		s -= 10 * maxf(0, fm.StarSatFrac-starSatFracMax)
+		// Background-mottle guard: coloured noise in the darkest quarter (shallow colour subs a dark stretch
+		// amplifies into purple-green blotches where the sky should be neutral grey).
+		s -= 8 * maxf(0, fm.BgChroma-bgChromaMax)
 		return clampf(s, 0, 10)
 	}
 }

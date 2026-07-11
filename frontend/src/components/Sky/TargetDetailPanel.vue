@@ -60,6 +60,16 @@ const exitWarn = computed(() => {
   const ep = props.target?.exit_pupil_mm;
   return ep != null && ep > 0 && (ep < 0.5 || ep > 7);
 });
+
+// Size as the true ellipse "major'×minor'" when a minor axis is known, else the major axis alone.
+const sizeText = computed(() => {
+  const tg = props.target;
+  if (!tg || !(tg.size_arcmin > 0)) return "—";
+  const maj = tg.size_arcmin.toFixed(1);
+  return tg.size_minor_arcmin && tg.size_minor_arcmin > 0
+    ? `${maj}'×${tg.size_minor_arcmin.toFixed(1)}'`
+    : `${maj}'`;
+});
 </script>
 
 <template>
@@ -79,6 +89,51 @@ const exitWarn = computed(() => {
       <p class="mt-3 text-sm text-slate-500 dark:text-slate-400">
         {{ target.reason }}
       </p>
+
+      <!-- Object facts (type, common name, morphology, size, surface brightness) from the catalogue. -->
+      <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+        <div class="flex justify-between gap-2">
+          <dt class="text-slate-400 dark:text-slate-500">
+            {{ t("tonight.detail.type") }}
+          </dt>
+          <dd class="text-slate-600 dark:text-slate-300">
+            {{ t("tonight.types." + target.type) }}
+          </dd>
+        </div>
+        <div v-if="target.common_name" class="flex justify-between gap-2">
+          <dt class="text-slate-400 dark:text-slate-500">
+            {{ t("tonight.detail.commonName") }}
+          </dt>
+          <dd class="text-slate-600 dark:text-slate-300">
+            {{ target.common_name }}
+          </dd>
+        </div>
+        <div v-if="target.morphology" class="flex justify-between gap-2">
+          <dt class="text-slate-400 dark:text-slate-500">
+            {{ t("tonight.detail.morphology") }}
+          </dt>
+          <dd class="text-slate-600 dark:text-slate-300">
+            {{ target.morphology }}
+          </dd>
+        </div>
+        <div v-if="target.size_arcmin > 0" class="flex justify-between gap-2">
+          <dt class="text-slate-400 dark:text-slate-500">
+            {{ t("tonight.detail.size") }}
+          </dt>
+          <dd class="text-slate-600 dark:text-slate-300">{{ sizeText }}</dd>
+        </div>
+        <div
+          v-if="target.surface_brightness > 0"
+          class="flex justify-between gap-2"
+        >
+          <dt class="text-slate-400 dark:text-slate-500">
+            {{ t("tonight.detail.surfaceBrightness") }}
+          </dt>
+          <dd class="text-slate-600 dark:text-slate-300">
+            {{ target.surface_brightness.toFixed(1) }}
+          </dd>
+        </div>
+      </dl>
 
       <!-- Visual (eyepiece) recommendation -->
       <div

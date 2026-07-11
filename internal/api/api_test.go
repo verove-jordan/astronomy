@@ -158,6 +158,15 @@ func TestDarkSites_AreaAndValidation(t *testing.T) {
 	})
 }
 
+func TestRerunRoute_Registered(t *testing.T) {
+	s := &Server{cfg: &config.Config{}}
+	rec := httptest.NewRecorder()
+	// A bad id is rejected in the handler before it touches the manager, so this needs no store/DB. A
+	// 400 (rather than a 404) proves POST /api/jobs/{id}/rerun is registered and the handler runs.
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs/notanumber/rerun", nil))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
 func TestCORSPreflight(t *testing.T) {
 	s := &Server{cfg: &config.Config{}}
 	rec := httptest.NewRecorder()

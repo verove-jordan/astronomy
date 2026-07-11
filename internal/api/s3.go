@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/verove-jordan/astronomy/internal/job"
 	"github.com/verove-jordan/astronomy/internal/s3store"
 )
@@ -31,11 +33,7 @@ type browseEntry struct {
 // dir list: a folder present on both is tagged Remote; a folder only on S3 is appended (Local=false) so
 // the user can see and download it. Returns the name-sorted union. cfg is the request-resolved S3 config
 // (see s3ConfigForRequest) so the listing targets the connection the bucket was chosen under.
-func (s *Server) mergeRemoteDirs(ctx context.Context, cfg s3store.Config, abs, bucket, userPrefix string, dirs []browseEntry) ([]browseEntry, error) {
-	client, err := s3store.New(cfg)
-	if err != nil {
-		return nil, err
-	}
+func (s *Server) mergeRemoteDirs(ctx context.Context, cfg s3store.Config, abs, bucket, userPrefix string, dirs []browseEntry, fresh bool) ([]browseEntry, error) {
 	dataAbs, err := filepath.Abs(s.cfg.DataDir)
 	if err != nil {
 		return nil, err
@@ -44,18 +42,25 @@ func (s *Server) mergeRemoteDirs(ctx context.Context, cfg s3store.Config, abs, b
 	if err != nil {
 		return nil, err
 	}
-	s3prefix := path.Join(userPrefix, "data", filepath.ToSlash(rel))
-	folders, _, err := client.ListDir(ctx, bucket, s3prefix)
+	relSlash := filepath.ToSlash(rel)
+	folders, _, err := s.listDirCached(ctx, cfg, bucket, path.Join(userPrefix, "data", relSlash), fresh)
 	if err != nil {
 		return nil, err
+	}
+	// Union the legacy-mirror child folders with the classified-layout child folders the DB ledger knows
+	// (a classified capture has no data/<rel>/ folder to list), so the browser shows both layouts.
+	names := childDirNames(folders)
+	if s.store != nil {
+		if kids, err := s.store.ListS3ChildDirs(ctx, bucket, userPrefix, relSlash); err == nil {
+			names = append(names, kids...)
+		}
 	}
 
 	byName := make(map[string]int, len(dirs))
 	for i := range dirs {
 		byName[dirs[i].Name] = i
 	}
-	for _, f := range folders {
-		name := path.Base(strings.TrimSuffix(f, "/"))
+	for _, name := range names {
 		if name == "" || name == "." {
 			continue
 		}
@@ -63,10 +68,27 @@ func (s *Server) mergeRemoteDirs(ctx context.Context, cfg s3store.Config, abs, b
 			dirs[i].Remote = true
 			continue
 		}
+		byName[name] = len(dirs)
 		dirs = append(dirs, browseEntry{Name: name, Path: filepath.Join(abs, name), IsDir: true, Remote: true})
 	}
 	sort.Slice(dirs, func(i, j int) bool { return dirs[i].Name < dirs[j].Name })
 	return dirs, nil
+}
+
+// wantsFresh reports whether the request asks to bypass the short-TTL listing cache (the Refresh
+// button appends ?fresh=1) so an explicit refresh always re-lists live.
+func wantsFresh(r *http.Request) bool {
+	v := r.URL.Query().Get("fresh")
+	return v == "1" || v == "true"
+}
+
+// childDirNames extracts the base folder names from S3 ListDir "folder/" entries.
+func childDirNames(folders []string) []string {
+	out := make([]string, 0, len(folders))
+	for _, f := range folders {
+		out = append(out, path.Base(strings.TrimSuffix(f, "/")))
+	}
+	return out
 }
 
 // s3Config resolves the S3 config the pipeline uses: the UI-selected **default connection** (decrypted)
@@ -237,13 +259,8 @@ func (s *Server) s3Browse(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "S3 is not configured")
 		return
 	}
-	client, err := s3store.New(cfg)
-	if err != nil {
-		serverError(w, err)
-		return
-	}
 	rel, _ := cleanRel(q.Get("rel")) // "" (prefix root) when empty/invalid; cleanRel drops any ".." escape
-	folders, files, err := client.ListDir(r.Context(), bucket, path.Join(q.Get("prefix"), rel))
+	folders, files, err := s.listDirCached(r.Context(), cfg, bucket, path.Join(q.Get("prefix"), rel), wantsFresh(r))
 	if err != nil {
 		serverError(w, err)
 		return
@@ -347,11 +364,24 @@ func (s *Server) ensureServable(ctx context.Context, r *http.Request, abs, root,
 	if err != nil {
 		return "", false
 	}
-	key := path.Join(q.Get("prefix"), namespace, relSlash)
+	key := s.mirrorKey(ctx, bucket, q.Get("prefix"), namespace, relSlash)
 	if err := client.Download(ctx, bucket, key, cachePath, nil); err != nil {
 		return "", false
 	}
 	return cachePath, true
+}
+
+// mirrorKey resolves the S3 key of a mirrored file. For the classified data namespace it prefers the
+// persisted local-rel → key mapping (a classified key is not derivable from the path), falling back to the
+// legacy <prefix>/<namespace>/<rel> mirror key; output/backup are always legacy. relSlash is the file's
+// DataDir/OutputDir-relative slash path.
+func (s *Server) mirrorKey(ctx context.Context, bucket, userPrefix, namespace, relSlash string) string {
+	if namespace == "data" && s.store != nil {
+		if o, ok, err := s.store.GetS3Object(ctx, bucket, userPrefix, relSlash); err == nil && ok {
+			return o.S3Key
+		}
+	}
+	return path.Join(userPrefix, namespace, relSlash)
 }
 
 // s3OutputRuns lists run.json objects under <prefix>/output/ and maps each to the absolute local path it
@@ -402,25 +432,85 @@ func (s *Server) summarizeS3Run(ctx context.Context, cfg s3store.Config, bucket,
 	return summarizeRunBytes(data, localRunJSON, mtimeMs)
 }
 
-// remoteDataDirExists reports whether a capture folder (absolute, under DataDir) has any objects on the S3
-// mirror (<prefix>/data/<rel>). Used by /api/processed so a folder freed after an S3 push is not shown as
-// deleted. Any error (misconfig, unreachable) soft-fails to false.
-func (s *Server) remoteDataDirExists(ctx context.Context, client *s3store.Client, bucket, userPrefix, localAbs string) bool {
-	if client == nil {
-		return false
+// remoteDirsExist reports, for each DataDir-relative folder rel, whether it still exists on the S3 mirror —
+// classified ledger or legacy <prefix>/data/<rel>. It batches by parent directory so N locally-freed folders
+// cost at most one listing per unique parent (usually one per capture target), reusing the warm-client
+// listing cache. Used by /api/processed so a folder freed after an S3 push is not shown as deleted; any
+// per-parent error soft-falls to that parent's ledger-only answer.
+func (s *Server) remoteDirsExist(ctx context.Context, cfg s3store.Config, bucket, userPrefix string, rels []string) map[string]bool {
+	parents := make([]string, 0)
+	byParent := make(map[string][]string)
+	relParent := make(map[string]string, len(rels))
+	relBase := make(map[string]string, len(rels))
+	for _, rel := range rels {
+		parent := path.Dir(rel)
+		if parent == "." {
+			parent = ""
+		}
+		base := path.Base(rel)
+		if _, seen := byParent[parent]; !seen {
+			parents = append(parents, parent)
+		}
+		byParent[parent] = append(byParent[parent], base)
+		relParent[rel] = parent
+		relBase[rel] = base
 	}
-	dataAbs, err := filepath.Abs(s.cfg.DataDir)
+
+	// Each parent is independent → resolve concurrently into its own slot (no shared-map race).
+	sets := make([]map[string]bool, len(parents))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(8)
+	for i, parent := range parents {
+		i, parent := i, parent
+		g.Go(func() error {
+			sets[i] = s.mirrorChildren(gctx, cfg, bucket, userPrefix, parent, byParent[parent])
+			return nil
+		})
+	}
+	_ = g.Wait()
+
+	byParentSet := make(map[string]map[string]bool, len(parents))
+	for i, parent := range parents {
+		byParentSet[parent] = sets[i]
+	}
+	out := make(map[string]bool, len(rels))
+	for _, rel := range rels {
+		if set := byParentSet[relParent[rel]]; set != nil {
+			out[rel] = set[relBase[rel]]
+		}
+	}
+	return out
+}
+
+// mirrorChildren returns the set of child folder names present under <prefix>/data/<parent> on the mirror:
+// the DB ledger's children (classified layout), plus — only when some wanted base isn't ledger-covered — one
+// live S3 listing (legacy mirror). Preserving the ledger-first early-out keeps a fully-classified capture at
+// zero S3 round-trips, exactly like the old per-folder HasS3ObjectsUnder short-circuit.
+func (s *Server) mirrorChildren(ctx context.Context, cfg s3store.Config, bucket, userPrefix, parent string, want []string) map[string]bool {
+	set := make(map[string]bool)
+	if s.store != nil {
+		if kids, err := s.store.ListS3ChildDirs(ctx, bucket, userPrefix, parent); err == nil {
+			for _, k := range kids {
+				set[k] = true
+			}
+		}
+	}
+	covered := true
+	for _, b := range want {
+		if !set[b] {
+			covered = false
+			break
+		}
+	}
+	if covered {
+		return set
+	}
+	folders, _, err := s.listDirCached(ctx, cfg, bucket, path.Join(userPrefix, "data", parent), false)
 	if err != nil {
-		return false
+		return set
 	}
-	rel, err := filepath.Rel(dataAbs, localAbs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return false
+	for _, name := range childDirNames(folders) {
+		set[name] = true
 	}
-	prefix := path.Join(userPrefix, "data", filepath.ToSlash(rel))
-	folders, files, err := client.ListDir(ctx, bucket, prefix)
-	if err != nil {
-		return false
-	}
-	return len(folders) > 0 || len(files) > 0
+	return set
 }

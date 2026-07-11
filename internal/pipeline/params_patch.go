@@ -161,6 +161,7 @@ func applyPlanetaryParamPatch(working mode.Preset, raw json.RawMessage) (mode.Pr
 	setF(&f.Sharpen, patch.Sharpen)
 	setF(&f.Clahe, patch.Clahe)
 	setF(&f.Saturation, patch.Saturation)
+	setF(&f.Headroom, patch.Headroom)
 	next.Planetary.Finish = clampPlanetaryFinish(f)
 
 	setI(&next.Planetary.BestPercent, patch.BestPercent)
@@ -212,7 +213,7 @@ func ParamsFor(p mode.Preset) map[string]any {
 		f := p.Planetary.Finish
 		return map[string]any{
 			"stretch": f.Stretch, "highlight": f.Highlight, "sharpen": f.Sharpen,
-			"clahe": f.Clahe, "saturation": f.Saturation,
+			"clahe": f.Clahe, "saturation": f.Saturation, "headroom": f.Headroom,
 			"best_percent": p.Planetary.BestPercent, "ap_align": p.Planetary.APAlign,
 			"deconv_fwhm": p.Planetary.DeconvFWHM, "deconv_iters": p.Planetary.DeconvIters,
 			"deconv_alpha": p.Planetary.DeconvAlpha,
@@ -220,14 +221,17 @@ func ParamsFor(p mode.Preset) map[string]any {
 	default:
 		return map[string]any{
 			"saturation": p.Saturation, "ha_screen": p.HaScreen, "ha_black_point": p.HaBlackPoint,
+			"lum_opacity": p.LumOpacity,
 			"chroma_blur": p.ChromaBlur, "crop_frac": p.CropFrac,
 			"core_highlight_knee": p.CoreHighlightKnee, "core_highlight_ceil": p.CoreHighlightCeil,
 			"highlight_knee": p.HighlightKnee, "highlight_ceil": p.HighlightCeil,
+			"star_desat":       p.StarDesat,
 			"ha_exclude_stars": p.HaExcludeStars,
 			"background_level": p.BackgroundLevel, "linked_stretch": p.LinkedStretch,
 			"color_calibration": p.ColorCalibration, "combined_background_ai": p.CombinedBackgroundAI,
 			"background_degree": p.BackgroundDegree, "color_denoise_ai": p.ColorDenoiseAI,
-			"star_reduce":     p.StarReduce,
+			"star_reduce": p.StarReduce, "stretch_headroom": p.StretchHeadroom,
+			"palette":         p.Palette,
 			"roundness_floor": p.Grade.RoundnessFloor, "fwhm_sigma": p.Grade.FWHMSigma,
 			"background_sigma": p.Grade.BackgroundSigma, "star_count_frac": p.Grade.StarCountFrac,
 			"trail_mask_k": p.TrailMaskK, "denoise_chroma": p.DenoiseChroma, "denoise_lum": p.DenoiseLum,

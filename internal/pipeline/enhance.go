@@ -6,15 +6,22 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/gimp"
 	"github.com/verove-jordan/astronomy/internal/graxpert"
 	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/starnet"
 )
+
+// denoiseAppliedNote is the success note denoiseAI returns; the cache only persists a genuine success.
+const denoiseAppliedNote = "denoise applied (GraXpert AI)"
 
 // aiBackground reports whether GraXpert background extraction is enabled by the preset and the
 // tool can actually run (deep health probe, not a mere binary lookup — a present-but-broken
@@ -54,6 +61,13 @@ func aiToolWarnings(ctx context.Context, opts Options) []string {
 				w = append(w, "StarNet++ star reduction enabled but unavailable ("+err.Error()+"); keeping full stars")
 			}
 		}
+	}
+	// SPCC photometric calibration: the astrometric plate-solve catalogue is installed (offline solve
+	// works) but the Gaia xp_sampled photometric chunks are not, so SPCC must fetch them online and will
+	// fall back (star-field gains / neutralization) whenever the network is slow or absent — the reason a
+	// run's stars aren't photometrically calibrated. Flag it so the miss is explained, not mysterious.
+	if opts.Preset.ColorCalibration && opts.Solve.AstroCat != "" && opts.Solve.XpsampDir == "" {
+		w = append(w, "offline SPCC photometric catalogue not installed (Gaia xp_sampled) — SPCC needs network and may fall back to star-field/neutralization; run `just download-catalogues-spcc` (~5 GB) to calibrate colour offline")
 	}
 	return w
 }
@@ -159,7 +173,53 @@ func denoiseAI(ctx context.Context, opts Options, path string, onProgress func(s
 	}
 	// Success is reported too — a silent "" made "denoise never ran" indistinguishable from "denoise
 	// ran fine" when chasing chroma-noise blotches in the final.
-	return "denoise applied (GraXpert AI)"
+	return denoiseAppliedNote
+}
+
+// denoiseAICached runs denoiseAI, but reuses a persisted result when the denoise INPUT is byte-identical
+// to a prior run — so a rerun that only changed a POST-denoise param (stretch / colour calibration /
+// saturation) skips the ~90-min AI pass. The cache lives in <outDir>/linear/ so it is cleaned with the
+// prep. The key is a content hash of the input, which already folds in the channel masters + the
+// background steps that precede it: an unchanged input hits; a changed one (new masters, or a
+// combined_background_ai toggle) hashes differently and correctly recomputes. Best-effort throughout —
+// any cache error just falls through to a normal denoise.
+func denoiseAICached(ctx context.Context, opts Options, path, outDir string, onProgress func(siril.Progress)) (note string) {
+	sig, err := fileSHA256(path)
+	if err != nil {
+		return denoiseAI(ctx, opts, path, onProgress)
+	}
+	cacheFits := filepath.Join(outDir, linearDirName, "rgb_base_denoised.fits")
+	cacheSig := cacheFits + ".sig"
+	if fileExists(cacheFits) {
+		if b, e := os.ReadFile(cacheSig); e == nil && string(b) == sig {
+			if e := fsutil.CopyFile(cacheFits, path); e == nil {
+				return "denoise reused from cache — input unchanged, the AI pass was skipped"
+			}
+		}
+	}
+	note = denoiseAI(ctx, opts, path, onProgress)
+	if note == denoiseAppliedNote { // persist only a genuine success (path now holds the denoised image)
+		if e := fsutil.EnsureDir(filepath.Dir(cacheFits)); e == nil {
+			if e := fsutil.CopyFile(path, cacheFits); e == nil {
+				_ = os.WriteFile(cacheSig, []byte(sig), 0o644)
+			}
+		}
+	}
+	return note
+}
+
+// fileSHA256 is the streaming content hash used as the denoise cache key.
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // aiStars reports whether StarNet++ star reduction is enabled by the preset (StarReduce > 0) and

@@ -156,6 +156,7 @@ type planetaryPatch struct {
 	Sharpen    *float64 `json:"sharpen,omitempty"`
 	Clahe      *float64 `json:"clahe,omitempty"`
 	Saturation *float64 `json:"saturation,omitempty"`
+	Headroom   *float64 `json:"headroom,omitempty"` // pre-stretch scale-down so the bright disk doesn't burn
 
 	// Tier C — re-stack from the source frames.
 	BestPercent *int     `json:"best_percent,omitempty"`
@@ -171,20 +172,21 @@ func clampPlanetaryFinish(f siril.PlanetaryFinish) siril.PlanetaryFinish {
 	f.Sharpen = clampf(f.Sharpen, 0, 2.5)
 	f.Clahe = clampf(f.Clahe, 0, 4)
 	f.Saturation = clampf(f.Saturation, 0, 1.5)
+	f.Headroom = clampf(f.Headroom, 0, 1) // 0 or 1 → no scaling; in-between reserves highlight room
 	return f
 }
 
 func finishParams(f siril.PlanetaryFinish) map[string]float64 {
 	return map[string]float64{
 		"stretch": f.Stretch, "highlight": f.Highlight, "sharpen": f.Sharpen,
-		"clahe": f.Clahe, "saturation": f.Saturation,
+		"clahe": f.Clahe, "saturation": f.Saturation, "headroom": f.Headroom,
 	}
 }
 
 func finishState(f siril.PlanetaryFinish) map[string]any {
 	return map[string]any{
 		"stretch": f.Stretch, "highlight": f.Highlight, "sharpen": f.Sharpen,
-		"clahe": f.Clahe, "saturation": f.Saturation,
+		"clahe": f.Clahe, "saturation": f.Saturation, "headroom": f.Headroom,
 	}
 }
 

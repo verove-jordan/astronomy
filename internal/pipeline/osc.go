@@ -25,6 +25,7 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 	if err := opts.Runner.Available(ctx); err != nil {
 		return nil, fmt.Errorf("siril unavailable: %w", err)
 	}
+	defer opts.freePulledMasters(ctx) // discard any phone masters pulled from the S3 library mirror this run
 	// One-shot-color source: raw stills (iPhone/DSLR), or — for older OSC captures — Bayer CFA FITS,
 	// which Siril demosaics with `convert -debayer`.
 	roots := opts.scanRoots()
@@ -97,7 +98,7 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 	if debayer {
 		convert = "convert osc -debayer -out=.\n"
 	}
-	convReg := "requires 1.2.0\nsetext fits\n" + convert + "register osc\n"
+	convReg := "requires 1.2.0\nsetext fits\nset32bits\n" + convert + "register osc\n"
 	if cr, err := opts.Runner.Run(ctx, seqDir, convReg, opts.sirilLines("convert + register")); err != nil {
 		return nil, fmt.Errorf("convert+register: %w\n%s", err, sirilTail(cr))
 	}
@@ -123,6 +124,13 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 		Filter: "RGB", InputFrames: len(frames), StackedFrames: regCount - len(rejectedReg),
 		Metrics: metrics, OutputPath: masterBase + ".fits",
 	}}
+	// Pointing-pattern diagnosis (dithered / drift / static) from the registration offsets — the
+	// walking-noise risk evidence and its dithering advice, same as the mono channel path.
+	if d := ditherReport(metrics); d != nil {
+		res.Channels[0].Dither = d
+		res.Channels[0].Selection.Notes = append(res.Channels[0].Selection.Notes, "capture offsets: "+d.Note)
+	}
+	appendDitherAdvice(res)
 
 	// Line-aware satellite/aircraft-trail masking on the registered subs before stacking (no-op unless
 	// the preset enables it — milkyway leaves it off). Soft-fail: stack as-is on any error.
@@ -180,7 +188,7 @@ func finishOSC(ctx context.Context, opts Options, res *Result, masterPath, workR
 	}
 	base := filepath.Join(stretchDir, "base")
 	// Linked + dark target background keeps the wide-field sky neutral and dark (not Siril's washed 0.25).
-	script := "requires 1.2.0\nsetext fits\n" + fmt.Sprintf("load %s\n", masterPath) +
+	script := "requires 1.2.0\nsetext fits\nset32bits\n" + fmt.Sprintf("load %s\n", masterPath) +
 		siril.SubskyCmd(deg) + siril.AutostretchCmd(true, bgLevel) + fmt.Sprintf("\nsavetif %s\n", base)
 	if st, err := opts.Runner.Run(ctx, stretchDir, script, opts.sirilLines("finishing (GIMP)")); err != nil {
 		res.Warnings = append(res.Warnings, "background extraction/stretch failed: "+err.Error()+"\n"+sirilTail(st))
@@ -197,7 +205,11 @@ func finishOSC(ctx context.Context, opts Options, res *Result, masterPath, workR
 				res.Final = &postprocess.Result{Mode: "OSC-RGB", Channels: []string{"RGB"}, Outputs: []string{g.Xcf, g.Tif, g.Png}, Notes: []string{"one-shot-color + curves (GIMP)"}}
 				return
 			} else {
-				res.Warnings = append(res.Warnings, "GIMP finishing failed, keeping Siril stretch: "+gerr.Error())
+				if ctx.Err() != nil {
+					res.Warnings = append(res.Warnings, "run cancelled — finishing skipped")
+				} else {
+					res.Warnings = append(res.Warnings, "GIMP finishing failed, keeping Siril stretch: "+gerr.Error())
+				}
 			}
 		}
 	}
@@ -241,6 +253,7 @@ func processNightscape(ctx context.Context, opts Options, res *Result, frames []
 		BiasFrames:            biasFrames,
 		PhoneCalib:            opts.PhoneCalib,
 		LibraryDir:            libDir,
+		LibraryMirror:         opts.LibraryMirror, // pull matched phone masters from S3 when absent locally
 		ForegroundFrame:       opts.Preset.ForegroundFrame,
 		Orientation:           opts.Preset.Orientation,
 		OnProgress:            opts.sirilLines("nightscape: register + composite"),

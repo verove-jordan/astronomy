@@ -21,7 +21,36 @@ const embeddedCatalogueDir = "catalogue"
 var (
 	embeddedOnce sync.Once
 	embedded     *Catalog
+
+	embeddedOverlayOnce sync.Once
+	embeddedOverlay     map[string]openNGCEntry
 )
+
+// embeddedOpenNGC parses the embedded OpenNGC overlay once. It ships in OUR catalogue snapshot (not the
+// Siril install), so it enriches BOTH the on-disk Siril catalogue and the embedded one — otherwise the
+// macOS host path (which reads Siril's own CSVs, without this file) would get no object types.
+func embeddedOpenNGC() map[string]openNGCEntry {
+	embeddedOverlayOnce.Do(func() {
+		f, err := embeddedCatalogueFS.Open(path.Join(embeddedCatalogueDir, openNGCFile))
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		if m, perr := parseOpenNGC(f); perr == nil {
+			embeddedOverlay = m
+		}
+	})
+	return embeddedOverlay
+}
+
+// overlayForDir prefers an OpenNGC overlay shipped in dir, else the embedded snapshot — so a future Siril
+// that bundles types would win, but today every path still gets the embedded overlay.
+func overlayForDir(dir string) map[string]openNGCEntry {
+	if m := loadOpenNGCFromDir(dir); len(m) > 0 {
+		return m
+	}
+	return embeddedOpenNGC()
+}
 
 // loadEmbeddedCatalog parses the embedded CSV snapshot once and caches it for the process lifetime.
 func loadEmbeddedCatalog() *Catalog {
@@ -41,6 +70,7 @@ func loadEmbeddedCatalog() *Catalog {
 				c.add(r)
 			}
 		}
+		c.applyOpenNGC(embeddedOpenNGC())
 		embedded = c
 	})
 	return embedded

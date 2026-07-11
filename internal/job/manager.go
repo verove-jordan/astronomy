@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +31,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/source"
 	"github.com/verove-jordan/astronomy/internal/starnet"
 	"github.com/verove-jordan/astronomy/internal/store"
+	"github.com/verove-jordan/astronomy/internal/transfer"
 	"github.com/verove-jordan/astronomy/internal/turns"
 	"github.com/verove-jordan/astronomy/internal/videoout"
 )
@@ -49,13 +52,18 @@ type Event struct {
 	PeakRSSBytes int64   `json:"peak_rss_bytes,omitempty"` // peak resident memory seen this step
 
 	// Live byte progress for an S3 transfer job (streamed, never persisted — the Progress int is).
-	BytesDone  int64 `json:"bytes_done,omitempty"`
-	BytesTotal int64 `json:"bytes_total,omitempty"`
+	BytesDone   int64 `json:"bytes_done,omitempty"`
+	BytesTotal  int64 `json:"bytes_total,omitempty"`
+	BytesPerSec int64 `json:"bytes_per_sec,omitempty"` // smoothed transfer throughput (débit)
 
 	// Iteration carries one supervised-finish pass (preview + tier + defects + scores) as it happens,
 	// so the UI streams the AI agent's iterations live instead of only after the job finishes.
 	Iteration    *postprocess.IterationRecord `json:"iteration,omitempty"`
 	StagePreview *postprocess.StagePreview    `json:"stage_preview,omitempty"` // one saved processing-milestone preview, streamed live
+
+	// StagePreviews carries the accumulated milestone previews in one shot — used only by the SSE
+	// reconnect snapshot so a page reloaded mid-run re-hydrates the intermediary-image timeline.
+	StagePreviews []postprocess.StagePreview `json:"stage_previews,omitempty"`
 
 	Done bool `json:"done,omitempty"`
 }
@@ -136,6 +144,13 @@ type Manager struct {
 	pauses    map[int64]*pauseGate         // cooperative pause signals for in-flight jobs (guarded by mu)
 	jobTurns  map[int64]string             // supervised jobs → their conversation turn id (guarded by mu)
 
+	// Live-preview retention for reconnecting clients: the latest preview PNG path and the accumulated
+	// milestone previews per running job. SSE events are dropped when no subscriber is attached, so this
+	// lets a page reloaded mid-run re-hydrate its preview + intermediary-image timeline from the snapshot.
+	// Cleared when the job finishes. Guarded by mu.
+	lastPreview   map[int64]string
+	stagePreviews map[int64][]postprocess.StagePreview
+
 	confirmSeq int64 // monotonic counter for unique expensive-step confirmation call ids
 
 	locker *pathLocker // serializes jobs whose input roots overlap (shared library/output)
@@ -164,10 +179,13 @@ type RunRequest struct {
 	Look            string `json:"look,omitempty"`
 	ForegroundFrame string `json:"foreground_frame,omitempty"`
 	Orientation     string `json:"orientation,omitempty"`
-	Brightness      string `json:"brightness,omitempty"`
-	DarkDir         string `json:"dark_dir,omitempty"`
-	FlatDir         string `json:"flat_dir,omitempty"`
-	BiasDir         string `json:"bias_dir,omitempty"`
+	// Palette selects the deep-sky channel→RGB colour mapping (natural|hargb|hoo|sho|hos|foraxx|mono);
+	// empty → natural. A palette missing its required filters falls back (see pipeline.resolvePalette).
+	Palette    string `json:"palette,omitempty"`
+	Brightness string `json:"brightness,omitempty"`
+	DarkDir    string `json:"dark_dir,omitempty"`
+	FlatDir    string `json:"flat_dir,omitempty"`
+	BiasDir    string `json:"bias_dir,omitempty"`
 
 	// Comet (mode "comet") optional manual comet position override: the comet's pixel coordinates in the
 	// first (X1,Y1) and last (X2,Y2) star-aligned frame. All four > 0 → override; otherwise auto-detect.
@@ -209,6 +227,16 @@ type RunRequest struct {
 	// worker branches to the finish-only path (see execute → executeRefine).
 	Refine *RefineRequest `json:"refine,omitempty"`
 
+	// Rerun, when set, re-runs an already-completed run from the stage a parameter edit requires
+	// (pipeline.RerunFromStage), in place — the manual, non-supervised counterpart of Refine. Built by
+	// Manager.Rerun from a source job; the worker branches to executeRerun.
+	Rerun *RerunRequest `json:"rerun,omitempty"`
+
+	// DenoiseFinal, when set, runs GraXpert AI denoise on an already-completed run's final image on demand
+	// (offloaded to the native host GraXpert service when ASTRO_GRAXPERT_URL is set). Built by
+	// Manager.DenoiseFinal; the worker branches to executeDenoiseFinal.
+	DenoiseFinal *DenoiseFinalRequest `json:"denoise_final,omitempty"`
+
 	// Sequential routes this job into the single-worker queue lane so stacked "Add to queue" jobs run
 	// one-at-a-time in submission order, auto-advancing — instead of the parallel pool. Default false.
 	Sequential bool `json:"sequential,omitempty"`
@@ -216,6 +244,13 @@ type RunRequest struct {
 	// CalibExclude lists calib.SuggestID keys (per light-set, per role) the user unchecked in the Import
 	// "Calibration" panel; those darks/flats/bias are dropped from each channel's matched selection.
 	CalibExclude []string `json:"calib_exclude,omitempty"`
+
+	// CalibPlan is a frozen snapshot of the calibration masters matched for this capture at queue time
+	// (the Import "Calibration" preview), so the job page can show which darks/flats/bias are included and
+	// with what params — visible while queued/running, before the run's result masters exist. Purely
+	// informational: the pipeline re-matches independently at run time (honoring CalibExclude). nil for
+	// CLI/non-UI jobs, which simply show no calibration panel.
+	CalibPlan *calib.CalibPreview `json:"calib_plan,omitempty"`
 
 	// Transfer, when set, makes this an S3 transfer job (upload/sync/download/remove-local) instead of a
 	// pipeline run — it is intercepted before mode parsing and reuses the whole job progress/SSE stack.
@@ -225,6 +260,10 @@ type RunRequest struct {
 	// process, push inputs+outputs, then remove local copies). S3 targets the run's S3Target.
 	StorageMode string    `json:"storage_mode,omitempty"`
 	S3          *S3Target `json:"s3,omitempty"`
+	// LowDisk overrides the server ASTRO_S3_LOW_DISK default for this full-S3 deep-sky/nebula run: when on,
+	// inputs are staged from S3 one frame-type/channel wave at a time and freed after, so peak local disk
+	// stays ≈ one channel's frames. nil → the server default. See internal/job/stager.go.
+	LowDisk *bool `json:"low_disk,omitempty"`
 
 	// Backup / Restore, when set, make this a backup-everything (or restore) job instead of a pipeline run
 	// — intercepted before mode parsing like Transfer, reusing the whole job progress/SSE stack.
@@ -262,6 +301,20 @@ type TransferRequest struct {
 	Prefix    string `json:"prefix"`
 	Namespace string `json:"namespace"` // "data" | "output"
 	RelPath   string `json:"rel_path"`
+	// LocalRoot, when set, is an ABSOLUTE local root OUTSIDE DataDir/OutputDir (an external drive) that the
+	// transfer walks instead of the namespace root. The API validates it against the browse allowlist before
+	// enqueuing (localfs.Allowed) — it is never derived from an untrusted body alone. With it, keys are
+	// `<Prefix>/<RelPath>/…` (Namespace stays empty) and the classified data-plan is skipped: these are
+	// arbitrary files, not AstroStack captures.
+	LocalRoot string `json:"local_root,omitempty"`
+	// Verify upgrades a sync to content-verified — upload only files MISSING or CORRUPTED, not just
+	// size-changed (see transfer.Request.Verify). Used by the external-drive copy so a half-written mirror
+	// object is re-uploaded rather than trusted.
+	Verify bool `json:"verify,omitempty"`
+	// ExcludeDirs names subdirectories the transfer walk skips entirely (see transfer.Request.ExcludeDirs).
+	// The calibration-library mirror sets it to ["catalogues"] so the multi-GB Gaia catalogues tree under
+	// LibraryDir is never uploaded.
+	ExcludeDirs []string `json:"exclude_dirs,omitempty"`
 }
 
 // S3Target is the bucket + prefix a full-S3 run reads inputs from and pushes results to.
@@ -293,6 +346,23 @@ type RefineRequest struct {
 	Params json.RawMessage `json:"params,omitempty"`
 }
 
+// RerunRequest re-runs an already-completed deepsky/nebula run from the stage a parameter edit requires,
+// in place (overwriting the run's files) — the manual, non-supervised counterpart of RefineRequest.
+// RunDir is the run's output folder; Stage is the timeline stage the user restarted from (the re-entry
+// floor); Params are the knob overrides applied onto the run's checkpoint baseline (the same whitelist
+// and clamps as RunRequest.Params). See pipeline.RerunFromStage.
+type RerunRequest struct {
+	RunDir string          `json:"run_dir"`
+	Stage  string          `json:"stage,omitempty"`
+	Params json.RawMessage `json:"params,omitempty"`
+}
+
+// DenoiseFinalRequest denoises an already-completed run's final image with GraXpert on demand (see
+// Manager.DenoiseFinal / executeDenoiseFinal).
+type DenoiseFinalRequest struct {
+	RunDir string `json:"run_dir"`
+}
+
 // inputRoots returns the capture folders this run scans: the multi-select Paths when set, else just
 // Path. The first element is the primary dir (session, target lock, run naming).
 func (r RunRequest) inputRoots() []string {
@@ -319,19 +389,21 @@ func (r RunRequest) reuseSessions() map[int64]bool {
 // the API layer) used to surface supervised jobs as conversations; nil disables that (jobs run headless).
 func NewManager(st *store.Store, runner *siril.Runner, cfg *config.Config, hub TurnHub) *Manager {
 	return &Manager{
-		store:     st,
-		runner:    runner,
-		cfg:       cfg,
-		turns:     hub,
-		s3conn:    newS3ConnService(st, cfg),
-		queue:     make(chan int64, 256),
-		seqQueue:  make(chan int64, 256),
-		xferQueue: make(chan int64, 256),
-		subs:      map[int64][]chan Event{},
-		cancels:   map[int64]context.CancelFunc{},
-		pauses:    map[int64]*pauseGate{},
-		jobTurns:  map[int64]string{},
-		locker:    newPathLocker(),
+		store:         st,
+		runner:        runner,
+		cfg:           cfg,
+		turns:         hub,
+		s3conn:        newS3ConnService(st, cfg),
+		queue:         make(chan int64, 256),
+		seqQueue:      make(chan int64, 256),
+		xferQueue:     make(chan int64, 256),
+		subs:          map[int64][]chan Event{},
+		cancels:       map[int64]context.CancelFunc{},
+		pauses:        map[int64]*pauseGate{},
+		jobTurns:      map[int64]string{},
+		lastPreview:   map[int64]string{},
+		stagePreviews: map[int64][]postprocess.StagePreview{},
+		locker:        newPathLocker(),
 	}
 }
 
@@ -373,6 +445,41 @@ func (m *Manager) Start(ctx context.Context, n int) {
 	// Two transfer workers so a couple of uploads/downloads can overlap without touching the run pool.
 	go m.worker(ctx, m.xferQueue)
 	go m.worker(ctx, m.xferQueue)
+	// Re-dispatch jobs a previous instance left 'queued'. Enqueue schedules a job by pushing its id onto
+	// an in-process lane channel, which is lost on restart — so, like the orphaned-running reconcile above,
+	// a job queued when the previous instance stopped has no live worker and would sit queued forever.
+	m.redispatchQueued(ctx)
+	// Auto-resume error-paused jobs (transient S3 failures) with backoff — manual pauses are left alone.
+	go m.autoResumePaused(ctx)
+}
+
+// redispatchQueued re-schedules every job the DB still has as 'queued' by pushing its id back onto the
+// right lane, oldest-first. Scheduling is an in-process channel push (see Enqueue/laneFor) that does not
+// survive a restart, so a job queued when the previous instance stopped (e.g. an `air` rebuild) would
+// otherwise stay 'queued' with no worker to run it. Called once from Start, after the workers are up.
+func (m *Manager) redispatchQueued(ctx context.Context) {
+	jobs, err := m.store.ListQueuedJobs(ctx)
+	if err != nil {
+		log.Printf("astrostack: reload queued jobs failed: %v", err)
+		return
+	}
+	dispatched := 0
+	for _, j := range jobs {
+		var req RunRequest
+		if err := json.Unmarshal(j.Params, &req); err != nil {
+			log.Printf("astrostack: re-dispatch job %d: invalid params: %v", j.ID, err)
+			continue
+		}
+		select {
+		case m.laneFor(req) <- j.ID:
+			dispatched++
+		default:
+			log.Printf("astrostack: re-dispatch job %d: lane full, left queued", j.ID)
+		}
+	}
+	if dispatched > 0 {
+		log.Printf("astrostack: re-dispatched %d queued job(s) on startup", dispatched)
+	}
 }
 
 // Enqueue creates a session and a queued job (kind = mode), then schedules it. Returns the job id.
@@ -505,6 +612,125 @@ func (m *Manager) Refine(ctx context.Context, sourceJobID int64, opts RefineRequ
 	return m.Enqueue(ctx, req)
 }
 
+// Rerun enqueues a job that re-runs an already-completed deepsky/nebula run from the stage a parameter
+// edit requires, overwriting the run in place — the manual, non-supervised counterpart of Refine. It
+// clones the source job's processing choices, so a Tier-C re-entry can re-stack from the raw frames and
+// reuse the calibration library; the overrides are applied onto the run's checkpoint baseline at the
+// cheapest re-entry tier. stage is the timeline stage the user restarted from ("" → the cheapest tier
+// that fits the change). Returns the new job id (a fresh row per rerun for the params trail; the run
+// dir is reused).
+func (m *Manager) Rerun(ctx context.Context, sourceJobID int64, stage string, params json.RawMessage) (int64, error) {
+	j, err := m.store.GetJob(ctx, sourceJobID)
+	if err != nil {
+		return 0, err
+	}
+	if j.Status == store.JobQueued || j.Status == store.JobRunning {
+		return 0, fmt.Errorf("job %d is still %s", sourceJobID, j.Status)
+	}
+	var src RunRequest
+	if err := json.Unmarshal(j.Params, &src); err != nil {
+		return 0, fmt.Errorf("job %d has invalid params: %w", sourceJobID, err)
+	}
+	runDir := runDirFromResult(j.Result)
+	if runDir == "" {
+		return 0, fmt.Errorf("job %d has no completed run to rerun", sourceJobID)
+	}
+	// Validate the overrides up front against the source mode's preset — a malformed body fails the
+	// REQUEST, not the worker mid-run (mirrors Enqueue).
+	if len(params) > 0 {
+		if mo, merr := mode.ParseMode(src.Mode); merr == nil {
+			scratch := mode.For(mo)
+			if _, perr := pipeline.ApplyParamPatch(&scratch, params); perr != nil {
+				return 0, fmt.Errorf("invalid params: %w", perr)
+			}
+		}
+	}
+	// Clone the source's processing choices. Keep src.Params as the job's Params so execute() rebuilds the
+	// ORIGINAL baseline preset (the fallback when a run predates the stage checkpoint); the NEW override
+	// rides in Rerun.Params, which RerunFromStage applies onto the checkpoint to pick the re-entry tier.
+	req := src
+	req.Live, req.Refine, req.Transfer, req.Backup, req.Restore = nil, nil, nil, nil, nil
+	req.Sequential = false
+	req.Supervise = false
+	req.Rerun = &RerunRequest{RunDir: runDir, Stage: stage, Params: params}
+	return m.Enqueue(ctx, req)
+}
+
+// DenoiseFinal enqueues an on-demand job that runs GraXpert AI denoise on a completed run's final image.
+// It clones the source job's mode/path for context and points at the run dir; when ASTRO_GRAXPERT_URL is
+// set the worker offloads the denoise to the native host GraXpert service (faster + non-blocking).
+// Returns the new job id. Refuses a job with no completed result.
+func (m *Manager) DenoiseFinal(ctx context.Context, sourceJobID int64) (int64, error) {
+	j, err := m.store.GetJob(ctx, sourceJobID)
+	if err != nil {
+		return 0, err
+	}
+	if j.Status != store.JobSucceeded {
+		return 0, fmt.Errorf("job %d has no completed result to denoise", sourceJobID)
+	}
+	runDir := runDirFromResult(j.Result)
+	if runDir == "" {
+		return 0, fmt.Errorf("job %d has no run directory to denoise", sourceJobID)
+	}
+	var src RunRequest
+	if err := json.Unmarshal(j.Params, &src); err != nil {
+		return 0, fmt.Errorf("job %d has invalid params: %w", sourceJobID, err)
+	}
+	req := src
+	req.Live, req.Refine, req.Transfer, req.Backup, req.Restore, req.Rerun = nil, nil, nil, nil, nil, nil
+	req.Sequential, req.Supervise = false, false
+	req.DenoiseFinal = &DenoiseFinalRequest{RunDir: runDir}
+	return m.Enqueue(ctx, req)
+}
+
+// FreeLocal frees the local input + output files of a finished full-S3 run by enqueuing verified removeLocal
+// transfers (each aborts unless every file is already on S3, so data is never lost). Returns the enqueued
+// transfer job ids. Errors when the job is not a succeeded full-S3 run or has nothing local to free. This is
+// the explicit counterpart to the auto-free that used to run after every full-S3 run.
+func (m *Manager) FreeLocal(ctx context.Context, sourceJobID int64) ([]int64, error) {
+	j, err := m.store.GetJob(ctx, sourceJobID)
+	if err != nil {
+		return nil, err
+	}
+	if j.Status != store.JobSucceeded {
+		return nil, fmt.Errorf("job %d is not a completed run", sourceJobID)
+	}
+	var p RunRequest
+	if err := json.Unmarshal(j.Params, &p); err != nil {
+		return nil, fmt.Errorf("job %d has invalid params: %w", sourceJobID, err)
+	}
+	if !p.wantsS3Storage() {
+		return nil, fmt.Errorf("job %d is not a full-S3 run", sourceJobID)
+	}
+	inputs, outRel := m.s3RunTargets(p, json.RawMessage(j.Result))
+
+	var ids []int64
+	enqueue := func(namespace, rel string) error {
+		newID, err := m.Enqueue(ctx, RunRequest{Mode: "transfer", Transfer: &TransferRequest{
+			Op: "removeLocal", Bucket: p.S3.Bucket, Prefix: p.S3.Prefix, Namespace: namespace, RelPath: rel,
+		}})
+		if err != nil {
+			return err
+		}
+		ids = append(ids, newID)
+		return nil
+	}
+	for _, rel := range inputs {
+		if err := enqueue("data", rel); err != nil {
+			return ids, err
+		}
+	}
+	if outRel != "" {
+		if err := enqueue("output", outRel); err != nil {
+			return ids, err
+		}
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("job %d has no local files to free", sourceJobID)
+	}
+	return ids, nil
+}
+
 // runDirFromResult resolves a finished job's on-disk run directory from its stored result JSON. Deep-sky,
 // comet and milkyway persist a pipeline.Result with output_dir; planetary persists a flat planetary.Result
 // with out_base (<runDir>/<object>_stack) and no output_dir, so fall back to the directory of out_base.
@@ -588,6 +814,7 @@ func (m *Manager) Subscribe(jobID int64) (<-chan Event, func()) {
 func (m *Manager) publish(e Event) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.retainPreview(e)
 	for _, ch := range m.subs[e.JobID] {
 		select {
 		case ch <- e:
@@ -596,15 +823,69 @@ func (m *Manager) publish(e Event) {
 	}
 }
 
+// retainPreview keeps the latest preview + the accumulated milestone previews for a running job, so a
+// client that reconnects (page reload) re-hydrates them from the SSE snapshot instead of waiting for the
+// next live event. Cleared when the job finishes. Caller holds m.mu.
+func (m *Manager) retainPreview(e Event) {
+	if e.Done {
+		delete(m.lastPreview, e.JobID)
+		delete(m.stagePreviews, e.JobID)
+		return
+	}
+	if e.Preview != "" {
+		m.lastPreview[e.JobID] = e.Preview
+	}
+	if e.StagePreview == nil {
+		return
+	}
+	list := m.stagePreviews[e.JobID]
+	for i := range list { // upsert by index so a re-emitted milestone updates in place
+		if list[i].Index == e.StagePreview.Index {
+			list[i] = *e.StagePreview
+			return
+		}
+	}
+	m.stagePreviews[e.JobID] = append(list, *e.StagePreview)
+}
+
+// PreviewSnapshot returns the latest preview path and a copy of the accumulated milestone previews for a
+// job — used by the SSE reconnect snapshot so a page reloaded mid-run restores its live preview and
+// intermediary-image timeline. Empty for a job that has produced no preview yet.
+func (m *Manager) PreviewSnapshot(jobID int64) (string, []postprocess.StagePreview) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stages := m.stagePreviews[jobID]
+	if len(stages) == 0 {
+		return m.lastPreview[jobID], nil
+	}
+	out := make([]postprocess.StagePreview, len(stages))
+	copy(out, stages)
+	return m.lastPreview[jobID], out
+}
+
 func (m *Manager) worker(ctx context.Context, q chan int64) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case id := <-q:
-			m.run(ctx, id)
+			m.runGuarded(ctx, id)
 		}
 	}
+}
+
+// runGuarded runs one job with a panic backstop: a panic in the pipeline (a bad master, a decode bug)
+// used to crash the ENTIRE engine process (the worker goroutine has no recover), which then reconciled
+// every in-flight job as "interrupted by a server restart". Now a panic fails only its own job and the
+// engine stays up for the others.
+func (m *Manager) runGuarded(ctx context.Context, id int64) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("astrostack: job %d panicked: %v\n%s", id, r, debug.Stack())
+			m.finishTerminal(id, store.JobFailed, fmt.Errorf("internal error (recovered): %v", r))
+		}
+	}()
+	m.run(ctx, id)
 }
 
 func (m *Manager) run(ctx context.Context, id int64) {
@@ -655,8 +936,8 @@ func (m *Manager) run(ctx context.Context, id int64) {
 	// the kept result — no recompute.
 	if cp.Phase == phasePush {
 		res := json.RawMessage(job.Result)
-		if err := m.pushAndFreeS3Run(runCtx, id, p, res); err != nil {
-			m.settleS3Error(id, runCtx, phasePush, res, err)
+		if err := m.pushS3Run(runCtx, id, p, res); err != nil {
+			m.settleS3Error(id, runCtx, phasePush, res, err, cp.Attempts)
 			return
 		}
 		m.finishSucceeded(id, p, job.Result)
@@ -665,23 +946,50 @@ func (m *Manager) run(ctx context.Context, id int64) {
 
 	// Full-S3 storage: pull the capture folders from S3 before processing so a run can work from files that
 	// live only on S3 (idempotent — same-size local files are skipped, so a resumed pull is cheap). A
-	// transient network failure PAUSES the job (resumable) rather than failing it.
-	if p.wantsS3Storage() {
+	// transient network failure PAUSES the job (resumable) rather than failing it. The low-disk staged mode
+	// skips this whole-folder pull: the pipeline's InputStager downloads one wave at a time instead. A
+	// denoise re-finish also skips it — it needs only the output tree (final.tif), hydrated in
+	// executeDenoiseFinal via ensureRunDirLocal, never the raw captures.
+	if p.wantsS3Storage() && !m.lowDiskActive(p) && p.DenoiseFinal == nil {
 		if err := m.pullS3Inputs(runCtx, id, p); err != nil {
-			m.settleS3Error(id, runCtx, phasePull, nil, err)
+			m.settleS3Error(id, runCtx, phasePull, nil, err, cp.Attempts)
 			return
 		}
 	}
 
 	res, runErr := m.execute(runCtx, id, turnID, job.Kind, p, cp.pipelineResume(), gate)
 
-	// A cooperative mid-stack pause returns *PausedError: park the job (its finished channels are on disk,
-	// reused on Continue) rather than failing it.
+	// A cooperative mid-stack pause returns *PausedError; a manual pause during a standalone transfer
+	// returns transfer.ErrPaused. Either parks the job in the resumable paused state (Cause=manual, so the
+	// auto-resume sweep never touches it) rather than failing it.
 	if runErr != nil {
+		// Low-disk staged input pull failed mid-compute: pause the compute phase (carrying the run's
+		// id/outDir so resume reuses the output dir + skips finished channels). A transient S3 error
+		// auto-resumes with backoff; a manual pause during staging (ErrPaused inside) stays paused. Checked
+		// before PausedError/ErrPaused because a StagePullError unwraps to ErrPaused for a manual pause.
+		var spe *pipeline.StagePullError
+		if errors.As(runErr, &spe) {
+			switch classifyS3Error(runCtx.Err(), spe.Err) {
+			case outcomeCancel:
+				m.finishTerminal(id, store.JobCancelled, spe.Err)
+			case outcomePause:
+				pcp := s3PauseCheckpoint(phaseCompute, spe.Err, cp.Attempts)
+				pcp.RunID, pcp.OutDir = spe.RunID, spe.OutDir
+				m.pauseJob(id, pcp, nil)
+			default:
+				m.finishTerminal(id, store.JobFailed, spe.Err)
+			}
+			return
+		}
 		var pe *pipeline.PausedError
 		if errors.As(runErr, &pe) {
 			m.pauseJob(id, resumeCheckpoint{Phase: phaseCompute, RunID: pe.RunID, OutDir: pe.OutDir,
-				Reason: "paused — will continue the remaining channels"}, nil)
+				Cause: causeManual, Reason: "paused by you — will continue the remaining channels"}, nil)
+			return
+		}
+		if errors.Is(runErr, transfer.ErrPaused) {
+			m.pauseJob(id, resumeCheckpoint{Phase: phaseTransfer, Cause: causeManual,
+				Reason: "paused by you — will resume the transfer"}, nil)
 			return
 		}
 		// Terminal writes use a fresh context so they persist even if the run was cancelled.
@@ -693,12 +1001,23 @@ func (m *Manager) run(ctx context.Context, id int64) {
 		return
 	}
 
-	// Full-S3 storage: after a successful run, push inputs+outputs to S3 and free the local copies
-	// (verified). A transient push failure PAUSES (results stay safe locally) so Continue re-uploads; a
-	// partial free is non-fatal.
+	// A cancel that lands during the soft-fail finishing stages (GIMP/combine warn instead of
+	// erroring) lets the pipeline limp through to a partial result with a nil error — that run must
+	// finish as CANCELLED, not masquerade as a success. The partial result is kept: the stacked
+	// channels on disk are real work the user may still want to inspect or refine.
+	if runCtx.Err() != nil {
+		_ = m.store.FinishJob(context.Background(), id, store.JobCancelled, resultBlob(res), "cancelled during the run — partial result kept")
+		m.publish(Event{JobID: id, Status: store.JobCancelled, Step: "cancelled", Done: true})
+		m.closeTurn(id, store.JobCancelled, "Cancelled — kept the channels finished so far.")
+		return
+	}
+
+	// Full-S3 storage: after a successful run, push inputs+outputs to S3 (local copies are kept so a retry
+	// can reuse them — freeing is the explicit "Remove local files" action). A transient push failure
+	// PAUSES (results stay safe locally) so Continue re-uploads.
 	if p.wantsS3Storage() {
-		if err := m.pushAndFreeS3Run(runCtx, id, p, res); err != nil {
-			m.settleS3Error(id, runCtx, phasePush, res, err)
+		if err := m.pushS3Run(runCtx, id, p, res); err != nil {
+			m.settleS3Error(id, runCtx, phasePush, res, err, cp.Attempts)
 			return
 		}
 	}
@@ -739,12 +1058,18 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 	}
 	if p.Denoise != nil && !*p.Denoise {
 		preset.DenoiseChroma, preset.DenoiseLum = 0, 0
+		// Also skip the (slow, ~90-min CPU) GraXpert joint colour denoise — previously "denoise off" left
+		// it running. The on-demand "Denoise final" action lets the user run GraXpert later on the host.
+		preset.ColorDenoiseAI = false
 	}
 	if p.HaExcludeStars != nil {
 		preset.HaExcludeStars = *p.HaExcludeStars
 	}
 	if p.Look != "" {
 		preset.Look = p.Look
+	}
+	if p.Palette != "" {
+		preset.Palette = p.Palette
 	}
 	if p.ForegroundFrame != "" {
 		preset.ForegroundFrame = p.ForegroundFrame
@@ -785,8 +1110,8 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 	}
 	solve, spcc := postprocess.SolveSpccFromConfig(m.cfg)
 	gclient := gimp.New(m.cfg.GimpBin, m.cfg.GimpHost, m.cfg.GimpPort)
-	graxRunner := graxpert.New(m.cfg.GraxpertBin) // optional; skipped when binary absent
-	starRunner := starnet.New(m.cfg.StarnetBin)   // optional; skipped when binary absent
+	graxRunner := graxpert.New(m.cfg.GraxpertBin, m.cfg.GraxpertURL).SetDefaults(m.cfg.GraxpertGPU, m.cfg.GraxpertBatch) // optional; skipped when binary absent
+	starRunner := starnet.New(m.cfg.StarnetBin)                                                                          // optional; skipped when binary absent
 	var superRunner *llm.Runner
 	if p.Supervise || p.Refine != nil { // opt-in local-AI-agent finish (always on for a refine); nil → standard finish
 		superRunner = llm.New(m.cfg.LLMBaseURL, m.cfg.LLMModel, m.cfg.LLMImageFormat).WithTimeout(m.cfg.LLMTimeout)
@@ -878,9 +1203,18 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 		m.publish(Event{JobID: id, Status: store.JobRunning, Progress: pct, Step: pr.Step, Preview: pr.Preview})
 	}
 
+	// A denoise-final job runs GraXpert AI denoise on the completed run's final image (on demand,
+	// non-blocking, offloaded to the host GraXpert service when configured).
+	if p.DenoiseFinal != nil {
+		return m.executeDenoiseFinal(ctx, id, p, graxRunner, pipeProg)
+	}
 	// A refine job re-finishes an existing run under the supervisor instead of processing from scratch.
 	if p.Refine != nil {
 		return m.executeRefine(ctx, id, p, preset, gclient, graxRunner, starRunner, superRunner, solve, spcc, pipeProg, steer, confirm)
+	}
+	// A rerun re-runs an existing run from the stage an edited param requires, in place (non-supervised).
+	if p.Rerun != nil {
+		return m.executeRerun(ctx, id, p, preset, gclient, graxRunner, starRunner, solve, spcc, pipeProg)
 	}
 
 	switch mo {
@@ -906,7 +1240,7 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
 			Supervisor: superRunner, JobID: id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal, // opt-in local-AI-agent finish
 			Solve: solve, Spcc: spcc, DarkDir: p.DarkDir, FlatDir: p.FlatDir, BiasDir: p.BiasDir,
-			PhoneCalib: m.store, LibraryDir: m.cfg.LibraryDir,
+			PhoneCalib: m.store, LibraryDir: m.cfg.LibraryDir, LibraryMirror: m.libPuller(ctx),
 			CatalogDir: m.cfg.SirilCatalogDir, OnProgress: pipeProg, Steer: steer, Confirm: confirm,
 		})
 		if err != nil {
@@ -931,7 +1265,7 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
 			Supervisor: superRunner,                                                          // opt-in local-AI-agent finish (nil → standard finish)
 			JobID:      id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal, // persist supervised iterations against this job
-			Library: m.store, LibraryDir: m.cfg.LibraryDir, OnProgress: pipeProg, Steer: steer, Confirm: confirm,
+			Library: m.store, LibraryDir: m.cfg.LibraryDir, LibraryMirror: m.libPuller(ctx), OnProgress: pipeProg, Steer: steer, Confirm: confirm,
 			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir,
 			Catalog: m.store,
 		}
@@ -986,7 +1320,7 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
 			Supervisor: superRunner,                                                          // opt-in local-AI-agent finish (nil → standard finish)
 			JobID:      id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal, // persist supervised iterations against this job
-			Library: m.store, LibraryDir: m.cfg.LibraryDir, OnProgress: pipeProg, Steer: steer, Confirm: confirm,
+			Library: m.store, LibraryDir: m.cfg.LibraryDir, LibraryMirror: m.libPuller(ctx), OnProgress: pipeProg, Steer: steer, Confirm: confirm,
 			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir,
 			Catalog:      m.store, // always record the run so its frames become reusable
 			CalibExclude: p.CalibExclude,
@@ -1001,6 +1335,15 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 			opts.Reuse = pipeline.ReuseConfig{
 				Provider: m.store, ConeDeg: m.cfg.ReuseConeDeg, Sessions: p.reuseSessions(),
 			}
+		}
+		// Low-disk staged S3 mode: supply inputs on demand (scan remotely, download/free one wave at a time)
+		// instead of the whole-folder pull run() skipped for this run.
+		if m.lowDiskActive(p) {
+			st, serr := m.newS3Stager(id, p)
+			if serr != nil {
+				return nil, fmt.Errorf("low-disk stager: %w", serr)
+			}
+			opts.Stager = st
 		}
 		r, err := pipeline.Process(ctx, opts)
 		if err != nil {
@@ -1021,6 +1364,10 @@ func (m *Manager) executeRefine(ctx context.Context, id int64, p RunRequest, pre
 	gclient *gimp.Client, grax *graxpert.Runner, star *starnet.Runner, super *llm.Runner,
 	solve siril.SolveOptions, spcc siril.SpccOptions, pipeProg func(pipeline.Progress),
 	steer func() (string, bool), confirm func(context.Context, string, []string) (string, bool)) (any, error) {
+	// A refine reads the run's on-disk masters/run.json; re-hydrate them from S3 when they were freed.
+	if err := m.ensureRunDirLocal(ctx, id, p, p.Refine.RunDir); err != nil {
+		return nil, err
+	}
 	preset.Supervise = true
 	preset.SuperviseTier = p.Refine.Tier
 	if p.Refine.MaxIters > 0 {
@@ -1067,6 +1414,89 @@ func (m *Manager) executeRefine(ctx context.Context, id int64, p RunRequest, pre
 		}
 		return final, nil
 	}
+}
+
+// executeRerun re-runs an already-completed deepsky/nebula run from the stage a parameter edit requires
+// (pipeline.RerunFromStage), overwriting the run in place — the manual, non-supervised counterpart of
+// executeRefine. It builds the same processing options a normal run uses, so a Tier-C re-entry can
+// re-stack from the raw frames and reuse the calibration library; it returns the refreshed run record so
+// JobView shows the new final + previews.
+func (m *Manager) executeRerun(ctx context.Context, id int64, p RunRequest, preset mode.Preset,
+	gclient *gimp.Client, grax *graxpert.Runner, star *starnet.Runner,
+	solve siril.SolveOptions, spcc siril.SpccOptions, pipeProg func(pipeline.Progress)) (any, error) {
+	// A Tier-A/B rerun reuses the run's on-disk masters; re-hydrate the output tree from S3 when it was freed
+	// (a Tier-C re-stack additionally gets its raw inputs from the whole-folder pull in run()).
+	if err := m.ensureRunDirLocal(ctx, id, p, p.Rerun.RunDir); err != nil {
+		return nil, err
+	}
+	preset.Supervise = false // a manual rerun never invokes the agent
+	grd := preset.Grade
+	opts := pipeline.Options{
+		InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
+		Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: grax, Starnet: star,
+		JobID: id, Library: m.store, LibraryDir: m.cfg.LibraryDir, OnProgress: pipeProg,
+		FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir,
+		Catalog: m.store, CalibExclude: p.CalibExclude,
+	}
+	if m.cfg.ReuseEnabled && !p.ReuseDisabled {
+		opts.RawCalib = m.store // Tier-C re-stack pools raw bias/darks into deep masters, like a normal run
+		opts.Deep = deepOptions(m.cfg)
+		opts.Reuse = pipeline.ReuseConfig{Provider: m.store, ConeDeg: m.cfg.ReuseConeDeg, Sessions: p.reuseSessions()}
+	}
+	res, err := pipeline.RerunFromStage(ctx, opts, p.Rerun.RunDir, p.Rerun.Params, p.Rerun.Stage)
+	if err != nil {
+		return nil, err
+	}
+	format, _ := mode.ParseFormat(p.Format)
+	if res != nil && res.Final != nil {
+		res.Final.Outputs = m.appendVideo(ctx, id, format, res.Final.Outputs)
+	}
+	return res, nil
+}
+
+// executeDenoiseFinal runs GraXpert AI denoise on a completed run's final.tif and returns a result that
+// surfaces the denoised image (plus a PNG for the browser). When ASTRO_GRAXPERT_URL is set the runner
+// offloads to the native host GraXpert service (faster + non-blocking). NOTE: GraXpert's denoise model is
+// CoreML-incompatible, so this is CPU-bound — "faster + on demand", not instant.
+func (m *Manager) executeDenoiseFinal(ctx context.Context, id int64, p RunRequest, grax *graxpert.Runner, pipeProg func(pipeline.Progress)) (any, error) {
+	runDir := p.DenoiseFinal.RunDir
+	// Re-hydrate the run's output tree from S3 when its results were freed (final.tif lives under output/,
+	// which the input pull never fetches); no-op when already local. Idempotent, so a retry reuses on-disk files.
+	if err := m.ensureRunDirLocal(ctx, id, p, runDir); err != nil {
+		return nil, err
+	}
+	if err := grax.Available(ctx); err != nil {
+		return nil, fmt.Errorf("GraXpert unavailable (set GRAXPERT_BIN, or run `just run-graxpert-service` + ASTRO_GRAXPERT_URL): %w", err)
+	}
+	src := filepath.Join(runDir, "final.tif")
+	if _, err := os.Stat(src); err != nil {
+		return nil, fmt.Errorf("run has no final.tif to denoise in %s", runDir)
+	}
+	out := filepath.Join(runDir, "final_denoised.tif")
+	pipeProg(pipeline.Progress{Step: "denoising final", Line: "GraXpert AI denoise on the final image…"})
+	fwd := func(pr graxpert.Progress) { pipeProg(pipeline.Progress{Step: "denoising final", Line: pr.Line}) }
+	if err := grax.Denoise(ctx, src, out, graxpert.DenoiseOptions{}, fwd); err != nil {
+		return nil, fmt.Errorf("denoise final: %w", err)
+	}
+	if _, err := os.Stat(out); err != nil {
+		return nil, fmt.Errorf("denoise final: GraXpert produced no output")
+	}
+	// Export a PNG the browser can show (Siril: load the denoised TIFF, save a PNG next to it). Non-fatal:
+	// the TIFF is always returned even if the PNG step fails.
+	if _, err := m.runner.Run(ctx, runDir, "load final_denoised\nsavepng final_denoised\n", nil); err != nil {
+		pipeProg(pipeline.Progress{Step: "denoising final", Line: "PNG export skipped: " + err.Error()})
+	}
+	outputs := make([]string, 0, 2)
+	png := filepath.Join(runDir, "final_denoised.png")
+	if _, err := os.Stat(png); err == nil {
+		outputs = append(outputs, png)
+	}
+	outputs = append(outputs, out)
+	return &pipeline.Result{
+		OutputDir: runDir,
+		Object:    filepath.Base(filepath.Dir(runDir)),
+		Final:     &postprocess.Result{Outputs: outputs, Notes: []string{"GraXpert AI denoise applied to the final image"}},
+	}, nil
 }
 
 // deepOptions builds the raw-calibration pool window from config: a temperature tolerance and an

@@ -21,6 +21,14 @@ func denoiseLinearMaster(ctx context.Context, opts Options, ch *ChannelResult, m
 	masterPath := filepath.Join(outDir, masterName+".fits")
 
 	before, measured := measureNoise(masterPath, ch)
+	// Defer the R/G/B denoise to the single joint pass on the COMBINED RGB (prepGimpInputs): three
+	// independent per-channel smoothing fields can't cancel in the combine, so they leave coherent
+	// colour patches; one denoise on the merged colour does not. Noise is still measured above for the
+	// record. L (luminance) and narrowband keep their own denoise.
+	if jointColorDenoise(ctx, opts) && isRGBChannel(filter) {
+		ch.Selection.Notes = append(ch.Selection.Notes, "channel denoise deferred to the combined joint colour pass")
+		return
+	}
 	base := denoiseFor(filter, opts.Preset)
 	effMod := base.Modulation
 	if opts.Preset.DenoiseAuto && measured {

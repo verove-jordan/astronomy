@@ -123,10 +123,29 @@ func typeFromDirName(dir string) FrameType {
 		return Bias
 	case hasDark:
 		return Dark
-	case set["light"] || set["lights"] || set["science"] || set["object"]:
-		return Light
+	case set["light"] || set["lights"] || set["science"] || set["object"] || set["capobj"]:
+		return Light // "capobj" is SharpCap's captured-object (lights) folder
 	}
 	return Unknown
+}
+
+// processedTokens are filename words that mark a PROCESSED image (a stack/finish output someone
+// stored beside their captures), never a raw sub — e.g. "m27_R_stacked.tif". Matched per token so
+// an object name containing the letters is safe.
+var processedTokens = map[string]bool{
+	"stacked": true, "stack": true, "master": true, "combined": true, "final": true,
+	"mosaic": true, "annotated": true, "preview": true, "thumb": true, "starless": true,
+}
+
+// isProcessedName reports whether a file's base name tokens mark it as a processed output.
+func isProcessedName(path string) bool {
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	for tk := range tokenSet(base) {
+		if processedTokens[tk] {
+			return true
+		}
+	}
+	return false
 }
 
 // tokenSet splits a directory name into lowercased word tokens (on _ - . space) for keyword matching.

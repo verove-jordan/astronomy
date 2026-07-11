@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -21,9 +22,17 @@ import (
 	"github.com/verove-jordan/astronomy/internal/sysmon"
 )
 
-// Runner executes GraXpert via its command-line interface.
+// Runner executes GraXpert. In the default (local) mode it shells out to the host-installed binary; when
+// a host-service URL is set it OFFLOADS each operation to a native GraXpert HTTP service (cmd/graxpert-host)
+// over that URL — the only way the containerized engine can run GraXpert natively (Docker on macOS can't
+// exec a host binary, and CoreML is unreachable from the Linux container). Both modes share this type.
 type Runner struct {
 	bin string
+	url string // optional host GraXpert service base URL; when non-empty, Denoise/ExtractBackground offload to it
+	hc  *http.Client
+
+	gpu   bool // default -gpu (from ASTRO_GRAXPERT_GPU); a per-call opts.GPU still forces it on
+	batch int  // default denoise -batch_size (from ASTRO_GRAXPERT_BATCH); a per-call opts.Batch overrides
 
 	// Deep-health memo (see health.go). Guarded by healthMu; a probe can take minutes on first
 	// run (model download), so callers needing a non-blocking answer use HealthCached.
@@ -32,9 +41,22 @@ type Runner struct {
 	healthErr  error
 }
 
-// New returns a Runner for the given GraXpert binary path. An empty path yields a Runner that
-// reports Unavailable, so "not configured" and "not installed" are handled identically by callers.
-func New(bin string) *Runner { return &Runner{bin: bin} }
+// SetDefaults sets the GPU flag and denoise batch size the runner falls back to when a call leaves them
+// unset (wired from config). Returns r for chaining after New.
+func (r *Runner) SetDefaults(gpu bool, batch int) *Runner {
+	if r != nil {
+		r.gpu, r.batch = gpu, batch
+	}
+	return r
+}
+
+// New returns a Runner for the given GraXpert binary path and optional host-service URL. url wins: when
+// set, operations offload to the native host service; when empty the local bin is exec'd. An empty bin
+// AND empty url yields a Runner that reports Unavailable, so "not configured" and "not installed" are
+// handled identically by callers.
+func New(bin, url string) *Runner {
+	return &Runner{bin: bin, url: strings.TrimRight(url, "/"), hc: &http.Client{}}
+}
 
 // Progress is one line of GraXpert output with any embedded percentage extracted. When Sample is
 // non-nil the Progress carries a live resource reading instead of a log line (Line is empty).
@@ -44,25 +66,35 @@ type Progress struct {
 	Sample  *sysmon.Sample
 }
 
-// BackgroundOptions tune GraXpert background extraction. GraXpert 3.x exposes only GPU toggling on
-// the command line; smoothing / interpolation method come from its saved preferences (or a
-// -preferences_file, not yet wired). GPU defaults to false (CPU) — most portable on macOS.
+// BackgroundOptions tune GraXpert background extraction. GPU defaults to false (CPU). On Apple Silicon
+// the background-extraction model IS CoreML-compatible, so -gpu true accelerates it natively (unlike the
+// denoise model — see DenoiseOptions).
 type BackgroundOptions struct {
 	GPU bool // -gpu true to use GPU/CoreML acceleration
 }
 
-// DenoiseOptions tune GraXpert denoising. Like background extraction, only GPU is CLI-settable in
-// GraXpert 3.x (denoise strength is a preference).
+// DenoiseOptions tune GraXpert denoising. NOTE: GraXpert's denoise AI model does NOT compile on Apple's
+// CoreML (verified: both MLProgram and NeuralNetwork backends fail), so -gpu true has no effect for
+// denoise on macOS — it runs on CPU regardless. Batch (-batch_size) and Strength (-strength) DO help:
+// a larger batch denoises more tiles in parallel.
 type DenoiseOptions struct {
-	GPU bool
+	GPU      bool
+	Batch    int     // -batch_size (tiles in parallel; 0 → GraXpert default 4). Higher = faster, more RAM.
+	Strength float64 // -strength in 0..1 (0 → GraXpert default 0.5)
 }
 
 var percentRe = regexp.MustCompile(`(\d+)\s?%`)
 
 // Available reports whether the GraXpert binary can be found and executed. It is a soft check:
 // callers log the error and fall back to the Siril path rather than aborting the run.
-func (r *Runner) Available(_ context.Context) error {
-	if r == nil || r.bin == "" {
+func (r *Runner) Available(ctx context.Context) error {
+	if r == nil {
+		return fmt.Errorf("graxpert runner is nil")
+	}
+	if r.url != "" {
+		return r.remotePing(ctx) // host-offload mode: the service reachable == available
+	}
+	if r.bin == "" {
 		return fmt.Errorf("graxpert binary path is empty (set GRAXPERT_BIN)")
 	}
 	if _, err := exec.LookPath(r.bin); err != nil {
@@ -71,40 +103,63 @@ func (r *Runner) Available(_ context.Context) error {
 	return nil
 }
 
+// GraXpert operation names (the -cmd values), shared by the local args and the remote request.
+const (
+	OpBackground = "background-extraction"
+	OpDenoise    = "denoising"
+)
+
 // ExtractBackground runs GraXpert background extraction on inPath (a linear FITS), writing the
-// gradient-removed image to outPath. Progress lines are streamed to onProgress (may be nil).
+// gradient-removed image to outPath. Offloads to the host service when a URL is set. Progress lines are
+// streamed to onProgress (may be nil).
 func (r *Runner) ExtractBackground(ctx context.Context, inPath, outPath string, opts BackgroundOptions, onProgress func(Progress)) error {
+	opts.GPU = opts.GPU || r.gpu
+	if r.url != "" {
+		return r.runRemote(ctx, RemoteRequest{Op: OpBackground, In: inPath, Out: outPath, GPU: opts.GPU}, onProgress)
+	}
 	if err := r.Available(ctx); err != nil {
 		return err
 	}
 	return r.run(ctx, backgroundArgs(inPath, outPath, opts), onProgress)
 }
 
-// Denoise runs GraXpert AI denoising on inPath, writing the result to outPath.
+// Denoise runs GraXpert AI denoising on inPath, writing the result to outPath. Offloads to the host
+// service when a URL is set.
 func (r *Runner) Denoise(ctx context.Context, inPath, outPath string, opts DenoiseOptions, onProgress func(Progress)) error {
+	opts.GPU = opts.GPU || r.gpu
+	if opts.Batch == 0 {
+		opts.Batch = r.batch
+	}
+	if r.url != "" {
+		return r.runRemote(ctx, RemoteRequest{Op: OpDenoise, In: inPath, Out: outPath, GPU: opts.GPU, Batch: opts.Batch, Strength: opts.Strength}, onProgress)
+	}
 	if err := r.Available(ctx); err != nil {
 		return err
 	}
 	return r.run(ctx, denoiseArgs(inPath, outPath, opts), onProgress)
 }
 
-// backgroundArgs builds the GraXpert CLI args for background extraction. Kept pure and central so
-// the exact flag spelling is easy to adjust and unit-test. Verified against GraXpert 3.2:
-//
-//	graxpert <filename> -cmd background-extraction -output <out> -gpu {true,false}
-//
-// The filename is positional and placed first to keep it unambiguous from `-output`'s optional arg.
+// backgroundArgs builds the GraXpert CLI args for background extraction (pure; unit-tested).
 func backgroundArgs(inPath, outPath string, opts BackgroundOptions) []string {
-	return cmdArgs("background-extraction", inPath, outPath, opts.GPU)
+	return baseArgs(OpBackground, inPath, outPath, opts.GPU)
 }
 
-// denoiseArgs builds the GraXpert CLI args for denoising (pure; see backgroundArgs).
+// denoiseArgs builds the GraXpert CLI args for denoising, appending the denoise-only -batch_size /
+// -strength knobs when set (they are dropped by GraXpert for background extraction).
 func denoiseArgs(inPath, outPath string, opts DenoiseOptions) []string {
-	return cmdArgs("denoising", inPath, outPath, opts.GPU)
+	args := baseArgs(OpDenoise, inPath, outPath, opts.GPU)
+	if opts.Batch > 0 {
+		args = append(args, "-batch_size", strconv.Itoa(opts.Batch))
+	}
+	if opts.Strength > 0 {
+		args = append(args, "-strength", strconv.FormatFloat(opts.Strength, 'f', 2, 64))
+	}
+	return args
 }
 
-// cmdArgs is the shared GraXpert 3.x command form: `<filename> -cmd <op> -output <out> -gpu <bool>`.
-func cmdArgs(op, inPath, outPath string, gpu bool) []string {
+// baseArgs is the shared GraXpert 3.x command form: `<filename> -cmd <op> -output <out> -gpu <bool>`.
+// The filename is positional and placed first to keep it unambiguous from `-output`'s optional arg.
+func baseArgs(op, inPath, outPath string, gpu bool) []string {
 	return []string{
 		inPath,
 		"-cmd", op,

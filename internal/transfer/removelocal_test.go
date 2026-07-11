@@ -121,6 +121,37 @@ func TestRunRemoveLocal_LegacyObjectsDeleteWithWarning(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(folder, "a.fits"))
 }
 
+func TestRunRemoveLocal_PlannedOnlyFreesOnlyPlanFiles(t *testing.T) {
+	req, folder := writeTestFolder(t)
+	req.Op = OpRemoveLocal
+	req.PlannedOnly = true // low-disk staged free: only this wave's file
+	req.Plan = []PlannedFile{{Rel: "a.fits", Key: "acct/data/M101/a.fits", Size: 5}}
+	fake := newFakeS3()
+	seedMirror(fake, time.Now().Add(time.Hour).UnixMilli())
+
+	res, err := runRemoveLocal(context.Background(), fake, req)
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Files, "only the planned file is freed")
+	assert.NoFileExists(t, filepath.Join(folder, "a.fits"))
+	assert.FileExists(t, filepath.Join(folder, "lights", "b.fits"), "the unplanned file is left in place")
+}
+
+func TestRunRemoveLocal_PlannedOnlyNoPlanFreesNothing(t *testing.T) {
+	req, folder := writeTestFolder(t)
+	req.Op = OpRemoveLocal
+	req.PlannedOnly = true // no Plan → safe no-op (never delete an unplanned file)
+	fake := newFakeS3()
+	seedMirror(fake, time.Now().Add(time.Hour).UnixMilli())
+
+	res, err := runRemoveLocal(context.Background(), fake, req)
+
+	require.NoError(t, err)
+	assert.Equal(t, 0, res.Files)
+	assert.FileExists(t, filepath.Join(folder, "a.fits"))
+	assert.FileExists(t, filepath.Join(folder, "lights", "b.fits"))
+}
+
 func TestRunRemoveLocal_CtxCancelStopsDeleteLoop(t *testing.T) {
 	req, folder := writeTestFolder(t)
 	req.Op = OpRemoveLocal

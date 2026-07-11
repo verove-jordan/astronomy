@@ -16,6 +16,7 @@ import {
 import "leaflet/dist/leaflet.css";
 import { addDarkBaseMap } from "@/utils/basemap";
 import { useMapLayers } from "@/composables/useMapLayers";
+import { useMapPinchZoom } from "@/composables/useMapPinchZoom";
 import { useDarkSkyStore } from "@/stores/darksky";
 import { useSkyStore } from "@/stores/sky";
 import { useLightPollutionStore } from "@/stores/lightpollution";
@@ -30,7 +31,12 @@ import { btnPrimary, btnGhost, input } from "@/constants/styles";
 import { bortleColor } from "@/utils/bortle";
 import { formatTimestamp } from "@/utils/format";
 import { apiGet } from "@/services/api";
-import type { AtlasBuildRequest, DarkSite, GeoResult } from "@/types";
+import type {
+  AtlasBuildRequest,
+  DarkSite,
+  GeoResult,
+  LocationFavorite,
+} from "@/types";
 
 // Find the darkest, most open observing sites in a drawn map area. The user draws a rectangle, picks a
 // max Bortle, and (optionally) evaluates horizon openness; results land as a ranked table + markers.
@@ -58,6 +64,13 @@ const drawing = ref(false);
 const hasArea = ref(false);
 const region = ref("france");
 const canopyRegion = ref("custom"); // canopy default: the drawn area (smallest download)
+
+// Bidirectional map↔table selection: the highlighted candidate's index in store.candidates (stable across
+// table sorting). null = nothing selected. tableRef.scrollToKey reveals the row when a marker is clicked.
+const tableRef = ref<{ scrollToKey: (k: string | number) => void } | null>(
+  null,
+);
+const selectedIdx = ref<number | null>(null);
 
 let lmap: LMap | null = null;
 let lpLayer: TileLayer | null = null;
@@ -129,6 +142,13 @@ function useMyLocation() {
     { enableHighAccuracy: false, timeout: 8000 },
   );
 }
+// Pick a saved favorite as the observing origin and focus the map on it (mirrors chooseLoc).
+function useFavoriteLocation(fav: LocationFavorite) {
+  locLabel.value = fav.label;
+  sky.setObserver(fav.lat, fav.lon);
+  centerHome(fav.lat, fav.lon);
+  if (store.searched && areaRect) search(); // refresh drives from the new origin
+}
 
 // drawHome (re)draws the observer marker; centerHome also recenters the map on it.
 function drawHome(lat: number, lon: number) {
@@ -170,23 +190,8 @@ onMounted(() => {
   lmap.on("mousemove", onMapMouseMove);
   lmap.on("mouseup", onMapMouseUp);
 
-  // Trackpad gestures (mirrors LocationPicker): ⌘/ctrl+wheel zooms about the cursor; plain wheel pans.
-  const onWheel = (e: WheelEvent) => {
-    if (!lmap) return;
-    e.preventDefault();
-    if (e.ctrlKey || e.metaKey) {
-      const px = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
-      const dz = Math.max(-1.2, Math.min(1.2, -px * 0.035));
-      lmap.setZoomAround(
-        lmap.mouseEventToContainerPoint(e),
-        lmap.getZoom() + dz,
-      );
-    } else {
-      lmap.panBy([e.deltaX, e.deltaY], { animate: false });
-    }
-  };
-  el.addEventListener("wheel", onWheel, { passive: false });
-  detachWheel = () => el.removeEventListener("wheel", onWheel);
+  // Trackpad gestures: ⌘/ctrl+wheel zooms about the cursor (velocity-sensitive); plain wheel pans.
+  detachWheel = useMapPinchZoom(el, () => lmap);
 });
 
 onBeforeUnmount(() => {
@@ -366,25 +371,59 @@ async function search() {
 function clearMarkers() {
   for (const m of markers) lmap?.removeLayer(m);
   markers.length = 0;
+  selectedIdx.value = null; // a rebuilt result set invalidates any prior selection
+}
+
+// Paint one candidate marker. The selected one gets a bright ring + larger radius and is raised above the
+// others so the highlight reads clearly against the light-pollution overlay.
+function styleMarker(m: CircleMarker, c: DarkSite, selected: boolean) {
+  m.setStyle({
+    color: selected ? "#f8fafc" : "#0b0b0d",
+    weight: selected ? 3 : 1,
+    fillColor: bortleColor(c.bortle),
+    fillOpacity: selected ? 1 : 0.9,
+  });
+  m.setRadius(selected ? 9 : 6);
+  if (selected) m.bringToFront();
+}
+function restyleMarkers() {
+  store.candidates.forEach((c, i) => {
+    const m = markers[i];
+    if (m) styleMarker(m, c, i === selectedIdx.value);
+  });
 }
 function renderMarkers() {
   clearMarkers();
   if (!lmap) return;
-  for (const c of store.candidates) {
-    const m = circleMarker([c.lat, c.lon], {
-      radius: 6,
-      color: "#0b0b0d",
-      weight: 1,
-      fillColor: bortleColor(c.bortle),
-      fillOpacity: 0.9,
-    }).addTo(lmap);
+  const map = lmap;
+  store.candidates.forEach((c, i) => {
+    const m = circleMarker([c.lat, c.lon]).addTo(map);
+    styleMarker(m, c, false);
     m.bindTooltip(markerTip(c), { direction: "top" });
+    m.on("click", () => selectCandidate(i, { scrollRow: true })); // map → table
     markers.push(m);
-  }
+  });
 }
-function focusCandidate(c: DarkSite) {
-  if (!lmap) return;
-  lmap.setView([c.lat, c.lon], Math.max(lmap.getZoom(), 9));
+
+// Select a candidate and highlight it on BOTH surfaces (marker ring + table-row ring). Reveal it only when
+// it's off-screen: pan the map iff the marker is outside the current view (zoomTo forces a zoom-in for the
+// explicit "Locate" button), and scroll the table row into view iff requested. Shared by marker clicks
+// (map → table, scrollRow) and row clicks (table → map).
+function selectCandidate(
+  idx: number,
+  opts: { zoomTo?: boolean; scrollRow?: boolean } = {},
+) {
+  const c = store.candidates[idx];
+  if (!c) return;
+  selectedIdx.value = idx;
+  restyleMarkers();
+  if (lmap) {
+    if (opts.zoomTo) lmap.setView([c.lat, c.lon], Math.max(lmap.getZoom(), 9));
+    else if (!lmap.getBounds().contains([c.lat, c.lon]))
+      lmap.panTo([c.lat, c.lon]);
+    markers[idx]?.openTooltip();
+  }
+  if (opts.scrollRow) tableRef.value?.scrollToKey(idx);
 }
 // Open the spot in Google Maps (drops a pin; Street View / satellite are one click away to scout it).
 function mapsUrl(c: DarkSite): string {
@@ -420,6 +459,7 @@ function markerTip(c: DarkSite): string {
 type Row = Record<string, unknown>;
 const rows = computed<Row[]>(() =>
   store.candidates.map((c, i) => ({
+    idx: i, // stable identity → correlates a row with its marker across sorting/selection
     n: i + 1,
     coords: `${c.lat.toFixed(3)}, ${c.lon.toFixed(3)}`,
     bortle: c.bortle,
@@ -433,6 +473,20 @@ const rows = computed<Row[]>(() =>
     site: c as unknown,
   })),
 );
+
+function rowIdx(row: Row): number {
+  return Number(row.idx);
+}
+// Table → map: clicking a row selects + highlights its marker (gentle reveal, keeps the current zoom).
+function onRowClick(row: Row) {
+  selectCandidate(rowIdx(row));
+}
+// The selected candidate's row gets a ring; every other row keeps the default clickable hover style.
+function rowClassFor(row: Row): string {
+  return rowIdx(row) === selectedIdx.value
+    ? "cursor-pointer bg-brand-100/70 ring-1 ring-inset ring-brand-400/60 dark:bg-brand-500/20"
+    : "cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50";
+}
 const columns: Column<Row>[] = [
   { key: "n", label: "#", align: "right" },
   { key: "coords", label: t("darksky.coords"), searchable: true },
@@ -516,6 +570,23 @@ const columns: Column<Row>[] = [
       >
         {{ locBusy ? t("common.loading") : t("darksky.location.gps") }}
       </button>
+
+      <!-- saved favorites: click to focus the map + set as the observing origin -->
+      <template v-if="sky.locationFavorites.length">
+        <span class="text-sm text-slate-500 dark:text-slate-400"
+          >{{ t("darksky.location.favorites") }}:</span
+        >
+        <button
+          v-for="fav in sky.locationFavorites"
+          :key="fav.id"
+          :class="btnGhost"
+          class="!px-2 !py-1 !text-xs"
+          :title="`${fav.lat.toFixed(3)}, ${fav.lon.toFixed(3)}`"
+          @click="useFavoriteLocation(fav)"
+        >
+          {{ fav.label }}
+        </button>
+      </template>
     </div>
 
     <!-- controls -->
@@ -656,9 +727,13 @@ const columns: Column<Row>[] = [
     <!-- results -->
     <GenericTable
       v-if="rows.length"
+      ref="tableRef"
       :columns="columns"
       :rows="rows"
+      :row-key="rowIdx"
+      :row-class="rowClassFor"
       max-height="24rem"
+      @row-click="onRowClick"
     >
       <template #cell-coords="{ row }">
         <a
@@ -667,6 +742,7 @@ const columns: Column<Row>[] = [
           rel="noopener noreferrer"
           class="text-brand-600 hover:underline dark:text-brand-300"
           :title="t('darksky.openMaps')"
+          @click.stop
         >
           {{ row.coords }}
         </a>
@@ -704,14 +780,14 @@ const columns: Column<Row>[] = [
           <button
             :class="btnGhost"
             class="!px-2 !py-1 !text-xs"
-            @click="focusCandidate(row.site as DarkSite)"
+            @click.stop="selectCandidate(rowIdx(row), { zoomTo: true })"
           >
             {{ t("darksky.locate") }}
           </button>
           <button
             :class="btnPrimary"
             class="!px-2 !py-1 !text-xs"
-            @click="
+            @click.stop="
               emit(
                 'useLocation',
                 (row.site as DarkSite).lat,

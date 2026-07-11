@@ -22,6 +22,39 @@ const (
 	coarseMaxShift  = 16 // coarse search in DOWNSAMPLED px — ±64 full-res px of drift coverage
 )
 
+// refContext is the reference-frame alignment context shared by warpToSharpest (per-frame lucky
+// alignment) and coRegisterMasters (cross-channel master alignment): the reference centroid, its blurred
+// + downsampled planes for the coarse/fine ZNCC, the global window/radius, and the AP-grid geometry.
+type refContext struct {
+	x, y     float64
+	blur     *fits.Image
+	small    *fits.Image
+	gWin     comet.Point
+	gRadius  int
+	cx, cy   []float64
+	onDisk   []bool
+	apRadius int
+}
+
+// newRefContext derives the alignment context from a reference frame once, so a batch of frames/masters
+// is measured against the same precomputed reference planes and AP geometry.
+func newRefContext(ref *fits.Image) refContext {
+	rx, ry := brightCentroid(ref)
+	blur := blurPlane(ref, warpBlur)
+	cx, cy := apCenters(ref.W, ref.H)
+	return refContext{
+		x: rx, y: ry,
+		blur:     blur,
+		small:    downPlane(blur, coarseDown),
+		gWin:     centerPoint(rx, ry), // window over the bright disk, not the (possibly off-centre) frame
+		gRadius:  min(ref.W, ref.H) * alignWinFrac / 100,
+		cx:       cx,
+		cy:       cy,
+		onDisk:   apDiskMask(ref, cx, cy),
+		apRadius: min(ref.W, ref.H) * apPatchFrac / 100,
+	}
+}
+
 // warpToSharpest reads the FITS frames at paths, registers each onto the sharpest one (highest score),
 // and writes the aligned 32-bit FITS into outDir as <prefix>_00001.fits, _00002.fits, … (1-based, input
 // order). It returns the written paths, the reference frame's written path, and each aligned frame's
@@ -39,14 +72,7 @@ func warpToSharpest(paths []string, scores []float64, outDir, prefix string, apA
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("warp: read reference %s: %w", paths[refIdx], err)
 	}
-	refX, refY := brightCentroid(ref)
-	refBlur := blurPlane(ref, warpBlur)
-	refSmall := downPlane(refBlur, coarseDown)
-	gWin := centerPoint(refX, refY) // window over the bright disk, not the (possibly off-centre) frame
-	gRadius := min(ref.W, ref.H) * alignWinFrac / 100
-	cx, cy := apCenters(ref.W, ref.H)
-	onDisk := apDiskMask(ref, cx, cy)
-	apRadius := min(ref.W, ref.H) * apPatchFrac / 100
+	rc := newRefContext(ref)
 
 	var out []string
 	var refPath string
@@ -59,7 +85,7 @@ func warpToSharpest(paths []string, scores []float64, outDir, prefix string, apA
 		aligned := im
 		isRef := p == paths[refIdx]
 		if !isRef {
-			aligned = warpFrameToRef(im, refBlur, refSmall, refX, refY, gWin, gRadius, cx, cy, onDisk, apRadius, apAlign)
+			aligned = warpFrameToRef(im, rc.blur, rc.small, rc.x, rc.y, rc.gWin, rc.gRadius, rc.cx, rc.cy, rc.onDisk, rc.apRadius, apAlign)
 		}
 		outPath := filepath.Join(outDir, fmt.Sprintf("%s_%05d.fits", prefix, len(out)+1))
 		if werr := aligned.WriteFITS(outPath); werr != nil {
@@ -67,7 +93,7 @@ func warpToSharpest(paths []string, scores []float64, outDir, prefix string, apA
 		}
 		out = append(out, outPath)
 		if apAlign {
-			cellSharp = append(cellSharp, apCellSharpness(aligned, cx, cy, onDisk))
+			cellSharp = append(cellSharp, apCellSharpness(aligned, rc.cx, rc.cy, rc.onDisk))
 		}
 		if isRef {
 			refPath = outPath

@@ -105,7 +105,7 @@ func (d *deepskyRenderer) finalize(ctx context.Context, opts Options, best *supe
 		return nil, err
 	}
 	out := &postprocess.Result{
-		Mode:     compMode(d.re.channels),
+		Mode:     compMode(d.re.channels, d.re.opts.Preset),
 		Channels: filterList(d.re.channels),
 		Outputs:  []string{finalBase + ".xcf", finalBase + ".tif", finalBase + ".png"},
 		Notes: append([]string{
@@ -153,13 +153,14 @@ func supervisorState(p mode.Preset) map[string]any {
 			"chroma_blur": p.ChromaBlur, "crop_frac": p.CropFrac,
 			"core_highlight_knee": p.CoreHighlightKnee, "core_highlight_ceil": p.CoreHighlightCeil,
 			"highlight_knee": p.HighlightKnee, "highlight_ceil": p.HighlightCeil,
+			"star_desat":       p.StarDesat,
 			"ha_exclude_stars": p.HaExcludeStars,
 		},
 		"tierB": map[string]any{
 			"background_level": p.BackgroundLevel, "linked_stretch": p.LinkedStretch,
 			"color_calibration": p.ColorCalibration, "combined_background_ai": p.CombinedBackgroundAI,
 			"background_degree": p.BackgroundDegree, "color_denoise_ai": p.ColorDenoiseAI,
-			"star_reduce": p.StarReduce,
+			"star_reduce": p.StarReduce, "stretch_headroom": p.StretchHeadroom,
 		},
 		"tierC": map[string]any{
 			"roundness_floor": p.Grade.RoundnessFloor, "fwhm_sigma": p.Grade.FWHMSigma,

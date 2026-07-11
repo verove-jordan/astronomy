@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"math"
 	"path/filepath"
 	"strings"
 
@@ -15,6 +14,12 @@ import (
 var (
 	fitsExts  = map[string]bool{".fits": true, ".fit": true, ".fts": true}
 	videoExts = map[string]bool{".ser": true, ".avi": true, ".mp4": true, ".mov": true, ".mkv": true, ".m4v": true}
+	// tiffExts are 16-bit TIFF stills (SharpCap/ASICAP lunar & planetary captures) that carry no FITS
+	// header — their type/filter come from the "<name>.TIF.txt" sidecar + filename/folder tokens, and
+	// anything the names can't resolve falls to the pixel-curve pass. Kept first-class (not lumped with
+	// cameraRawExts) so a folder mixing TIFF lights + FITS calibration classifies both, and mono TIFF
+	// keeps its filter instead of being force-tagged one-shot-color.
+	tiffExts = map[string]bool{".tif": true, ".tiff": true}
 	// cameraRawExts are one-shot-color camera raws (iPhone DNG/HEIC, DSLR raws). They are surfaced
 	// as lights only when a directory holds no FITS/video, so stray jpg/png outputs in a FITS capture
 	// set are never miscounted — which is why those non-raw still formats are excluded here.
@@ -82,6 +87,22 @@ func scanFrames(ctx context.Context, root string, opts ScanOptions) (*Inventory,
 			if fr.Type == Unknown {
 				unknown = append(unknown, fr)
 			}
+		case tiffExts[ext]:
+			// Skip processed OUTPUTS kept next to the captures (m27_R_stacked.tif …): ingested as
+			// frames they form phantom one-image channel sets that sink that channel's whole run.
+			if isProcessedName(path) {
+				return nil
+			}
+			// No FITS header: build the frame here and back-fill its type/filter/exposure from the
+			// "<name>.TIF.txt" sidecar + filename/folder tokens (a darks/flats/offsets ancestor is
+			// authoritative). Whatever the names can't resolve joins `unknown` for the pixel-curve pass,
+			// exactly like a headerless FITS frame.
+			fr := &Frame{Path: path, Type: Unknown, ClassSource: SourceExtension}
+			backfillMeta(fr, path)
+			inv.Frames = append(inv.Frames, fr)
+			if fr.Type == Unknown {
+				unknown = append(unknown, fr)
+			}
 		case videoExts[ext]:
 			inv.Videos = append(inv.Videos, &Frame{Path: path, Type: Video, ClassSource: SourceExtension})
 		case cameraRawExts[ext]:
@@ -108,7 +129,7 @@ func scanFrames(ctx context.Context, root string, opts ScanOptions) (*Inventory,
 		}
 	}
 
-	classifyUnknowns(inv, unknown)
+	classifyUnknowns(ctx, inv, unknown)
 	if opts.DetectChannels {
 		chOpts := opts.Channel
 		if len(chOpts.Order) == 0 {
@@ -257,67 +278,14 @@ func commonParent(roots []string) string {
 	}
 }
 
-// readFITSFrame opens one FITS file and extracts the metadata we care about.
+// readFITSFrame opens one FITS file and extracts the metadata we care about. The header extraction +
+// path back-fill live in FrameFromHeader (remote.go), shared with the S3 low-disk ranged-header scan.
 func readFITSFrame(path string) (*Frame, error) {
 	f, err := fits.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	h := f.Header
-	fr := &Frame{Path: path, Type: Unknown, BinX: 1, BinY: 1}
-
-	if v, ok := h.String("FILTER"); ok {
-		fr.Filter = normalizeFilter(v)
-	}
-	if sec, ok := exposureSec(h); ok {
-		fr.ExposureMs = int64(math.Round(sec * 1000))
-	}
-	if g, ok := h.Int("GAIN"); ok {
-		fr.Gain = g
-	}
-	if o, ok := h.Int("OFFSET"); ok {
-		fr.Offset = o
-	}
-	if t, ok := h.Float("CCD-TEMP"); ok {
-		fr.TempMilliC = int64(math.Round(t * 1000))
-		fr.HasTemp = true
-	}
-	if b, ok := h.Int("XBINNING"); ok && b > 0 {
-		fr.BinX, fr.BinY = int(b), int(b)
-	}
-	if b, ok := h.Int("YBINNING"); ok && b > 0 {
-		fr.BinY = int(b)
-	}
-	if v, ok := h.String("BAYERPAT"); ok {
-		if b := strings.TrimSpace(v); b != "" && !strings.EqualFold(b, "NONE") {
-			fr.Bayer = strings.ToUpper(b) // one-shot-color; the mono pipeline excludes these
-		}
-	}
-	fr.Width, fr.Height = f.Dimensions()
-	fr.Object, _ = h.String("OBJECT")
-	fr.Instrument, _ = h.String("INSTRUME")
-	fr.Telescope, _ = h.String("TELESCOP")
-	if v, ok := h.String("DATE-OBS"); ok {
-		fr.DateObs = v
-		fr.DateObsMs = parseDateObs(v)
-	}
-	if v, ok := h.Float("FOCALLEN"); ok {
-		fr.FocalLenMM = v
-	}
-	if v, ok := h.Float("XPIXSZ"); ok {
-		fr.PixelSizeUm = v
-	}
-	fr.ObjCtRA, _ = h.String("OBJCTRA")
-	fr.ObjCtDec, _ = h.String("OBJCTDEC")
-	if v, ok := h.String("IMAGETYP"); ok {
-		if t := classifyImageType(v); t != Unknown {
-			fr.Type = t
-			fr.ClassSource = SourceHeader
-		}
-	}
-
-	backfillMeta(fr, path)
-	return fr, nil
+	return FrameFromHeader(path, f.Header), nil
 }
 
 // backfillMeta fills frame fields the FITS header lacked (common for ASI/ASICAP captures that omit
@@ -378,23 +346,13 @@ func exposureSec(h *fits.Header) (float64, bool) {
 // classifyUnknowns assigns a type to frames left Unknown by header/folder/filename, comparing each
 // frame's pixel "curve" (brightness, noise, uniformity, peak count) across the session via
 // classifyByStats. The stats are sampled once per frame and reused for the warning detail.
-func classifyUnknowns(inv *Inventory, unknown []*Frame) {
+func classifyUnknowns(ctx context.Context, inv *Inventory, unknown []*Frame) {
 	if len(unknown) == 0 {
 		return
 	}
 	stats := make([]frameStat, len(unknown))
 	for i, fr := range unknown {
-		stats[i] = frameStat{exposureMs: fr.ExposureMs}
-		f, err := fits.Open(fr.Path)
-		if err != nil {
-			continue
-		}
-		if st, serr := f.Stats(statsSample); serr == nil {
-			stats[i].median = st.Median
-			stats[i].mad = st.MAD
-			stats[i].brightFrac = st.BrightFrac
-			stats[i].peaks = st.Peaks
-		}
+		stats[i] = unknownStat(ctx, fr)
 	}
 	types := classifyByStats(stats)
 	for i, fr := range unknown {
@@ -403,10 +361,40 @@ func classifyUnknowns(inv *Inventory, unknown []*Frame) {
 		if fr.Bayer != "" {
 			continue // one-shot-color frames routinely omit IMAGETYP — not worth a per-frame warning
 		}
+		if !stats[i].hasStats {
+			inv.Warnings = append(inv.Warnings, fmt.Sprintf(
+				"%s has no IMAGETYP/type folder and its pixels could not be sampled — kept as LIGHT",
+				rel(inv.Root, fr.Path)))
+			continue
+		}
 		inv.Warnings = append(inv.Warnings, fmt.Sprintf(
 			"%s has no IMAGETYP/type folder; classified as %s by curve heuristic (median %.0f, peaks %d)",
 			rel(inv.Root, fr.Path), fr.Type, stats[i].median, stats[i].peaks))
 	}
+}
+
+// unknownStat samples one unlabeled frame's pixel "curve" for classifyByStats. FITS pixels are read in
+// process; a non-FITS still (SharpCap TIFF, camera raw) is developed to a downscaled thumbnail via the
+// shared sips path. Any read failure yields an exposure-only stat WITHOUT hasStats, so the frame
+// finalizes as a Light (classifyOneStat never guesses a calibration type from an unmeasured curve) —
+// and a host without sips (Linux engine) never crashes, it just can't refine the guess.
+func unknownStat(ctx context.Context, fr *Frame) frameStat {
+	if fitsExts[strings.ToLower(filepath.Ext(fr.Path))] {
+		s := frameStat{exposureMs: fr.ExposureMs}
+		f, err := fits.Open(fr.Path)
+		if err != nil {
+			return s
+		}
+		if st, serr := f.Stats(statsSample); serr == nil {
+			s.median, s.mad, s.brightFrac, s.peaks = st.Median, st.MAD, st.BrightFrac, st.Peaks
+			s.hasStats = true
+		}
+		return s
+	}
+	if s, err := sampleRawStat(ctx, fr.Path, fr.ExposureMs); err == nil {
+		return s
+	}
+	return frameStat{exposureMs: fr.ExposureMs}
 }
 
 // addWarnings flags missing calibration categories that will degrade the result.

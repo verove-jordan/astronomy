@@ -80,6 +80,41 @@ func TestMetricsFromImage_SignalCast(t *testing.T) {
 	assert.InDelta(t, 0.0, m.GreenCast, 1e-9) // sky median stays neutral — the reason we need SignalCast
 }
 
+func TestMetricsFromImage_StarSatFrac(t *testing.T) {
+	black := color.RGBA{0, 0, 0, 255}
+	// Bright, fully-saturated magenta "discs" over a dark sky → most bright cores read as colour discs.
+	magenta := color.RGBA{255, 0, 255, 255}
+	discs := map[int]color.RGBA{}
+	for i := 0; i < 120; i++ {
+		discs[i] = magenta
+	}
+	assert.Greater(t, metricsFromImage(fill(20, 20, black, discs)).StarSatFrac, 0.5,
+		"saturated bright cores read as colour discs")
+
+	// Bright WHITE cores (natural, desaturated) → no colour discs.
+	white := color.RGBA{255, 255, 255, 255}
+	whites := map[int]color.RGBA{}
+	for i := 0; i < 120; i++ {
+		whites[i] = white
+	}
+	assert.Less(t, metricsFromImage(fill(20, 20, black, whites)).StarSatFrac, 0.05,
+		"white star cores are not colour discs")
+}
+
+func TestMetricsFromImage_BgChroma(t *testing.T) {
+	// Dark background carpeted with coloured (red/blue) noise → high background chroma mottle.
+	red := color.RGBA{40, 0, 0, 255}
+	over := map[int]color.RGBA{}
+	for i := 0; i < 400; i += 2 { // half dark-red, half the dark-blue base
+		over[i] = red
+	}
+	assert.Greater(t, metricsFromImage(fill(20, 20, color.RGBA{0, 0, 40, 255}, over)).BgChroma, 0.05,
+		"coloured noise in the shadows reads as mottle")
+
+	// Neutral dark grey background → no chroma mottle.
+	assert.Less(t, metricsFromImage(fill(20, 20, color.RGBA{20, 20, 20, 255}, nil)).BgChroma, 0.01)
+}
+
 func TestPercentile(t *testing.T) {
 	var h [256]uint64
 	h[10] = 30

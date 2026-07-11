@@ -8,6 +8,12 @@ type Summary struct {
 	WithTrails int `json:"frames_with_trails"`
 	Segments   int `json:"segments"`
 	MaskedPx   int `json:"masked_px"`
+	// Line-validation observability (validated hybrid only): candidates rejected as fixed pattern
+	// (walking noise), geostationary swaths repaired, and frames whose line pass was skipped as a
+	// candidate flood. All omitempty so the plain per-pixel summary is unchanged.
+	Rejected      int `json:"rejected_fixed_pattern,omitempty"`
+	Geostationary int `json:"geostationary_segments,omitempty"`
+	SkippedFrames int `json:"line_skipped_frames,omitempty"`
 }
 
 // FrameReport records what MaskSequence changed in one registered frame (1-based Index).
@@ -24,11 +30,14 @@ type Report struct {
 	// masked frame-by-frame instead.
 	PerFrameFallback bool
 	width, height    int // frame dims, for the masked-fraction in Note()
+	// Line-validation counters (validated hybrid): candidates rejected as fixed pattern, geostationary
+	// swaths repaired, and frames whose line pass was skipped as a candidate flood.
+	rejected, geo, skipped int
 }
 
 // Summary rolls the per-frame reports into the compact record.
 func (r *Report) Summary() Summary {
-	s := Summary{Frames: len(r.PerFrame)}
+	s := Summary{Frames: len(r.PerFrame), Rejected: r.rejected, Geostationary: r.geo, SkippedFrames: r.skipped}
 	for _, f := range r.PerFrame {
 		if f.MaskedPx > 0 {
 			s.WithTrails++

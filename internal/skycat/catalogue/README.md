@@ -17,3 +17,20 @@ degrees, aliases `/`-separated. Files: `messier`, `ngc`, `ic`, `sh2`, `ldn`.
 **Provenance / licence.** The coordinates, sizes and magnitudes are public-domain astronomical data
 (the Messier, NGC/IC, Sharpless and Lynds Dark Nebula catalogues). Siril is GPL-licensed; these data
 files carry no additional restriction. To refresh, re-copy them from a current Siril install.
+
+## `openngc.csv` — object-type overlay (OpenNGC)
+
+`openngc.csv` is a **slimmed snapshot of OpenNGC** (https://github.com/mattiaverga/OpenNGC), the
+morphological type / size / surface-brightness / common-name database for the NGC and IC catalogues.
+The Siril CSVs above carry no *type* column, so every object without a type keyword in its name (e.g.
+NGC 6946) fell to "other" in the tonight table; this overlay supplies the authoritative type and
+enriches size, surface brightness, Hubble morphology and common names.
+
+It is **not** a coordinate source — it is matched by name onto the Siril records above (which own the
+coordinates) in `openngc.go`, so `Dup`/`NonEx`/star rows are dropped and only NGC/IC names are kept.
+Columns (header-driven, parsed by `openngc.go`): `name,type,majax,minax,posang,surfbr,hubble,messier,common`
+— name unpadded (`NGC0224`→`NGC224`) to match the Siril rows, `common` names `/`-separated.
+
+**Licence.** OpenNGC data is released under **CC-BY-SA-4.0** (© Mattia Verga and contributors). Keep
+this attribution when redistributing. To refresh, re-slim `database_files/NGC.csv` from a current
+OpenNGC release (see the awk recipe in the commit that added this file).

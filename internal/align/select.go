@@ -82,6 +82,9 @@ func chosenMeridianSide(accepted, cands []positioned, profile Profile) string {
 		if !inBand(c, profile) || c.Mag > profile.MagLimit || astro.ApparentAltitude(c.alt) <= 0 {
 			continue
 		}
+		if !inStarList(profile.StarList, c.Name) {
+			continue // weigh only stars the hand controller can offer
+		}
 		if c.side == "east" {
 			east += suitability(c, profile)
 		} else {
@@ -110,6 +113,7 @@ func eligible(cands []positioned, profile Profile, side string, rejected map[str
 		case !inBand(c, profile):
 		case astro.ApparentAltitude(c.alt) <= 0:
 		case c.Mag > profile.MagLimit:
+		case !inStarList(profile.StarList, c.Name): // not offered by the hand controller
 		case side != "any" && c.side != side:
 		case profile.AvoidMeridianDeg > 0 && math.Abs(c.ha) < profile.AvoidMeridianDeg:
 		default:

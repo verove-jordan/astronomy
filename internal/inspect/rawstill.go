@@ -218,6 +218,7 @@ func statFromLuma(exposureMs int64, vals []float64) frameStat {
 		mad:        mad,
 		brightFrac: float64(bright) / float64(len(vals)),
 		peaks:      countLumaPeaks(vals, median+6*mad),
+		hasStats:   true,
 	}
 }
 

@@ -587,18 +587,20 @@ func smoothChroma(masters map[string]string, radius int) error {
 	return nil
 }
 
-// coRegisterMasters aligns every channel master onto the reference channel (sub-pixel centroid + ZNCC)
-// and overwrites them, so the subsequent rgbcomp has no channel-to-channel offset. The per-filter stacks
-// were each aligned to their own sharpest frame, captured at different times, so they start misaligned.
+// coRegisterMasters aligns every channel master onto the reference channel and overwrites them, so the
+// subsequent rgbcomp has no channel-to-channel offset. Each per-filter stack was aligned to its OWN
+// sharpest frame (captured at a different instant), so the channels start not just globally shifted but
+// with DIFFERENT per-AP atmospheric-warp residuals — a single global translation leaves green/red fringes
+// in the corners. So each non-reference master is warped onto the reference with the SAME full
+// displacement field the per-frame lucky alignment uses (global centroid+coarse+fine ZNCC baseline + a
+// per-AP local field over the lit disk, one Catmull-Rom resample). ZNCC is contrast-normalized, so the
+// cross-filter (R/G/B vs L) correlation on the high-SNR lunar surface is reliable.
 func coRegisterMasters(masters map[string]string, refFilter string) error {
 	ref, err := fits.ReadImage(masters[refFilter] + ".fits")
 	if err != nil {
 		return err
 	}
-	refX, refY := brightCentroid(ref)
-	refBlur := blurPlane(ref, warpBlur)
-	win := centerPoint(refX, refY)
-	radius := min(ref.W, ref.H) * alignWinFrac / 100
+	rc := newRefContext(ref)
 	for f, base := range masters {
 		if f == refFilter {
 			continue
@@ -607,9 +609,8 @@ func coRegisterMasters(masters map[string]string, refFilter string) error {
 		if err != nil {
 			return err
 		}
-		icx, icy := brightCentroid(im)
-		dx, dy := comet.AlignSeeded(refBlur, blurPlane(im, warpBlur), win, radius, surfaceMaxShift, 0, refX-icx, refY-icy)
-		if err := cubicShift(im, dx, dy).WriteFITS(base + ".fits"); err != nil {
+		aligned := warpFrameToRef(im, rc.blur, rc.small, rc.x, rc.y, rc.gWin, rc.gRadius, rc.cx, rc.cy, rc.onDisk, rc.apRadius, true)
+		if err := aligned.WriteFITS(base + ".fits"); err != nil {
 			return err
 		}
 	}

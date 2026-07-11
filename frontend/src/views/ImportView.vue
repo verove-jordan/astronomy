@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from "vue";
+import { ref, computed, onMounted, nextTick, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useBrowseStore } from "@/stores/browse";
 import { useJobsStore } from "@/stores/jobs";
 import { useS3Store, type TransferOp } from "@/stores/s3";
+import { usePresetsStore } from "@/stores/presets";
 import { useCaptureSummary } from "@/composables/useCaptureSummary";
 import { useChannelMapping } from "@/composables/useChannelMapping";
 import GenericTable, {
@@ -12,22 +13,26 @@ import GenericTable, {
 } from "@/components/Common/GenericTable.vue";
 import FilterChip from "@/components/Common/FilterChip.vue";
 import FileBrowser from "@/components/Common/FileBrowser.vue";
-import BackupPanel from "@/components/Common/BackupPanel.vue";
+import Spinner from "@/components/Common/Spinner.vue";
 import CaptureSummary from "@/components/Capture/CaptureSummary.vue";
 import FilterMappingEditor from "@/components/Capture/FilterMappingEditor.vue";
 import ReusePanel from "@/components/Capture/ReusePanel.vue";
 import CalibrationPanel from "@/components/Capture/CalibrationPanel.vue";
 import FilePreviewButton from "@/components/Common/FilePreviewButton.vue";
+import ParamGlossary from "@/components/Common/ParamGlossary.vue";
 import CollapsibleCard from "@/components/Common/CollapsibleCard.vue";
 import TwoPane from "@/components/Common/TwoPane.vue";
 import StatusPill from "@/components/Common/StatusPill.vue";
 import EnvWarnings from "@/components/Common/EnvWarnings.vue";
 import IconFolder from "@/components/Icons/IconFolder.vue";
+import IconCloud from "@/components/Icons/IconCloud.vue";
 import type { CreateOpts } from "@/stores/jobs";
 import type {
   ReusePreview,
   CalibPreview,
   ProcessingHistoryEntry,
+  PresetItem,
+  PresetPayload,
 } from "@/types";
 import {
   btnPrimary,
@@ -49,6 +54,7 @@ const s3 = useS3Store();
 // Storage mode for a run (only offered when S3 is active): "local" keeps files on disk; "s3" pulls inputs
 // from S3, processes locally, pushes inputs+results back to S3, then frees the local copies (verified).
 const processMode = ref<"local" | "s3">("local");
+const lowDisk = ref(true); // staged low-disk S3 processing (default on; deep-sky/nebula only)
 
 // Import file-source tab: browse local disk vs the S3 mirror. Both drive the same FileBrowser over the
 // DataDir tree, filtered by source; the selection is shared across tabs. S3-only folders download to local
@@ -58,8 +64,16 @@ const tabClass = (kind: "local" | "s3") =>
   kind === sourceTab.value
     ? "rounded-md px-3 py-2 text-sm font-medium bg-brand-600 text-white"
     : "rounded-md px-3 py-2 text-sm font-medium text-slate-500 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-700";
+// S3 → local progress feedback: downloadingS3 = folders being pulled, downloadedS3 = how many finished,
+// inspecting = the post-download frame scan. s3Busy drives the browser's disabled/busy button + banner.
 const downloadingS3 = ref(0);
+const downloadedS3 = ref(0);
+const inspecting = ref(false);
 const inspectError = ref("");
+const s3Busy = computed(() => downloadingS3.value > 0 || inspecting.value);
+const s3BusyLabel = computed(() =>
+  inspecting.value ? t("import.inspectingBtn") : t("import.downloadingBtn"),
+);
 
 const selectedPaths = ref<string[]>([]);
 const rootPath = ref("");
@@ -81,6 +95,18 @@ const formats = ["image", "video", "both"];
 // Milky-Way nightscape render style (foreground composite + linear grade); only shown for milkyway.
 const look = ref("natural");
 const looks = ["natural", "iphone", "deepsky"];
+const palette = ref("natural");
+// Deep-sky colour palettes + the filters each needs. Narrowband palettes are shown but disabled until
+// their OIII/SII data exists (the engine also soft-falls back); natural/mono always apply.
+const paletteOptions: { value: string; needs: string[] }[] = [
+  { value: "natural", needs: [] },
+  { value: "hargb", needs: ["Ha"] },
+  { value: "hoo", needs: ["Ha", "OIII"] },
+  { value: "sho", needs: ["SII", "Ha", "OIII"] },
+  { value: "hos", needs: ["SII", "Ha", "OIII"] },
+  { value: "foraxx", needs: ["Ha", "OIII"] },
+  { value: "mono", needs: [] },
+];
 // Sky brightness target for the nightscape auto-levels (data-driven stretch); balanced is the default.
 const brightness = ref("balanced");
 const brightnesses = ["darker", "balanced", "brighter"];
@@ -132,6 +158,55 @@ const runParams = computed<Record<string, unknown> | null | undefined>(() => {
 });
 const paramsInvalid = computed(() => runParams.value === null);
 
+// Prefill: opening "Advanced AI parameters" (or switching mode while it's open) fills the JSON box with
+// the mode's effective knobs so the user sees and tweaks the real values instead of an empty box. The
+// knobs the checkboxes above already own are OMITTED — the backend applies the JSON *after* the
+// checkboxes, so including them would silently override an unchecked box. `paramsDirty` protects manual
+// edits: once the user types, we never re-prefill until the mode changes.
+const CHECKBOX_PARAM_KEYS = [
+  "color_calibration",
+  "denoise_chroma",
+  "denoise_lum",
+  "ha_exclude_stars",
+];
+const paramsDirty = ref(false);
+const advancedOpen = ref(false);
+const applyingPreset = ref(false); // true while applyPreset() spreads a preset onto the form
+
+async function prefillParams() {
+  if (paramsDirty.value) return;
+  try {
+    const { defaults } = await jobsStore.fetchModeParams(selectedMode.value);
+    const shown: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(defaults)) {
+      if (!CHECKBOX_PARAM_KEYS.includes(k)) shown[k] = v;
+    }
+    paramsText.value = JSON.stringify(shown, null, 2);
+  } catch {
+    // Leave the box as-is on failure — the run still works without prefilled params.
+  }
+}
+
+function onAdvancedToggle(e: Event) {
+  advancedOpen.value = (e.target as HTMLDetailsElement).open;
+  if (advancedOpen.value) void prefillParams();
+}
+
+// Switching mode invalidates any prior edits (each mode has its own knob set) → reset + re-prefill.
+// A preset drives mode + knobs together (applyPreset), so skip the prefill while it is applying —
+// otherwise the mode-change prefill would clobber the preset's recipe.
+watch(selectedMode, () => {
+  if (applyingPreset.value) return;
+  paramsDirty.value = false;
+  if (advancedOpen.value) void prefillParams();
+});
+
+// "Reset to defaults" re-prefills the box with the current mode's effective knobs.
+function resetParams() {
+  paramsDirty.value = false;
+  void prefillParams();
+}
+
 onMounted(async () => {
   s3.fetchStatus(); // learn whether S3 is configured (drives presence badges + transfer actions)
   await browseStore.browse();
@@ -155,12 +230,34 @@ function openS3Tab() {
 async function onBucket(e: Event) {
   s3.setBucket((e.target as HTMLSelectElement).value);
   s3.clearS3();
-  await Promise.all([browseStore.browse(browseStore.path), s3.s3Browse("")]);
+  // The new bucket invalidates both cached listings (presence badges + object tree).
+  browseStore.clearCache();
+  s3.clearS3Cache();
+  await Promise.all([
+    browseStore.browse(browseStore.path, true),
+    s3.s3Browse("", true),
+  ]);
+}
+
+// refreshS3 re-checks the connection and re-lists both trees live (bypassing every cache).
+async function refreshS3() {
+  browseStore.clearCache();
+  s3.clearS3Cache();
+  await s3.fetchStatus();
+  await Promise.all([
+    browseStore.browse(browseStore.path, true),
+    s3.bucket ? s3.s3Browse(s3.s3Rel, true) : Promise.resolve(),
+  ]);
 }
 async function onPrefix(e: Event) {
   s3.setPrefix((e.target as HTMLInputElement).value);
   s3.clearS3();
-  await Promise.all([browseStore.browse(browseStore.path), s3.s3Browse("")]);
+  browseStore.clearCache();
+  s3.clearS3Cache();
+  await Promise.all([
+    browseStore.browse(browseStore.path, true),
+    s3.s3Browse("", true),
+  ]);
 }
 
 // relToRoot maps a selected folder's absolute path to its path relative to the capture root (DataDir),
@@ -245,8 +342,9 @@ async function onInspect(emitted: string[]) {
       : emitted.filter((p) => p.startsWith(rootPath.value)); // ignore an S3-tab active rel
   if (s3Rels.length) {
     downloadingS3.value = s3Rels.length;
+    downloadedS3.value = 0;
     try {
-      await s3.importFolders(s3Rels);
+      await s3.importFolders(s3Rels, () => downloadedS3.value++);
       await browseStore.browse(browseStore.path); // downloaded folders now show in Local Files
     } catch (e) {
       inspectError.value = (e as Error).message;
@@ -257,12 +355,171 @@ async function onInspect(emitted: string[]) {
   }
   const landing = s3Rels.map((rel) => `${rootPath.value}/${rel}`);
   const paths = [...localPaths, ...landing];
-  if (paths.length) await doInspect(paths);
+  if (paths.length) {
+    inspecting.value = true;
+    try {
+      await doInspect(paths);
+    } finally {
+      inspecting.value = false;
+    }
+  }
 }
 
 const inv = computed(() => browseStore.inventory);
 const summary = useCaptureSummary(inv);
 const { detectedFilters, mapping, overrides } = useChannelMapping(inv);
+const isDeepskyFamily = computed(
+  () => selectedMode.value === "deepsky" || selectedMode.value === "nebula",
+);
+// The filters a palette needs but the current input lacks (→ disable it in the selector, with a hint).
+function paletteMissing(needs: string[]): string[] {
+  return needs.filter((f) => !detectedFilters.value.includes(f));
+}
+
+// --- Processing presets -----------------------------------------------------------------------------
+// The built-in "best params per situation" catalog + the user's saved presets. Applying one spreads its
+// recipe onto the launch form; "Save current…" captures the form as a named preset (persisted in
+// Postgres). The picker is keyed by a stable string so the currently-applied preset stays highlighted.
+const presetsStore = usePresetsStore();
+const selectedPresetKey = ref(""); // "" = custom (nothing applied)
+const presetEdit = ref<"" | "save" | "rename">(""); // which inline name input is showing
+const presetNameField = ref("");
+const presetError = ref("");
+
+const presetKey = (p: PresetItem) => (p.builtin ? `b:${p.name}` : `u:${p.id}`);
+const presetLabel = (p: PresetItem) =>
+  p.builtin ? t(`preset.builtin.${p.name}.label`) : p.name;
+const presetDesc = (p: PresetItem) =>
+  p.builtin ? t(`preset.builtin.${p.name}.desc`) : "";
+const selectedPreset = computed(
+  () =>
+    presetsStore.presets.find(
+      (p) => presetKey(p) === selectedPresetKey.value,
+    ) ?? null,
+);
+// Only user presets can be renamed/deleted (built-ins are read-only).
+const selectedUserPreset = computed(() =>
+  selectedPreset.value && !selectedPreset.value.builtin
+    ? selectedPreset.value
+    : null,
+);
+
+// applyPreset spreads a preset's payload onto the launch-form refs. It sets mode first, guarded by
+// applyingPreset so the mode watcher does NOT re-prefill and wipe the recipe's knob JSON; only fields the
+// payload defines are touched.
+function applyPreset(item: PresetItem) {
+  const p = item.payload;
+  applyingPreset.value = true;
+  if (p.mode) selectedMode.value = p.mode;
+  if (p.format) selectedFormat.value = p.format;
+  if (p.palette) palette.value = p.palette;
+  if (p.look) look.value = p.look;
+  if (p.brightness) brightness.value = p.brightness;
+  if (p.color_calibration !== undefined)
+    colorCalibration.value = p.color_calibration;
+  if (p.denoise !== undefined) denoise.value = p.denoise;
+  if (p.ha_exclude_stars !== undefined)
+    haExcludeStars.value = p.ha_exclude_stars;
+  if (p.drop_wheel_transition !== undefined)
+    dropWheelTransition.value = p.drop_wheel_transition;
+  if (p.supervise !== undefined) supervise.value = p.supervise;
+  goal.value = p.goal ?? "";
+
+  const hasParams = !!p.params && Object.keys(p.params).length > 0;
+  if (hasParams) {
+    paramsText.value = JSON.stringify(p.params, null, 2);
+    paramsDirty.value = true; // protect the recipe from the mode-watch prefill
+    advancedOpen.value = true; // reveal the knobs
+  } else {
+    paramsText.value = "";
+    paramsDirty.value = false; // no recipe → let the box reflect the new mode when opened
+    if (advancedOpen.value) void prefillParams();
+  }
+  // Release the guard AFTER the mode watcher has flushed (it runs pre-render; nextTick is after).
+  void nextTick(() => {
+    applyingPreset.value = false;
+  });
+}
+
+// capturePayload snapshots the situation-defining form fields (the same subset runOpts sends, minus
+// input-specific ones) into a preset payload.
+function capturePayload(): PresetPayload {
+  const payload: PresetPayload = {
+    mode: selectedMode.value,
+    format: selectedFormat.value,
+    color_calibration: colorCalibration.value,
+    denoise: denoise.value,
+    ha_exclude_stars: haExcludeStars.value,
+    drop_wheel_transition: dropWheelTransition.value,
+    supervise: supervise.value,
+  };
+  if (isDeepskyFamily.value) payload.palette = palette.value;
+  if (isMilkyway.value) {
+    payload.look = look.value;
+    payload.brightness = brightness.value;
+  }
+  const g = goal.value.trim();
+  if (g) payload.goal = g;
+  const params = runParams.value;
+  if (params && typeof params === "object") {
+    payload.params = params as Record<string, unknown>;
+  }
+  return payload;
+}
+
+function onPresetChange() {
+  presetError.value = "";
+  const p = selectedPreset.value;
+  if (p) applyPreset(p);
+}
+function startPresetSave() {
+  presetError.value = "";
+  presetNameField.value = "";
+  presetEdit.value = "save";
+}
+function startPresetRename() {
+  const p = selectedUserPreset.value;
+  if (!p) return;
+  presetError.value = "";
+  presetNameField.value = p.name;
+  presetEdit.value = "rename";
+}
+function cancelPresetEdit() {
+  presetEdit.value = "";
+  presetNameField.value = "";
+  presetError.value = "";
+}
+async function confirmPresetEdit() {
+  const name = presetNameField.value.trim();
+  if (!name) return;
+  try {
+    if (presetEdit.value === "rename") {
+      const p = selectedUserPreset.value;
+      if (!p) return;
+      await presetsStore.rename(p.id, name);
+    } else {
+      if (paramsInvalid.value) return;
+      await presetsStore.save(name, capturePayload());
+      const saved = presetsStore.userPresets.find(
+        (p) => p.name.toLowerCase() === name.toLowerCase(),
+      );
+      if (saved) selectedPresetKey.value = presetKey(saved);
+    }
+    cancelPresetEdit();
+  } catch (e) {
+    presetError.value = (e as Error).message;
+  }
+}
+async function deleteSelectedPreset() {
+  const p = selectedUserPreset.value;
+  if (!p) return;
+  await presetsStore.remove(p.id);
+  if (selectedPresetKey.value === presetKey(p)) selectedPresetKey.value = "";
+}
+
+onMounted(() => {
+  void presetsStore.list();
+});
 
 const counts = computed(() => {
   const c: Record<string, number> = {};
@@ -440,6 +697,10 @@ function runOpts(): CreateOpts {
     goal: goal.value.trim() || undefined,
     params: runParams.value || undefined,
     look: isMilkyway.value ? look.value : undefined,
+    palette:
+      isDeepskyFamily.value && palette.value !== "natural"
+        ? palette.value
+        : undefined,
     brightness: isMilkyway.value ? brightness.value : undefined,
     orientation: isMilkyway.value ? orientationValue.value : undefined,
     darkDir: isMilkyway.value ? darkDir.value || undefined : undefined,
@@ -451,11 +712,18 @@ function runOpts(): CreateOpts {
     reuseSessions: reuseSelectionForRun.value,
     // Library masters the user unchecked in the Calibration panel (skipped at process time).
     calibExclude: calibExcluded.value,
+    // Freeze the matched-calibration preview with the job so its page can show the included darks/flats/
+    // bias and their params (the pipeline still re-matches independently, honoring calibExclude).
+    calibPlan: calibPreview.value,
     // Full-S3 run: pull inputs from S3, process, push inputs+results, then free local (only when active).
     storageMode: s3.active && processMode.value === "s3" ? "s3" : undefined,
     s3:
       s3.active && processMode.value === "s3"
         ? { bucket: s3.bucket, prefix: s3.prefix }
+        : undefined,
+    lowDisk:
+      s3.active && processMode.value === "s3" && isDeepskyFamily.value
+        ? lowDisk.value
         : undefined,
   };
 }
@@ -497,14 +765,56 @@ async function queuePipeline() {
 // Re-run a past folder-set: re-select the folders that still exist, restore mode/format, inspect, and
 // scroll to the run controls. Deleted folders are dropped (the chips show them crossed-out).
 const runControls = ref<HTMLElement | null>(null);
+// useHistory re-runs a past folder-set whether its files are still local or were freed to S3 after a
+// full-S3 run. Folders present on the S3 mirror but not on disk (exists && !local) are pulled back from
+// <prefix>/data/<rel> into <DataDir>/<rel> first, so the inspection below always sees real local files.
 async function useHistory(entry: ProcessingHistoryEntry) {
-  const existing = entry.paths.filter((p) => p.exists).map((p) => p.path);
-  if (!existing.length) return;
-  browseStore.selectPaths(existing);
+  inspectError.value = "";
+  // Partition the folder-set. `local === false` (strict) is the only signal to pull from S3, so an older
+  // backend that omits `local` safely degrades to the local-only path instead of pulling every folder.
+  const localPaths = entry.paths
+    .filter((p) => p.exists && p.local !== false)
+    .map((p) => p.path);
+  const s3Only = entry.paths.filter((p) => p.exists && p.local === false);
+  if (!localPaths.length && !s3Only.length) return; // every folder truly gone
+
+  const landing: string[] = [];
+  if (s3Only.length) {
+    if (!s3.active) {
+      inspectError.value = t("import.history.needS3");
+      return;
+    }
+    // Pull with the backend-authoritative DataDir-rel (the ledger key the offer was based on) — a
+    // client-side rel guess diverges for nested folders and misses the ledger. A data-namespace download
+    // of `rel` lands at <DataDir>/<rel>, which is exactly `p.path`, so inspect the original paths below.
+    const pulls = s3Only.filter((p) => p.rel);
+    const rels = pulls.map((p) => p.rel);
+    downloadingS3.value = rels.length;
+    downloadedS3.value = 0;
+    try {
+      await s3.downloadFolders(rels, () => downloadedS3.value++);
+    } catch (e) {
+      inspectError.value = (e as Error).message;
+      downloadingS3.value = 0;
+      return;
+    }
+    downloadingS3.value = 0;
+    await browseStore.browse(browseStore.path); // pulled folders now show in Local Files
+    landing.push(...pulls.map((p) => p.path));
+  }
+
+  const paths = [...localPaths, ...landing];
+  if (!paths.length) return;
+  browseStore.selectPaths(paths);
   if (entry.mode && modes.includes(entry.mode)) selectedMode.value = entry.mode;
   if (entry.format && formats.includes(entry.format))
     selectedFormat.value = entry.format;
-  await doInspect(existing);
+  inspecting.value = true;
+  try {
+    await doInspect(paths);
+  } finally {
+    inspecting.value = false;
+  }
   await nextTick();
   runControls.value?.scrollIntoView({ behavior: "smooth", block: "center" });
 }
@@ -575,7 +885,7 @@ function histChip(exists: boolean): string {
           :placeholder="t('s3.prefix')"
           @change="onPrefix"
         />
-        <button :class="btnGhost" class="!px-2 !py-1" @click="s3.fetchStatus()">
+        <button :class="btnGhost" class="!px-2 !py-1" @click="refreshS3">
           {{ t("s3.test") }}
         </button>
         <span
@@ -607,7 +917,8 @@ function histChip(exists: boolean): string {
         :processed="browseStore.processedByPath"
         :s3-enabled="s3.active"
         source-filter="local"
-        :downloading="downloadingS3 > 0"
+        :downloading="s3Busy"
+        :busy-label="s3BusyLabel"
         @navigate="openDir"
         @inspect="onInspect"
         @toggle="browseStore.toggleSelected"
@@ -625,23 +936,33 @@ function histChip(exists: boolean): string {
         :selected="s3.s3Selected"
         :error="s3.error"
         :fetch-children="s3.s3ListDir"
-        :downloading="downloadingS3 > 0"
+        :downloading="s3Busy"
+        :busy-label="s3BusyLabel"
         @navigate="s3.s3Browse"
         @inspect="onInspect"
         @toggle="s3.toggleS3"
         @clear-selection="s3.clearS3"
       />
-      <p
-        v-if="downloadingS3 > 0"
-        class="mt-2 text-xs text-slate-500 dark:text-slate-400"
+      <div
+        v-if="s3Busy"
+        class="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500 dark:text-slate-400"
       >
-        {{ t("import.downloadingS3", { n: downloadingS3 }) }}
+        <Spinner>
+          <span v-if="downloadingS3 > 0">{{
+            t("import.downloadingS3Progress", {
+              done: downloadedS3,
+              n: downloadingS3,
+            })
+          }}</span>
+          <span v-else>{{ t("import.inspectingS3") }}</span>
+        </Spinner>
         <router-link
+          v-if="downloadingS3 > 0"
           :to="{ name: 'jobs' }"
           class="font-medium underline hover:text-slate-700 dark:hover:text-slate-200"
           >{{ t("import.viewQueue") }}</router-link
         >
-      </p>
+      </div>
       <p v-if="inspectError" class="mt-2 text-xs text-danger">
         {{ inspectError }}
       </p>
@@ -686,7 +1007,7 @@ function histChip(exists: boolean): string {
             <button
               :class="btnGhost"
               class="ml-auto !px-2 !py-1 !text-xs"
-              :disabled="!entry.paths.some((p) => p.exists)"
+              :disabled="s3Busy || !entry.paths.some((p) => p.exists)"
               @click="useHistory(entry)"
             >
               {{ t("import.history.useAgain") }}
@@ -698,15 +1019,47 @@ function histChip(exists: boolean): string {
               :key="p.path"
               :class="histChip(p.exists)"
               :title="
-                p.exists ? p.path : t('import.history.deleted') + ': ' + p.path
+                !p.exists
+                  ? t('import.history.deleted') + ': ' + p.path
+                  : p.local
+                    ? p.path
+                    : t('import.history.onS3') + ': ' + p.path
               "
             >
-              <IconFolder class="h-3 w-3 shrink-0" />
+              <IconCloud
+                v-if="p.exists && !p.local"
+                class="h-3 w-3 shrink-0 text-brand-500 dark:text-brand-300"
+              />
+              <IconFolder v-else class="h-3 w-3 shrink-0" />
               {{ baseName(p.path) }}
             </span>
           </div>
         </li>
       </ul>
+      <!-- Feedback while a history re-run pulls its freed folders back from the S3 mirror. -->
+      <div
+        v-if="s3Busy"
+        class="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500 dark:text-slate-400"
+      >
+        <Spinner>
+          <span v-if="downloadingS3 > 0">{{
+            t("import.downloadingS3Progress", {
+              done: downloadedS3,
+              n: downloadingS3,
+            })
+          }}</span>
+          <span v-else>{{ t("import.inspectingS3") }}</span>
+        </Spinner>
+        <router-link
+          v-if="downloadingS3 > 0"
+          :to="{ name: 'jobs' }"
+          class="font-medium underline hover:text-slate-700 dark:hover:text-slate-200"
+          >{{ t("import.viewQueue") }}</router-link
+        >
+      </div>
+      <p v-if="inspectError" class="mt-3 text-xs text-danger">
+        {{ inspectError }}
+      </p>
     </CollapsibleCard>
 
     <!-- Selected capture + channel mapping + run controls -->
@@ -740,6 +1093,90 @@ function histChip(exists: boolean): string {
     <div ref="runControls" :class="card">
       <!-- Environment warnings (missing/broken tools, catalogues) — warn before the run, not after. -->
       <EnvWarnings class="mb-3" />
+
+      <!-- Processing presets: apply a built-in "best params per situation" recipe (or a saved one), and
+           save the current params as a named preset. -->
+      <div class="mb-3 flex flex-wrap items-center gap-2">
+        <span class="text-xs font-medium text-slate-500">{{
+          t("preset.label")
+        }}</span>
+        <select
+          v-model="selectedPresetKey"
+          :class="[input, 'max-w-[16rem]']"
+          data-demo="run-preset"
+          @change="onPresetChange"
+        >
+          <option value="">{{ t("preset.custom") }}</option>
+          <optgroup
+            v-for="g in presetsStore.byCategory"
+            :key="g.key"
+            :label="
+              g.key === 'mine' ? t('preset.my') : t('preset.category.' + g.key)
+            "
+          >
+            <option
+              v-for="p in g.items"
+              :key="presetKey(p)"
+              :value="presetKey(p)"
+              :title="presetDesc(p)"
+            >
+              {{ presetLabel(p) }}
+            </option>
+          </optgroup>
+        </select>
+
+        <template v-if="presetEdit === ''">
+          <button type="button" :class="btnGhost" @click="startPresetSave">
+            {{ t("preset.save") }}
+          </button>
+          <button
+            v-if="selectedUserPreset"
+            type="button"
+            :class="[btnGhost, '!px-2']"
+            :title="t('preset.rename')"
+            @click="startPresetRename"
+          >
+            ✎
+          </button>
+          <button
+            v-if="selectedUserPreset"
+            type="button"
+            :class="[btnGhost, '!px-2']"
+            :title="t('preset.delete')"
+            @click="deleteSelectedPreset"
+          >
+            ✕
+          </button>
+        </template>
+        <template v-else>
+          <input
+            v-model="presetNameField"
+            type="text"
+            :placeholder="t('preset.saveName')"
+            :class="[input, 'w-48']"
+            @keyup.enter="confirmPresetEdit"
+            @keyup.esc="cancelPresetEdit"
+          />
+          <button
+            type="button"
+            :class="btnPrimary"
+            :disabled="
+              !presetNameField.trim() ||
+              (presetEdit === 'save' && paramsInvalid)
+            "
+            @click="confirmPresetEdit"
+          >
+            {{ t("preset.saveBtn") }}
+          </button>
+          <button type="button" :class="btnGhost" @click="cancelPresetEdit">
+            {{ t("preset.cancel") }}
+          </button>
+        </template>
+        <span v-if="presetError" class="text-xs text-danger">{{
+          presetError
+        }}</span>
+      </div>
+
       <div class="flex flex-wrap items-end gap-4">
         <label class="text-sm">
           <span class="mb-1 block text-xs font-medium text-slate-500">{{
@@ -774,6 +1211,14 @@ function histChip(exists: boolean): string {
             <option value="s3">{{ t("s3.storageS3") }}</option>
           </select>
         </label>
+        <label
+          v-if="s3.active && processMode === 's3' && isDeepskyFamily"
+          class="flex items-center gap-2 self-end pb-2 text-sm"
+          :title="t('s3.lowDiskHint')"
+        >
+          <input v-model="lowDisk" type="checkbox" :class="checkbox" />
+          {{ t("s3.lowDisk") }}
+        </label>
         <label v-if="isMilkyway" class="text-sm">
           <span class="mb-1 block text-xs font-medium text-slate-500">{{
             t("run.look")
@@ -781,6 +1226,36 @@ function histChip(exists: boolean): string {
           <select v-model="look" :class="input">
             <option v-for="lk in looks" :key="lk" :value="lk">
               {{ t("run.looks." + lk) }}
+            </option>
+          </select>
+        </label>
+        <label v-if="isDeepskyFamily" class="text-sm">
+          <span class="mb-1 block text-xs font-medium text-slate-500">{{
+            t("run.palette")
+          }}</span>
+          <select v-model="palette" :class="input">
+            <option
+              v-for="opt in paletteOptions"
+              :key="opt.value"
+              :value="opt.value"
+              :disabled="paletteMissing(opt.needs).length > 0"
+              :title="
+                paletteMissing(opt.needs).length
+                  ? t('run.paletteNeeds', {
+                      filters: paletteMissing(opt.needs).join(', '),
+                    })
+                  : ''
+              "
+            >
+              {{ t("rerun.knobs.paletteOptions." + opt.value)
+              }}{{
+                paletteMissing(opt.needs).length
+                  ? " — " +
+                    t("run.paletteNeeds", {
+                      filters: paletteMissing(opt.needs).join(", "),
+                    })
+                  : ""
+              }}
             </option>
           </select>
         </label>
@@ -922,13 +1397,30 @@ function histChip(exists: boolean): string {
         </div>
       </details>
 
-      <!-- Advanced AI parameters: free-text goal + fine knob overrides (JSON), forwarded on the run. -->
-      <details class="mt-3 text-sm">
+      <!-- Advanced AI parameters: free-text goal + fine knob overrides (JSON), forwarded on the run.
+           Opening it prefills the JSON with the selected mode's effective knobs (checkbox-owned ones
+           excluded). -->
+      <details
+        class="mt-3 text-sm"
+        :open="advancedOpen"
+        @toggle="onAdvancedToggle"
+      >
         <summary class="cursor-pointer text-xs font-medium text-slate-500">
           {{ t("run.advancedParams") }}
         </summary>
-        <div class="mt-2 grid gap-3 sm:grid-cols-2">
-          <label class="text-sm">
+
+        <!-- AI guidance: a plain-language objective the finish supervisor carries (only used when the
+             "Supervise finish" AI agent is on). -->
+        <section class="mt-3">
+          <h4
+            class="text-xs font-semibold uppercase tracking-wide text-slate-500"
+          >
+            {{ t("run.aiSection") }}
+          </h4>
+          <p class="mt-0.5 text-xs text-slate-400">
+            {{ t("run.aiSectionHint") }}
+          </p>
+          <label class="mt-2 block text-sm">
             <span class="mb-1 block text-xs font-medium text-slate-500">{{
               t("run.goal")
             }}</span>
@@ -940,15 +1432,39 @@ function histChip(exists: boolean): string {
               data-demo="run-goal"
             />
           </label>
-          <label class="text-sm">
-            <span class="mb-1 block text-xs font-medium text-slate-500">{{
-              t("run.paramsJson")
-            }}</span>
+        </section>
+
+        <!-- Pipeline parameters: fine tunable-knob overrides applied to EVERY run (AI or not), prefilled
+             with the selected mode's effective knobs. -->
+        <section
+          class="mt-4 border-t border-slate-200 pt-3 dark:border-slate-700"
+        >
+          <h4
+            class="text-xs font-semibold uppercase tracking-wide text-slate-500"
+          >
+            {{ t("run.pipelineSection") }}
+          </h4>
+          <p class="mt-0.5 text-xs text-slate-400">
+            {{ t("run.pipelineSectionHint") }}
+          </p>
+          <label class="mt-2 block text-sm">
+            <span
+              class="mb-1 flex items-center justify-between gap-2 text-xs font-medium text-slate-500"
+            >
+              {{ t("run.paramsJson") }}
+              <button
+                type="button"
+                class="font-normal text-brand-500 hover:text-brand-700 hover:underline dark:text-brand-300 dark:hover:text-brand-100"
+                @click="resetParams"
+              >
+                {{ t("run.paramsReset") }}
+              </button>
+            </span>
             <textarea
               v-model="paramsText"
               rows="4"
               spellcheck="false"
-              placeholder='{"denoise_lum": 0.6}'
+              :placeholder="t('run.paramsPlaceholder')"
               :class="[
                 input,
                 'h-24 font-mono text-xs',
@@ -957,12 +1473,19 @@ function histChip(exists: boolean): string {
                   : '',
               ]"
               data-demo="run-params"
+              @input="paramsDirty = true"
             />
             <span v-if="paramsInvalid" class="mt-1 block text-xs text-danger">
               {{ t("run.paramsInvalid") }}
             </span>
+            <span v-else class="mt-1 block text-xs text-slate-400">
+              {{ t("run.paramsCheckboxNote") }}
+            </span>
           </label>
-        </div>
+          <!-- Per-parameter reference for the JSON above: every knob this mode exposes, the ones set in
+               the JSON highlighted with their live value. -->
+          <ParamGlossary :mode="selectedMode" :params="runParams" />
+        </section>
       </details>
       <p v-if="!selectedPaths.length" class="mt-2 text-xs text-slate-400">
         {{ t("import.selectCapture") }}
@@ -980,9 +1503,6 @@ function histChip(exists: boolean): string {
         </router-link>
       </p>
     </div>
-
-    <!-- Backup everything (db + calibration library + LP atlas + browser app-state) to S3, and restore. -->
-    <BackupPanel v-if="s3.active" />
 
     <div v-if="inv" class="space-y-6">
       <div class="flex flex-wrap gap-3">

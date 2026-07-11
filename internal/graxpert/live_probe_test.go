@@ -16,6 +16,6 @@ func TestLiveHostProbe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	start := time.Now()
-	err := New("graxpert").Healthy(ctx)
+	err := New("graxpert", "").Healthy(ctx)
 	t.Logf("host graxpert Healthy: err=%v (took %s)", err, time.Since(start).Round(time.Second))
 }

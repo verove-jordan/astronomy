@@ -111,15 +111,15 @@ const guides = computed(() => {
 
 const poleStarLabel = computed(() =>
   store.result?.hemisphere === "south"
-    ? t("tonight.polar.reticle.sigmaOct")
-    : t("tonight.polar.reticle.polaris"),
+    ? t("polar.reticle.sigmaOct")
+    : t("polar.reticle.polaris"),
 );
 
 const caption = computed(() => {
-  if (store.mirror) return t("tonight.polar.reticle.mirrored");
+  if (store.mirror) return t("polar.reticle.mirrored");
   return store.invert
-    ? t("tonight.polar.reticle.invertedView")
-    : t("tonight.polar.reticle.erectView");
+    ? t("polar.reticle.invertedView")
+    : t("polar.reticle.erectView");
 });
 </script>
 
@@ -214,7 +214,7 @@ const caption = computed(() => {
         font-size="9"
         text-anchor="start"
       >
-        {{ t("tonight.polar.reticle.truePole") }}
+        {{ t("polar.reticle.truePole") }}
       </text>
 
       <!-- Constellation direction guides -->
@@ -248,7 +248,7 @@ const caption = computed(() => {
           font-size="9"
           text-anchor="middle"
         >
-          {{ t(`tonight.polar.reticle.${g.key}`) }}
+          {{ t(`polar.reticle.${g.key}`) }}
         </text>
       </g>
 
@@ -293,7 +293,7 @@ const caption = computed(() => {
     >
       <span>{{ caption }}</span>
       <span v-if="store.result" class="tabular-nums text-slate-300">
-        {{ t("tonight.polar.reticle.placeHere") }}
+        {{ t("polar.reticle.placeHere") }}
       </span>
     </div>
   </div>

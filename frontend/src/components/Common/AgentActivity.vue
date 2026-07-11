@@ -4,7 +4,7 @@
 // (args) and the tool outputs. Fed by the streamed AgentStep[] on an assistant message.
 import { ref, computed } from "vue";
 import { useI18n } from "vue-i18n";
-import { fileUrl } from "@/services/api";
+import { thumbUrl } from "@/services/api";
 import type { AgentStep } from "@/stores/agent";
 
 const props = defineProps<{
@@ -62,8 +62,10 @@ const toolCalls = computed(() =>
           </p>
           <img
             v-if="s.preview"
-            :src="fileUrl(s.preview)"
+            :src="thumbUrl(s.preview, 480)"
             :alt="t('agent.activity.preview')"
+            loading="lazy"
+            decoding="async"
             class="max-h-64 rounded border border-slate-200 dark:border-slate-700"
           />
         </div>

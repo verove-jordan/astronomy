@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 // downloadFails make the first N attempts on a key fail with failWith, after emitting partial bytes to
 // onBytes — modelling a connection dropped mid-file.
 type fakeS3 struct {
+	mu            sync.Mutex                // guards the maps: runUpload/runDownload now call in parallel
 	objects       map[string]s3store.Object // keyed by full S3 key
 	uploadFails   map[string]int            // remaining failing attempts per key
 	downloadFails map[string]int
@@ -36,53 +38,80 @@ func newFakeS3() *fakeS3 {
 }
 
 func (f *fakeS3) List(_ context.Context, _, prefix string) ([]s3store.Object, error) {
+	f.mu.Lock()
 	var out []s3store.Object
 	for _, o := range f.objects {
 		if strings.HasPrefix(o.Key, prefix) {
 			out = append(out, o)
 		}
 	}
+	f.mu.Unlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out, nil
 }
 
 func (f *fakeS3) Stat(_ context.Context, _, key string) (s3store.Object, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	o, ok := f.objects[key]
 	return o, ok, nil
 }
 
 func (f *fakeS3) Upload(_ context.Context, _, key, localPath string, onBytes func(int64)) error {
+	f.mu.Lock()
 	f.uploadCalls[key]++
+	failing := f.uploadFails[key] > 0
+	if failing {
+		f.uploadFails[key]--
+	}
+	partial, failWith := f.partial, f.failWith
+	f.mu.Unlock()
+
 	fi, err := os.Stat(localPath)
 	if err != nil {
 		return err
 	}
-	if f.uploadFails[key] > 0 {
-		f.uploadFails[key]--
-		if onBytes != nil && f.partial > 0 {
-			onBytes(min(f.partial, fi.Size()))
+	if failing {
+		if onBytes != nil && partial > 0 {
+			onBytes(min(partial, fi.Size()))
 		}
-		return f.failWith
+		return failWith
+	}
+	// Record the content MD5 like the real Upload does (Astro-Md5 user metadata), so a verified sync/
+	// remove-local can actually compare bytes against this fake mirror. The heavy work (Stat, MD5, onBytes)
+	// runs OUTSIDE the lock so parallel workers actually overlap — exercising the aggregator/ledger races.
+	sum, err := s3store.MD5File(localPath)
+	if err != nil {
+		return err
 	}
 	if onBytes != nil {
 		onBytes(fi.Size())
 	}
-	f.objects[key] = s3store.Object{Key: key, Size: fi.Size(), ModTime: time.Now().UnixMilli()}
+	f.mu.Lock()
+	f.objects[key] = s3store.Object{Key: key, Size: fi.Size(), MD5: sum, ModTime: time.Now().UnixMilli()}
+	f.mu.Unlock()
 	return nil
 }
 
 func (f *fakeS3) Download(_ context.Context, _, key, localPath string, onBytes func(int64)) error {
+	f.mu.Lock()
 	f.downloadCalls[key]++
 	obj, ok := f.objects[key]
+	failing := f.downloadFails[key] > 0
+	if failing {
+		f.downloadFails[key]--
+	}
+	partial, failWith := f.partial, f.failWith
+	f.mu.Unlock()
+
 	if !ok {
 		return os.ErrNotExist
 	}
-	if f.downloadFails[key] > 0 {
-		f.downloadFails[key]--
-		if onBytes != nil && f.partial > 0 {
-			onBytes(min(f.partial, obj.Size))
+	if failing {
+		if onBytes != nil && partial > 0 {
+			onBytes(min(partial, obj.Size))
 		}
-		return f.failWith
+		return failWith
 	}
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return err

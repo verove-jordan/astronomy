@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"path"
@@ -371,7 +372,88 @@ func (s *Server) manageDeleteObject(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
+	// Prune the ledger rows for the deleted key(s) so a classified local_rel → s3_key mapping doesn't dangle
+	// (the serving fallback would otherwise resolve to a now-missing key). Non-fatal: the bytes are already
+	// gone, and a stray row self-heals on the next upload.
+	if s.store != nil {
+		if _, derr := s.store.DeleteS3ObjectsByKeyPrefix(r.Context(), bucket, strings.TrimSuffix(key, "/")); derr != nil {
+			log.Printf("s3 manage delete: prune ledger for %s/%s: %v", bucket, key, derr)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// manageMove relocates an object or a whole folder (key ending "/") to a destination folder, then rewrites
+// the s3_objects ledger so a moved file is still resolvable by the inspector/serving fallback. Physical
+// copy → ledger rekey → delete source (so a mid-way failure never strands the ledger pointing at a deleted
+// key). POST /api/s3/manage/move?conn=  body {bucket, src, dst}
+func (s *Server) manageMove(w http.ResponseWriter, r *http.Request) {
+	client, ok := s.manageClient(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Bucket string `json:"bucket"`
+		Src    string `json:"src"`
+		Dst    string `json:"dst"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		badRequest(w, "invalid body")
+		return
+	}
+	if body.Bucket == "" || body.Src == "" {
+		badRequest(w, "bucket and src are required")
+		return
+	}
+	isDir := strings.HasSuffix(body.Src, "/")
+	base := path.Base(strings.TrimSuffix(body.Src, "/"))
+	dstFolder := body.Dst
+	if dstFolder != "" && !strings.HasSuffix(dstFolder, "/") {
+		dstFolder += "/"
+	}
+	newKey := dstFolder + base
+	if isDir {
+		newKey += "/"
+	}
+	if newKey == body.Src {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true}) // no-op move into the same place
+		return
+	}
+	if isDir && strings.HasPrefix(dstFolder, body.Src) {
+		badRequest(w, "cannot move a folder into itself")
+		return
+	}
+
+	// 1) Physical copy (server-side; bytes never transit the engine).
+	var err error
+	if isDir {
+		err = client.CopyPrefix(r.Context(), body.Bucket, body.Src, newKey)
+	} else {
+		err = client.Copy(r.Context(), body.Bucket, body.Src, newKey)
+	}
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	// 2) Rekey the ledger (s3_key src → newKey, local_rel preserved) BEFORE deleting the source, so a failed
+	// delete leaves the ledger already pointing at the surviving copy rather than at a deleted key.
+	if s.store != nil {
+		if _, rerr := s.store.RekeyS3Objects(r.Context(), body.Bucket,
+			strings.TrimSuffix(body.Src, "/"), strings.TrimSuffix(newKey, "/")); rerr != nil {
+			serverError(w, rerr)
+			return
+		}
+	}
+	// 3) Delete the source now that the copy + ledger point at the new location.
+	if isDir {
+		err = client.RemovePrefix(r.Context(), body.Bucket, body.Src)
+	} else {
+		err = client.Delete(r.Context(), body.Bucket, body.Src)
+	}
+	if err != nil {
+		log.Printf("s3 manage move: source %s/%s copied+rekeyed to %s but not deleted: %v", body.Bucket, body.Src, newKey, err)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "key": newKey})
 }
 
 // manageDownload streams an object to the browser. GET /api/s3/manage/download?conn=&bucket=&key=

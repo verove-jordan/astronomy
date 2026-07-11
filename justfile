@@ -94,7 +94,7 @@ dev:
 web:
     cd frontend && pnpm dev
 
-# Serve the local vision model for the finish supervisor (host; first run downloads ~26 GB).
+# Serve the local vision model for the finish supervisor (host; first run downloads ~28 GB).
 run-ia-model:
     @scripts/ia-model.sh
 
@@ -105,6 +105,16 @@ stop-ia-model:
 # Health-check the local model server.
 ia-model-status:
     @curl -fsS "http://127.0.0.1:${ASTRO_LLM_PORT:-1234}/health" && echo " OK"
+
+# Serve the host GraXpert on demand so the containerized engine can offload denoise / background
+# extraction to a NATIVE process (Docker on macOS can't reach the host binary or the GPU). Foreground;
+# then set ASTRO_GRAXPERT_URL=http://host.docker.internal:8083 for `just stack` and restart the engine.
+run-graxpert-service:
+    go run ./cmd/graxpert-host
+
+# Health-check the host GraXpert service.
+graxpert-service-status:
+    @curl -fsS "http://127.0.0.1:${ASTRO_GRAXPERT_PORT:-8083}/health" && echo " OK"
 
 # Inspect a capture directory and print the inventory (host).
 inspect DIR:
@@ -129,6 +139,13 @@ update-light-pollution-data-custom:
 update-canopy-data:
     @scripts/update-canopy.sh
 
+# Rebuild the frontend sky-map dataset (frontend/src/assets/skymap.json): the star + constellation-line
+# figures the GoTo "Find it in the sky" map renders. Fetches the HYG catalogue + Stellarium constellations
+# (network at build time ONLY); the app then renders the sky fully offline. MAG = faintest star (default 6.0
+# = naked-eye limit). Re-run only to refresh the data or change density; commit the regenerated JSON.
+gen-skymap-data MAG="6.0":
+    go run ./cmd/astrostack skymap-data --mag "{{MAG}}"
+
 # One-time download of Siril's OFFLINE Gaia plate-solve catalogue (~1.1 GB → ~3 GB) into
 # library/catalogues — makes plate-solving (and therefore SPCC colour calibration) work with no
 # network, on the host AND in the Docker engine (same files via the /data/library volume).
@@ -140,7 +157,7 @@ download-catalogues:
 download-catalogues-spcc:
     @scripts/download-catalogues.sh --spcc
 
-# Run the full auto pipeline (host). MODE: deepsky|nebula|milkyway|planetary  FORMAT: image|video|both
+# Run the full auto pipeline (host). MODE: deepsky|nebula|milkyway|planetary|comet  FORMAT: image|video|both
 # e.g. just process deepsky image ~/Astro/M31   ·   just process planetary video ~/Astro/moon.mp4
 process MODE FORMAT PATH *args:
     go run ./cmd/astrostack process {{args}} {{MODE}} {{FORMAT}} "{{PATH}}"
@@ -166,6 +183,11 @@ mcp-siril:
 build-mcp:
     @mkdir -p {{bin}}
     go build -o {{bin}}/siril-mcp ./cmd/siril-mcp
+
+# Build the host GraXpert service binary into ./bin.
+build-graxpert-host:
+    @mkdir -p {{bin}}
+    go build -o {{bin}}/graxpert-host ./cmd/graxpert-host
 
 # Build all binaries + the frontend (build identity stamped via ldflags — shows in /api/health,
 # every run record, and the UI's engine chip, so a stale-engine run is identifiable at a glance).

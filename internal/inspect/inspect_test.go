@@ -57,30 +57,42 @@ func TestClassifyByStats(t *testing.T) {
 		{
 			name: "16-bit integer LRGB session",
 			stats: []frameStat{
-				{exposureMs: 60000, peaks: 80, median: 1200, mad: 40}, // light: stars
-				{exposureMs: 1500, peaks: 0, median: 30000, mad: 300}, // flat: bright + uniform
-				{exposureMs: 0, peaks: 0, median: 300, mad: 5},        // bias: ~0 exposure at floor
-				{exposureMs: 60000, peaks: 2, median: 500, mad: 50},   // dark: long, dim, starless
+				{exposureMs: 60000, peaks: 80, median: 1200, mad: 40, hasStats: true}, // light: stars
+				{exposureMs: 1500, peaks: 0, median: 30000, mad: 300, hasStats: true}, // flat: bright + uniform
+				{exposureMs: 0, peaks: 0, median: 300, mad: 5, hasStats: true},        // bias: ~0 exposure at floor
+				{exposureMs: 60000, peaks: 2, median: 500, mad: 50, hasStats: true},   // dark: long, dim, starless
 			},
 			want: []FrameType{Light, Flat, Bias, Dark},
 		},
 		{
 			name: "normalized [0,1] float frames",
 			stats: []frameStat{
-				{exposureMs: 120000, peaks: 60, median: 0.05, mad: 0.002}, // light
-				{exposureMs: 3000, peaks: 0, median: 0.6, mad: 0.01},      // flat
-				{exposureMs: 0, peaks: 0, median: 0.01, mad: 0.001},       // bias
-				{exposureMs: 120000, peaks: 1, median: 0.012, mad: 0.003}, // dark (dim, long)
+				{exposureMs: 120000, peaks: 60, median: 0.05, mad: 0.002, hasStats: true}, // light
+				{exposureMs: 3000, peaks: 0, median: 0.6, mad: 0.01, hasStats: true},      // flat
+				{exposureMs: 0, peaks: 0, median: 0.01, mad: 0.001, hasStats: true},       // bias
+				{exposureMs: 120000, peaks: 1, median: 0.012, mad: 0.003, hasStats: true}, // dark (dim, long)
 			},
 			want: []FrameType{Light, Flat, Bias, Dark},
 		},
 		{
 			name: "nebulosity light with sparse stars caught by brightFrac",
 			stats: []frameStat{
-				{exposureMs: 300000, peaks: 3, brightFrac: 0.05, median: 900, mad: 30},   // faint Ha light
-				{exposureMs: 300000, peaks: 1, brightFrac: 0.0002, median: 800, mad: 60}, // dark
+				{exposureMs: 300000, peaks: 3, brightFrac: 0.05, median: 900, mad: 30, hasStats: true},   // faint Ha light
+				{exposureMs: 300000, peaks: 1, brightFrac: 0.0002, median: 800, mad: 60, hasStats: true}, // dark
 			},
 			want: []FrameType{Light, Dark},
+		},
+		{
+			// The container regression: a frame whose pixels could not be sampled (no sips on Linux)
+			// has an all-zero curve that LOOKS like a bias at the dark floor. It must classify LIGHT —
+			// never a calibration type — and its zero median must not drag the session floor down.
+			name: "unreadable stats never classify as calibration",
+			stats: []frameStat{
+				{exposureMs: 0}, // e.g. a processed TIFF, stats unreadable
+				{exposureMs: 60000, peaks: 80, median: 1200, mad: 40, hasStats: true}, // real light
+				{exposureMs: 0, peaks: 0, median: 300, mad: 5, hasStats: true},        // real bias stays a bias
+			},
+			want: []FrameType{Light, Light, Bias},
 		},
 	}
 	for _, tt := range tests {

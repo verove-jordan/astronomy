@@ -108,8 +108,19 @@ func Open(path string) (*File, error) {
 		return nil, err
 	}
 	defer f.Close()
+	hdr, consumed, err := ReadHeaderFrom(bufio.NewReaderSize(f, blockSize))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return &File{Header: hdr, DataOffset: consumed, path: path}, nil
+}
 
-	r := bufio.NewReaderSize(f, blockSize)
+// ReadHeaderFrom parses the primary HDU header from r — block by block until the END card — and returns
+// the header plus the byte offset where the data unit begins (the header bytes consumed). It reads ONLY
+// the header, never the pixel data, so it works on a ranged/partial reader that supplies just the first
+// few KB of a FITS file (the S3 low-disk remote scan reads a byte range instead of the whole object).
+// The caller should pass a buffered reader for efficiency; ReadHeaderFrom does not close r.
+func ReadHeaderFrom(r io.Reader) (*Header, int64, error) {
 	hdr := &Header{index: make(map[string]int)}
 	buf := make([]byte, blockSize)
 	var consumed int64
@@ -117,12 +128,12 @@ func Open(path string) (*File, error) {
 
 	for {
 		if _, err := io.ReadFull(r, buf); err != nil {
-			return nil, fmt.Errorf("read fits header block in %s: %w", path, err)
+			return nil, 0, fmt.Errorf("read fits header block: %w", err)
 		}
 		if first {
 			key := strings.TrimRight(string(buf[0:8]), " ")
 			if key != "SIMPLE" && key != "XTENSION" {
-				return nil, fmt.Errorf("%s: not a FITS file (first keyword %q)", path, key)
+				return nil, 0, fmt.Errorf("not a FITS file (first keyword %q)", key)
 			}
 			first = false
 		}
@@ -146,7 +157,7 @@ func Open(path string) (*File, error) {
 			break
 		}
 	}
-	return &File{Header: hdr, DataOffset: consumed, path: path}, nil
+	return hdr, consumed, nil
 }
 
 // StripKeyword blanks every primary-header card whose keyword equals key (case-insensitive), in place:

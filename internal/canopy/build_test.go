@@ -1,6 +1,7 @@
 package canopy
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,6 +27,30 @@ func TestSourceTiles(t *testing.T) {
 
 	// A box spanning 3×3 tiles.
 	assert.Equal(t, 9, TileCount(Bounds{MinLat: 44, MinLon: 2, MaxLat: 49, MaxLon: 7}))
+}
+
+func TestBuildWarpArgs(t *testing.T) {
+	b := Bounds{MinLat: 45, MinLon: 3, MaxLat: 45.2, MaxLon: 3.3}
+	args := buildWarpArgs(b, 0.0008, "/tmp/mosaic.vrt", "/tmp/atlas.bin")
+
+	// -te must be xmin ymin xmax ymax = minLon minLat maxLon maxLat. A lat/lon swap here silently warps the
+	// wrong window (and is exactly the kind of regression this guards).
+	te := slices.Index(args, "-te")
+	require.GreaterOrEqual(t, te, 0, "-te present")
+	require.Less(t, te+4, len(args))
+	assert.Equal(t, []string{"3", "45", "3.3", "45.2"}, args[te+1:te+5])
+
+	// -tr carries the requested resolution.
+	tr := slices.Index(args, "-tr")
+	require.GreaterOrEqual(t, tr, 0)
+	assert.Equal(t, []string{"0.0008", "0.0008"}, args[tr+1:tr+3])
+
+	// GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR must NOT be here: it makes gdalwarp fail to open the VRT's
+	// source COG and die with no error — the download bug. Guard against it being re-added.
+	assert.NotContains(t, args, "GDAL_DISABLE_READDIR_ON_OPEN")
+
+	// Source then destination are the final positional args.
+	assert.Equal(t, []string{"/tmp/mosaic.vrt", "/tmp/atlas.bin"}, args[len(args)-2:])
 }
 
 func TestResolveBounds(t *testing.T) {

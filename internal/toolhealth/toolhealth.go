@@ -70,7 +70,7 @@ type Checker struct {
 func New(cfg *config.Config) *Checker {
 	return &Checker{
 		cfg:   cfg,
-		grax:  graxpert.New(cfg.GraxpertBin),
+		grax:  graxpert.New(cfg.GraxpertBin, cfg.GraxpertURL),
 		siril: siril.New(cfg.SirilBin, siril.Limits{}),
 		llm:   llm.New(cfg.LLMBaseURL, cfg.LLMModel, cfg.LLMImageFormat),
 	}

@@ -21,6 +21,15 @@ type Profile struct {
 	AvoidMeridianDeg float64 `json:"avoid_meridian_deg"` // reject |hour angle| < this (Celestron); 0 = off
 	ZenithBias       float64 `json:"zenith_bias"`        // push selection away from the zenith (alt-az)
 
+	// Hand-controller coherence + two-phase routines (see starlists/README.md). StarList names an
+	// embedded hand-controller star list — only stars on it are suggested, labeled as the HC shows
+	// them. AlignStars > 0 splits the plan into that many alignment stars followed by calibration
+	// stars; CalibOppositeSide applies the brand rule that calibration stars sit across the meridian
+	// from the alignment pair (models cone error).
+	StarList          string `json:"star_list,omitempty"`
+	AlignStars        int    `json:"align_stars,omitempty"`
+	CalibOppositeSide bool   `json:"calib_opposite_side,omitempty"`
+
 	Note string `json:"note"`
 }
 
@@ -36,14 +45,15 @@ var profiles = []Profile{
 	{
 		Key: "synscan-eq", Label: "SkyWatcher SynScan (EQ)", MountType: "eq",
 		MinAltDeg: 20, MaxAltDeg: 72, DefaultStars: 3, MinStars: 1, MaxStars: 3, MagLimit: 3.5,
-		SameMeridianSide: true,
-		Note:             "SynScan 1/2/3-star: bright stars on the same side of the meridian, well separated.",
+		SameMeridianSide: true, StarList: "synscan",
+		Note: "SynScan 1/2/3-star: bright stars on the same side of the meridian, well separated.",
 	},
 	{
 		Key: "celestron-eq", Label: "Celestron NexStar / AVX (EQ)", MountType: "eq",
-		MinAltDeg: 20, MaxAltDeg: 72, DefaultStars: 2, MinStars: 2, MaxStars: 6, MagLimit: 3.5,
+		MinAltDeg: 20, MaxAltDeg: 72, DefaultStars: 6, MinStars: 2, MaxStars: 6, MagLimit: 3.5,
 		SameMeridianSide: true, AvoidMeridianDeg: 10,
-		Note: "Two align stars far apart on one side of the meridian (add calibration stars afterwards).",
+		StarList: "celestron", AlignStars: 2, CalibOppositeSide: true,
+		Note: "Two align stars on one side of the meridian, then up to four calibration stars on the opposite side (models cone error).",
 	},
 	{
 		Key: "altaz-generic", Label: "Alt-Az (generic)", MountType: "altaz",
@@ -54,8 +64,8 @@ var profiles = []Profile{
 	{
 		Key: "synscan-altaz", Label: "SkyWatcher SynScan (Alt-Az)", MountType: "altaz",
 		MinAltDeg: 20, MaxAltDeg: 65, DefaultStars: 2, MinStars: 1, MaxStars: 3, MagLimit: 3.5,
-		ZenithBias: 0.5,
-		Note:       "Brightest-star / 2-star: two bright stars wide apart in azimuth at moderate altitude.",
+		ZenithBias: 0.5, StarList: "synscan",
+		Note: "Brightest-star / 2-star: two bright stars wide apart in azimuth at moderate altitude.",
 	},
 	{
 		Key: "celestron-altaz", Label: "Celestron SkyAlign (Alt-Az)", MountType: "altaz",

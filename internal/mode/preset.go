@@ -71,6 +71,7 @@ type Preset struct {
 	Saturation       float64           // final saturation boost
 	Curve            []float64         // gentle value curve (post-combine); flat x,y pairs in 0..1
 	LumCurve         []float64         // galaxy-brightness curve applied to the L luminance layer (LRGB)
+	LumOpacity       float64           // opacity (0..1) of the L luminance layer in the LRGB composite (1 = full detail from L; lower = softer, more RGB-driven). 0/unset → full.
 	Planetary        planetary.Options // lucky-imaging settings (planetary only)
 
 	// CoreHighlightKnee / CoreHighlightCeil roll off the L luminance highlights (after LumCurve, before the
@@ -87,6 +88,31 @@ type Preset struct {
 	// Disabled unless 0 < knee < ceil < 1. See internal/gimp/compose.go.
 	HighlightKnee float64
 	HighlightCeil float64
+
+	// StarDesat (0..1) desaturates the brightest star cores/wings toward white in the final composite,
+	// through a luminosity-masked copy. Under LAYER-MODE-LUMINANCE the exported chroma at a star pixel
+	// comes from the thin RGB base's noisy, exaggerated colour PSF, so on a dense star field (a cluster)
+	// bright stars render as solid blue/magenta discs; this pushes only the bright cores/wings toward
+	// white while background/extended-object colour is untouched. 0 → off. See internal/gimp/compose.go.
+	StarDesat float64
+
+	// StretchHeadroom caps bright highlights (star cores, galaxy nuclei) just below 1.0 in LINEAR light
+	// BEFORE the finishing autostretch, keeping their per-channel ratios (colour) intact — a ratio-
+	// preserving tanh roll-off applied to the RGB base and L masters (nightscape.CompressHighlights).
+	// The MTF autostretch fixes 1.0→1.0, so a core left at the linear max clips to pure white and loses
+	// its colour; capping it at StretchHeadroom means the stretch maps it just below white and the star
+	// keeps its natural hue. This is the deep-sky analogue of the planetary finish Headroom/fmul.
+	// 0 or ≥1 disables it (legacy behaviour). See internal/pipeline (applyStretchHeadroom).
+	StretchHeadroom float64
+
+	// AutoFixStars enables the deterministic, gated post-finish star repair: after the standard finish,
+	// the engine measures the exported image for burnt / colour-flattened star cores and — only when it
+	// finds fixable ones — re-enters the finish (Tier B re-stretch with more headroom, then cheap Tier-A
+	// colour passes), keeping the best-scoring result. A clean finish is a no-op (zero extra cost). It
+	// needs no vision model (distinct from Supervise). StarFixMaxIters caps the repair passes (0 →
+	// default). See internal/pipeline/starfix.go.
+	AutoFixStars    bool
+	StarFixMaxIters int
 
 	// Noise reduction (Siril `denoise` on the linear stacks). Chroma is denoised harder than
 	// luminance to cut color noise while preserving detail; 0 skips a channel class.
@@ -166,6 +192,14 @@ type Preset struct {
 	// many px while the L luminance keeps all detail — erasing the "pink" chroma noise of short colour
 	// subs with no loss of sharpness. 0 → none (mono/OSC, where there is no separate luminance).
 	ChromaBlur float64
+	// ChromaSmoothPx smooths ONLY the colour of the combined linear RGB (after the joint GraXpert
+	// denoise + background equalization, before SPCC) this many px, preserving the per-pixel RGB mean
+	// exactly (the same mean-preserving technique as the planetary chroma smooth): m=(R+G+B)/3,
+	// c'=m+blur(c−m). It flattens the coherent 10–30 px colour PATCHES that survive the joint denoise
+	// (and that a stretch + saturation then amplify into red/blue blotches) without touching luminance
+	// — the L layer supplies detail in LRGB, and the mean is byte-for-byte unchanged. 0 → none. See
+	// internal/pipeline/chroma.go.
+	ChromaSmoothPx int
 	// CropFrac trims this fraction off each edge of the exported image to drop ragged stacking-edge
 	// bands (dithered frame borders); the layered .xcf keeps the full frame. 0 → no crop.
 	CropFrac float64
@@ -201,6 +235,12 @@ type Preset struct {
 	// is now FALSE — the loop runs autonomously within its per-tier budgets, per the product
 	// decision "autonomous with caps, no mid-run confirmations".
 	SuperviseConfirmRestack bool
+
+	// Palette selects the channel→RGB colour mapping for the deep-sky finish: "" / "natural" (broadband
+	// LRGB + Hα screen + SPCC), "hargb", or the narrowband palettes "hoo" / "sho" / "hos" / "foraxx"
+	// (which need OIII/SII and disable the Hα screen + SPCC), "mono". A palette missing its required
+	// filters falls back (see internal/pipeline resolvePalette). Empty → natural. Deepsky/nebula only.
+	Palette string
 
 	// Nightscape (milkyway) controls. Look selects the render style (natural/iphone/deepsky);
 	// ForegroundFrame optionally overrides the auto-picked clean foreground source (a raw frame path);
@@ -271,17 +311,21 @@ func For(m Mode) Preset {
 			BackgroundAI:              true,    // per-channel GraXpert background extraction
 			CombinedBackgroundAI:      true,    // parity with deepsky: 2nd GraXpert pass on combined RGB → homogeneous sky
 			ColorDenoiseAI:            true,    // parity with deepsky: GraXpert AI denoise on combined colour
+			ChromaSmoothPx:            6,       // parity with deepsky: mean-preserving chroma smooth on the combined RGB → flattens residual colour patches
 			StarReduce:                0.5,     // emission nebulae benefit most from star reduction
 			TrailMaskK:                3.0,     // cross-frame transient mask: clean satellite trails / cosmic rays pre-stack
 			CoreHighlightKnee:         0.64,    // roll off the L luminance core highlights → structured pink knot
 			CoreHighlightCeil:         0.76,
 			HighlightKnee:             0.85, // star-safe highlight cap: bright star cores stay coloured, never burn white
-			HighlightCeil:             0.96,
+			HighlightCeil:             0.92, // roll cores a touch further below white (was 0.96) so they read coloured, not near-white
+			StretchHeadroom:           0.90, // cap linear highlights ≤0.90 before the autostretch so star cores keep colour (no hard clip to white)
+			AutoFixStars:              true, // gated post-finish repair of any residual burnt/colour-flattened stars (zero cost when clean)
 			HaExcludeStars:            true, // median-remove stars before the red Ha screen → no orange/pink star tint
 			DropFilterWheelTransition: true,
 			ColorCalibration:          true,
 			LinkedStretch:             true,
 			BackgroundLevel:           0.09, // a touch brighter than deepsky to keep faint nebulosity visible
+			LumOpacity:                1.0,  // L composites at full opacity by default (the UI can lower it)
 			HaBlackPoint:              0.07, // lighter clip: Ha is the subject here, only zero the sky pedestal
 			HaRBF:                     true, // RBF-flatten the Ha layer so its screen can't paint a red gradient
 			Previews:                  true,
@@ -344,7 +388,8 @@ func For(m Mode) Preset {
 			// LumCurve lifts the galaxy from the clean L luminance (sky ~0.044, galaxy ~0.08 after the 0.06
 			// autostretch): pull deep sky to near-black, lift the 0.05–0.30 band so the galaxy stands out,
 			// and roll off highlights so star cores aren't clipped (natural, faded halos).
-			LumCurve: []float64{0, 0, 0.04, 0.025, 0.08, 0.20, 0.15, 0.40, 0.28, 0.58, 0.5, 0.75, 0.8, 0.92, 1, 1},
+			LumCurve:   []float64{0, 0, 0.04, 0.025, 0.08, 0.20, 0.15, 0.40, 0.28, 0.58, 0.5, 0.75, 0.8, 0.92, 1, 1},
+			LumOpacity: 1.0, // L composites at full opacity by default; the UI can lower it for a softer LRGB blend
 
 			// Denoise the linear masters: luminance gently (preserve galaxy detail) and chroma hard (the
 			// thin R/G/B sub-stacks are very noisy). VST suits the photon-limited linear data. ChromaBlur
@@ -355,16 +400,19 @@ func For(m Mode) Preset {
 			StackWeight:               "wfwhm", // weight subs by star sharpness (was unweighted for single-session)
 			PhotomNorm:                false,   // off: mis-measured real cross-gain groups (Ha clamped at 5×) — validate before re-enabling
 			ChromaBlur:                0,       // 0: GraXpert AI denoise handles colour noise; no blur → crisp star halos
+			ChromaSmoothPx:            6,       // mean-preserving chroma smooth on the combined RGB → flattens residual colour patches (no luma cost)
 			CropFrac:                  0.035,   // trim ragged stacking-edge bands off the export
 			TrailMaskK:                3.0,     // cross-frame transient mask: clean satellite trails / cosmic rays pre-stack
 			CoreHighlightKnee:         0.64,    // roll off the L luminance above this so the blown nebula core dims
 			CoreHighlightCeil:         0.76,    // ...to this asymptote → structured pink knot, outer tones untouched
 			HighlightKnee:             0.85,    // star-safe highlight cap: bright star cores stay coloured, never burn white
-			HighlightCeil:             0.96,
-			BackgroundAI:              true, // per-channel GraXpert background extraction
-			CombinedBackgroundAI:      true, // 2nd GraXpert pass on the combined RGB + RBF subsky → homogeneous sky
-			ColorDenoiseAI:            true, // GraXpert AI denoise on the combined colour → no RGB chroma speckle
-			HaExcludeStars:            true, // Ha on the galaxy/nebulosity only (stars median-removed)
+			HighlightCeil:             0.92,    // roll cores a touch further below white (was 0.96) so they read coloured, not near-white
+			StretchHeadroom:           0.90,    // cap linear highlights ≤0.90 before the autostretch so star cores keep colour (no hard clip to white)
+			AutoFixStars:              true,    // gated post-finish repair of any residual burnt/colour-flattened stars (zero cost when clean)
+			BackgroundAI:              true,    // per-channel GraXpert background extraction
+			CombinedBackgroundAI:      true,    // 2nd GraXpert pass on the combined RGB + RBF subsky → homogeneous sky
+			ColorDenoiseAI:            true,    // GraXpert AI denoise on the combined colour → no RGB chroma speckle
+			HaExcludeStars:            true,    // Ha on the galaxy/nebulosity only (stars median-removed)
 			DropFilterWheelTransition: true,
 			ColorCalibration:          true,
 			LinkedStretch:             true,

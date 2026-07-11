@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useJobsStore } from "@/stores/jobs";
+import { useBrowseStore } from "@/stores/browse";
 import { useAgentStore } from "@/stores/agent";
 import { useJobStream } from "@/composables/useJobStream";
 import { fileUrl } from "@/services/api";
@@ -14,13 +15,16 @@ import StatusPill from "@/components/Common/StatusPill.vue";
 import ProgressBar from "@/components/Common/ProgressBar.vue";
 import LogConsole from "@/components/Common/LogConsole.vue";
 import CaptureSummary from "@/components/Capture/CaptureSummary.vue";
+import CalibrationPanel from "@/components/Capture/CalibrationPanel.vue";
 import ChannelMappingList from "@/components/Capture/ChannelMappingList.vue";
 import RunResultPanels from "@/components/Common/RunResultPanels.vue";
 import SupervisorPanel from "@/components/Common/SupervisorPanel.vue";
 import SupervisorChat from "@/components/Common/SupervisorChat.vue";
 import StagePreviewTimeline from "@/components/Common/StagePreviewTimeline.vue";
+import StageParamEditor from "@/components/Common/StageParamEditor.vue";
 import SeriesTimeline from "@/components/Common/SeriesTimeline.vue";
 import EnvWarnings from "@/components/Common/EnvWarnings.vue";
+import ParamChips from "@/components/Common/ParamChips.vue";
 import TwoPane from "@/components/Common/TwoPane.vue";
 import StatGrid from "@/components/Common/StatGrid.vue";
 import { btnDanger, btnGhost, btnPrimary, card } from "@/constants/styles";
@@ -31,6 +35,7 @@ const props = defineProps<{ id: string }>();
 const { t } = useI18n();
 const router = useRouter();
 const jobsStore = useJobsStore();
+const browseStore = useBrowseStore();
 const agent = useAgentStore();
 // Set (this session) for a supervised/refine run: the id of its live steerable conversation turn.
 const turnId = computed(() => jobsStore.turnFor(jobId));
@@ -51,17 +56,36 @@ const {
   rssBytes,
   cpuPercent,
   peakRssBytes,
+  bytesDone,
+  bytesTotal,
+  bytesPerSec,
   iterations,
   stagePreviews,
   seed,
   reconnect,
-} = useJobStream(jobId, () => jobsStore.get(jobId));
+} = useJobStream(jobId, () => jobsStore.get(jobId), false); // connect only for live jobs (below)
 
 const reInv = ref<Inventory | null>(null);
 const cancelling = ref(false);
 
-// Live resource readouts for the running job, packed into a compact StatGrid.
+// An S3 transfer job reports byte progress + throughput instead of a subprocess's CPU/RAM.
+const isTransfer = computed(() => bytesTotal.value > 0);
+
+// Live readouts for the running job, packed into a compact StatGrid: transferred/throughput for an S3
+// copy, else the running subprocess's CPU/RAM.
 const progressStats = computed(() => {
+  if (isTransfer.value) {
+    return [
+      {
+        label: t("job.transferred"),
+        value: `${formatBytes(bytesDone.value)} / ${formatBytes(bytesTotal.value)}`,
+      },
+      {
+        label: t("job.throughput"),
+        value: `${formatBytes(bytesPerSec.value)}/s`,
+      },
+    ];
+  }
   const s = [
     { label: t("job.cpu"), value: `${Math.round(cpuPercent.value)}%` },
     { label: t("job.memory"), value: formatBytes(rssBytes.value) },
@@ -80,9 +104,14 @@ onMounted(async () => {
       title: t("supervisorChat.convTitle", { id: jobId }),
     });
   }
+  void browseStore.loadProcessed(); // per-folder local/S3 truth for the "Remove local files" action
   await jobsStore.get(jobId);
   const jb = jobsStore.current;
   if (jb?.log_tail) seed(jb.log_tail.split("\n"));
+  // Open the SSE stream only for a job that can still emit events. A finished job's state is fully
+  // in the fetched row — opening a stream for it just spends a connection (and, on a loaded engine,
+  // makes the page look slow while that pointless request waits its turn).
+  if (!isTerminal(jb?.status)) reconnect();
   // If the create-time inventory was lost (a restarted job, or a hard reload) and the job is still
   // running, re-inspect. Pass the FULL folder selection (params.paths ?? [params.path]) so a
   // multi-folder run whose primary path is a calibration folder still finds the light frames.
@@ -125,17 +154,32 @@ const isLive = computed(() => job.value?.params?.mode === "livestack");
 // A paused job (manual pause, or auto-paused on a transient S3 error) can be continued from where it
 // left off. Not terminal — it shows Continue + Cancel.
 const isPaused = computed(() => liveStatus.value === "paused");
-// Manual mid-run pause is honored by the multi-channel deep-sky path (deepsky/nebula); other modes only
-// pause at S3 boundaries (automatic), so we don't offer a manual Pause button that would look like a no-op.
+// Manual mid-run pause is honored by the multi-channel deep-sky path (deepsky/nebula) AND by any S3
+// copy — a full-S3 run or a standalone transfer/backup pauses between files. Other local modes have no
+// safe mid-run boundary, so we don't offer a Pause that would look like a no-op.
 const PAUSABLE_MODES = ["deepsky", "nebula"];
+const isS3Copy = computed(
+  () =>
+    job.value?.params?.storage_mode === "s3" ||
+    job.value?.kind === "transfer" ||
+    job.value?.kind === "backup",
+);
 const canPause = computed(
   () =>
     running.value &&
     !isLive.value &&
-    PAUSABLE_MODES.includes(job.value?.params?.mode ?? ""),
+    (PAUSABLE_MODES.includes(job.value?.params?.mode ?? "") || isS3Copy.value),
 );
 const pausing = ref(false);
 const continuing = ref(false);
+
+// A short line under the paused notice: a manual pause waits for the user; an error pause auto-resumes.
+const pauseCauseText = computed(() => {
+  const r = job.value?.resume;
+  if (!isPaused.value || !r?.cause) return "";
+  if (r.cause === "manual") return t("job.pausedManual");
+  return t("job.pausedError", { n: r.attempts ?? 1, max: 8 });
+});
 
 // Improvement series this job belongs to: series_id lives on the job row itself and is echoed in its
 // persisted params (the RunRequest) — read both so every row resolves. 0 = not part of a series.
@@ -151,6 +195,47 @@ const canRefine = computed(
     job.value?.status === "succeeded" &&
     (!!result.value?.final || !!result.value?.outputs?.length),
 );
+// On-demand GraXpert denoise of the final image — offered on any succeeded run that produced a final.
+const canDenoiseFinal = computed(
+  () => job.value?.status === "succeeded" && !!result.value?.final,
+);
+// "Remove local files": offered on a succeeded full-S3 run whose capture folders are still on local disk
+// (from /api/processed). Freeing is safe — each file is verified on S3 server-side before deletion.
+const jobFilesLocal = computed(() => {
+  const g = browseStore.processedGroups.find((x) => x.job_id === jobId);
+  return !!g && g.paths.some((p) => p.local);
+});
+const freedLocal = ref(false);
+const canFreeLocal = computed(
+  () =>
+    job.value?.status === "succeeded" &&
+    job.value?.params?.storage_mode === "s3" &&
+    !freedLocal.value &&
+    jobFilesLocal.value,
+);
+async function freeLocalAction() {
+  if (!window.confirm(t("job.freeLocalConfirm"))) return;
+  try {
+    await jobsStore.freeLocal(jobId);
+    freedLocal.value = true; // optimistic hide; the removeLocal transfers run in Tasks
+  } catch {
+    // a failed transfer surfaces in the Tasks list
+  }
+}
+const denoising = ref(false);
+const denoiseError = ref("");
+async function denoiseFinalJob() {
+  denoising.value = true;
+  denoiseError.value = "";
+  try {
+    const newId = await jobsStore.denoiseFinal(jobId);
+    router.push({ name: "job", params: { id: String(newId) } });
+  } catch (e) {
+    denoiseError.value = (e as Error).message;
+  } finally {
+    denoising.value = false;
+  }
+}
 // Only the deep-sky supervisor has cost tiers (composite / finish / re-stack); the other modes re-finish
 // in a single cheap stage, so the tier selector is hidden for them.
 const refineHasTiers = computed(() => {
@@ -181,15 +266,74 @@ async function refineJob() {
   }
 }
 
+// A completed deepsky/nebula run supports editable per-stage rerun: tweak a knob at a stage and re-run
+// from there in place (the manual, non-supervised counterpart of Refine — same tier model). The
+// StagePreviewTimeline shows an "edit & re-run" affordance per card; clicking opens StageParamEditor.
+const canRerun = computed(
+  () =>
+    job.value?.status === "succeeded" &&
+    !!result.value?.final &&
+    refineHasTiers.value,
+);
+const rerunStage = ref<string | null>(null);
+const rerunning = ref(false);
+const rerunError = ref("");
+function openStageEditor(stage: string) {
+  rerunError.value = "";
+  rerunStage.value = stage;
+}
+function closeStageEditor() {
+  if (rerunning.value) return; // don't close mid-submit
+  rerunStage.value = null;
+}
+async function submitRerun(payload: {
+  stage: string;
+  params: Record<string, unknown>;
+}) {
+  rerunning.value = true;
+  rerunError.value = "";
+  try {
+    const newId = await jobsStore.rerun(jobId, {
+      stage: payload.stage,
+      params: payload.params,
+    });
+    rerunStage.value = null;
+    // A rerun mints a new job (same run dir); follow it to watch progress + the refreshed previews.
+    router.push({ name: "job", params: { id: String(newId) } });
+  } catch (e) {
+    rerunError.value = (e as Error).message || t("rerun.failed");
+  } finally {
+    rerunning.value = false;
+  }
+}
+
 // Processing timer: ticks each second while running, then freezes at the total once the job finishes.
 const now = ref(Date.now());
 let timer: ReturnType<typeof setInterval> | null = null;
-onMounted(() => {
+function startTicker() {
+  if (timer) return;
   timer = setInterval(() => (now.value = Date.now()), 1000);
+}
+function stopTicker() {
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
+}
+// Only tick while the job is live; once it settles, elapsed freezes from updated_at, so a running
+// interval would just re-render every second for nothing. Restart if a paused job resumes.
+onMounted(() => {
+  if (running.value) startTicker();
 });
-onBeforeUnmount(() => {
-  if (timer) clearInterval(timer);
+watch(running, (r) => {
+  if (r) {
+    startTicker();
+  } else {
+    now.value = Date.now();
+    stopTicker();
+  }
 });
+onBeforeUnmount(stopTicker);
 const elapsedMs = computed(() => {
   const start = job.value?.created_at;
   if (!start) return 0;
@@ -202,6 +346,32 @@ function fmtElapsed(ms: number): string {
   const m = Math.floor((s % 3600) / 60);
   const pad = (n: number) => String(n).padStart(2, "0");
   return h > 0 ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
+}
+
+// Estimated time remaining for an S3 transfer, from the already-smoothed throughput and bytes left.
+// 0 (hidden) for non-transfer jobs, a stalled rate, or once the copy is done.
+const etaMs = computed(() => {
+  if (!isTransfer.value || bytesPerSec.value <= 0) return 0;
+  const remain = bytesTotal.value - bytesDone.value;
+  if (remain <= 0) return 0;
+  return (remain / bytesPerSec.value) * 1000;
+});
+
+// The S3 mirror destination for a transfer job (`s3://<bucket>/<prefix>/<namespace>/<rel_path>`), rebuilt
+// from job params like the backend's baseKey(). Empty for non-transfer jobs. JS has no path.Join, so trim
+// slashes and drop empty segments (external-drive copies leave namespace empty).
+const destPath = computed(() => {
+  const tr = job.value?.params?.transfer;
+  if (!tr?.bucket) return "";
+  const key = [tr.prefix, tr.namespace, tr.rel_path]
+    .map((s) => (s ?? "").replace(/^\/+|\/+$/g, ""))
+    .filter(Boolean)
+    .join("/");
+  return `s3://${tr.bucket}${key ? "/" + key : ""}`;
+});
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
 const stashed = computed(() => jobsStore.captureFor(jobId));
@@ -277,6 +447,14 @@ async function continueJobAction() {
         {{ t("run.modes." + job.params.mode) }} ·
         {{ t("run.formats." + (job.params.format || "image")) }}
       </span>
+      <ParamChips :params="job?.params" show-goal />
+      <span
+        v-if="job?.params?.goal"
+        class="text-xs italic text-slate-400"
+        :title="job.params.goal"
+      >
+        {{ t("run.chips.goal", { goal: truncate(job.params.goal, 60) }) }}
+      </span>
       <span v-if="result?.input_dir" class="text-sm text-slate-500">{{
         baseName(result.input_dir)
       }}</span>
@@ -319,13 +497,32 @@ async function continueJobAction() {
       >
         {{ restarting ? t("job.restarting") : t("job.restart") }}
       </button>
+      <button
+        v-if="canFreeLocal"
+        :class="[btnGhost, 'ml-auto text-danger']"
+        :title="t('job.freeLocalHint')"
+        @click="freeLocalAction"
+      >
+        {{ t("job.freeLocal") }}
+      </button>
     </div>
 
     <!-- Environment warnings (missing/broken tools, catalogues): collapsed count chip, expandable. -->
     <EnvWarnings />
 
+    <!-- A paused job stores its (benign) pause reason in `error`; render it as a neutral/amber notice,
+         not the red failure banner, and say whether it will auto-resume or waits for the user. -->
     <p
-      v-if="job?.error"
+      v-if="isPaused && job?.error"
+      class="rounded-md bg-amber-100 p-3 text-sm text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+    >
+      {{ job.error }}
+      <span v-if="pauseCauseText" class="mt-1 block text-xs opacity-80">{{
+        pauseCauseText
+      }}</span>
+    </p>
+    <p
+      v-else-if="job?.error && !running"
       class="rounded-md bg-red-100 p-3 text-sm text-red-800 dark:bg-red-900/40 dark:text-red-300"
     >
       {{ job.error }}
@@ -355,6 +552,12 @@ async function continueJobAction() {
                   class="flex shrink-0 items-center gap-3 text-slate-500 dark:text-slate-400"
                 >
                   <span class="tabular-nums">{{ fmtElapsed(elapsedMs) }}</span>
+                  <span
+                    v-if="etaMs"
+                    class="tabular-nums"
+                    :title="t('job.remaining')"
+                    >~{{ fmtElapsed(etaMs) }}</span
+                  >
                   <span class="font-medium text-slate-700 dark:text-slate-200"
                     >{{ progress }}%</span
                   >
@@ -362,18 +565,28 @@ async function continueJobAction() {
               </div>
               <ProgressBar :percent="progress" :active="running" />
               <StatGrid
-                v-if="rssBytes || cpuPercent"
+                v-if="rssBytes || cpuPercent || isTransfer"
                 class="mt-3"
                 :cols="3"
                 :items="progressStats"
               />
+              <p
+                v-if="destPath"
+                class="mt-3 truncate font-mono text-xs text-slate-500 dark:text-slate-400"
+                :title="destPath"
+              >
+                {{ t("job.destination") }}: {{ destPath }}
+              </p>
             </div>
             <CaptureSummary v-if="summary" :summary="summary" />
+            <CalibrationPanel
+              v-if="job?.params?.calib_plan"
+              :preview="job.params.calib_plan"
+              :excluded="job?.params?.calib_exclude ?? []"
+              readonly
+            />
             <ChannelMappingList v-if="detection" :detection="detection" />
-          </div>
-        </template>
-        <template #aside>
-          <div class="space-y-4">
+            <!-- Live preview sits directly under the progression + information cards. -->
             <section v-if="previewUrl" :class="card">
               <h2 class="mb-3 text-lg font-medium">
                 {{ t("job.livePreview") }}
@@ -384,6 +597,10 @@ async function continueJobAction() {
                 class="block max-h-[28rem] w-full max-w-full rounded-md border border-slate-200 object-contain dark:border-slate-700"
               />
             </section>
+          </div>
+        </template>
+        <template #aside>
+          <div class="space-y-4">
             <LogConsole :lines="lines" />
           </div>
         </template>
@@ -455,8 +672,48 @@ async function continueJobAction() {
         </p>
       </section>
 
-      <RunResultPanels :result="result" />
+      <!-- On-demand GraXpert AI denoise of the final image. Runs on the native host GraXpert service when
+           ASTRO_GRAXPERT_URL is set (faster + non-blocking); else the in-container CPU GraXpert. -->
+      <section v-if="canDenoiseFinal" :class="card">
+        <div class="flex flex-wrap items-end gap-4">
+          <div class="min-w-0 flex-1">
+            <h2 class="text-lg font-medium">{{ t("denoiseFinal.title") }}</h2>
+            <p class="text-sm text-slate-500 dark:text-slate-400">
+              {{ t("denoiseFinal.hint") }}
+            </p>
+          </div>
+          <button
+            :class="btnPrimary"
+            :disabled="denoising"
+            @click="denoiseFinalJob"
+          >
+            {{ denoising ? t("denoiseFinal.starting") : t("denoiseFinal.run") }}
+          </button>
+        </div>
+        <p
+          v-if="denoiseError"
+          class="mt-2 text-sm text-red-600 dark:text-red-400"
+        >
+          {{ denoiseError }}
+        </p>
+      </section>
+
+      <RunResultPanels
+        :result="result"
+        :rerunnable="canRerun"
+        @rerun-stage="openStageEditor"
+      />
       <SupervisorPanel :result="result" :live="iterations" />
+      <StageParamEditor
+        v-if="rerunStage"
+        :key="rerunStage"
+        :stage="rerunStage"
+        :params="job?.params"
+        :busy="rerunning"
+        :error="rerunError"
+        @submit="submitRerun"
+        @close="closeStageEditor"
+      />
     </template>
   </div>
 </template>

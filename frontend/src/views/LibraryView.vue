@@ -2,17 +2,25 @@
 import { onMounted, computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { useLibraryStore } from "@/stores/library";
+import { useS3Store } from "@/stores/s3";
 import GenericTable, {
   type Column,
 } from "@/components/Common/GenericTable.vue";
 import Spinner from "@/components/Common/Spinner.vue";
-import { btnGhost } from "@/constants/styles";
+import { btnGhost, btnPrimary } from "@/constants/styles";
 import { humanizeMs, baseName, tempC } from "@/utils/format";
 
 const { t } = useI18n();
 const libraryStore = useLibraryStore();
+const s3 = useS3Store();
 
 onMounted(() => libraryStore.load());
+
+// Mirror the whole master library to <prefix>/library/ on S3 (a background job); a later run pulls back any
+// matched master it is missing. Only offered once an S3 connection + bucket are chosen (s3.active).
+function onCopyToS3() {
+  void libraryStore.copyToS3(s3.bucket, s3.prefix);
+}
 
 type Row = Record<string, unknown>;
 const rows = computed<Row[]>(() =>
@@ -104,10 +112,40 @@ const phoneColumns: Column<Row>[] = [
   <div class="space-y-4">
     <div class="flex items-center justify-between">
       <h1 class="text-2xl font-semibold">{{ t("library.title") }}</h1>
-      <button :class="btnGhost" @click="libraryStore.load()">
-        {{ t("common.refresh") }}
-      </button>
+      <div class="flex items-center gap-2">
+        <button
+          v-if="s3.active"
+          :class="btnPrimary"
+          :disabled="libraryStore.copying"
+          :title="t('library.copyToS3Hint')"
+          @click="onCopyToS3"
+        >
+          {{
+            libraryStore.copying ? t("library.copying") : t("library.copyToS3")
+          }}
+        </button>
+        <button :class="btnGhost" @click="libraryStore.load()">
+          {{ t("common.refresh") }}
+        </button>
+      </div>
     </div>
+
+    <!-- Copy-to-S3 feedback: a queued toast linking to the live job, or the error. -->
+    <p
+      v-if="libraryStore.copiedJobId"
+      class="text-sm text-emerald-600 dark:text-emerald-400"
+    >
+      {{ t("library.copyQueued") }}
+      <router-link
+        :to="{ name: 'job', params: { id: String(libraryStore.copiedJobId) } }"
+        class="underline"
+      >
+        {{ t("import.viewQueue") }}
+      </router-link>
+    </p>
+    <p v-else-if="libraryStore.copyError" class="text-sm text-rose-500">
+      {{ libraryStore.copyError }}
+    </p>
 
     <Spinner v-if="libraryStore.loading">{{ t("common.loading") }}</Spinner>
 

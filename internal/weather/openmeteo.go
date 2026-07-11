@@ -113,9 +113,11 @@ func (p *Provider) fetchOpenMeteoGrid(ctx context.Context, lats, lons []float64,
 	return out, nil
 }
 
-// fetchOpenMeteoGridChunk is one bulk GET for a slice of the grid's coordinate list.
+// fetchOpenMeteoGridChunk is one bulk GET for a slice of the grid's coordinate list. Unlike the per-site
+// point forecast (which keeps a past day for the timeline), the animated map only shows the forecast
+// window, so past_days=0 halves the frames (and the upstream payload) the cube carries.
 func (p *Provider) fetchOpenMeteoGridChunk(ctx context.Context, lats, lons []float64, vars []string) ([]omResponse, error) {
-	url := fmt.Sprintf("%s?latitude=%s&longitude=%s&hourly=%s&past_days=1&forecast_days=1&timezone=UTC",
+	url := fmt.Sprintf("%s?latitude=%s&longitude=%s&hourly=%s&past_days=0&forecast_days=2&timezone=UTC",
 		p.openMeteoURL, joinFloats(lats), joinFloats(lons), strings.Join(vars, ","))
 	var resp []omResponse
 	if err := p.getJSON(ctx, url, &resp); err != nil {

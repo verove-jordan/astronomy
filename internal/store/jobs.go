@@ -64,11 +64,13 @@ func (s *Store) CreateJob(ctx context.Context, sessionID int64, kind string, par
 	return id, err
 }
 
-// SetJobRunning marks a job running and stamps started_at.
+// SetJobRunning marks a job running and stamps started_at. It also CLEARS any error — a running job has no
+// error, and on resume the paused state stored its (benign) pause reason there (SetJobPaused), which would
+// otherwise linger as a stale red failure banner once the job is running again.
 func (s *Store) SetJobRunning(ctx context.Context, id int64) error {
 	now := nowMs()
 	_, err := s.pool.Exec(ctx,
-		`UPDATE jobs SET status=$2, started_at_ms=$3, updated_at=$3 WHERE id=$1`,
+		`UPDATE jobs SET status=$2, started_at_ms=$3, error='', updated_at=$3 WHERE id=$1`,
 		id, JobRunning, now)
 	return err
 }
@@ -159,6 +161,29 @@ func (s *Store) ListJobs(ctx context.Context, limit, offset int) ([]Job, error) 
 		offset = 0
 	}
 	rows, err := s.pool.Query(ctx, jobSelect+` ORDER BY id DESC LIMIT $1 OFFSET $2`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[Job])
+}
+
+// ListPausedJobs returns every job in the resumable paused state, oldest first — the input to the
+// auto-resume sweep, which restarts the error-caused ones whose backoff has elapsed.
+func (s *Store) ListPausedJobs(ctx context.Context) ([]Job, error) {
+	rows, err := s.pool.Query(ctx, jobSelect+` WHERE status=$1 ORDER BY id ASC`, JobPaused)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[Job])
+}
+
+// ListQueuedJobs returns every job still in the queued state, oldest first. A server restart reloads
+// these to re-dispatch them: a queued job is scheduled by pushing its id onto an in-process lane channel,
+// which does not survive a restart, so without a reload the DB row would sit queued with no worker to run it.
+func (s *Store) ListQueuedJobs(ctx context.Context) ([]Job, error) {
+	rows, err := s.pool.Query(ctx, jobSelect+` WHERE status=$1 ORDER BY id ASC`, JobQueued)
 	if err != nil {
 		return nil, err
 	}

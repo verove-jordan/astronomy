@@ -73,11 +73,12 @@
   },
   "goto": {
     "title": "GoTo alignment assistant",
-    "subtitle": "Pick the best stars — in the best order — to calibrate your mount's GoTo from where the telescope is set up. Skip any star blocked by a house or tree and it is instantly replaced.",
+    "subtitle": "Polar-align the mount, then calibrate its GoTo with the best stars in the best order — only stars your hand controller actually offers. Skip any star blocked by a house or tree and it is instantly replaced.",
     "controls": {
       "location": "Observing site",
       "mount": "Mount / routine",
       "count": "Alignment stars",
+      "phaseHint": "{align} align + {calib} calibration",
       "time": "Time",
       "specific": "Specific time",
       "reset": "Reset sequence"
@@ -93,7 +94,7 @@
       },
       "celestron-eq": {
         "label": "Celestron NexStar / AVX (EQ)",
-        "note": "Two align stars far apart on one side of the meridian (add calibration stars after)."
+        "note": "Two align stars on one side of the meridian, then up to four calibration stars on the opposite side (models cone error). Only hand-controller stars are suggested."
       },
       "altaz-generic": {
         "label": "Alt-Az (generic)",
@@ -114,14 +115,19 @@
       "skip": "Skip — blocked",
       "undo": "Undo",
       "accepted": "Centered",
-      "empty": "No stars available right now — lower the count, wait for more to rise, or change the mount profile."
+      "empty": "No stars available right now — lower the count, wait for more to rise, or change the mount profile.",
+      "phase": {
+        "align": "Alignment stars",
+        "calibration": "Calibration stars"
+      }
     },
     "card": {
       "look": "Look {dir} · {alt}° up",
       "meridian": "{side} of meridian",
       "east": "east",
       "west": "west",
-      "magnitude": "mag {mag}"
+      "magnitude": "mag {mag}",
+      "catalogName": "catalog: {name}"
     },
     "quality": {
       "label": "Sequence quality"
@@ -130,10 +136,130 @@
       "title": "Sky map",
       "legend": "Numbered = your alignment stars in order; the dashed path shows their spread."
     },
+    "sky": {
+      "title": "Find it in the sky",
+      "subtitle": "An interactive map centred on the star to center now — pan and zoom to match the real sky.",
+      "loading": "Loading sky…",
+      "empty": "All stars centered — no next target.",
+      "face": "Face {dir}, look about {alt}° up",
+      "hint": "drag to pan · scroll to zoom",
+      "controls": {
+        "zoomIn": "Zoom in",
+        "zoomOut": "Zoom out",
+        "reset": "Centre on the target",
+        "wholeSky": "Whole sky"
+      },
+      "bodies": {
+        "moon": "Moon",
+        "mercury": "Mercury",
+        "venus": "Venus",
+        "mars": "Mars",
+        "jupiter": "Jupiter",
+        "saturn": "Saturn"
+      }
+    },
     "why": {
       "title": "Why this matters",
-      "body": "Centering well-spread stars builds an accurate pointing model, so the mount tracks and slews precisely. Combined with good polar alignment, that lets you push longer exposures.",
-      "polarLink": "Polar alignment is on the Tonight page →"
+      "body": "Centering well-spread stars builds an accurate pointing model, so the mount tracks and slews precisely. Combined with the polar alignment above, that lets you push longer exposures."
+    }
+  },
+  "polar": {
+    "title": "Polar alignment",
+    "subtitle": "Put the pole star at the right spot on your polar-scope reticle for right now.",
+    "hemisphere": {
+      "north": "Northern",
+      "south": "Southern"
+    },
+    "reticle": {
+      "placeHere": "Put the star in the orange circle",
+      "truePole": "true pole",
+      "polaris": "Polaris",
+      "sigmaOct": "σ Octantis",
+      "cassiopeia": "Cassiopeia",
+      "bigDipper": "Big Dipper",
+      "crux": "Crux",
+      "octans": "Octans",
+      "invertedView": "As seen through the scope (inverted)",
+      "erectView": "Naked-eye (erect) view",
+      "mirrored": "Mirrored (star diagonal)"
+    },
+    "panel": {
+      "clock": "Clock position",
+      "poleStar": "Pole star",
+      "hemisphere": "Hemisphere",
+      "ha": "Hour angle",
+      "separation": "Offset from pole",
+      "alt": "Altitude",
+      "az": "Azimuth",
+      "lst": "Sidereal time",
+      "latTooLow": "The celestial pole is too low here for a polar scope.",
+      "notVisible": "The pole star is below the horizon right now."
+    },
+    "orientation": {
+      "inverting": "Inverting (scope)",
+      "erect": "Erect (naked eye)",
+      "mirror": "Mirror (diagonal)",
+      "hint": "Most polar scopes invert the view. Match the on-screen reticle to what you actually see."
+    },
+    "time": {
+      "specific": "Specific time",
+      "autoRefresh": "Auto-refresh"
+    },
+    "tutorial": {
+      "title": "How to set up and use your polar scope",
+      "intro": "A practical walkthrough for a SkyWatcher polar scope on a Celestron Advanced VX — from one-time setup to using it under a dark sky.",
+      "s1": {
+        "title": "What polar alignment does",
+        "body": "Your mount's RA axis must point at the celestial pole so a single motor can track the sky. The polar scope lets you sight the pole star and place it precisely.",
+        "tips": [
+          "The pole is near — but not exactly at — the pole star.",
+          "Good alignment = long, round-star exposures and reliable go-to."
+        ]
+      },
+      "s2": {
+        "title": "One-time: collimate the polar scope to the RA axis",
+        "body": "Center a distant object on the reticle, rotate the RA axis 180°, and adjust the three grub screws to remove half the drift. Repeat until the object stays put as you rotate.",
+        "tips": [
+          "Do this once in daylight on a far landmark (or on Polaris at night).",
+          "Adjust the reticle grub screws, never the mount's alt/az bolts.",
+          "Tiny turns — the screws are sensitive."
+        ]
+      },
+      "s3": {
+        "title": "Set up the mount (Advanced VX)",
+        "body": "Level the tripod, set the latitude scale to your latitude, and aim the mount at TRUE north (or south), not magnetic north.",
+        "tips": [
+          "Use a bubble level; an unlevel tripod throws off the latitude setting.",
+          "Correct for magnetic declination between compass north and true north.",
+          "Pre-set the latitude bolt near your site latitude before you start."
+        ]
+      },
+      "s4": {
+        "title": "See the reticle at night",
+        "body": "At night you see stars but not the engraved reticle. Illuminate it dimly: shine a RED light obliquely into the front (objective) end, or use the mount's illuminator if fitted.",
+        "tips": [
+          "Red only — white light ruins your dark adaption.",
+          "A red phone screen held near the objective works in a pinch.",
+          "Keep it dim; too bright washes out faint Polaris."
+        ]
+      },
+      "s5": {
+        "title": "Place the pole star",
+        "body": "Rotate the RA axis until the reticle's pole-star marker is at the clock position shown above, then use the mount's ALT and AZ bolts (not RA) to move the star into the marker.",
+        "tips": [
+          "Match the on-screen orientation (inverting/erect) to your scope.",
+          "Move with the slow alt/az bolts; leave RA where you set it.",
+          "Center the star in the small circle, not on the true-pole cross."
+        ]
+      },
+      "s6": {
+        "title": "Verify and refine",
+        "body": "Cross-check with the Advanced VX hand controller's All-Star Polar Align, or do a quick drift check on a star near the meridian and tweak the alt/az bolts.",
+        "tips": [
+          "All-Star uses any bright star — handy when Polaris is hidden.",
+          "Re-check after the mount settles or if you bump the tripod."
+        ]
+      }
     }
   },
   "processing": {
@@ -143,13 +269,42 @@
       "tasks": "Tasks",
       "runs": "Runs",
       "library": "Library",
-      "storage": "Storage"
+      "storage": "Storage",
+      "drives": "Drives"
     }
   },
+  "drives": {
+    "title": "External Drives",
+    "subtitle": "Browse a connected drive and copy a folder straight to S3 — a smart copy that scans first and uploads only the files that are missing or corrupted.",
+    "target": "S3 destination",
+    "noS3": "No S3 connection yet.",
+    "openStorage": "Connect one in Storage →",
+    "connectHere": "Add and default one in the Connections section above.",
+    "bucket": "Bucket",
+    "pickBucket": "Choose a bucket…",
+    "prefix": "Prefix",
+    "smartHint": "Copied under your prefix, in a folder named after the source. Re-running uploads only what changed.",
+    "noBuckets": "This connection isn't reachable or has no buckets — check it in Storage.",
+    "drivesHeading": "Mounted drives",
+    "up": "Up",
+    "refresh": "Refresh",
+    "copyThisFolder": "Copy this folder to S3",
+    "copyFolderHint": "Smart copy to S3 — only missing or corrupted files are uploaded",
+    "pickBucketFirst": "Choose an S3 bucket first",
+    "copy": "Copy to S3",
+    "copying": "Queuing…",
+    "capacity": "{free} free of {total}",
+    "noDrives": "No external drives found. Plug one in, then Refresh.",
+    "emptyFolder": "This folder is empty."
+  },
   "storage": {
-    "title": "S3 storage manager",
-    "subtitle": "Connect any S3-compatible store, browse and manage its objects. The default connection also powers import, processing, results and backups.",
+    "title": "Storage",
+    "subtitle": "Manage S3 connections, browse objects, copy local drives to S3, and back up your data. The default connection also powers import, processing and results.",
     "connections": "Connections",
+    "browseObjects": "Browse objects",
+    "drivesSection": "Local drives → S3",
+    "browseHint": "Pick a connection above and click Browse to view its buckets and objects.",
+    "backupNeedsS3": "Choose a default connection and a bucket (in the sections above) to enable backups.",
     "addConnection": "Add connection",
     "newConnection": "New connection",
     "editConnection": "Edit connection",
@@ -189,8 +344,100 @@
     "confirmDeleteBucket": "Delete bucket \"{name}\"?",
     "forceDeleteBucket": "Delete ALL objects in it first? (OK = force-empty then delete, Cancel = only if already empty)",
     "newFolderPrompt": "New folder name:",
+    "move": {
+      "moveSelected": "Move selected…",
+      "hint": "Drag a row onto a folder to move it, or check rows and use “Move selected…”.",
+      "title": "Move {n} into…",
+      "moveHere": "Move here",
+      "noSubfolders": "No sub-folders"
+    },
     "confirmDeleteObject": "Delete \"{name}\"?",
     "confirmDeleteFolder": "Delete the folder \"{name}\" and everything in it?"
+  },
+  "preset": {
+    "label": "Preset",
+    "custom": "Custom",
+    "my": "My presets",
+    "save": "Save…",
+    "saveBtn": "Save",
+    "saveName": "Preset name",
+    "rename": "Rename",
+    "delete": "Delete",
+    "cancel": "Cancel",
+    "category": {
+      "deepsky": "Deep-sky",
+      "nebula": "Nebula",
+      "narrowband": "Narrowband",
+      "solar": "Solar system",
+      "comet": "Comet",
+      "milkyway": "Milky Way"
+    },
+    "builtin": {
+      "galaxy-lrgb": {
+        "label": "Galaxy (LRGB)",
+        "desc": "Broadband galaxy — bright core with faint outer arms; natural colour."
+      },
+      "galaxy-faint": {
+        "label": "Galaxy (faint)",
+        "desc": "Low-SNR galaxy — stronger denoise and AI background extraction."
+      },
+      "star-cluster": {
+        "label": "Star cluster",
+        "desc": "Globular or open cluster — keeps every star and its natural colour."
+      },
+      "reflection-nebula": {
+        "label": "Reflection nebula",
+        "desc": "Blue broadband nebula — preserves the blues, no Hα screen."
+      },
+      "emission-hargb": {
+        "label": "Emission nebula (HaRGB)",
+        "desc": "Hα blended into RGB — strong nebula over a clean background."
+      },
+      "emission-broadband": {
+        "label": "Emission nebula (broadband)",
+        "desc": "Broadband emission nebula with a gentle Hα boost."
+      },
+      "planetary-nebula": {
+        "label": "Planetary nebula",
+        "desc": "Small, bright shell — keeps all stars, extra colour, gentle stretch."
+      },
+      "narrowband-sho": {
+        "label": "Narrowband SHO (Hubble)",
+        "desc": "SII/Hα/OIII → RGB (Hubble palette); SPCC off, magenta stars tamed."
+      },
+      "narrowband-hoo": {
+        "label": "Narrowband HOO",
+        "desc": "Hα/OIII bicolour palette; SPCC off."
+      },
+      "narrowband-foraxx": {
+        "label": "Narrowband Foraxx",
+        "desc": "Dynamic Hα/OIII (Foraxx) palette; SPCC off."
+      },
+      "moon": {
+        "label": "Moon",
+        "desc": "Lunar lucky imaging — highlight headroom so the disk doesn't burn, crisp craters."
+      },
+      "planet": {
+        "label": "Planet",
+        "desc": "Jupiter/Saturn/Mars — strict frame selection, AP alignment, mild deconvolution."
+      },
+      "comet": {
+        "label": "Comet",
+        "desc": "Moving comet — dual star/comet stack with a gentle coma-gradient cleanup."
+      },
+      "milkyway-natural": {
+        "label": "Milky Way (natural)",
+        "desc": "Wide-field nightscape, natural balanced look."
+      },
+      "milkyway-iphone": {
+        "label": "Milky Way (iPhone)",
+        "desc": "Nightscape tuned for iPhone/ProRAW captures."
+      },
+      "milkyway-deep": {
+        "label": "Milky Way (dramatic)",
+        "desc": "Brighter, deep-sky-style nightscape rendering."
+      }
+    }
   },
   "run": {
     "mode": "Mode",
@@ -200,21 +447,43 @@
     "haExcludeStars": "Hα on nebulosity only (exclude stars)",
     "dropTransition": "Drop filter-wheel transition frames",
     "supervise": "Run with local AI agent (experimental)",
+    "chips": {
+      "s3": "Full S3",
+      "s3LowDisk": "Low disk",
+      "palette": "Palette · {name}",
+      "spcc": "SPCC",
+      "denoise": "Denoise",
+      "ha": "Hα nebulosity",
+      "dropTransition": "Drop transitions",
+      "ai": "AI agent",
+      "sequential": "Queued",
+      "goal": "Goal: {goal}",
+      "tier": "Tier {tier}",
+      "iters": "≤{n} iters"
+    },
     "superviseHint": "Opt-in: a local vision model auto-tunes the finish over a few iterations, keeping the best — for every stacking mode (deep-sky/nebula composite, comet, milkyway grade, planetary sharpen). Needs a host model server (ASTRO_LLM_URL).",
     "modes": {
       "deepsky": "Deep-sky",
       "nebula": "Nebula",
       "milkyway": "Milky Way",
       "planetary": "Planetary",
-      "comet": "Comet"
+      "comet": "Comet",
+      "transfer": "Transfer",
+      "backup": "Backup"
     },
-    "formats": { "image": "Image", "video": "Video", "both": "Image + video" },
+    "formats": {
+      "image": "Image",
+      "video": "Video",
+      "both": "Image + video"
+    },
     "look": "Look",
     "looks": {
       "natural": "Natural",
       "iphone": "iPhone (warm core)",
       "deepsky": "Punchy"
     },
+    "palette": "Colour palette",
+    "paletteNeeds": "needs {filters}",
     "brightness": "Brightness",
     "brightnesses": {
       "darker": "Darker",
@@ -223,12 +492,12 @@
     },
     "orientation": "Orientation",
     "orientations": {
+      "180": "Rotate 180°",
       "exif": "Match photo (EXIF)",
       "auto": "Auto (content)",
       "none": "Original",
       "cw": "Rotate 90° right",
-      "ccw": "Rotate 90° left",
-      "180": "Rotate 180°"
+      "ccw": "Rotate 90° left"
     },
     "mirror": "Mirror horizontally",
     "calibration": "Calibration frames (optional)",
@@ -238,11 +507,18 @@
     "bias": "Bias / offset",
     "addToQueue": "Add to queue",
     "addToQueueHint": "Queue this processing to run after the others, one at a time.",
-    "advancedParams": "Advanced AI parameters",
+    "advancedParams": "Advanced parameters",
+    "aiSection": "AI guidance",
+    "aiSectionHint": "Only used when \"Supervise finish\" is on — a plain-language objective for the AI finish agent.",
+    "pipelineSection": "Pipeline parameters",
+    "pipelineSectionHint": "Fine tuning applied to every run, with or without AI. Prefilled with the selected mode's effective values.",
     "goal": "Goal",
     "goalHint": "e.g. bring out the faint outer nebulosity",
     "paramsJson": "Fine parameters (JSON)",
-    "paramsInvalid": "Invalid JSON — expected an object like {\"denoise_lum\": 0.6}"
+    "paramsInvalid": "Invalid JSON — expected an object like {'{'}\"denoise_lum\": 0.6{'}'}",
+    "paramsPlaceholder": "Effective parameters for the selected mode…",
+    "paramsReset": "Reset to defaults",
+    "paramsCheckboxNote": "SPCC, noise reduction & Hα-on-nebulosity are controlled by the checkboxes above."
   },
   "reuse": {
     "title": "Reuse prior data",
@@ -254,10 +530,16 @@
   "calib": {
     "title": "Calibration · matched from your library",
     "subtitle": "These library masters match your lights and will be applied. Uncheck any to skip it.",
+    "includedTitle": "Calibration included",
+    "includedSubtitle": "Darks, flats and bias/offsets applied to this capture, with their parameters.",
     "selectAll": "Select all",
     "deselectAll": "Deselect all",
     "frames": "{n} frames",
-    "role": { "dark": "Dark", "flat": "Flat", "bias": "Bias" }
+    "role": {
+      "dark": "Dark",
+      "flat": "Flat",
+      "bias": "Bias"
+    }
   },
   "s3": {
     "title": "S3 storage",
@@ -272,6 +554,8 @@
     "storageHint": "Full S3: pull inputs from S3, process locally, push inputs + results back, then free local disk (only after every file is verified on S3).",
     "storageLocal": "Full local",
     "storageS3": "Full S3 (free local after)",
+    "lowDisk": "Low local disk",
+    "lowDiskHint": "Stage captures from S3 one channel at a time and free each after stacking — keeps peak local disk to about one channel's frames instead of the whole dataset (deep-sky/nebula).",
     "badge": {
       "synced": "On S3 (synced with local)",
       "cloudOnly": "Only on S3 — download to use it locally"
@@ -343,8 +627,14 @@
     "inspectN": "Inspect {n} folders",
     "downloadInspect": "Download & inspect {n}",
     "downloadingBtn": "Downloading…",
+    "inspectingBtn": "Inspecting…",
     "downloadingS3": "Downloading {n} folder(s) from S3…",
-    "tabs": { "local": "Local Files", "s3": "S3 Storage" },
+    "downloadingS3Progress": "Downloading {done}/{n} folder(s) from S3…",
+    "inspectingS3": "Inspecting frames…",
+    "tabs": {
+      "local": "Local Files",
+      "s3": "S3 Storage"
+    },
     "s3NotConfigured": "Configure S3 on the Storage page to browse it here.",
     "selectedCount": "{n} selected",
     "nFolders": "{n} folders",
@@ -364,6 +654,8 @@
       "useAgain": "Use again",
       "runs": "{n}× run",
       "deleted": "Folder no longer exists",
+      "onS3": "On S3 — downloaded automatically when re-run",
+      "needS3": "These files were freed to S3. Select their S3 bucket first, then try again.",
       "untitled": "Untitled"
     }
   },
@@ -430,8 +722,10 @@
     "id": "ID",
     "kind": "Kind",
     "progress": "Progress",
+    "options": "Options",
     "started": "Started",
-    "duration": "Duration"
+    "duration": "Duration",
+    "pointing": "Pointing"
   },
   "job": {
     "title": "Job",
@@ -455,6 +749,10 @@
     "cpu": "CPU",
     "memory": "RAM",
     "peak": "Peak",
+    "transferred": "Transferred",
+    "throughput": "Throughput",
+    "remaining": "Remaining",
+    "destination": "Destination",
     "followTail": "Follow",
     "showLogs": "Show log",
     "hideLogs": "Hide log",
@@ -467,8 +765,13 @@
     "pausing": "Pausing…",
     "continue": "Continue",
     "continuing": "Continuing…",
+    "pausedManual": "Paused by you — it will stay paused until you continue.",
+    "pausedError": "Paused after a transfer error — retrying automatically (attempt {n}/{max}).",
     "restart": "Restart",
     "restarting": "Restarting…",
+    "freeLocal": "Remove local files",
+    "freeLocalHint": "Delete the local copies of this run's files — safe, since each is verified on S3 first.",
+    "freeLocalConfirm": "Remove the local copies of this run's files? They stay on S3 (each is verified before deletion) and can be pulled back when you re-run.",
     "remove": "Remove",
     "queueBadge": "{n} queued"
   },
@@ -509,6 +812,130 @@
       "final": "Final"
     }
   },
+  "rerun": {
+    "title": "Edit & re-run from “{stage}”",
+    "editStage": "Edit & re-run",
+    "run": "Re-run from here",
+    "running": "Re-running…",
+    "cancel": "Cancel",
+    "noChange": "No changes — re-runs this step as-is",
+    "changedCount": "{n} change(s) — re-runs this step and everything after",
+    "failed": "Re-run failed",
+    "tier": {
+      "stack": "Re-stacks from the raw frames, then rebuilds everything after (minutes to hours).",
+      "prep": "Rebuilds the linear prep (combine, background, colour, stretch), then the composite (tens of seconds to minutes).",
+      "composite": "Re-renders the final composite only (seconds)."
+    },
+    "knobs": {
+      "lum_opacity": "Luminance opacity",
+      "saturation": "Saturation",
+      "star_desat": "Star-core desaturation",
+      "palette": "Colour palette",
+      "paletteOptions": {
+        "natural": "Natural (LRGB)",
+        "hargb": "HaRGB",
+        "hoo": "HOO (bicolour)",
+        "sho": "SHO — Hubble",
+        "hos": "HOS — CFHT",
+        "foraxx": "Foraxx (Webb-style)",
+        "mono": "Monochrome"
+      },
+      "ha_screen": "Hα layer opacity",
+      "ha_black_point": "Hα black point",
+      "chroma_blur": "Chroma blur (px)",
+      "crop_frac": "Edge crop",
+      "ha_exclude_stars": "Hα on nebulosity only",
+      "color_calibration": "Colour calibration (SPCC)",
+      "linked_stretch": "Linked stretch",
+      "background_level": "Sky background level",
+      "stretch_headroom": "Star highlight headroom",
+      "background_degree": "Background degree",
+      "combined_background_ai": "AI background (combined)",
+      "color_denoise_ai": "AI colour denoise",
+      "star_reduce": "Star reduction",
+      "fwhm_sigma": "FWHM reject σ",
+      "roundness_floor": "Roundness floor",
+      "background_sigma": "Background reject σ",
+      "star_count_frac": "Star-count fraction",
+      "trail_mask_k": "Trail mask k",
+      "denoise_lum": "Luminance denoise",
+      "denoise_chroma": "Chroma denoise",
+      "background_ai": "AI background (per channel)"
+    }
+  },
+  "paramDocs": {
+    "title": "What each parameter does",
+    "activeLegend": "Every knob for the selected mode. The ones set in the JSON above are highlighted with their current value; add any of the others to tune it.",
+    "set": "set",
+    "groups": {
+      "composite": "Composite",
+      "compositeHint": "Tier A · re-renders the final image in seconds",
+      "prep": "Colour & stretch",
+      "prepHint": "Tier B · rebuilds the linear prep (tens of seconds)",
+      "stack": "Frame selection & stacking",
+      "stackHint": "Tier C · re-stacks from the raw frames (minutes)",
+      "planetaryFinish": "Finish & sharpening",
+      "planetaryFinishHint": "re-renders the image in seconds",
+      "planetaryStack": "Frame selection & deconvolution",
+      "planetaryStackHint": "re-stacks from the source frames (slower)",
+      "cometFinish": "Colour finish",
+      "cometFinishHint": "re-combines the comet composite in seconds",
+      "cometStack": "Frame selection & stacking",
+      "cometStackHint": "re-stacks from the calibrated frames (slower)",
+      "milkywayGrade": "Grade",
+      "milkywayGradeHint": "re-renders the nightscape in seconds"
+    },
+    "saturation": "Overall colour saturation of the final image. Higher is more vivid; too high turns stars garish.",
+    "star_desat": "Pushes the brightest star cores toward white. Fixes solid colour discs on dense clusters and magenta SHO stars. 0 = off.",
+    "lum_opacity": "Opacity of the L (luminance) layer in an LRGB composite. 1 = all detail from L; lower is softer and more colour-driven.",
+    "ha_screen": "Opacity of the red Hα layer screened over the image (only when an Hα channel is present). Higher = stronger red nebulosity.",
+    "ha_black_point": "Clips the Hα layer's background to black so its red lifts only bright HII knots, not the whole sky.",
+    "ha_exclude_stars": "Screens Hα onto nebulosity only (stars removed first) so the red doesn't tint stars orange/pink.",
+    "chroma_blur": "Blurs colour noise in the LRGB composite (pixels); the L layer keeps all detail. Higher smooths colour and flattens mottle.",
+    "core_highlight_knee": "Where the nebula-CORE highlight roll-off begins on the luminance. Below it nothing changes — for blown nebula cores, not clusters.",
+    "core_highlight_ceil": "How far below white a blown nebula core is capped (with core_highlight_knee). Lower = a deeper, more structured core.",
+    "highlight_knee": "Where the star-safe highlight cap begins on the final image — keeps bright star cores from clipping to white.",
+    "highlight_ceil": "How far below white bright star cores are capped (with highlight_knee). Lower = cores stay more coloured, less burnt.",
+    "crop_frac": "Fraction trimmed off each edge to drop the ragged dithered stacking-edge bands.",
+    "palette": "Channel→RGB colour mapping: natural, hargb, hoo, sho, hos, foraxx or mono. The narrowband palettes need OIII/SII data.",
+    "color_calibration": "Photometric colour calibration (SPCC) for natural star/nebula hues; falls back to a neutral balance when offline.",
+    "linked_stretch": "Stretches all channels together to preserve the calibrated colour balance (vs per-channel, which re-tints).",
+    "background_level": "Target sky-background brightness for the auto-stretch. Lower = a darker sky.",
+    "stretch_headroom": "Caps bright star cores this far below white BEFORE the stretch so they keep colour instead of burning. 0 = off; lower = more protection.",
+    "background_degree": "Degree of the Siril polynomial used to model and subtract the sky background/gradient.",
+    "combined_background_ai": "A second gradient-extraction pass on the combined RGB — removes the large-scale gradient / brown sky the per-channel pass leaves.",
+    "color_denoise_ai": "AI colour denoise on the linear RGB — cuts chroma noise without blurring detail (unlike a blur).",
+    "star_reduce": "StarNet++ star-reduction opacity in the finish: 1 = full stars, 0.5 = halved, 0 = keep all.",
+    "fwhm_sigma": "Frame rejection: drop subs whose star sharpness (FWHM) is worse than this many σ from the session. Lower rejects harder.",
+    "roundness_floor": "Frame rejection: minimum star roundness to keep a sub — drops trailed / wind-shaken frames. Higher keeps only rounder stars.",
+    "background_sigma": "Frame rejection: drop subs whose background is this many σ above the median (clouds, moonlight, gradients).",
+    "star_count_frac": "Frame rejection: keep only subs with at least this fraction of the best sub's detected star count.",
+    "trail_mask_k": "Cross-frame satellite/plane trail masking: a pixel above the per-pixel median + k·σ is replaced. Lower = more aggressive; 0 = off.",
+    "denoise_lum": "Denoise strength on the linear LUMINANCE master — gentle, to preserve galaxy/nebula detail.",
+    "denoise_chroma": "Denoise strength on the linear COLOUR channels — usually higher, since thin R/G/B sub-stacks are noisy.",
+    "background_ai": "GraXpert AI background/gradient extraction on each linear master (instead of Siril's polynomial subsky).",
+    "stretch": "Overall brightness/contrast stretch of the planet/Moon. Higher lifts the mid-tones.",
+    "highlight": "Highlight-protection point — higher keeps bright craters and the limb from clipping to white.",
+    "sharpen": "Wavelet detail boost. 1.0 is default; raise for more crater/band detail, lower if it rings or looks crunchy.",
+    "clahe": "Local contrast / surface relief. Higher is punchier; too high looks harsh.",
+    "headroom": "Scales the bright disk down before the stretch so highlights don't burn. 0 or 1 = no scaling; in-between reserves more room.",
+    "best_percent": "Lucky-imaging frame selection: keep only this % of the sharpest frames before stacking. Lower = stricter.",
+    "ap_align": "Multi-point (planetary) alignment — corrects local seeing distortion across the disk, not just a global shift.",
+    "deconv_fwhm": "Deconvolution PSF width (pixels) — set near the blur size to recover detail. 0 = off.",
+    "deconv_iters": "Deconvolution iterations. More sharpens harder but can ring around bright edges.",
+    "deconv_alpha": "Deconvolution regularisation — higher suppresses noise/ringing, lower is more aggressive.",
+    "per_frame_starnet": "Runs StarNet++ on every frame before the comet stack (denser fields). Slower, but cleaner star removal.",
+    "look": "Render style: natural (faithful, soft), iphone (warmer, punchier, deeper sky) or deepsky (bold, dramatic, high saturation).",
+    "brightness": "Target sky-background level. Lower = a darker sky; higher lifts the Milky-Way core.",
+    "saturation_scale": "Scales the chosen look's own saturation. 1 = as designed; below 1 tames neon colour; up to 2 for more.",
+    "highlight_ceiling": "The Milky-Way core's brightness ceiling. Lower = a dimmer, better-protected core; 0 keeps the look's own."
+  },
+  "denoiseFinal": {
+    "title": "Denoise the final (GraXpert)",
+    "hint": "Run GraXpert AI denoise on the final image on demand — on the native host GraXpert service when configured (faster, non-blocking). Opens a new job with the denoised result.",
+    "run": "Denoise final",
+    "starting": "Starting…"
+  },
   "refine": {
     "title": "Improve this run with AI",
     "hint": "The local vision model looks at the result, diagnoses its defects, and re-finishes it — iterating until it's clean.",
@@ -521,7 +948,9 @@
     "starting": "Starting…",
     "failed": "Couldn't start the AI improvement for this run."
   },
-  "log": { "empty": "No log output yet." },
+  "log": {
+    "empty": "No log output yet."
+  },
   "viewer": {
     "zoomIn": "Zoom in",
     "zoomOut": "Zoom out",
@@ -570,7 +999,11 @@
     "title": "Calibration library",
     "deepskyTitle": "Camera masters (cooled)",
     "phoneTitle": "Phone / DSLR masters (ISO)",
-    "empty": "The library is empty. Run a pipeline with calibration frames to populate it."
+    "empty": "The library is empty. Run a pipeline with calibration frames to populate it.",
+    "copyToS3": "Copy to S3",
+    "copyToS3Hint": "Mirror every calibration master to S3 (kept local too). Later runs pull back any master that's missing locally, and discard it after — so machines with little disk still stack.",
+    "copying": "Copying…",
+    "copyQueued": "Library copy to S3 queued."
   },
   "status": {
     "queued": "Queued",
@@ -613,7 +1046,8 @@
       "gps": "📍 My location",
       "gpsLabel": "My location",
       "you": "You",
-      "notSet": "not set — search or use GPS"
+      "notSet": "not set — search or use GPS",
+      "favorites": "Favorites"
     },
     "canopy": {
       "title": "Tree/forest data",
@@ -651,7 +1085,9 @@
     "autoRefresh": "Auto-refresh",
     "updated": "Updated {time}",
     "notVisible": "Not up tonight",
-    "time": { "specific": "Specific time" },
+    "time": {
+      "specific": "Specific time"
+    },
     "location": {
       "title": "Location",
       "lat": "Latitude",
@@ -682,7 +1118,12 @@
       "cloudMid": "Mid clouds",
       "cloudHigh": "High clouds",
       "humidity": "Humidity",
-      "precip": "Rain chance"
+      "precip": "Rain chance",
+      "radar": "Rain radar",
+      "live": "live",
+      "radarLight": "light",
+      "radarHeavy": "heavy",
+      "liveNoData": "Live radar: no data for this time"
     },
     "lp": {
       "uncovered": "Detailed light-pollution data isn't downloaded for this area.",
@@ -696,10 +1137,20 @@
       "loading": "Loading the forecast…",
       "unavailable": "Weather is currently unavailable.",
       "verdict": "Observability",
+      "tonightLabel": "Tonight",
+      "verdictLabel": {
+        "excellent": "Excellent",
+        "good": "Good",
+        "fair": "Fair",
+        "poor": "Poor"
+      },
       "best": "Best clear window",
       "noWindow": "No clear window in the dark hours.",
       "sources": "Source",
-      "legend": { "less": "less", "more": "more" },
+      "legend": {
+        "less": "less",
+        "more": "more"
+      },
       "timeline": {
         "play": "Play / pause the cloud animation",
         "scrub": "Scrub through time",
@@ -711,6 +1162,7 @@
         "seeing": "Seeing",
         "transparency": "Transparency",
         "humidity": "Humidity",
+        "temp": "Temperature",
         "dew": "Dew risk",
         "wind": "Wind (km/h)",
         "jet": "Jet stream (km/h)",
@@ -783,104 +1235,7 @@
     },
     "tabs": {
       "targets": "Targets",
-      "polar": "Polar align",
       "darksky": "Dark-sky finder"
-    },
-    "polar": {
-      "title": "Polar alignment",
-      "subtitle": "Put the pole star at the right spot on your polar-scope reticle for right now.",
-      "hemisphere": { "north": "Northern", "south": "Southern" },
-      "reticle": {
-        "placeHere": "Put the star in the orange circle",
-        "truePole": "true pole",
-        "polaris": "Polaris",
-        "sigmaOct": "σ Octantis",
-        "cassiopeia": "Cassiopeia",
-        "bigDipper": "Big Dipper",
-        "crux": "Crux",
-        "octans": "Octans",
-        "invertedView": "As seen through the scope (inverted)",
-        "erectView": "Naked-eye (erect) view",
-        "mirrored": "Mirrored (star diagonal)"
-      },
-      "panel": {
-        "clock": "Clock position",
-        "poleStar": "Pole star",
-        "hemisphere": "Hemisphere",
-        "ha": "Hour angle",
-        "separation": "Offset from pole",
-        "alt": "Altitude",
-        "az": "Azimuth",
-        "lst": "Sidereal time",
-        "latTooLow": "The celestial pole is too low here for a polar scope.",
-        "notVisible": "The pole star is below the horizon right now."
-      },
-      "orientation": {
-        "inverting": "Inverting (scope)",
-        "erect": "Erect (naked eye)",
-        "mirror": "Mirror (diagonal)",
-        "hint": "Most polar scopes invert the view. Match the on-screen reticle to what you actually see."
-      },
-      "time": {
-        "specific": "Specific time",
-        "autoRefresh": "Auto-refresh"
-      },
-      "tutorial": {
-        "title": "How to set up and use your polar scope",
-        "intro": "A practical walkthrough for a SkyWatcher polar scope on a Celestron Advanced VX — from one-time setup to using it under a dark sky.",
-        "s1": {
-          "title": "What polar alignment does",
-          "body": "Your mount's RA axis must point at the celestial pole so a single motor can track the sky. The polar scope lets you sight the pole star and place it precisely.",
-          "tips": [
-            "The pole is near — but not exactly at — the pole star.",
-            "Good alignment = long, round-star exposures and reliable go-to."
-          ]
-        },
-        "s2": {
-          "title": "One-time: collimate the polar scope to the RA axis",
-          "body": "Center a distant object on the reticle, rotate the RA axis 180°, and adjust the three grub screws to remove half the drift. Repeat until the object stays put as you rotate.",
-          "tips": [
-            "Do this once in daylight on a far landmark (or on Polaris at night).",
-            "Adjust the reticle grub screws, never the mount's alt/az bolts.",
-            "Tiny turns — the screws are sensitive."
-          ]
-        },
-        "s3": {
-          "title": "Set up the mount (Advanced VX)",
-          "body": "Level the tripod, set the latitude scale to your latitude, and aim the mount at TRUE north (or south), not magnetic north.",
-          "tips": [
-            "Use a bubble level; an unlevel tripod throws off the latitude setting.",
-            "Correct for magnetic declination between compass north and true north.",
-            "Pre-set the latitude bolt near your site latitude before you start."
-          ]
-        },
-        "s4": {
-          "title": "See the reticle at night",
-          "body": "At night you see stars but not the engraved reticle. Illuminate it dimly: shine a RED light obliquely into the front (objective) end, or use the mount's illuminator if fitted.",
-          "tips": [
-            "Red only — white light ruins your dark adaption.",
-            "A red phone screen held near the objective works in a pinch.",
-            "Keep it dim; too bright washes out faint Polaris."
-          ]
-        },
-        "s5": {
-          "title": "Place the pole star",
-          "body": "Rotate the RA axis until the reticle's pole-star marker is at the clock position shown above, then use the mount's ALT and AZ bolts (not RA) to move the star into the marker.",
-          "tips": [
-            "Match the on-screen orientation (inverting/erect) to your scope.",
-            "Move with the slow alt/az bolts; leave RA where you set it.",
-            "Center the star in the small circle, not on the true-pole cross."
-          ]
-        },
-        "s6": {
-          "title": "Verify and refine",
-          "body": "Cross-check with the Advanced VX hand controller's All-Star Polar Align, or do a quick drift check on a star near the meridian and tweak the alt/az bolts.",
-          "tips": [
-            "All-Star uses any bright star — handy when Polaris is hidden.",
-            "Re-check after the mount settles or if you bump the tripod."
-          ]
-        }
-      }
     },
     "controls": {
       "apply": "Apply",
@@ -946,8 +1301,10 @@
       "nebula": "Nebula",
       "emission_nebula": "Emission nebula",
       "planetary_nebula": "Planetary nebula",
+      "reflection_nebula": "Reflection nebula",
       "dark_nebula": "Dark nebula",
-      "cluster": "Open cluster",
+      "open_cluster": "Open cluster",
+      "cluster": "Star cluster",
       "globular": "Globular cluster",
       "supernova_remnant": "Supernova remnant",
       "other": "Other"
@@ -962,7 +1319,12 @@
       "title": "{name} — why this score",
       "select": "Select a target to see its altitude curve and score breakdown.",
       "subScores": "Score breakdown",
-      "reason": "Summary"
+      "reason": "Summary",
+      "type": "Type",
+      "commonName": "Common name",
+      "morphology": "Morphology",
+      "surfaceBrightness": "Surface brightness",
+      "size": "Size"
     },
     "sub": {
       "max_alt": "Altitude",
@@ -999,7 +1361,10 @@
     "composition": {
       "title": "Filters / emission",
       "load": "Load",
-      "source": { "curated": "known", "typical": "by type" }
+      "source": {
+        "curated": "known",
+        "typical": "by type"
+      }
     },
     "lines": {
       "ha": "Hα",
@@ -1010,7 +1375,8 @@
     },
     "map": {
       "title": "Sky map",
-      "hint": "Each dot is a target placed by altitude (centre = zenith) and azimuth; colour = score."
+      "hint": "Each dot is a target placed by altitude (centre = zenith) and azimuth; colour = score.",
+      "belowHorizon": "Below the horizon now"
     }
   },
   "calendar": {
@@ -1020,7 +1386,10 @@
     "loading": "Computing the sky calendar…",
     "refresh": "Refresh",
     "updated": "Updated {time}",
-    "sections": { "location": "Location", "filters": "Filters" },
+    "sections": {
+      "location": "Location",
+      "filters": "Filters"
+    },
     "range": {
       "label": "Window",
       "d30": "Next 30 days",
@@ -1160,6 +1529,7 @@
       "altitude": "Altitude",
       "sun_up": "Sun up",
       "moon": "Moonlight",
+      "light_pollution": "Light pollution",
       "brightness": "Brightness"
     },
     "contact": {

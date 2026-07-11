@@ -18,6 +18,7 @@ export interface CreateOpts {
   supervise?: boolean; // opt-in: drive the local AI agent to auto-tune the finish
   sequential?: boolean; // queue into the single-worker sequential lane (chained "Add to queue")
   look?: string; // milkyway render style: natural | iphone | deepsky
+  palette?: string; // deepsky colour palette: natural | hargb | hoo | sho | hos | foraxx | mono
   brightness?: string; // milkyway sky brightness: darker | balanced | brighter
   orientation?: string; // milkyway final orientation override: auto | none | cw | ccw | 180 (+ "-flip")
   darkDir?: string; // milkyway: optional dark calibration frames folder
@@ -32,10 +33,14 @@ export interface CreateOpts {
   reuseSessions?: number[];
   // Library calibration the user unchecked in the Calibration panel (calib.SuggestID keys to skip).
   calibExclude?: string[];
+  // Frozen snapshot of the matched calibration masters (the Calibration preview), persisted with the job
+  // so its page can show which darks/flats/bias are included and with what params. Informational only.
+  calibPlan?: CalibPreview | null;
   // Storage mode: "local" (default — keep files) or "s3" (pull inputs from S3, process locally, push
   // inputs+results back to S3, then free the local copies — verified). s3 carries the target bucket/prefix.
   storageMode?: "local" | "s3";
   s3?: { bucket: string; prefix: string };
+  lowDisk?: boolean; // staged low-disk S3 processing (download/free one channel at a time)
   // Live stacking (mode "livestack"): which source to watch and the per-sub exposure.
   live?: {
     sourceKind: "local" | "s3";
@@ -59,6 +64,22 @@ export interface RefineOpts {
   tier?: "A" | "B" | "C"; // how far the agent may reach: composite | +finish prep | +re-stack
   allowRestack?: boolean; // permit Tier-C re-stack from the original raw frames
   params?: Record<string, unknown>; // fine knob overrides seeded onto the preset before the loop
+}
+
+// RerunOpts drives a manual, non-supervised re-run of a completed deepsky/nebula run from a chosen
+// timeline stage (POST /api/jobs/{id}/rerun). stage is the stage to restart from (the re-entry floor);
+// params are the knob overrides applied onto the run's checkpoint baseline.
+export interface RerunOpts {
+  stage?: string;
+  params?: Record<string, unknown>;
+}
+
+// ModeParams is a stacking mode's effective tunable knobs (the run's real values) + the human-readable
+// knob menu, from GET /api/mode-params. Powers the Advanced-parameters prefill in the Import run controls.
+export interface ModeParams {
+  mode: string;
+  defaults: Record<string, unknown>;
+  menu: string;
 }
 
 // Runs gallery page size (paginated so a large output dir loads fast).
@@ -92,7 +113,15 @@ export const useJobsStore = defineStore("jobs", () => {
       const data = await apiGet<{ jobs: Job[]; total: number }>(
         `/api/jobs?offset=0&limit=${limit}`,
       );
-      jobs.value = data.jobs || [];
+      // Merge by id, reusing the previous row object when it is unchanged (same updated_at, bumped by the
+      // server on any change) so the 2.5s poll doesn't hand every row a new identity and force the whole
+      // Tasks table to re-render each tick.
+      const incoming = data.jobs || [];
+      const prevById = new Map(jobs.value.map((j) => [j.id, j]));
+      jobs.value = incoming.map((j) => {
+        const prev = prevById.get(j.id);
+        return prev && prev.updated_at === j.updated_at ? prev : j;
+      });
       jobsTotal.value = data.total ?? jobs.value.length;
     } catch (e) {
       error.value = (e as Error).message;
@@ -150,6 +179,7 @@ export const useJobsStore = defineStore("jobs", () => {
     if (opts.supervise) body.supervise = true;
     if (opts.sequential) body.sequential = true;
     if (opts.look) body.look = opts.look;
+    if (opts.palette) body.palette = opts.palette;
     if (opts.brightness) body.brightness = opts.brightness;
     if (opts.orientation) body.orientation = opts.orientation;
     if (opts.darkDir) body.dark_dir = opts.darkDir;
@@ -160,6 +190,7 @@ export const useJobsStore = defineStore("jobs", () => {
       body.reuse_sessions = opts.reuseSessions;
     if (opts.calibExclude && opts.calibExclude.length)
       body.calib_exclude = opts.calibExclude;
+    if (opts.calibPlan) body.calib_plan = opts.calibPlan;
     if (opts.live)
       body.live = {
         source_kind: opts.live.sourceKind,
@@ -170,6 +201,7 @@ export const useJobsStore = defineStore("jobs", () => {
     if (opts.storageMode === "s3" && opts.s3?.bucket) {
       body.storage_mode = "s3";
       body.s3 = { bucket: opts.s3.bucket, prefix: opts.s3.prefix };
+      if (typeof opts.lowDisk === "boolean") body.low_disk = opts.lowDisk;
     }
     if (opts.goal) body.goal = opts.goal;
     if (opts.params && Object.keys(opts.params).length)
@@ -184,6 +216,19 @@ export const useJobsStore = defineStore("jobs", () => {
     if (opts.inventory) captureByJob.value[data.id] = opts.inventory;
     if (data.turn_id) turnByJob.value[data.id] = data.turn_id;
     return data.id;
+  }
+
+  // fetchModeParams returns a mode's effective knob defaults (+ menu), cached per mode so opening the
+  // Advanced-parameters box or switching modes doesn't re-fetch.
+  const modeParamsCache = new Map<string, ModeParams>();
+  async function fetchModeParams(mode: string): Promise<ModeParams> {
+    const cached = modeParamsCache.get(mode);
+    if (cached) return cached;
+    const data = await apiGet<ModeParams>(
+      `/api/mode-params?mode=${encodeURIComponent(mode)}`,
+    );
+    modeParamsCache.set(mode, data);
+    return data;
   }
 
   // previewReuse asks the backend what prior light sessions a run over these folders would fold in.
@@ -263,6 +308,20 @@ export const useJobsStore = defineStore("jobs", () => {
     return data.id;
   }
 
+  // denoiseFinal enqueues an on-demand GraXpert AI denoise of a completed run's final image (POST
+  // /api/jobs/{id}/denoise-final), offloaded to the native host service when configured. Returns the new id.
+  async function denoiseFinal(id: number): Promise<number> {
+    const data = await apiPost<{ id: number }>(`/api/jobs/${id}/denoise-final`);
+    return data.id;
+  }
+
+  // freeLocal frees a finished full-S3 run's local input+output files (each verified present on S3 first)
+  // by enqueuing removeLocal transfers; returns their ids so the caller can follow the frees in Tasks.
+  async function freeLocal(id: number): Promise<number[]> {
+    const data = await apiPost<{ ids: number[] }>(`/api/jobs/${id}/free-local`);
+    return data.ids ?? [];
+  }
+
   // refine re-finishes a completed run under the AI supervisor (no re-stack unless allowRestack) as a
   // new job, returning its id so the caller can navigate to the live iteration stream.
   async function refine(id: number, opts: RefineOpts = {}): Promise<number> {
@@ -277,6 +336,21 @@ export const useJobsStore = defineStore("jobs", () => {
       body,
     );
     if (data.turn_id) turnByJob.value[data.id] = data.turn_id;
+    return data.id;
+  }
+
+  // rerun re-runs a completed deepsky/nebula run from the stage an edited parameter requires, in place
+  // (overwriting the run's files), as a new non-supervised job — returning its id so the caller can
+  // navigate to the live progress.
+  async function rerun(id: number, opts: RerunOpts = {}): Promise<number> {
+    const body: Record<string, unknown> = {};
+    if (opts.stage) body.stage = opts.stage;
+    if (opts.params && Object.keys(opts.params).length)
+      body.params = opts.params;
+    const data = await apiPost<{ id: number }>(`/api/jobs/${id}/rerun`, body);
+    // Carry the source job's stashed capture inventory onto the new id so its panels populate at once.
+    const inv = captureByJob.value[id];
+    if (inv) captureByJob.value[data.id] = inv;
     return data.id;
   }
 
@@ -349,6 +423,7 @@ export const useJobsStore = defineStore("jobs", () => {
     list,
     get,
     create,
+    fetchModeParams,
     previewReuse,
     previewCalibration,
     captureFor,
@@ -358,7 +433,10 @@ export const useJobsStore = defineStore("jobs", () => {
     pause,
     continueJob,
     restart,
+    denoiseFinal,
+    freeLocal,
     refine,
+    rerun,
     listRuns,
     engineVersion,
     fetchHealth,

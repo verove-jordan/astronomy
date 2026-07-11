@@ -22,6 +22,14 @@ const maxCalFrames = 24
 
 // hasCalibration reports whether any calibration frames were supplied this run — an explicit folder
 // or frames auto-detected among the input stills.
+// phoneMasterPath returns a matched phone master's local file path, or "" when nothing matched.
+func phoneMasterPath(m *calib.PhoneMaster) string {
+	if m == nil {
+		return ""
+	}
+	return m.Path
+}
+
 func hasCalibration(o Options) bool {
 	return o.DarkDir != "" || o.FlatDir != "" || o.BiasDir != "" ||
 		len(o.DarkFrames) > 0 || len(o.FlatFrames) > 0 || len(o.BiasFrames) > 0
@@ -48,6 +56,8 @@ func calibrateLights(ctx context.Context, o Options, plan calPlan, seqDir string
 	key := plan.light
 	key.Width, key.Height = ref.W, ref.H
 	sel := calib.MatchPhoneCalibration(key, plan.masters)
+	// Pull the matched phone masters back from the S3 library mirror if their files are absent locally.
+	o.ensureMasters(ctx, []string{phoneMasterPath(sel.Dark), phoneMasterPath(sel.Bias), phoneMasterPath(sel.Flat)})
 
 	dark, dn := buildOrReusePhoneMaster(ctx, o, "dark", key, sel.Dark)
 	bias, bn := buildOrReusePhoneMaster(ctx, o, "bias", key, sel.Bias)

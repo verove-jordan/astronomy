@@ -1,0 +1,15 @@
+2026-07-11 14:37:04,321 MainProcess root INFO     Starting GraXpert CLI, Background-Extraction, version: 3.2.0a2 release: fix gui launch
+2026-07-11 14:37:04,322 MainProcess root INFO     Using stored smoothing value 0.0.
+2026-07-11 14:37:04,322 MainProcess root INFO     Using stored correction type Subtraction.
+2026-07-11 14:37:04,323 MainProcess root INFO     Using user-supplied gpu acceleration setting False.
+2026-07-11 14:37:04,323 MainProcess root INFO     /Users/jordanverove/projects/perso/astronomy/frontend/work/.config/GraXpert/preferences.json appears to be missing. it will be created after program shutdown
+2026-07-11 14:37:04,409 MainProcess root INFO     Using AI version 1.0.1. You can overwrite this by providing the argument '-ai_version'
+2026-07-11 14:37:04,409 MainProcess root INFO     AI version 1.0.1 not found locally, downloading...
+2026-07-11 14:37:08,933 MainProcess root INFO     download successful
+2026-07-11 14:37:08,935 MainProcess root INFO     Excecuting background extraction with the following parameters:
+interpolation type - AI
+         smoothing - 0.0
+   correction type - Subtraction
+     AI model path - /Users/jordanverove/projects/perso/astronomy/frontend/work/.local/share/GraXpert/bge-ai-models/1.0.1/model.onnx
+2026-07-11 14:37:08,954 MainProcess root INFO     Available inference providers : ['CPUExecutionProvider']
+2026-07-11 14:37:09,110 MainProcess root INFO     Used inference providers for /Users/jordanverove/projects/perso/astronomy/frontend/work/.local/share/GraXpert/bge-ai-models/1.0.1/model.onnx: ['CPUExecutionProvider']

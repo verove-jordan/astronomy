@@ -19,9 +19,6 @@ import CollapsibleCard from "@/components/Common/CollapsibleCard.vue";
 import TwoPane from "@/components/Common/TwoPane.vue";
 import TabBar from "@/components/Common/TabBar.vue";
 import IconStar from "@/components/Icons/IconStar.vue";
-import PolarScopeReticle from "@/components/Polar/PolarScopeReticle.vue";
-import PolarAlignPanel from "@/components/Polar/PolarAlignPanel.vue";
-import PolarTutorial from "@/components/Polar/PolarTutorial.vue";
 import { card, input, btnGhost, skyTypePillClass } from "@/constants/styles";
 import { scrollElementToTop } from "@/utils/scroll";
 import {
@@ -36,11 +33,12 @@ import type { SkyTarget } from "@/types";
 const { t } = useI18n();
 const store = useSkyStore();
 
-// In-page tabs: the deep-sky planner vs the polar-alignment aid. Persisted across reloads.
+// In-page tabs: the deep-sky planner vs the dark-sky finder. Persisted across reloads. (The
+// polar-alignment aid moved to the GoTo alignment page; a stale saved "polar" falls back here.)
 const TAB_KEY = "astrostack.tonight.tab";
 const savedTab = localStorage.getItem(TAB_KEY);
-const tab = ref<"targets" | "polar" | "darksky">(
-  savedTab === "polar" || savedTab === "darksky" ? savedTab : "targets",
+const tab = ref<"targets" | "darksky">(
+  savedTab === "darksky" ? savedTab : "targets",
 );
 watch(tab, (v) => localStorage.setItem(TAB_KEY, v));
 
@@ -135,6 +133,7 @@ type Row = Record<string, unknown>;
 const rows = computed<Row[]>(() =>
   filtered.value.map((tg) => ({
     name: tg.name,
+    common_name: tg.common_name ?? "",
     fav: store.isFavorite(tg.name) ? 0 : 1, // 0 sorts favorites to the top
     type: tg.type,
     palette: tg.composition.palette,
@@ -144,6 +143,7 @@ const rows = computed<Row[]>(() =>
     transit_utc_ms: tg.transit_utc_ms,
     transit_local: tg.transit_local,
     size_arcmin: tg.size_arcmin,
+    size_minor_arcmin: tg.size_minor_arcmin ?? 0,
     mag_v: tg.mag_v,
     fov_fill_pct: tg.fov_fill_pct,
     chosen_eyepiece: tg.chosen_eyepiece ?? "",
@@ -158,9 +158,14 @@ const deg = (v: unknown): string => {
   const n = Number(v);
   return Number.isFinite(n) ? `${Math.round(n)}°` : "—";
 };
-const arcmin = (v: unknown): string => {
-  const n = Number(v);
-  return n > 0 ? `${n.toFixed(1)}'` : "—";
+// Size as the true ellipse "major'×minor'" when OpenNGC supplies a minor axis, else just the major axis.
+const sizeFmt = (v: unknown, row: Row): string => {
+  const maj = Number(v);
+  if (!(maj > 0)) return "—";
+  const min = Number(row.size_minor_arcmin);
+  return min > 0
+    ? `${maj.toFixed(1)}'×${min.toFixed(1)}'`
+    : `${maj.toFixed(1)}'`;
 };
 const magFmt = (v: unknown): string => {
   const n = Number(v);
@@ -190,6 +195,10 @@ const columns = computed<Column<Row>[]>(() => [
     label: t("tonight.cols.name"),
     sortable: true,
     searchable: true,
+    // Display is the #cell-name slot; this format only feeds search so a common name ("Fireworks
+    // Galaxy") matches the query too.
+    format: (v, row) =>
+      row.common_name ? `${String(v)} ${String(row.common_name)}` : String(v),
   },
   {
     key: "type",
@@ -236,7 +245,7 @@ const columns = computed<Column<Row>[]>(() => [
     label: t("tonight.cols.size"),
     sortable: true,
     align: "right",
-    format: arcmin,
+    format: sizeFmt,
   },
   {
     key: "mag_v",
@@ -311,24 +320,17 @@ const fovH = computed(() => store.query?.equipment.fov_h_deg ?? 1);
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div>
         <h1 class="text-2xl font-semibold">{{ t("tonight.title") }}</h1>
-        <p class="text-sm text-slate-400">
-          {{
-            tab === "polar"
-              ? t("tonight.polar.subtitle")
-              : t("tonight.subtitle")
-          }}
-        </p>
+        <p class="text-sm text-slate-400">{{ t("tonight.subtitle") }}</p>
       </div>
       <div class="flex flex-wrap items-center gap-3">
         <Teleport to="#page-tabs">
           <TabBar
             :tabs="[
               { key: 'targets', label: t('tonight.tabs.targets') },
-              { key: 'polar', label: t('tonight.tabs.polar') },
               { key: 'darksky', label: t('tonight.tabs.darksky') },
             ]"
             :active="tab"
-            @select="(k) => (tab = k as 'targets' | 'polar' | 'darksky')"
+            @select="(k) => (tab = k as 'targets' | 'darksky')"
           />
         </Teleport>
         <template v-if="tab === 'targets'">
@@ -530,11 +532,19 @@ const fovH = computed(() => store.query?.equipment.fov_h_deg ?? 1);
         </template>
         <template #cell-name="{ row }">
           <button
-            class="font-medium text-brand-600 hover:underline dark:text-brand-300"
+            class="text-left"
             :aria-pressed="row.name === store.selectedName"
             @click="selectTarget(String(row.name))"
           >
-            {{ row.name }}
+            <span
+              class="font-medium text-brand-600 hover:underline dark:text-brand-300"
+              >{{ row.name }}</span
+            >
+            <span
+              v-if="row.common_name"
+              class="block text-xs text-slate-400 dark:text-slate-500"
+              >{{ row.common_name }}</span
+            >
           </button>
         </template>
         <template #cell-type="{ row }">
@@ -584,14 +594,6 @@ const fovH = computed(() => store.query?.equipment.fov_h_deg ?? 1);
           <p class="mt-1 text-xs text-slate-400">{{ t("tonight.map.hint") }}</p>
         </CollapsibleCard>
       </div>
-    </section>
-
-    <section v-if="tab === 'polar'" class="space-y-4">
-      <div class="grid gap-4 lg:grid-cols-2">
-        <PolarScopeReticle />
-        <PolarAlignPanel />
-      </div>
-      <PolarTutorial />
     </section>
 
     <section v-if="tab === 'darksky'" class="space-y-4">

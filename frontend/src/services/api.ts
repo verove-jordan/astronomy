@@ -2,7 +2,12 @@
 
 import type { Health } from "@/types";
 
-export const BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
+// Default to a RELATIVE base ("" → same-origin): the app is served behind a reverse proxy that forwards
+// /api to the Go engine — nginx in the container image (docker/default.conf.template) and the Vite dev
+// proxy (vite.config.ts) in host-dev. Same-origin means tile <img> loads and SSE need no CORS, and a
+// failed tile surfaces as its real HTTP status instead of a cross-origin opaque net::ERR (which used to
+// mask engine 502s and trigger a retry storm). Set VITE_API_BASE only to point at an engine on another origin.
+export const BASE = import.meta.env.VITE_API_BASE || "";
 
 export class ApiError extends Error {
   constructor(

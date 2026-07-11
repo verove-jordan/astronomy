@@ -89,7 +89,7 @@ const clockText = computed(() => fmtClock(store.displayClockHour));
   <div :class="card">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200">
-        {{ t("tonight.polar.title") }}
+        {{ t("polar.title") }}
       </h3>
       <div class="flex flex-wrap items-center gap-3">
         <label class="flex items-center gap-1.5 text-xs text-slate-400">
@@ -98,7 +98,7 @@ const clockText = computed(() => fmtClock(store.displayClockHour));
             type="checkbox"
             class="accent-brand-500"
           />
-          {{ t("tonight.polar.time.specific") }}
+          {{ t("polar.time.specific") }}
         </label>
         <input
           v-if="useCustomTime"
@@ -112,7 +112,7 @@ const clockText = computed(() => fmtClock(store.displayClockHour));
             type="checkbox"
             class="accent-brand-500"
           />
-          {{ t("tonight.polar.time.autoRefresh") }}
+          {{ t("polar.time.autoRefresh") }}
         </label>
       </div>
     </div>
@@ -125,14 +125,14 @@ const clockText = computed(() => fmtClock(store.displayClockHour));
           :class="[segBtn, store.invert ? segActive : segIdle]"
           @click="store.setInvert(true)"
         >
-          {{ t("tonight.polar.orientation.inverting") }}
+          {{ t("polar.orientation.inverting") }}
         </button>
         <button
           type="button"
           :class="[segBtn, !store.invert ? segActive : segIdle]"
           @click="store.setInvert(false)"
         >
-          {{ t("tonight.polar.orientation.erect") }}
+          {{ t("polar.orientation.erect") }}
         </button>
       </div>
       <label class="flex items-center gap-1.5 text-xs text-slate-400">
@@ -142,11 +142,11 @@ const clockText = computed(() => fmtClock(store.displayClockHour));
           :checked="store.mirror"
           @change="store.setMirror(($event.target as HTMLInputElement).checked)"
         />
-        {{ t("tonight.polar.orientation.mirror") }}
+        {{ t("polar.orientation.mirror") }}
       </label>
     </div>
     <p class="mt-1 text-[11px] text-slate-400">
-      {{ t("tonight.polar.orientation.hint") }}
+      {{ t("polar.orientation.hint") }}
     </p>
 
     <template v-if="r">
@@ -155,7 +155,7 @@ const clockText = computed(() => fmtClock(store.displayClockHour));
         class="mt-3 flex items-baseline gap-2 rounded-md bg-slate-50 px-3 py-2 dark:bg-slate-800/50"
       >
         <span class="text-xs uppercase tracking-wide text-slate-400">{{
-          t("tonight.polar.panel.clock")
+          t("polar.panel.clock")
         }}</span>
         <span
           class="text-2xl font-bold tabular-nums text-brand-600 dark:text-brand-300"
@@ -169,13 +169,13 @@ const clockText = computed(() => fmtClock(store.displayClockHour));
         v-if="r.lat_too_low"
         class="mt-2 text-xs text-amber-600 dark:text-amber-400"
       >
-        {{ t("tonight.polar.panel.latTooLow") }}
+        {{ t("polar.panel.latTooLow") }}
       </p>
       <p
         v-else-if="!r.pole_star_visible"
         class="mt-2 text-xs text-amber-600 dark:text-amber-400"
       >
-        {{ t("tonight.polar.panel.notVisible") }}
+        {{ t("polar.panel.notVisible") }}
       </p>
 
       <!-- Readout grid -->
@@ -184,23 +184,23 @@ const clockText = computed(() => fmtClock(store.displayClockHour));
       >
         <div>
           <dt class="text-slate-400">
-            {{ t("tonight.polar.panel.hemisphere") }}
+            {{ t("polar.panel.hemisphere") }}
           </dt>
-          <dd>{{ t(`tonight.polar.hemisphere.${r.hemisphere}`) }}</dd>
+          <dd>{{ t(`polar.hemisphere.${r.hemisphere}`) }}</dd>
         </div>
         <div>
           <dt class="text-slate-400">
-            {{ t("tonight.polar.panel.poleStar") }}
+            {{ t("polar.panel.poleStar") }}
           </dt>
           <dd>{{ r.pole_star_name }}</dd>
         </div>
         <div>
-          <dt class="text-slate-400">{{ t("tonight.polar.panel.ha") }}</dt>
+          <dt class="text-slate-400">{{ t("polar.panel.ha") }}</dt>
           <dd>{{ r.ha_deg.toFixed(1) }}° · {{ haHours.toFixed(1) }}h</dd>
         </div>
         <div>
           <dt class="text-slate-400">
-            {{ t("tonight.polar.panel.separation") }}
+            {{ t("polar.panel.separation") }}
           </dt>
           <dd>
             {{ r.separation_deg.toFixed(3) }}° ·
@@ -208,11 +208,11 @@ const clockText = computed(() => fmtClock(store.displayClockHour));
           </dd>
         </div>
         <div>
-          <dt class="text-slate-400">{{ t("tonight.polar.panel.alt") }}</dt>
+          <dt class="text-slate-400">{{ t("polar.panel.alt") }}</dt>
           <dd>{{ r.alt_deg.toFixed(1) }}°</dd>
         </div>
         <div>
-          <dt class="text-slate-400">{{ t("tonight.polar.panel.az") }}</dt>
+          <dt class="text-slate-400">{{ t("polar.panel.az") }}</dt>
           <dd>{{ r.az_deg.toFixed(1) }}°</dd>
         </div>
         <div>
@@ -223,7 +223,7 @@ const clockText = computed(() => fmtClock(store.displayClockHour));
           </dd>
         </div>
         <div>
-          <dt class="text-slate-400">{{ t("tonight.polar.panel.lst") }}</dt>
+          <dt class="text-slate-400">{{ t("polar.panel.lst") }}</dt>
           <dd>{{ r.lst_deg.toFixed(1) }}°</dd>
         </div>
       </dl>

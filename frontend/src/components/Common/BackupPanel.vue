@@ -12,6 +12,10 @@ import {
 import { card, btnPrimary, btnGhost, checkbox } from "@/constants/styles";
 import IconCloud from "@/components/Icons/IconCloud.vue";
 
+// embedded drops the card frame + header so the panel can sit inside an existing card/accordion section
+// (the Storage page) that already provides them; standalone it renders its own card + title.
+defineProps<{ embedded?: boolean }>();
+
 const { t } = useI18n();
 const store = useBackupStore();
 
@@ -76,14 +80,17 @@ function reloadPage() {
 </script>
 
 <template>
-  <section :class="card">
-    <header class="mb-3 flex items-center gap-2">
+  <section :class="embedded ? '' : card">
+    <header v-if="!embedded" class="mb-3 flex items-center gap-2">
       <IconCloud class="h-5 w-5 text-brand-500" />
       <div>
         <h2 class="text-sm font-semibold">{{ t("backup.title") }}</h2>
         <p class="text-xs text-slate-500">{{ t("backup.subtitle") }}</p>
       </div>
     </header>
+    <p v-if="embedded" class="mb-3 text-xs text-slate-500">
+      {{ t("backup.subtitle") }}
+    </p>
 
     <!-- Component checkboxes -->
     <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm">

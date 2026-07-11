@@ -63,6 +63,16 @@ type FinishQuality struct {
 	GreenCast  float64    `json:"green_cast"`  // medianG − mean(medianR, medianB); >0 → green cast
 	WarmCast   float64    `json:"warm_cast"`   // sky red-excess on the 10th-pct background; >0 → warm
 	SignalCast float64    `json:"signal_cast"` // bright-signal green balance; <0 → magenta/pink
+	// Star-core quality: StarWarmFrac is the fraction of bright cores reading warm (red-dominant) — high
+	// = the "all stars orange" look; StarColorSpread is the stddev of their red−blue balance — low = star
+	// colours flattened to one hue (or to grey/white). Both from the rendered finish.
+	StarWarmFrac    float64 `json:"star_warm_frac"`
+	StarColorSpread float64 `json:"star_color_spread"`
+	// StarSatFrac is the fraction of bright cores that are over-saturated colour DISCS (a dense star field
+	// rendered as solid blue/magenta blobs — the cluster failure); BgChroma is the mean chroma of the
+	// darkest quarter of the frame (purple-green background MOTTLE). Both from the rendered finish.
+	StarSatFrac float64 `json:"star_sat_frac"`
+	BgChroma    float64 `json:"bg_chroma"`
 }
 
 // Defect is one issue the vision model diagnosed in a rendered finish (a fixed Kind vocabulary, a
@@ -154,12 +164,14 @@ func buildCombine(channels map[string]string, opts Options) (string, *Result) {
 	}
 
 	var b strings.Builder
-	b.WriteString("requires 1.2.0\nsetext fits\n")
+	b.WriteString("requires 1.2.0\nsetext fits\nset32bits\n")
 	switch {
 	case has("R") && has("G") && has("B"):
 		buildColor(&b, channels, has, res)
 	case has("Ha") && has("OIII") && has("SII"):
-		// Hubble (SHO) palette: R=SII, G=Ha, B=OIII.
+		// Hubble (SHO) palette: R=SII, G=Ha, B=OIII. This is the Siril-only fallback finish; the primary
+		// GIMP finish resolves a user-selectable palette (natural / HaRGB / HOO / SHO / HOS / Foraxx / mono)
+		// in internal/pipeline (palette.go / prepGimpInputs). Keep this default in sync with that table's SHO.
 		fmt.Fprintf(&b, "rgbcomp %s %s %s -out=combined\n", channels["SII"], channels["Ha"], channels["OIII"])
 		b.WriteString("load combined\n")
 		res.Mode = "SHO"

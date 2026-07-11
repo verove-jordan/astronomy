@@ -32,6 +32,31 @@ func TestApplyParamPatch_PerMode(t *testing.T) {
 			check: func(t *testing.T, p mode.Preset) { assert.InDelta(t, 0.35, p.Saturation, 1e-9) },
 		},
 		{
+			name: "deepsky lum_opacity is tierA", mode: mode.Deepsky,
+			params: `{"lum_opacity":0.7}`, tier: "A", changed: []string{"lum_opacity"},
+			check: func(t *testing.T, p mode.Preset) { assert.InDelta(t, 0.7, p.LumOpacity, 1e-9) },
+		},
+		{
+			name: "deepsky star_desat is tierA", mode: mode.Deepsky,
+			params: `{"star_desat":0.6}`, tier: "A", changed: []string{"star_desat"},
+			check: func(t *testing.T, p mode.Preset) { assert.InDelta(t, 0.6, p.StarDesat, 1e-9) },
+		},
+		{
+			name: "deepsky palette is tierB", mode: mode.Deepsky,
+			params: `{"palette":"SHO"}`, tier: "B", changed: []string{"palette"},
+			check: func(t *testing.T, p mode.Preset) { assert.Equal(t, "sho", p.Palette) }, // normalized
+		},
+		{
+			name: "deepsky invalid palette is dropped", mode: mode.Deepsky,
+			params: `{"palette":"bogus"}`, tier: "A", changed: nil,
+			check: func(t *testing.T, p mode.Preset) { assert.Empty(t, p.Palette) },
+		},
+		{
+			name: "deepsky clamps lum_opacity to the 0 floor", mode: mode.Deepsky,
+			params: `{"lum_opacity":-1}`, tier: "A", changed: []string{"lum_opacity"},
+			check: func(t *testing.T, p mode.Preset) { assert.InDelta(t, 0.0, p.LumOpacity, 1e-9) },
+		},
+		{
 			name: "deepsky tierC grade knob", mode: mode.Deepsky,
 			params: `{"fwhm_sigma":2.0}`, tier: "C", changed: []string{"fwhm_sigma"},
 			check: func(t *testing.T, p mode.Preset) { assert.InDelta(t, 2.0, p.Grade.FWHMSigma, 1e-9) },

@@ -25,6 +25,21 @@ type Record struct {
 	HasMag         bool
 	Aliases        []string
 	Source         string // catalog of origin: messier|ngc|ic|sh2|ldn
+
+	// OpenNGC overlay (applied by openngc.go for NGC/IC/M rows; empty/zero otherwise). Type is the raw
+	// OpenNGC code (G, OCl, GCl, PN, HII, EmN, RfN, SNR, DrkN, Cl+N, *Ass, …), mapped to the display
+	// vocabulary by skyplan.deriveType. MinorAxisArcmin/PositionAngleDeg give the true ellipse; SurfBr is
+	// the catalogued surface brightness (mag/arcsec²); Morphology is the Hubble class; CommonNames are the
+	// friendly names ("Fireworks Galaxy").
+	Type             string
+	MinorAxisArcmin  float64
+	HasMinorAxis     bool
+	PositionAngleDeg float64
+	HasPositionAngle bool
+	SurfBr           float64
+	HasSurfBr        bool
+	Morphology       string
+	CommonNames      []string
 }
 
 // Catalog is the merged, de-duplicated set of catalog records, with a normalized name/alias index.
@@ -82,6 +97,7 @@ func loadCatalog(dir string) (*Catalog, error) {
 			c.add(r)
 		}
 	}
+	c.applyOpenNGC(overlayForDir(dir))
 	return c, nil
 }
 
@@ -101,6 +117,25 @@ func (c *Catalog) Lookup(name string) (Record, bool) {
 		return *r, true
 	}
 	return Record{}, false
+}
+
+// IsStarCluster reports whether the named object is a star cluster with no significant nebulosity — a
+// globular ("GCl") or open ("OCl") cluster in the OpenNGC overlay. Such a target is a pure star field:
+// the galaxy/nebula finish recipe (mid-tone luminance lift, nebula-core roll-off, full saturation on the
+// bright pixels) over-processes it — blowing the dense core to white and ringing stars with garish
+// colour — so the pipeline routes it to a gentler star-field finish. A cluster WITH nebulosity ("Cl+N")
+// is deliberately excluded: it wants the nebula recipe. An unknown or un-typed name returns false, so the
+// caller falls back to the default recipe. Name matching is case- and punctuation-insensitive (Lookup).
+func (c *Catalog) IsStarCluster(name string) bool {
+	rec, ok := c.Lookup(name)
+	if !ok {
+		return false
+	}
+	switch rec.Type {
+	case "GCl", "OCl":
+		return true
+	}
+	return false
 }
 
 // add inserts r, merging it into an existing record when its name or any alias is already known.

@@ -114,6 +114,14 @@ RUN if [ "$INSTALL_GRAXPERT" = "true" ]; then \
 RUN apt-get update && apt-get install -y --no-install-recommends libraw-bin \
  && rm -rf /var/lib/apt/lists/*
 
+# --- GDAL (gdal-bin): the canopy-height atlas downloader shells out to gdalwarp/gdalbuildvrt/gdalinfo to
+# stream + reproject the ETH 10 m canopy COGs over /vsicurl/ (internal/canopy/build.go — the DarkSky
+# finder's "download canopy for this area" button). Resolved by bare name on PATH (no *_BIN var), so
+# gdal-bin in /usr/bin is all that's needed; the feature soft-fails to a terrain-only horizon when absent.
+# Own layer (like libraw-bin) so it doesn't bust the Siril/GraXpert cache on rebuild.
+RUN apt-get update && apt-get install -y --no-install-recommends gdal-bin \
+ && rm -rf /var/lib/apt/lists/*
+
 # StarNet++ is deliberately NOT baked in (its licence isn't redistributable). To enable star removal,
 # bind-mount your StarNet install and set STARNET_BIN; until then the pipeline keeps full stars.
 

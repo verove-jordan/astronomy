@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"time"
 
 	"github.com/verove-jordan/astronomy/internal/s3store"
 	"github.com/verove-jordan/astronomy/internal/store"
@@ -42,6 +43,16 @@ func (m *Manager) transferRoot(namespace string) string {
 	return m.cfg.DataDir
 }
 
+// transferLocalRoot resolves the absolute local root a transfer walks: an explicit external LocalRoot (an
+// external drive, already validated by the API against the browse allowlist) when set, else the namespace's
+// DataDir/OutputDir.
+func (m *Manager) transferLocalRoot(tr *TransferRequest) (string, error) {
+	if tr.LocalRoot != "" {
+		return filepath.Abs(tr.LocalRoot)
+	}
+	return filepath.Abs(m.transferRoot(tr.Namespace))
+}
+
 // runTransfer executes a standalone S3 transfer job (upload/sync/download/remove-local) — the whole job is
 // the transfer. It reuses the same event stream as a pipeline run (so it shows up in Tasks with a bar).
 func (m *Manager) runTransfer(ctx context.Context, id int64, tr *TransferRequest) (any, error) {
@@ -61,24 +72,79 @@ func (m *Manager) execTransfer(ctx context.Context, id int64, tr *TransferReques
 	if err != nil {
 		return transfer.Result{}, err
 	}
-	rootAbs, err := filepath.Abs(m.transferRoot(tr.Namespace))
+	rootAbs, err := m.transferLocalRoot(tr)
 	if err != nil {
 		return transfer.Result{}, err
 	}
 	req := transfer.Request{
-		Op:        transfer.Op(tr.Op),
-		LocalRoot: rootAbs,
-		RelPath:   tr.RelPath,
-		Bucket:    tr.Bucket,
-		KeyPrefix: path.Join(tr.Prefix, tr.Namespace),
+		Op:          transfer.Op(tr.Op),
+		LocalRoot:   rootAbs,
+		RelPath:     tr.RelPath,
+		Bucket:      tr.Bucket,
+		KeyPrefix:   path.Join(tr.Prefix, tr.Namespace),
+		Verify:      tr.Verify,
+		ExcludeDirs: tr.ExcludeDirs,
+		Concurrency: m.cfg.S3Concurrency, // 0 → the transfer engine's default parallelism
 	}
+	// Let a manual pause stop the transfer BETWEEN files (checked in the ops loops), so a long S3 copy —
+	// pull, push or a standalone transfer — pauses instead of ignoring the request until it finishes.
+	if gate := m.gateFor(id); gate != nil {
+		req.PauseRequested = gate.requested
+	}
+	// Classified layout: a data-namespace transfer places files at darks/offsets/flats/lum keys (recorded
+	// in the s3_objects ledger) instead of the flat data/<rel> mirror. Nil plan → legacy behaviour. An
+	// external-drive copy (LocalRoot set) is arbitrary files, not a classifiable capture — always a plain
+	// mirror, never the classified plan.
+	if tr.LocalRoot == "" {
+		if plan, onStored := m.buildDataPlan(ctx, tr); plan != nil {
+			req.Plan = plan
+			req.OnStored = onStored
+		}
+	}
+	return m.runTransferReq(ctx, id, client, req, label)
+}
+
+// runTransferReq runs an already-built transfer.Request, publishing throttled byte-level progress + a
+// throughput EMA through the job event stream. Shared by execTransfer (whole-folder ops) and the low-disk
+// s3Stager (subset staged ops, which build their own subset Plan). label overrides the step prefix.
+func (m *Manager) runTransferReq(ctx context.Context, id int64, client *s3store.Client, req transfer.Request, label string) (transfer.Result, error) {
 	name := label
 	if name == "" {
-		name = string(tr.Op)
+		name = string(req.Op)
 	}
 
-	m.publish(Event{JobID: id, Status: store.JobRunning, Progress: 0, Step: name + " starting"})
+	m.publish(Event{JobID: id, Status: store.JobRunning, Progress: 0, Step: name + " scanning…"})
+
+	// The engine can emit a progress callback per file (thousands for a big folder), so throttle the DB
+	// write + SSE publish to a few per second, and smooth the throughput (débit) with an EMA so the UI
+	// shows a steady MB/s rather than a spiky instantaneous rate. A throttled log line names the file
+	// currently moving, so the Live log shows what is being copied instead of sitting empty.
+	var lastPub, lastLog, lastSample time.Time
+	var lastBytes int64
+	var emaRate float64
 	onProg := func(pr transfer.Progress) {
+		now := time.Now()
+		if !lastSample.IsZero() {
+			if dt := now.Sub(lastSample).Seconds(); dt > 0 {
+				inst := float64(pr.BytesDone-lastBytes) / dt
+				if inst < 0 {
+					inst = 0 // a retried file restreams from zero — never report a negative rate
+				}
+				if emaRate == 0 {
+					emaRate = inst
+				} else {
+					emaRate = 0.8*emaRate + 0.2*inst
+				}
+			}
+		}
+		lastSample, lastBytes = now, pr.BytesDone
+
+		final := pr.TotalFiles > 0 && pr.Files >= pr.TotalFiles
+		if !final && now.Sub(lastPub) < 250*time.Millisecond {
+			return
+		}
+		lastPub = now
+
 		pct := 0
 		if pr.BytesTotal > 0 {
 			pct = int(pr.BytesDone * 100 / pr.BytesTotal)
@@ -86,10 +152,33 @@ func (m *Manager) execTransfer(ctx context.Context, id int64, tr *TransferReques
 				pct = 99
 			}
 		}
-		step := fmt.Sprintf("%s %d/%d files", name, pr.Files, pr.TotalFiles)
+		rate := int64(emaRate)
+		step := fmt.Sprintf("%s %d/%d files · %s / %s · %s/s", name, pr.Files, pr.TotalFiles,
+			humanBytes(pr.BytesDone), humanBytes(pr.BytesTotal), humanBytes(rate))
 		_ = m.store.UpdateJobProgress(ctx, id, pct, step, "")
-		m.publish(Event{JobID: id, Status: store.JobRunning, Progress: pct, Step: step,
-			BytesDone: pr.BytesDone, BytesTotal: pr.BytesTotal})
+		ev := Event{JobID: id, Status: store.JobRunning, Progress: pct, Step: step,
+			BytesDone: pr.BytesDone, BytesTotal: pr.BytesTotal, BytesPerSec: rate}
+		if pr.Name != "" && now.Sub(lastLog) >= 900*time.Millisecond {
+			lastLog = now
+			ev.Line = "↑ " + pr.Name
+			ev.Ts = now.UnixMilli()
+		}
+		m.publish(ev)
 	}
 	return transfer.Run(ctx, client, req, onProg)
+}
+
+// humanBytes formats a byte count in binary units (e.g. "3.4 GiB", "18.0 MiB"). Used for transfer step
+// text + throughput; a rate is formatted the same and suffixed "/s" by the caller.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for x := n / unit; x >= unit; x /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }

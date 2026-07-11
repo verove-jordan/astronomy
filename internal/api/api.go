@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/klauspost/compress/gzhttp"
+
 	"github.com/verove-jordan/astronomy/internal/agent"
 	"github.com/verove-jordan/astronomy/internal/buildinfo"
 	"github.com/verove-jordan/astronomy/internal/canopy"
@@ -55,6 +57,7 @@ type Server struct {
 	agent          *agent.Runner       // tool-using AstroAgent (drives the local model over the app's tools)
 	agentTurns     *turns.Sessions     // live turns (agent chat + supervised-job conversations), streamed over SSE
 	toolHealth     *toolhealth.Checker // environment health (tool deep probes + catalogue presence)
+	s3cache        *s3Cache            // reuses minio clients + memoizes listings so browsing stays fast
 }
 
 // New builds the API server. hub is the shared turn transport (also handed to the job manager) so a
@@ -86,6 +89,7 @@ func New(mgr *job.Manager, st *store.Store, cfg *config.Config, hub *turns.Sessi
 		s3conn:         newS3ConnService(st, cfg),
 		agentTurns:     hub,
 		toolHealth:     toolhealth.New(cfg),
+		s3cache:        newS3Cache(),
 	}
 	s.buildAgent()
 	return s
@@ -109,8 +113,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/environment", s.environment)
 	mux.HandleFunc("POST /api/inspect", s.inspect)
 	mux.HandleFunc("GET /api/browse", s.browse)
+	mux.HandleFunc("GET /api/mode-params", s.modeParams)
+	mux.HandleFunc("GET /api/presets", s.listPresets)
+	mux.HandleFunc("POST /api/presets", s.savePreset)
+	mux.HandleFunc("PUT /api/presets/{id}", s.renamePreset)
+	mux.HandleFunc("DELETE /api/presets/{id}", s.deletePreset)
 	mux.HandleFunc("GET /api/masters", s.masters)
 	mux.HandleFunc("GET /api/phone-masters", s.phoneMasters)
+	mux.HandleFunc("POST /api/library/s3-sync", s.libraryS3Sync)
 	mux.HandleFunc("POST /api/reuse/preview", s.reusePreview)
 	mux.HandleFunc("POST /api/calib/preview", s.calibPreview)
 	mux.HandleFunc("POST /api/jobs", s.createJob)
@@ -121,6 +131,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/continue", s.continueJob)
 	mux.HandleFunc("POST /api/jobs/{id}/restart", s.restartJob)
 	mux.HandleFunc("POST /api/jobs/{id}/refine", s.refineJob)
+	mux.HandleFunc("POST /api/jobs/{id}/rerun", s.rerunJob)
+	mux.HandleFunc("POST /api/jobs/{id}/denoise-final", s.denoiseFinalJob)
+	mux.HandleFunc("POST /api/jobs/{id}/free-local", s.freeLocalJob)
 	mux.HandleFunc("GET /api/jobs/{id}/iterations", s.jobIterations)
 	mux.HandleFunc("GET /api/jobs/{id}/events", s.jobEvents)
 	mux.HandleFunc("POST /api/series", s.createSeries)
@@ -138,11 +151,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sky/series", s.skyEventSeries)
 	mux.HandleFunc("GET /api/sky/polar", s.skyPolar)
 	mux.HandleFunc("GET /api/sky/align", s.skyAlign)
+	mux.HandleFunc("GET /api/sky/align/profiles", s.skyAlignProfiles)
 	mux.HandleFunc("GET /api/sky/geocode", s.geocode)
 	mux.HandleFunc("GET /api/s3/status", s.s3Status)
 	mux.HandleFunc("POST /api/s3/transfer", s.s3Transfer)
 	mux.HandleFunc("GET /api/s3/browse", s.s3Browse)
 	mux.HandleFunc("POST /api/s3/import", s.s3Import)
+	mux.HandleFunc("GET /api/local/drives", s.localDrives)
+	mux.HandleFunc("GET /api/local/browse", s.localBrowse)
+	mux.HandleFunc("POST /api/local/upload", s.localUpload)
 	mux.HandleFunc("GET /api/s3/connections", s.listConnections)
 	mux.HandleFunc("POST /api/s3/connections", s.createConnection)
 	mux.HandleFunc("POST /api/s3/connections/test", s.testConnection)
@@ -156,6 +173,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/s3/manage/objects", s.manageObjects)
 	mux.HandleFunc("POST /api/s3/manage/folder", s.manageCreateFolder)
 	mux.HandleFunc("DELETE /api/s3/manage/object", s.manageDeleteObject)
+	mux.HandleFunc("POST /api/s3/manage/move", s.manageMove)
 	mux.HandleFunc("GET /api/s3/manage/download", s.manageDownload)
 	mux.HandleFunc("POST /api/s3/manage/upload", s.manageUpload)
 	mux.HandleFunc("POST /api/backup", s.createBackup)
@@ -171,13 +189,28 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sky/canopy/atlas", s.canopyBuildAtlas)
 	mux.HandleFunc("GET /api/sky/weather", s.skyWeather)
 	mux.HandleFunc("GET /api/sky/weather/grid", s.skyWeatherGrid)
+	mux.HandleFunc("GET /api/sky/weather/grid/frames", s.skyWeatherGridFrames)
+	mux.HandleFunc("GET /api/sky/weather/tiles/{metric}/{time}/{z}/{x}/{y}", s.skyWeatherTile)
 	mux.HandleFunc("GET /api/agent/status", s.agentStatus)
 	mux.HandleFunc("POST /api/agent/chat", s.agentChat)
 	mux.HandleFunc("GET /api/agent/turns/{id}/events", s.agentTurnEvents)
 	mux.HandleFunc("POST /api/agent/turns/{id}/confirm", s.agentTurnConfirm)
 	mux.HandleFunc("POST /api/agent/turns/{id}/message", s.agentTurnMessage)
-	return cors(mux)
+	// CORS outermost so an OPTIONS preflight short-circuits before gzip. gzip compresses only JSON bodies
+	// (allow-list) above a min size — PNG tiles (image/png) and SSE (text/event-stream) pass through
+	// untouched, and gzhttp preserves http.Flusher so the streaming endpoints keep flushing.
+	return cors(gzipJSON(mux))
 }
+
+// gzipJSON wraps a handler with content-type-scoped gzip (application/json only). Built once from static
+// options, so the wrapper never errors; a misconfig would fail open (no compression) rather than panic.
+var gzipJSON = func() func(http.Handler) http.Handler {
+	wrap, err := gzhttp.NewWrapper(gzhttp.ContentTypes([]string{"application/json"}), gzhttp.MinSize(512))
+	if err != nil {
+		return func(h http.Handler) http.Handler { return h }
+	}
+	return func(h http.Handler) http.Handler { return wrap(h) } // wrap returns http.HandlerFunc (an http.Handler)
+}()
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -253,7 +286,7 @@ func (s *Server) browse(w http.ResponseWriter, r *http.Request) {
 	// The config honors ?conn= so the mirror listing targets the connection the bucket was chosen under.
 	if bucket := q.Get("bucket"); bucket != "" {
 		if cfg, err := s.s3ConfigForRequest(r); err == nil && cfg.Configured() {
-			if merged, err := s.mergeRemoteDirs(r.Context(), cfg, abs, bucket, q.Get("prefix"), dirs); err == nil {
+			if merged, err := s.mergeRemoteDirs(r.Context(), cfg, abs, bucket, q.Get("prefix"), dirs, wantsFresh(r)); err == nil {
 				dirs = merged
 			}
 		}
@@ -263,6 +296,23 @@ func (s *Server) browse(w http.ResponseWriter, r *http.Request) {
 		out = []browseEntry{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"path": abs, "entries": out})
+}
+
+// modeParams returns a stacking mode's effective tunable knobs (the values in effect for its preset)
+// plus the human-readable knob menu, so the UI can prefill the Advanced-parameters box. It flattens
+// through the SAME pipeline.ParamsFor the run merge uses, so the prefill can never drift from what the
+// run actually applies. An empty/unknown mode falls back to deep-sky. GET /api/mode-params?mode=deepsky
+func (s *Server) modeParams(w http.ResponseWriter, r *http.Request) {
+	mo, err := mode.ParseMode(r.URL.Query().Get("mode"))
+	if err != nil {
+		mo = mode.Deepsky
+	}
+	preset := mode.For(mo)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"mode":     string(mo),
+		"defaults": pipeline.ParamsFor(preset),
+		"menu":     pipeline.KnobMenuFor(mo),
+	})
 }
 
 func (s *Server) masters(w http.ResponseWriter, r *http.Request) {
@@ -465,6 +515,66 @@ func (s *Server) refineJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": newID, "turn_id": s.mgr.TurnFor(newID)})
 }
 
+// rerunJob re-runs a completed deepsky/nebula run from the stage an edited parameter requires, in place,
+// as a new job (non-supervised) — the manual counterpart of refineJob. Returns the new job id so the UI
+// can follow its live progress. POST /api/jobs/{id}/rerun  { "stage"?: string, "params"?: object }
+func (s *Server) rerunJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		badRequest(w, "invalid job id")
+		return
+	}
+	var req struct {
+		Stage  string          `json:"stage"`
+		Params json.RawMessage `json:"params"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			badRequest(w, "invalid body")
+			return
+		}
+	}
+	newID, err := s.mgr.Rerun(r.Context(), id, req.Stage, req.Params)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"id": newID})
+}
+
+// denoiseFinalJob runs GraXpert AI denoise on a completed run's final image on demand (offloaded to the
+// host GraXpert service when configured) and returns the new job id. POST /api/jobs/{id}/denoise-final
+func (s *Server) denoiseFinalJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		badRequest(w, "invalid job id")
+		return
+	}
+	newID, err := s.mgr.DenoiseFinal(r.Context(), id)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"id": newID})
+}
+
+// freeLocalJob frees the local input+output files of a finished full-S3 run — each verified present on S3
+// first — by enqueuing removeLocal transfers, and returns their job ids so the UI can follow the frees in
+// Tasks. POST /api/jobs/{id}/free-local
+func (s *Server) freeLocalJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		badRequest(w, "invalid job id")
+		return
+	}
+	ids, err := s.mgr.FreeLocal(r.Context(), id)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"ids": ids})
+}
+
 // listJobs returns a page of jobs newest-first (id desc = date desc) with the total, so the Tasks page
 // paginates ("load more") instead of loading the entire history. GET /api/jobs?offset=&limit=
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
@@ -525,19 +635,28 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // never let a proxy buffer the live stream
 
 	events, unsubscribe := s.mgr.Subscribe(id)
 	defer unsubscribe()
 
-	// Send a snapshot first so a late subscriber sees current state.
-	if jb, err := s.store.GetJob(r.Context(), id); err == nil {
-		done := isTerminal(jb.Status)
-		sendEvent(w, flusher, job.Event{
-			JobID: id, Status: jb.Status, Progress: jb.Progress, Step: jb.CurrentStep, Done: done,
-		})
-		if done {
-			return
-		}
+	// Send a snapshot first so a late subscriber sees current state — including the latest preview and the
+	// milestone previews accumulated so far, so a page reloaded mid-run restores its live preview and
+	// intermediary-image timeline instead of waiting for the next live event.
+	jb, err := s.store.GetJob(r.Context(), id)
+	if err != nil {
+		// Without the snapshot we cannot know the job is terminal — dangling here would hold a silent
+		// SSE open forever on a finished job. Close instead; the client retries or shows the fetched job.
+		return
+	}
+	done := isTerminal(jb.Status)
+	snap := job.Event{JobID: id, Status: jb.Status, Progress: jb.Progress, Step: jb.CurrentStep, Done: done}
+	if !done {
+		snap.Preview, snap.StagePreviews = s.mgr.PreviewSnapshot(id)
+	}
+	sendEvent(w, flusher, snap)
+	if done {
+		return
 	}
 	for {
 		select {
@@ -847,6 +966,41 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// writeJSONCached writes v as JSON with an ETag + Cache-Control, but returns 304 Not Modified (no body) when
+// the request's If-None-Match matches — so re-fetching an unchanged resource (e.g. the weather frames index)
+// is a tiny conditional round-trip instead of a full re-download. Empty etag → a plain writeJSON.
+func writeJSONCached(w http.ResponseWriter, r *http.Request, status int, etag, cacheControl string, v any) {
+	if etag == "" {
+		writeJSON(w, status, v)
+		return
+	}
+	w.Header().Set("ETag", etag)
+	if cacheControl != "" {
+		w.Header().Set("Cache-Control", cacheControl)
+	}
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	writeJSON(w, status, v)
+}
+
+// etagMatches reports whether the If-None-Match header (a comma list, tokens optionally W/-prefixed, or "*")
+// contains etag. Weak/strong prefixes are ignored (our ETags are weak validators).
+func etagMatches(header, etag string) bool {
+	if header == "" {
+		return false
+	}
+	want := strings.TrimPrefix(etag, "W/")
+	for _, tok := range strings.Split(header, ",") {
+		tok = strings.TrimPrefix(strings.TrimSpace(tok), "W/")
+		if tok == "*" || tok == want {
+			return true
+		}
+	}
+	return false
+}
+
 func badRequest(w http.ResponseWriter, msg string) {
 	writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
 }
@@ -860,6 +1014,10 @@ func cors(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		// The app is normally same-origin (a reverse proxy forwards /api), so CORS is unused. But if BASE is
+		// pointed at this engine cross-origin, tiles are loaded via <img>: allow that explicitly so a browser
+		// never opaque-blocks a tile (or masks an error body as a bare net::ERR). Harmless for same-origin.
+		w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
