@@ -41,8 +41,13 @@ public data services by default.
 | `internal/inspect` | Walk a directory, classify each file (light/dark/flat/bias/dark-flat/video), group into sets. Bare-filename legacy captures are labeled from an `info.txt` sidecar (`manifest.go`) that lists the per-sub-run filter order + gain. |
 | `internal/siril` | `SirilRunner`: generate `.ssf`, exec `siril-cli`, parse `progress:`/`log:` + `seqstat` CSV. |
 | `internal/grade` | Per-frame quality metrics + rejection rules; trail handling. |
-| `internal/calib` | Build master calibration frames; match the right masters to each light set; calibration library. |
-| `internal/pipeline` | Orchestrate inspect → masters → calibrate → grade → register → stack → combine; soft-fail AI steps in `enhance.go`. |
+| `internal/calib` | Build master calibration frames (+ the dark **defect map** / bad-pixel scan); match the right masters to each light set; calibration library + deep cross-session pools. |
+| `internal/transient` | Cross-frame satellite/plane-trail + cosmic-ray masking on the registered subs, validated against fixed-pattern noise. |
+| `internal/photom` | Photometric normalization across mixed-session groups (percentile-curve fit; currently off by default). |
+| `internal/dither` | Pointing-pattern diagnosis from registration offsets (dithered / drift / static) — the walking-noise advisory. |
+| `internal/noise` · `internal/imgops` · `internal/optics` | Noise measurement/starlet denoiser, shared image ops, flat-defect QC. |
+| `internal/pipeline` | Orchestrate inspect → masters → calibrate → grade → register → stack → combine; soft-fail AI steps in `enhance.go`; palettes, supervisor, per-stage rerun. |
+| `internal/preset` | The built-in "best params per situation" catalog (16 recipes) merged with user presets. |
 | `internal/postprocess` | LRGB+Ha channel combine, color calibration, stretch; optional GIMP touch-ups. |
 | `internal/graxpert` | Optional host CLI: GraXpert AI background-gradient extraction / denoise (`GRAXPERT_BIN`). |
 | `internal/starnet` | Optional host CLI: StarNet++ v2 star removal for star-reduced finishing (`STARNET_BIN`). |
@@ -64,10 +69,37 @@ public data services by default.
 | `internal/buildinfo` | Engine build identity injected via `-ldflags` (`Version`/`BuiltAt`) — stamped into `/api/health` and every `run.json`. |
 | `internal/toolhealth` | Deep environment probes (Siril/GIMP/GraXpert/StarNet/raw developer/LLM + offline-catalogue presence) behind `/api/environment`. |
 | `internal/store` | Postgres access via **raw `pgx/v5`** (no ORM/sqlc); schema applied from embedded, versioned `*.up.sql` migrations (`store.Migrate`, tracked in `schema_migrations`). |
-| `internal/job` | In-process worker pool + job lifecycle. |
+| `internal/libmirror` | The calibration library's S3-mirror convention + on-demand puller seam. |
+| `internal/job` | In-process worker pool (parallel / sequential / transfer lanes), job lifecycle incl. pause/resume + cancel semantics, per-input-dir locking. |
+| `internal/agent` · `internal/turns` | AstroAgent chat loop (confirmation-gated tools) + the live conversation transport shared with supervised runs. |
 | `internal/api` | HTTP handlers (Go 1.22 `http.ServeMux` method routing) + SSE progress; the `/api/sky/*` planner endpoints. |
 | `astro` · `skycat` · `skyplan` | Ephemeris, sky-object catalog, and visibility/event scoring behind the **planner** (`/api/sky/*`). |
 | `internal/report` | JSON + markdown run reports. |
+
+## Colour palettes (deep-sky finish)
+
+The deep-sky GIMP finish resolves a user-selectable **colour palette** — the channel→RGB mapping — in
+`internal/pipeline/palette.go` (`resolvePalette`), consumed by `prepGimpInputs`:
+
+| Palette | R | G | B | Notes |
+|---|---|---|---|---|
+| `natural` (default) | R | G | B | broadband LRGB + Hα screen + SPCC; `""` ≡ natural (byte-identical to the pre-palette pipeline) |
+| `hargb` | R | G | B | natural with Hα mandatory |
+| `hoo` | Hα | OIII | OIII | narrowband bicolour |
+| `sho` (Hubble) | SII | Hα | OIII | narrowband |
+| `hos` (CFHT) | Hα | OIII | SII | narrowband |
+| `foraxx` (Webb-style) | Hα | √(Hα·OIII) | OIII | dynamic green via Siril pixel-math |
+| `mono` | L → Hα → first | — | — | single-channel |
+
+The narrowband palettes assign emission lines straight to R/G/B, so they **disable the Hα screen and
+SPCC** and stretch unlinked; natural/hargb keep the SPCC ladder. A palette missing its required filters
+falls back down a chain to one that resolves (ultimately mono) and records a `run.json` note — so a run
+can request SHO today and simply render natural until OIII/SII data exists. The palette is a **Tier-B**
+knob (`palette` in the supervisor/agent whitelist), so it can be switched post-run from the stage
+timeline or Refine as a cheap re-finish (rebuild the combine from the persisted channel masters, no
+re-stack). A pure **star cluster** (OpenNGC globular/open) additionally gets a gentler natural-colour
+finish profile (`applyClusterProfile`): full-opacity L luminance, low saturation, star-core
+desaturation + chroma blur, so a dense field reads as natural white-ish stars, not solid colour discs.
 
 ## Weather & sky overlays
 
@@ -83,8 +115,9 @@ soft-fail** takes over (last cached frames + a warning). The disk cache is **ver
 (`gridCacheVersion` in `internal/weather/provider.go`, part of the cache key) so a semantic or
 geometry change ignores stale cubes instead of mis-rendering them. On the client, the coarse grid
 is bicubically interpolated onto a viewport-sized **canvas overlay** (a Leaflet `imageOverlay`
-backed by a canvas, `frontend/src/composables/useWeatherGridLayer.ts`) with play/scrub over the
-timesteps. Weather is overlay + panel only — it never changes visibility scores.
+backed by a canvas — `frontend/src/composables/useFrameTileLayer.ts`, registered through the
+modular layer registry `useMapLayers.ts`) with play/scrub over the timesteps. Weather is overlay +
+panel only — it never changes visibility scores.
 
 ## Run provenance & environment health
 
@@ -154,45 +187,58 @@ points at). **StarNet++** is not baked in (licence not redistributable) — moun
 set `STARNET_BIN`; it soft-fails to full stars otherwise. The one thing that cannot run in a container on
 macOS is the **VLM** (no GPU/Metal) — keep it native there.
 
+### Which mode per environment
+
+| Environment | Command | Engine + Siril/GIMP | AI model (VLM) | Use it for |
+|---|---|---|---|---|
+| **macOS — daily dev** | `just up` + `just dev` + `just web` | **native on host** (fast) | native mlx: `just run-ia-model` | everything — the normal workflow |
+| **macOS — full container** | `just stack` | container (**native arm64**) — Siril/GIMP run natively (Siril ~1.2.x from the distro) | native mlx on host | a full local stack; use amd64 or host-dev for exact 1.4.3 parity |
+| **Linux + NVIDIA GPU** | `just stack-ai` + `just ai-pull` | container (**native amd64**) — full processing | container (Ollama, GPU) | **true 100 % dockerized**, incl. the VLM |
+| **Linux — no GPU** | `just stack` | container (native amd64) — full processing | skip, or point at any OpenAI-compatible server | headless processing without a GPU |
+
+### Ports
+
+| Port | Service | Mode |
+|---|---|---|
+| `5432` | Postgres | all |
+| `8080` | engine API | host-dev (`just dev`) **or** container (`just stack`) — one at a time |
+| `8082` | frontend (nginx) | `stack` / `web` |
+| `11434` | Ollama VLM | `ai` (Linux + GPU) |
+| `1234` | native mlx VLM | macOS host (`just run-ia-model`) |
+| `8081` | Adminer | `tools` |
+| `5173` | Vite dev server | host-dev (`just web`) |
+
+### Stack configuration (`.env`)
+
+Beyond the host-dev variables, the containerized stack reads (host tool paths like `SIRIL_BIN` are
+**baked into the engine image** and don't apply here):
+
+| Variable | Default | Description |
+|---|---|---|
+| `API_UPSTREAM` | `host.docker.internal:8080` | nginx `/api` target; `just stack` sets it to `engine:8080`. |
+| `ENGINE_PORT` | `8080` | Host port the containerized engine's API is published on. |
+| `UID` / `GID` | *(unset → 10001)* | Linux: run the engine as the UID/GID owning the data dirs (`id -u`/`id -g`). |
+| `ASTRO_LLM_URL` / `ASTRO_LLM_MODEL` | host mlx / — | VLM endpoint + model id (see the table above). |
+| `OLLAMA_TAG` / `OLLAMA_PORT` | `0.6.8` / `11434` | Ollama image tag (verify one for your driver) + port. |
+
+**Your existing data & runs keep working.** The engine stores **absolute** paths in Postgres +
+`run.json`, so the stack mounts your `./input`, `./library`, `./output`, `./work` at their **same
+absolute host paths** and runs with the repo root as CWD. Previous Library masters, Runs, Tasks and
+cross-session reuse resolve unchanged, and you can switch between host-dev and the stack freely.
+Keep captures under `./input` (or symlink them there); `input` is mounted read-only.
+
 ## S3 storage (import / process / results + sync + backup)
 
-S3 is a first-class store alongside the local filesystem, so large captures/results can live in the cloud
-and local disk stays free — without ever losing data. **Credentials** come from a **UI-managed connection**
-or the host environment (`ASTRO_S3_*`); the **bucket + prefix** are chosen per-request in the UI. The mirror
-convention under `<prefix>` is `data/<relToDataDir>` (captures), `output/<relToOutputDir>` (results) and
-`backup/<stamp>/` (snapshots).
+S3 is a first-class store alongside the local filesystem, so large captures/results can live in the
+cloud and local disk stays free — without ever losing data. Credentials come from a UI-managed
+connection (secret **AES-256-GCM encrypted at rest**, never returned to the UI) or the
+`ASTRO_S3_*` env fallback; bucket + prefix are per-request UI state. The mirror convention under
+`<prefix>` is `data/` (captures), `output/` (results), `library/` (calibration masters, pulled
+back on demand) and `backup/<stamp>/` (snapshots: db dump, library tar, atlas, browser app-state).
+Transfers, backups and restores are ordinary **jobs** on a dedicated worker lane; "free local"
+**verifies every file on S3 before deleting anything**; freed previews/results serve local-first
+with a transparent S3 fallback; a *full-S3* run pulls inputs, processes locally, pushes and frees
+(low-disk mode stages one channel wave at a time).
 
-- **Connections (`internal/secret` + `internal/store/s3conn.go` + `internal/s3conn`)** — the UI (Processing →
-  **Storage**, `views/StorageView.vue`) connects to any S3-compatible store by entering endpoint + access
-  key + secret. Connections persist in Postgres (`s3_connections`) with the **secret access key AES-256-GCM
-  encrypted at rest** — the master key is `ASTRO_ENCRYPTION_KEY` or an auto-generated key file kept *outside*
-  the backup roots. The secret is decrypted only to build a client and **never returned to the UI**
-  (`SecretEnc` is `json:"-"`). One connection is the **default**, and the pipeline's S3 config resolves
-  *default connection → env* (`s.s3Config(ctx)` / `m.s3ConfigResolved(ctx)`), so a UI connection transparently
-  drives import/process/results/backup. The same view is a full **object manager** (browse buckets/objects,
-  upload, download, delete, create folder/bucket — `internal/s3store/manage.go`).
-- **`internal/s3store`** — a small reusable minio-go v7 client (list/stat/upload/download with byte
-  progress/delete/put+get bytes). Deals in raw `(bucket, key, localPath)`; the mirror mapping lives in the
-  callers.
-- **`internal/transfer`** — the sync engine: `upload` / `sync` (upload only what's missing, by rel-key +
-  size) / `download` / `removeLocal` (**verifies each file is present + same-size on S3, then deletes
-  local — aborting the whole folder if any file is unverified**, so "free local" never loses data).
-- **Transfers, backups and restores are modeled as jobs** (`RunRequest.Transfer/Backup/Restore`,
-  intercepted in `Manager.execute` before mode parsing) so they inherit the SSE progress / Cancel /
-  persistence stack and a dedicated worker lane (`xferQueue`, never starving pipeline runs). `Event` gains
-  live-only `bytes_done/bytes_total`.
-- **Local-first, S3-fallback serving** (`internal/api` `ensureServable`, `s3OutputRuns`,
-  `remoteDataDirExists`) — after "Free local", previews/results/thumbnails and the Runs gallery transparently
-  download-on-demand from the mirror into a regenerable cache. The frontend tags every file/preview/thumb
-  URL and the runs/processed lists with the active bucket/prefix (`services/api.ts` `s3Suffix`/`withS3`), so
-  previews work everywhere with zero per-component changes.
-- **Process modes** (`StorageMode`) — *full-local* (default, keep) or *full-S3*: `run()` pulls the capture
-  folders from S3 → runs the pipeline unchanged (the engine stays local-only: Siril/GIMP write absolute
-  paths) → backs up inputs+outputs → frees local (verified). A failed push fails the job (nothing freed); a
-  partial free is non-fatal (data is safe on S3).
-- **`internal/backup`** — snapshot the precious state that isn't a big file: Postgres (`pg_dump -Fc` →
-  `pg_restore --clean` on restore), the calibration-master library (tar), the light-pollution atlas, and the
-  **browser-only app state** (favorites/setups/prefs + AI-chat IndexedDB) — the latter can only be gathered
-  UI-side (`frontend/src/utils/appstate.ts`), posted as `appstate.json`, and re-imported on restore.
-  Components soft-fail individually; a `manifest.json` records what was stored + the roots. Secrets in
-  `.env` are excluded by default. Captures/results are backed up via the per-folder sync instead.
+Full detail — layout, connections, transfer semantics, staging, backup/restore:
+**[docs/storage-s3.md](storage-s3.md)**.

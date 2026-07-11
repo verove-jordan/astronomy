@@ -35,6 +35,25 @@ Open the run's `output/<object>/<runID>/run.json` and check:
 - Sanity: `warnings` contains no `finish quality:` entries; `final.png` shows a neutral dark sky
   and varied (not uniformly orange) star colours.
 
+### Noise & calibration (same run)
+
+- **Adaptive rejection engaged** — the Siril log (job log tail, or `-v` on the CLI) must show the
+  algorithm matching each pool's size: `Pixel rejection ........... GESDT clipping` with
+  `outliers=0.300 significance=0.050` for a ≥ 50-frame pool (e.g. a 100-offset bias master),
+  `winsorized sigma clipping` for 8–49, `percentile clipping` for ≤ 7
+  (`siril.Rejection` in `internal/siril/scripts.go`).
+- **Dark defect map built and applied** — after a run whose dark pool has ≥ 8 raw darks:
+  `library/master_DARK_*_defects.lst` exists next to the master, and the log shows
+  `Cosmetic correction from Bad Pixel Map: …_defects.lst` for every calibrated channel
+  (`calib.ScanDarkDefects` + `-cc=bpm` in `internal/siril/scripts.go`). With < 8 darks the scan is
+  skipped and `-cc=dark` appears instead.
+- **Pointing verdict recorded** — `run.json` `channels[].dither.pattern` is one of
+  `dithered|mixed|drift|static` (≥ 5 registered frames), the Tasks job page shows the **Pointing**
+  column, and a `drift`/`static` session carries exactly one run warning recommending dithering
+  (`internal/dither`, `appendDitherAdvice`).
+- **Preset catalog anti-drift** — `go test ./internal/preset` (locks the 16 built-in recipes
+  against accidental default changes).
+
 ## milkyway
 
 ```bash

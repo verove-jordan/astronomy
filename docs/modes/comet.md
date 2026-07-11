@@ -54,8 +54,10 @@ Sources of truth: `pipeline.ProcessComet` (`internal/pipeline/comet.go`) and `in
      star-aligned-only image with an explicit warning.
 6. **Dual per-channel stacks** (`stackChannelsDual`), from the same globally-aligned frames:
    - **star stack** — `siril.StackAlignedScript`:
-     `stack s rej winsorized 3 3 -norm=addscale -output_norm -out=star_master_<tag>` — the
-     symmetric rejection clips the *moving* comet out of the star image;
+     `stack s <adaptive rejection> -norm=addscale -output_norm -out=star_master_<tag>` — the
+     rejection algorithm follows the frame count (percentile ≤ 7 / winsorized 8–49 / GESD ≥ 50,
+     see [../calibration.md](../calibration.md#count-adaptive-rejection)); its symmetric clip
+     removes the *moving* comet from the star image;
    - **comet stack** — each surviving frame is translated so the coma lands at the mid-time
      position `p_mid` (`translateChannel` → `comet.TranslateFile`, sub-pixel bilinear), then
      `siril.StackCometScript` stacks with **asymmetric** rejection:
