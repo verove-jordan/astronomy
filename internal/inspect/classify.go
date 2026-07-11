@@ -88,6 +88,11 @@ type frameStat struct {
 	mad        float64 // robust noise (median absolute deviation)
 	brightFrac float64 // fraction of pixels well above the noise floor (structure/nebulosity)
 	peaks      int     // distinct bright point sources (stars/hot pixels)
+	// hasStats marks that the pixel curve was actually measured. A frame whose stats could not be
+	// read (unreadable file, or no raw developer on this host — sips is macOS-only) must NEVER be
+	// classified from its zero-value curve: an all-zero stat is indistinguishable from a bias at
+	// the dark floor, which is how processed TIFFs became phantom BIAS frames in the Linux engine.
+	hasStats bool
 }
 
 // Statistical-fallback thresholds. They run only when neither header, filename, nor folder names a
@@ -118,6 +123,9 @@ func classifyByStats(stats []frameStat) []FrameType {
 }
 
 func classifyOneStat(s frameStat, floor float64, starryExp map[int64]bool) FrameType {
+	if !s.hasStats {
+		return Light // no measured curve → never guess a calibration type; keep the frame as signal
+	}
 	switch {
 	case hasStars(s):
 		return Light
@@ -151,11 +159,12 @@ func starryExposures(stats []frameStat) map[int64]bool {
 }
 
 // darkFloor is the session's dark/bias signal level: the smallest frame median (the least-illuminated
-// frame). It is the reference a flat must clearly exceed and a bias must sit near.
+// frame). It is the reference a flat must clearly exceed and a bias must sit near. Frames without
+// measured stats are excluded — their zero medians would drag the floor to 0 for everyone else.
 func darkFloor(stats []frameStat) float64 {
 	floor := math.MaxFloat64
 	for _, s := range stats {
-		if s.median < floor {
+		if s.hasStats && s.median < floor {
 			floor = s.median
 		}
 	}

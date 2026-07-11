@@ -105,7 +105,7 @@ func visualLimitMag(apertureMM, magX float64) float64 {
 // isPointLikeType reports whether a target reads as star-like in the eyepiece (clusters resolve into
 // stars), so its integrated magnitude — not its surface brightness — governs visual detectability.
 func isPointLikeType(objType string) bool {
-	return objType == "cluster" || objType == "globular"
+	return objType == "cluster" || objType == "open_cluster" || objType == "globular"
 }
 
 // visualDetectabilityScore rates how easily the eye sees a target through the chosen eyepiece. Star-like

@@ -44,8 +44,8 @@ func TestHeader_CDDeterminant(t *testing.T) {
 		},
 		{
 			// Mirrored frame: CDELT1 positive (East-right) with identity PC → det(CD) > 0 → needs a flip.
-			name: "mirrored frame, positive CDELT1, PC identity",
-			cards: map[string]string{"CDELT1": "0.0003", "CDELT2": "0.0003"},
+			name:   "mirrored frame, positive CDELT1, PC identity",
+			cards:  map[string]string{"CDELT1": "0.0003", "CDELT2": "0.0003"},
 			wantOK: true, wantSign: 1,
 		},
 		{

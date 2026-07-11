@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -56,30 +57,42 @@ func TestClassifyByStats(t *testing.T) {
 		{
 			name: "16-bit integer LRGB session",
 			stats: []frameStat{
-				{exposureMs: 60000, peaks: 80, median: 1200, mad: 40},  // light: stars
-				{exposureMs: 1500, peaks: 0, median: 30000, mad: 300},  // flat: bright + uniform
-				{exposureMs: 0, peaks: 0, median: 300, mad: 5},         // bias: ~0 exposure at floor
-				{exposureMs: 60000, peaks: 2, median: 500, mad: 50},    // dark: long, dim, starless
+				{exposureMs: 60000, peaks: 80, median: 1200, mad: 40, hasStats: true}, // light: stars
+				{exposureMs: 1500, peaks: 0, median: 30000, mad: 300, hasStats: true}, // flat: bright + uniform
+				{exposureMs: 0, peaks: 0, median: 300, mad: 5, hasStats: true},        // bias: ~0 exposure at floor
+				{exposureMs: 60000, peaks: 2, median: 500, mad: 50, hasStats: true},   // dark: long, dim, starless
 			},
 			want: []FrameType{Light, Flat, Bias, Dark},
 		},
 		{
 			name: "normalized [0,1] float frames",
 			stats: []frameStat{
-				{exposureMs: 120000, peaks: 60, median: 0.05, mad: 0.002}, // light
-				{exposureMs: 3000, peaks: 0, median: 0.6, mad: 0.01},      // flat
-				{exposureMs: 0, peaks: 0, median: 0.01, mad: 0.001},       // bias
-				{exposureMs: 120000, peaks: 1, median: 0.012, mad: 0.003}, // dark (dim, long)
+				{exposureMs: 120000, peaks: 60, median: 0.05, mad: 0.002, hasStats: true}, // light
+				{exposureMs: 3000, peaks: 0, median: 0.6, mad: 0.01, hasStats: true},      // flat
+				{exposureMs: 0, peaks: 0, median: 0.01, mad: 0.001, hasStats: true},       // bias
+				{exposureMs: 120000, peaks: 1, median: 0.012, mad: 0.003, hasStats: true}, // dark (dim, long)
 			},
 			want: []FrameType{Light, Flat, Bias, Dark},
 		},
 		{
 			name: "nebulosity light with sparse stars caught by brightFrac",
 			stats: []frameStat{
-				{exposureMs: 300000, peaks: 3, brightFrac: 0.05, median: 900, mad: 30}, // faint Ha light
-				{exposureMs: 300000, peaks: 1, brightFrac: 0.0002, median: 800, mad: 60}, // dark
+				{exposureMs: 300000, peaks: 3, brightFrac: 0.05, median: 900, mad: 30, hasStats: true},   // faint Ha light
+				{exposureMs: 300000, peaks: 1, brightFrac: 0.0002, median: 800, mad: 60, hasStats: true}, // dark
 			},
 			want: []FrameType{Light, Dark},
+		},
+		{
+			// The container regression: a frame whose pixels could not be sampled (no sips on Linux)
+			// has an all-zero curve that LOOKS like a bias at the dark floor. It must classify LIGHT —
+			// never a calibration type — and its zero median must not drag the session floor down.
+			name: "unreadable stats never classify as calibration",
+			stats: []frameStat{
+				{exposureMs: 0}, // e.g. a processed TIFF, stats unreadable
+				{exposureMs: 60000, peaks: 80, median: 1200, mad: 40, hasStats: true}, // real light
+				{exposureMs: 0, peaks: 0, median: 300, mad: 5, hasStats: true},        // real bias stays a bias
+			},
+			want: []FrameType{Light, Light, Bias},
 		},
 	}
 	for _, tt := range tests {
@@ -110,6 +123,35 @@ func TestScan_EXPOINUSExposureAndBayerOSC(t *testing.T) {
 	assert.Equal(t, 1, removed)
 	assert.Empty(t, inv.Frames)
 	assert.Empty(t, inv.SetsOfType(Light))
+}
+
+// TestScan_SpuriousBayerOnMonoRig reproduces the older-ASICAP capture of a MONO camera (ASI 1600MM Pro):
+// every frame carries a BAYERPAT card, yet the lights are shot through a filter wheel (L/R/G/B/Ha). The
+// CFA card is spurious — without the veto the whole session is dropped as one-shot-color and the job
+// "succeeds" instantly with no channels. The filter wheel proves the rig is mono, so Bayer must be cleared
+// on the filtered lights AND their calibration frames; ExcludeBayer must then drop nothing.
+func TestScan_SpuriousBayerOnMonoRig(t *testing.T) {
+	dir := t.TempDir()
+	const bayer = "'GRBG'"
+	// Filtered lights (a filter wheel ⇒ mono rig), each tagged with the bogus CFA pattern.
+	for i, filt := range []string{"'L'", "'R'", "'G'", "'B'", "'Ha'"} {
+		fitstest.Write(t, dir, "light_"+strconv.Itoa(i)+".fits", 8, 8, 2400,
+			map[string]string{"IMAGETYP": "'Light'", "FILTER": filt, "BAYERPAT": bayer, "EXPOINUS": "120000000"})
+	}
+	// Calibration frames carry no filter but belong to the same mono rig — they too must be un-Bayered.
+	fitstest.Write(t, dir, "dark_0.fits", 8, 8, 800,
+		map[string]string{"IMAGETYP": "'Dark'", "BAYERPAT": bayer, "EXPOINUS": "120000000"})
+	fitstest.Write(t, dir, "bias_0.fits", 8, 8, 500,
+		map[string]string{"IMAGETYP": "'Bias'", "BAYERPAT": bayer, "EXPOINUS": "1000"})
+
+	inv, err := Scan(context.Background(), dir)
+	require.NoError(t, err)
+	require.Len(t, inv.Frames, 7)
+	for _, fr := range inv.Frames {
+		assert.Empty(t, fr.Bayer, "%s: spurious BAYERPAT must be cleared on a filter-wheel (mono) session", filepath.Base(fr.Path))
+	}
+	assert.Zero(t, inv.ExcludeBayer(), "no frame should be dropped as one-shot-color")
+	assert.NotEmpty(t, inv.SetsOfType(Light), "the mono lights must survive into stackable sets")
 }
 
 func TestIsOSCDir(t *testing.T) {

@@ -35,6 +35,10 @@ func TestDenoiseArgs(t *testing.T) {
 	assert.Equal(t,
 		[]string{"in.fits", "-cmd", "denoising", "-output", "out.fits", "-gpu", "true"},
 		denoiseArgs("in.fits", "out.fits", DenoiseOptions{GPU: true}))
+	// batch + strength are denoise-only knobs, appended only when set.
+	assert.Equal(t,
+		[]string{"in.fits", "-cmd", "denoising", "-output", "out.fits", "-gpu", "false", "-batch_size", "16", "-strength", "0.80"},
+		denoiseArgs("in.fits", "out.fits", DenoiseOptions{Batch: 16, Strength: 0.8}))
 }
 
 func TestParsePercent(t *testing.T) {
@@ -63,5 +67,5 @@ func TestFirstErrorLine(t *testing.T) {
 }
 
 func TestAvailable_EmptyBin(t *testing.T) {
-	assert.Error(t, New("").Available(context.Background()))
+	assert.Error(t, New("", "").Available(context.Background()))
 }

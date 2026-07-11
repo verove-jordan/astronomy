@@ -70,7 +70,35 @@ const Step = z.object({
     .object({ into: Target, text: z.string(), enter: z.boolean().default(false) })
     .optional(),
   hover: Target.optional(),
-  scrollTo: Target.optional(),
+  scrollTo: Target.optional(), // smooth-scroll this element to the viewport centre
+  scroll: z
+    .object({
+      by: z.number().optional(), // pixels (default ~600); ignored if `edge` is set
+      edge: z.enum(["top", "bottom"]).optional(),
+      ms: z.number().positive().optional(),
+    })
+    .optional(), // smooth page scroll (reveal below-the-fold content)
+  mapZoom: z
+    .object({
+      on: Target, // the map element to zoom
+      in: z.number().int().positive().optional(),
+      out: z.number().int().positive().optional(),
+      ms: z.number().positive().optional(),
+    })
+    .optional(), // real Leaflet zoom by double-clicking the map N times (not the cosmetic `zoom`)
+  drawRect: z
+    .object({
+      on: Target, // the map element to draw on
+      from: z.tuple([z.number(), z.number()]), // top-left, as 0..1 fractions of the element box
+      to: z.tuple([z.number(), z.number()]), // bottom-right, fractions
+      ms: z.number().positive().optional(),
+    })
+    .optional(), // drag a rectangle (e.g. the dark-sky search area)
+  select: z
+    .object({ into: Target, value: z.string().optional(), label: z.string().optional() })
+    .optional(), // choose a <select> option (by value or visible label)
+  external: Target.optional(), // click a link that opens a new tab, then close it (the "handoff")
+  waitFor: Target.optional(), // wait for an element to become visible (e.g. async search results)
   highlight: Target.optional(), // spotlight until the next step
   job: JobConfig.optional(),
   waitForJob: WaitForJob.optional(),
@@ -90,6 +118,8 @@ const Meta = z.object({
   baseApi: z.string().url().default("http://localhost:8080"),
   music: z.string().optional(), // path (relative to the package) to a background track
   voiceover: z.enum(["say", "none"]).default("none"),
+  voice: z.string().optional(), // macOS `say` voice, e.g. "Siri Voice 3 (French (France))"
+  voiceRate: z.number().int().positive().optional(), // speaking rate in words/min
 });
 export type Meta = z.infer<typeof Meta>;
 

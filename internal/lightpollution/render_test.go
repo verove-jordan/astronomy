@@ -76,7 +76,7 @@ func TestProvider_ColoredTile_RendersAndCaches(t *testing.T) {
 
 	path1, err := p.ColoredTile(context.Background(), 5, 15, 10)
 	require.NoError(t, err)
-	assert.Contains(t, path1, filepath.Join("tiles_bortle_v1", "5", "15"))
+	assert.Contains(t, path1, filepath.Join("tiles_bortle_v3", "5", "15"))
 
 	// The rendered tile is the all-dark Bortle color, opaque.
 	f, err := os.Open(path1)
@@ -99,4 +99,33 @@ func TestProvider_ColoredTile_NoSource(t *testing.T) {
 	p := New(&config.Config{WorkDir: t.TempDir(), DataDir: t.TempDir()})
 	_, err := p.ColoredTile(context.Background(), 5, 1, 1)
 	assert.ErrorIs(t, err, ErrNoTileSource)
+}
+
+// A tile inside atlas coverage must be rendered from the atlas SQM (via sqmToBortleF), NOT from GIBS —
+// this is what keeps the map colour in step with the per-site badge.
+func TestProvider_ColoredTile_FromAtlas(t *testing.T) {
+	// Uniform SQM 21.94 (= Bortle 2, mid-band) over lat 40..50, lon 0..10; no GIBS tile URL configured.
+	const sqm = 21.94
+	cells := make([]float32, 16)
+	for i := range cells {
+		cells[i] = sqm
+	}
+	bin := writeAtlas(t, atlasMeta{
+		Rows: 4, Cols: 4, LatMin: 40, LatMax: 50, LonMin: 0, LonMax: 10, Unit: "sqm", NoData: -1,
+	}, cells)
+	p := New(&config.Config{WorkDir: t.TempDir(), DataDir: t.TempDir(), LightPollutionAtlas: bin})
+	require.NotNil(t, p.atlas)
+
+	z, x, y := 8, 131, 92 // ~lon 5, lat 45 — well inside coverage
+	require.True(t, tileInsideAtlas(z, x, y, p.atlas.Meta), "test tile must be fully inside coverage")
+
+	path, err := p.ColoredTile(context.Background(), z, x, y)
+	require.NoError(t, err)
+	img, err := decodePNG(path)
+	require.NoError(t, err)
+
+	want := gradientColor(clampf((sqmToBortleF(sqm)-1)/8, 0, 1))
+	r, g, b, a := img.At(128, 128).RGBA()
+	got := color.NRGBA{uint8(r / 257), uint8(g / 257), uint8(b / 257), uint8(a / 257)}
+	assert.Equal(t, want, got, "inside-coverage pixel is the atlas Bortle colour, not GIBS")
 }

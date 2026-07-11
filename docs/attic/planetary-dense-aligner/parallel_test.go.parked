@@ -1,0 +1,77 @@
+package planetary
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/verove-jordan/astronomy/internal/comet"
+)
+
+// warpDiskShifts writes a sequence of textured disks drifted by known sub-pixel amounts (some blurred so
+// the sharpness ranking, the pre-cull and the synthetic reference all have something to order), returning
+// their paths and per-frame sharpness scores.
+func warpDiskShifts(t *testing.T, w, h int) (dir string, paths []string, scores []float64) {
+	t.Helper()
+	base := texturedDisk(w, h)
+	specs := []struct {
+		dx, dy float64
+		blur   int
+	}{{0, 0, 0}, {2.3, -1.5, 1}, {-3, 2, 0}, {1.2, 4.1, 2}, {-2.5, -2.5, 1}, {3.5, 0.5, 0}, {0.7, -3.2, 1}}
+	dir = t.TempDir()
+	for i, s := range specs {
+		im := comet.Translate(base, s.dx, s.dy)
+		if s.blur > 0 {
+			im = blurPlane(im, s.blur)
+		}
+		p := filepath.Join(dir, fmt.Sprintf("in_%02d.fits", i))
+		require.NoError(t, im.WriteFITS(p))
+		paths = append(paths, p)
+		scores = append(scores, diskSharpness(im))
+	}
+	return dir, paths, scores
+}
+
+// TestWarpToSharpest_Parallel_Deterministic asserts the parallel aligner is worker-count invariant: a
+// single worker and many workers must produce byte-identical aligned FITS and byte-identical stacked
+// masters (each survivor owns a pre-assigned output path, so completion order can never leak in).
+func TestWarpToSharpest_Parallel_Deterministic(t *testing.T) {
+	_, paths, scores := warpDiskShifts(t, 200, 200)
+
+	run := func(workers int) (frames [][]byte, master []byte) {
+		out := t.TempDir()
+		cfg := defaultAlignCfg()
+		cfg.workers = workers
+		res, err := warpSequence(paths, scores, out, "f", true, cfg)
+		require.NoError(t, err)
+		require.NotEmpty(t, res.paths)
+		alignedScores := make([]float64, len(res.paths))
+		for i, p := range res.paths {
+			alignedScores[i] = frameSharpness(p)
+			b, rerr := os.ReadFile(p)
+			require.NoError(t, rerr)
+			frames = append(frames, b)
+		}
+		masterBase := filepath.Join(out, "m")
+		require.NoError(t, stackWeightedFile(res.paths, alignedScores, masterBase))
+		mb, rerr := os.ReadFile(masterBase + ".fits")
+		require.NoError(t, rerr)
+		return frames, mb
+	}
+
+	serialFrames, serialMaster := run(1)
+	parFrames, parMaster := run(8)
+
+	require.Len(t, parFrames, len(serialFrames))
+	for i := range serialFrames {
+		assert.True(t, bytes.Equal(serialFrames[i], parFrames[i]),
+			"aligned frame %d must be byte-identical for 1 vs 8 workers", i)
+	}
+	assert.True(t, bytes.Equal(serialMaster, parMaster),
+		"stacked master must be byte-identical for 1 vs 8 workers")
+}

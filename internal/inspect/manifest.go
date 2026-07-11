@@ -43,10 +43,12 @@ type manifest struct {
 	Warnings   []string
 }
 
-// knownFilters are matched longest-first so multi-char filters (Ha/OIII/SII) win over single letters
+// knownFilters are matched longest-first so multi-char filters (Ha/OIII/SII) win over single letters.
+// Aliases ("O3"→OIII, "S2"→SII) are included because hand-written info.txt legends use them;
+// normalizeFilter canonicalizes each match, so keep this list in sync with filterToken (classify.go).
 // when expanding a glued run like "LLLRGBHaHa". V (Johnson-V) is recognized and normalized to G (these
 // older LRGB sessions used R/V/B), so an info.txt legend like "RVB" parses to R/G/B.
-var knownFilters = []string{"OIII", "SII", "Ha", "L", "R", "G", "B", "V"}
+var knownFilters = []string{"OIII", "O3", "SII", "S2", "Ha", "L", "R", "G", "B", "V"}
 
 var (
 	reManifestFile = regexp.MustCompile(`(?i)^info\.txt(\.txt)?$`)
@@ -116,7 +118,7 @@ func applyOneManifest(mfPath string, framesByDir map[string][]*Frame, inv *Inven
 		inv.Warnings = append(inv.Warnings, label+": "+w)
 	}
 	subdirs := captureSubdirs(filepath.Dir(mfPath), framesByDir)
-	if assignByWheelSlot(man, subdirs, framesByDir) {
+	if assignByWheelSlot(man, subdirs, framesByDir, inv) {
 		return // physical slots present → legend-based naming supersedes positional folder mapping
 	}
 	if len(man.Slots) == 0 {

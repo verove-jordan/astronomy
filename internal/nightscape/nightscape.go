@@ -10,12 +10,22 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/graxpert"
+	"github.com/verove-jordan/astronomy/internal/libmirror"
 	"github.com/verove-jordan/astronomy/internal/rawconv"
 	"github.com/verove-jordan/astronomy/internal/siril"
 )
+
+// ensureMasters pulls the given matched phone-master files back from the S3 library mirror if they are
+// absent locally (no-op when no mirror is set / a path is empty or already present).
+func (o Options) ensureMasters(ctx context.Context, paths []string) {
+	if o.LibraryMirror != nil {
+		_ = o.LibraryMirror.Ensure(ctx, paths)
+	}
+}
 
 // Look bundles the per-render-style tunables, ported verbatim from the reference recipe's presets
 // (main.py lines ~1500–1569). natural ≈ a straight developed DNG; iphone ≈ an edited ProRAW (deep
@@ -45,7 +55,7 @@ var looks = map[string]Look{
 	"natural": {
 		Name: "natural", AsinhIntensityFG: 6, Saturation: 1.10, GreenRemoval: 0.25,
 		MaskPercentile: 45, MaskDilation: 15, MaskBlur: 12, SkyPercentile: 55, NormPercentile: 99.9,
-		ToneStrength: 0, NeutralizePercentile: 2.0, HighlightKnee: 0.30, HighlightCeiling: 0.42, TargetBg: 0.06,
+		ToneStrength: 0, NeutralizePercentile: 2.0, HighlightKnee: 0.30, HighlightCeiling: 0.38, TargetBg: 0.05,
 	},
 	"iphone": {
 		Name: "iphone", AsinhIntensityFG: 7, Saturation: 1.12, GreenRemoval: 0.3,
@@ -89,6 +99,11 @@ type Options struct {
 	// Brightness overrides the auto-levels target sky-background (the "Darker/Balanced/Brighter"
 	// control); 0 → the Look's own TargetBg. See autoStretch.
 	Brightness float64
+	// SaturationScale scales the Look's own saturation (1 or 0 = as designed; <1 tames neon colour,
+	// up to 2 boosts) and HighlightCeilOverride replaces the Look's core highlight ceiling
+	// (0 = keep; lower = dimmer, flatter Milky-Way core). Both are supervisor/params knobs.
+	SaturationScale       float64
+	HighlightCeilOverride float64
 
 	// ColorCalibration enables plate-solve + SPCC on the sky stack for natural star colour; it engages
 	// only when an OSC sensor is also configured (Spcc.OSCSensor) — a phone sensor is rarely in Siril's
@@ -103,11 +118,26 @@ type Options struct {
 	// DarkDir/FlatDir/BiasDir are optional calibration-frame folders (#4); empty keeps the proven
 	// uncalibrated single-pass path. Offset == bias.
 	DarkDir, FlatDir, BiasDir string
+	// DarkFrames/FlatFrames/BiasFrames are calibration raws auto-detected among the input stills
+	// (classified by inspect) and unioned with the *Dir folders. Frames captured this run are also
+	// persisted to the reusable library (PhoneCalib) keyed by ISO/exposure/dimensions.
+	DarkFrames, FlatFrames, BiasFrames []string
+	// PhoneCalib is the persistent phone-calibration-master library: matched masters are reused when no
+	// cal frames are supplied this run, and freshly-built masters are saved to it. nil → no persistence
+	// (build-from-frames only). LibraryDir is where the master FITS are written.
+	PhoneCalib calib.PhoneCalibStore
+	LibraryDir string
+	// LibraryMirror pulls a matched phone master back from the S3 library mirror when its file is absent
+	// locally (then frees the transient copy after the run). nil → local-only. See internal/libmirror.
+	LibraryMirror libmirror.Puller
 
 	ForegroundFrame string // optional raw frame used as the clean foreground (and registration ref)
 	Orientation     string // auto|none|cw|ccw|180 (+ -flip)
 	RefIndex        int    // 1-based reference frame (0 = middle); ignored if ForegroundFrame set
 	OnProgress      func(siril.Progress)
+	// PreviewOnly makes gradeCompose write only final.png (skip the preview + linear FITS intermediates).
+	// The supervised finish sets it for its per-iteration re-grades, which only need the PNG to score.
+	PreviewOnly bool
 }
 
 // Result reports what Process produced.
@@ -166,17 +196,25 @@ func Process(ctx context.Context, o Options) (*Result, error) {
 		res.Warnings = append(res.Warnings, warn...)
 	}
 
-	const hdr = "requires 1.2.0\nsetext fits\n"
-	if hasCalibration(o) {
+	const hdr = "requires 1.2.0\nsetext fits\nset32bits\n"
+	plan := planCalibration(ctx, o)
+	if plan.active {
 		// Opt-in calibration: convert lights to FITS, dark/flat/bias-correct them in Go (linear light),
-		// then register the calibrated frames. Soft-fail — a bad cal set just warns and proceeds.
+		// then register the calibrated frames. Masters come from this run's cal frames (also saved to the
+		// library) or a reused library master. Soft-fail — a bad cal set just warns and proceeds.
 		if _, err := o.Siril.Run(ctx, seqDir, hdr+"convert light -out=.\n", o.OnProgress); err != nil {
 			return nil, fmt.Errorf("convert: %w", err)
 		}
 		lights, _ := filepath.Glob(filepath.Join(seqDir, "light_*.fit*"))
 		sort.Strings(lights)
-		res.note(calibrateLights(ctx, o, seqDir, lights))
-		if _, err := o.Siril.Run(ctx, seqDir, hdr+fmt.Sprintf("setref light %d\nregister light -2pass\nseqapplyreg light\n", refIndex), o.OnProgress); err != nil {
+		res.note(calibrateLights(ctx, o, plan, seqDir, lights))
+		// The register runs in a SEPARATE Siril session (the calibration happened in Go between the
+		// two), so it must load the sequence from disk by its real name. `convert light` writes the
+		// sequence as `light_` (files light_00001.fits, sequence file light_.seq) — Siril's standard
+		// underscore suffix. In the single-session non-cal path below, `register light` works because
+		// the just-converted sequence stays loaded in memory; a fresh session opening `light.seq`
+		// would fail ("cannot be opened"), so here we reference `light_` explicitly.
+		if _, err := o.Siril.Run(ctx, seqDir, hdr+fmt.Sprintf("setref light_ %d\nregister light_ -2pass\nseqapplyreg light_\n", refIndex), o.OnProgress); err != nil {
 			return nil, fmt.Errorf("register: %w", err)
 		}
 	} else {
@@ -235,11 +273,14 @@ func compose(ctx context.Context, o Options, aligned []string, fgPath string, re
 	}
 	outDir := o.OutDir
 
-	// Foreground: the unaligned reference frame, linearised + hot-pixel cleaned.
+	// Foreground: the unaligned reference frame, linearised + hot-pixel cleaned. It is a Siril convert
+	// output (0..65535 ADU), so normalize it to [0,1] first — otherwise linearizeSRGB blows the ADU
+	// values up and the landscape washes out to white (the aligned sky frames are already float [0,1]).
 	fg, err := fits.ReadImage(fgPath)
 	if err != nil {
 		return nil, fmt.Errorf("read foreground frame: %w", err)
 	}
+	normalizeADU(fg)
 	linearizeSRGB(fg)
 	cleanHotPixels(fg, 5.0)
 
@@ -282,9 +323,39 @@ func compose(ctx context.Context, o Options, aligned []string, fgPath string, re
 	neutralizeBackground(fg, look.NeutralizePercentile)
 	removeGreenCast(fg, look.GreenRemoval)
 
+	// Persist the pre-grade linear inputs (+ the resolved orientation) so the supervised finish and a
+	// later post-run refine can re-grade in seconds without re-developing/re-registering. See Regrade.
+	// The developed reference frame's dims feed the baked-rotation detection (orientDecision).
+	orientMode := resolveOrientation(o, fg.W, fg.H)
+	persistGradeInputs(outDir, sky, fg, alpha, orientMode, res)
+	return gradeCompose(o, sky, fg, alpha, orientMode, res)
+}
+
+// gradeCompose runs the tunable colour grade over the cleaned linear sky/foreground + sky mask: auto-
+// stretch, asinh foreground, masked composite, saturation / split-tone / highlight shoulder, then orient
+// and export. Shared by compose (a full run) and Regrade (a re-tune from persisted linear inputs), so the
+// supervised finish renders exactly what a full run would for the same Look/Brightness.
+func gradeCompose(o Options, sky, fg *fits.Image, alpha []float32, orientMode string, res *Result) (*Result, error) {
+	look := o.Look
+	if look.Name == "" {
+		look = LookByName("")
+	}
+	outDir := o.OutDir
+
 	targetBg := o.Brightness
+	ceilScale := 1.0
 	if targetBg <= 0 {
 		targetBg = look.TargetBg
+	} else if look.TargetBg > 0 {
+		// Give the Darker/Balanced/Brighter control authority over the bright core, not just the faint
+		// background: scale the highlight ceiling with the chosen background target so "darker" also dims
+		// the Milky-Way core and "brighter" lifts it (clamped so the shoulder stays well-defined).
+		ceilScale = targetBg / look.TargetBg
+		if ceilScale < 0.7 {
+			ceilScale = 0.7
+		} else if ceilScale > 1.35 {
+			ceilScale = 1.35
+		}
 	}
 	autoStretch(sky, targetBg, alpha)
 	asinhStretch(fg, look.AsinhIntensityFG, look.NormPercentile, 0, false)
@@ -293,17 +364,29 @@ func compose(ctx context.Context, o Options, aligned []string, fgPath string, re
 	if err != nil {
 		return nil, err
 	}
-	boostSaturation(composite, look.Saturation)
+	satScale := o.SaturationScale
+	if satScale <= 0 {
+		satScale = 1
+	}
+	boostSaturation(composite, look.Saturation*satScale)
 	splitTone(composite, look.ShadowTint, look.HighlightTint, look.ToneStrength, 0.85)
-	compressHighlights(composite, look.HighlightKnee, look.HighlightCeiling)
+	ceil := look.HighlightCeiling
+	if o.HighlightCeilOverride > 0 {
+		ceil = o.HighlightCeilOverride
+	}
+	compressHighlights(composite, look.HighlightKnee, ceil*ceilScale)
 
-	composite = orient(composite, o.Orientation)
+	// Restore the intended display orientation (resolved by the caller: user override / EXIF / heuristic).
+	composite = orient(composite, orientMode)
 	res.Width, res.Height = composite.W, composite.H
 
 	// Export: display PNG (primary) + a downscaled preview + linear intermediates for inspection.
 	res.FinalPNG = filepath.Join(outDir, "final.png")
 	if err := exportPNG(composite, res.FinalPNG); err != nil {
 		return nil, fmt.Errorf("export png: %w", err)
+	}
+	if o.PreviewOnly { // supervised per-iteration render: only the PNG is scored — skip the heavy FITS
+		return res, nil
 	}
 	res.PreviewPNG = filepath.Join(outDir, "final_preview.png")
 	if err := exportPNG(downsample(composite, 1400), res.PreviewPNG); err != nil {
@@ -312,10 +395,59 @@ func compose(ctx context.Context, o Options, aligned []string, fgPath string, re
 	res.CompositeFITS = filepath.Join(outDir, "composite.fits")
 	_ = composite.WriteFITS(res.CompositeFITS)
 	res.SkyFITS = filepath.Join(outDir, "stacked_sky.fits")
-	_ = orient(sky, o.Orientation).WriteFITS(res.SkyFITS)
+	_ = orient(sky, orientMode).WriteFITS(res.SkyFITS)
 	res.ForegroundFITS = filepath.Join(outDir, "foreground_reference.fits")
-	_ = orient(fg, o.Orientation).WriteFITS(res.ForegroundFITS)
+	_ = orient(fg, orientMode).WriteFITS(res.ForegroundFITS)
 	return res, nil
+}
+
+// persistGradeInputs writes the pre-grade linear sky/foreground, the sky mask, and the resolved
+// orientation to outDir, so the supervised finish and a post-run refine can re-grade without re-
+// developing. Best-effort — a failure just warns (refine falls back to a full re-process).
+func persistGradeInputs(outDir string, sky, fg *fits.Image, alpha []float32, orientMode string, res *Result) {
+	if err := sky.WriteFITS(filepath.Join(outDir, "lin_sky.fits")); err != nil {
+		res.Warnings = append(res.Warnings, "persist lin_sky: "+err.Error())
+		return
+	}
+	if err := fg.WriteFITS(filepath.Join(outDir, "lin_fg.fits")); err != nil {
+		res.Warnings = append(res.Warnings, "persist lin_fg: "+err.Error())
+		return
+	}
+	mask := fits.NewImage(sky.W, sky.H, 1)
+	copy(mask.Pix[0], alpha)
+	if err := mask.WriteFITS(filepath.Join(outDir, "sky_alpha.fits")); err != nil {
+		res.Warnings = append(res.Warnings, "persist sky_alpha: "+err.Error())
+		return
+	}
+	_ = os.WriteFile(filepath.Join(outDir, "grade.orient"), []byte(orientMode), 0o644)
+}
+
+// Regrade re-runs only the colour grade over the persisted pre-grade linear inputs (lin_sky/lin_fg/
+// sky_alpha + grade.orient) in srcDir, with the Look/Brightness in o, writing the result to o.OutDir. It
+// backs both the in-run supervised finish and a post-run refine of a milkyway run — re-tuning the grade
+// in seconds without re-developing or re-registering. Errors if the linear inputs are missing.
+func Regrade(ctx context.Context, o Options, srcDir string) (*Result, error) {
+	sky, err := fits.ReadImage(filepath.Join(srcDir, "lin_sky.fits"))
+	if err != nil {
+		return nil, fmt.Errorf("regrade: read lin_sky: %w", err)
+	}
+	fg, err := fits.ReadImage(filepath.Join(srcDir, "lin_fg.fits"))
+	if err != nil {
+		return nil, fmt.Errorf("regrade: read lin_fg: %w", err)
+	}
+	mask, err := fits.ReadImage(filepath.Join(srcDir, "sky_alpha.fits"))
+	if err != nil {
+		return nil, fmt.Errorf("regrade: read sky_alpha: %w", err)
+	}
+	if err := fsutil.EnsureDir(o.OutDir); err != nil {
+		return nil, err
+	}
+	orientMode := o.Orientation
+	if b, rerr := os.ReadFile(filepath.Join(srcDir, "grade.orient")); rerr == nil && len(b) > 0 {
+		orientMode = strings.TrimSpace(string(b))
+	}
+	_ = ctx // grade is pure Go (no I/O to cancel); ctx kept for a uniform signature
+	return gradeCompose(o, sky, fg, mask.Pix[0], orientMode, &Result{})
 }
 
 // percentileStretch maps [pLo,pHi] (over all channels) to [0,1] — a quick linear look for debugging.
@@ -354,9 +486,9 @@ func exportPNG(im *fits.Image, path string) error {
 				g, b = im.Pix[1][i], im.Pix[2][i]
 			}
 			o := rgba.PixOffset(x, y)
-			rgba.Pix[o+0] = to8(r)
-			rgba.Pix[o+1] = to8(g)
-			rgba.Pix[o+2] = to8(b)
+			rgba.Pix[o+0] = to8Dithered(r, i*3)
+			rgba.Pix[o+1] = to8Dithered(g, i*3+1)
+			rgba.Pix[o+2] = to8Dithered(b, i*3+2)
 			rgba.Pix[o+3] = 255
 		}
 	}
@@ -376,6 +508,33 @@ func to8(v float32) uint8 {
 		s = 255
 	}
 	return uint8(s + 0.5)
+}
+
+// to8Dithered quantizes with a deterministic ±0.5 LSB triangular dither: the smooth stretched sky
+// spans only a handful of 8-bit levels, and plain rounding turns that into visible banding (worst
+// case the posterized look). Triangular noise spreads the quantization error over two levels — it
+// reads as imperceptible fine grain instead of contours. Keyed by pixel index, so exports stay
+// byte-reproducible.
+func to8Dithered(v float32, key int) uint8 {
+	s := encodeSRGB(float64(v))*255 + ditherTri(key)
+	if s < 0 {
+		s = 0
+	} else if s > 255 {
+		s = 255
+	}
+	return uint8(s + 0.5)
+}
+
+// ditherTri returns a deterministic triangular-distribution dither in (-1,1) LSB units for key —
+// the sum of two independent uniform hashes.
+func ditherTri(key int) float64 {
+	h1 := uint32(key)*2654435761 + 0x9e3779b9
+	h1 ^= h1 >> 16
+	h2 := (uint32(key) + 0x85ebca6b) * 2246822519
+	h2 ^= h2 >> 13
+	u1 := float64(h1&0xffff) / 65536
+	u2 := float64(h2&0xffff) / 65536
+	return u1 + u2 - 1
 }
 
 // downsample nearest-neighbour shrinks an image so its larger axis is at most maxDim (for previews).

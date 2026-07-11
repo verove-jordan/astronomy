@@ -1,0 +1,103 @@
+package planetary
+
+import (
+	"fmt"
+
+	"golang.org/x/sync/errgroup"
+)
+
+// Frame-level stacking glue between the aligner and the streamed stack: parallel sharpness scoring, the
+// seeing soft-weight + cull, the per-frame report bookkeeping, and the survivor selection that feeds the
+// multi-point weighted mean.
+
+// sharpnessOf scores each path's on-disk sharpness in parallel (results stored by index → deterministic).
+func sharpnessOf(paths []string) []float64 {
+	out := make([]float64, len(paths))
+	var grp errgroup.Group
+	grp.SetLimit(workerLimit(0, 0, 0))
+	for i, p := range paths {
+		i, p := i, p
+		grp.Go(func() error { out[i] = frameSharpness(p); return nil })
+	}
+	_ = grp.Wait()
+	return out
+}
+
+// finishStack scores the aligned frames, folds the seeing soft-weight into the stacking score, culls the
+// worst-seeing frames, records the per-frame report + seeing report, and writes the multi-point weighted
+// master. Returns the seeing report (nil when apAlign is off) and the number of frames actually stacked.
+func finishStack(res *alignResult, opts Options, frameReport []FrameScore, keptOrig []int, master string) (*SeeingReport, int, error) {
+	alignedScores := sharpnessOf(res.paths)
+	seeing := seeingReport(res)
+	drop := map[int]bool{}
+	// The seeing soft-weight + cull engage together via opts.SeeingCull (>0). With the knob at zero the
+	// report is still recorded (per-frame RMS provenance) but the scores stay pure sharpness — the
+	// verified pre-refinement behavior.
+	if seeing != nil && opts.SeeingCull > 0 {
+		w := seeingWeights(seeing)
+		for s := range alignedScores {
+			if s < len(w) {
+				alignedScores[s] *= w[s] // global soft weight, folded in before sharpnessWeights
+			}
+		}
+		drop = seeingCull(seeing, opts.SeeingCull)
+	}
+	markReport(frameReport, keptOrig, res, seeing, drop)
+	paths, scores, cells := selectSurvivors(res, alignedScores, drop)
+	var apFields [][]float64
+	if opts.APWeights && len(cells) == len(paths) && len(cells) > 1 {
+		apFields = weightFieldsFor(cells, opts.APSelectFrac)
+	}
+	if err := stackWeightedFileAP(paths, scores, apFields, master); err != nil {
+		return seeing, 0, fmt.Errorf("weighted stack: %w", err)
+	}
+	return seeing, len(paths), nil
+}
+
+// weightFieldsFor builds the multi-point quality weight grids, with soft local frame selection when
+// selectFrac is in (0,1) (a literal Options{}'s zero disables it, reproducing the classic per-cell falloff).
+func weightFieldsFor(cellSharp [][]float64, selectFrac float64) [][]float64 {
+	return apGrid{N: gridDim(len(cellSharp[0]))}.weightFields(cellSharp, selectFrac)
+}
+
+// markReport reflects the aligner's verdicts back into the per-frame report: frames dropped by the
+// correlation pre-cull or the seeing cull become Kept=false, and every surviving frame gets its residual
+// rms recorded. Survivor position s maps to the original frame via inputIdx → keptOrig.
+func markReport(frameReport []FrameScore, keptOrig []int, res *alignResult, seeing *SeeingReport, drop map[int]bool) {
+	survivorOf := make(map[int]int, len(res.inputIdx))
+	for s, j := range res.inputIdx {
+		survivorOf[j] = s
+	}
+	for j, orig := range keptOrig {
+		if orig >= len(frameReport) {
+			continue
+		}
+		s, ok := survivorOf[j]
+		if !ok { // dropped by the correlation pre-cull before alignment
+			frameReport[orig].Kept = false
+			continue
+		}
+		if seeing != nil && s < len(seeing.Trace) {
+			frameReport[orig].SeeingRMS = seeing.Trace[s].RMS
+		}
+		if drop[s] { // dropped by the seeing cull
+			frameReport[orig].Kept = false
+		}
+	}
+}
+
+// selectSurvivors keeps the aligned frames NOT seeing-culled (in order), with their scores + per-cell
+// sharpness aligned 1:1, ready for the weighted stack.
+func selectSurvivors(res *alignResult, alignedScores []float64, drop map[int]bool) (paths []string, scores []float64, cells [][]float64) {
+	for s := range res.paths {
+		if drop[s] {
+			continue
+		}
+		paths = append(paths, res.paths[s])
+		scores = append(scores, alignedScores[s])
+		if res.cellSharp != nil && s < len(res.cellSharp) {
+			cells = append(cells, res.cellSharp[s])
+		}
+	}
+	return paths, scores, cells
+}

@@ -5,6 +5,15 @@ import { useGotoStore } from "@/stores/goto";
 import { useSkyStore } from "@/stores/sky";
 import AlignmentSequence from "@/components/Goto/AlignmentSequence.vue";
 import AlignmentSkyMap from "@/components/Goto/AlignmentSkyMap.vue";
+
+// The interactive sky map bundles a raw canvas + the star/constellation dataset — load it lazily so it
+// only enters the /goto chunk when this view mounts.
+const StarChart = defineAsyncComponent(
+  () => import("@/components/Goto/StarChart.vue"),
+);
+import PolarScopeReticle from "@/components/Polar/PolarScopeReticle.vue";
+import PolarAlignPanel from "@/components/Polar/PolarAlignPanel.vue";
+import PolarTutorial from "@/components/Polar/PolarTutorial.vue";
 import Spinner from "@/components/Common/Spinner.vue";
 import { card, input, btnGhost } from "@/constants/styles";
 import { tzForLocation, zonedWallToISO, nowInZone } from "@/utils/tz";
@@ -18,17 +27,10 @@ const { t } = useI18n();
 const store = useGotoStore();
 const sky = useSkyStore();
 
-// Mount/routine presets — keys mirror the backend align.Profiles() registry; labels/notes are i18n.
-const PROFILES = [
-  "eq-generic",
-  "synscan-eq",
-  "celestron-eq",
-  "altaz-generic",
-  "synscan-altaz",
-  "celestron-altaz",
-];
-
-onMounted(() => store.fetch());
+onMounted(() => {
+  void store.fetchProfiles(); // mount/routine registry (count bounds, phases, HC star list)
+  void store.fetch();
+});
 
 const loc = computed(() => store.query?.location);
 const tz = computed(() =>
@@ -49,6 +51,17 @@ const effCount = computed(() => store.query?.count ?? store.params.count ?? 3);
 function changeCount(delta: number) {
   store.setCount(Math.max(1, effCount.value + delta));
 }
+
+// Two-phase routines (Celestron EQ): break the total down as "N align + M calibration" so the count
+// stepper reads like the hand-controller procedure.
+const phaseHint = computed(() => {
+  const alignStars = store.currentProfile?.align_stars ?? 0;
+  if (alignStars <= 0) return "";
+  return t("goto.controls.phaseHint", {
+    align: Math.min(alignStars, effCount.value),
+    calib: Math.max(0, effCount.value - alignStars),
+  });
+});
 
 // Time: "now" (default) or a specific instant entered in the site's local time (mirrors Polar/Tonight).
 const useCustomTime = ref(false);
@@ -98,6 +111,25 @@ function onPick(lat: number, lon: number) {
       <p class="text-sm text-slate-400">{{ t("goto.subtitle") }}</p>
     </header>
 
+    <!-- Step 1 — Mise en station: polar-align the mount before building the GoTo model. -->
+    <section class="space-y-3">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-700 dark:text-slate-200">
+          {{ t("polar.title") }}
+        </h2>
+        <p class="text-xs text-slate-400">{{ t("polar.subtitle") }}</p>
+      </div>
+      <div class="grid gap-4 lg:grid-cols-2">
+        <PolarScopeReticle />
+        <PolarAlignPanel />
+      </div>
+    </section>
+
+    <!-- Step 2 — GoTo star alignment. -->
+    <h2 class="text-sm font-semibold text-slate-700 dark:text-slate-200">
+      {{ t("goto.sequence.title") }}
+    </h2>
+
     <!-- Controls -->
     <div :class="card">
       <div class="grid gap-4 md:grid-cols-2">
@@ -118,8 +150,8 @@ function onPick(lat: number, lon: number) {
               t("goto.controls.mount")
             }}</label>
             <select v-model="profile" :class="input">
-              <option v-for="p in PROFILES" :key="p" :value="p">
-                {{ t(`goto.profiles.${p}.label`) }}
+              <option v-for="p in store.profiles" :key="p.key" :value="p.key">
+                {{ t(`goto.profiles.${p.key}.label`) }}
               </option>
             </select>
             <p class="mt-1 text-[11px] text-slate-400">
@@ -140,6 +172,9 @@ function onPick(lat: number, lon: number) {
               <button :class="[btnGhost, 'px-3 py-1']" @click="changeCount(1)">
                 +
               </button>
+              <span v-if="phaseHint" class="text-[11px] text-slate-400">{{
+                phaseHint
+              }}</span>
             </div>
           </div>
           <div>
@@ -182,6 +217,17 @@ function onPick(lat: number, lon: number) {
       <div class="space-y-4">
         <div :class="card">
           <h3
+            class="mb-1 text-sm font-semibold text-slate-700 dark:text-slate-200"
+          >
+            {{ t("goto.sky.title") }}
+          </h3>
+          <p class="mb-2 text-xs text-slate-400">
+            {{ t("goto.sky.subtitle") }}
+          </p>
+          <StarChart />
+        </div>
+        <div :class="card">
+          <h3
             class="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-200"
           >
             {{ t("goto.map.title") }}
@@ -195,15 +241,12 @@ function onPick(lat: number, lon: number) {
             {{ t("goto.why.title") }}
           </h3>
           <p class="text-xs text-slate-400">{{ t("goto.why.body") }}</p>
-          <router-link
-            to="/tonight"
-            class="mt-1 inline-block text-xs text-brand-400 hover:text-brand-300"
-          >
-            {{ t("goto.why.polarLink") }}
-          </router-link>
         </div>
       </div>
     </div>
     <p v-if="store.error" class="text-sm text-danger-500">{{ store.error }}</p>
+
+    <!-- Reference material: the polar-scope setup walkthrough, collapsed by default. -->
+    <PolarTutorial />
   </div>
 </template>

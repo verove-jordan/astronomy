@@ -1,6 +1,7 @@
 package lightpollution
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,6 +28,23 @@ func TestSqmToBortle(t *testing.T) {
 			assert.Equal(t, tt.want, sqmToBortle(tt.sqm))
 		})
 	}
+}
+
+// The map-overlay gradient colours pixels via the continuous sqmToBortleF; its rounding MUST agree with
+// the discrete sqmToBortle used by the per-site badge, or the map colour and the badge disagree (the
+// exact bug this replaced — a Bortle-5 sky painted a Bortle-2/3 blue).
+func TestSqmToBortleF_RoundsToDiscrete(t *testing.T) {
+	for sqm := 16.0; sqm <= 22.5; sqm += 0.05 {
+		f := sqmToBortleF(sqm)
+		assert.GreaterOrEqual(t, f, 1.0)
+		assert.LessOrEqual(t, f, 9.0)
+		// Skip the exact class boundaries, where a half-integer rounds ambiguously.
+		if d := sqmToBortle(sqm); math.Abs(f-math.Round(f)) > 1e-9 {
+			assert.Equalf(t, d, int(math.Round(f)), "sqm=%.2f: continuous %.3f must round to discrete %d", sqm, f, d)
+		}
+	}
+	assert.InDelta(t, 1.0, sqmToBortleF(22.0), 1e-9, "pristine → Bortle 1")
+	assert.InDelta(t, 9.0, sqmToBortleF(17.0), 1e-9, "fully lit → Bortle 9")
 }
 
 func TestValueToSQM(t *testing.T) {

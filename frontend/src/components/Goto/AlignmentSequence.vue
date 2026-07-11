@@ -5,11 +5,27 @@ import { useGotoStore } from "@/stores/goto";
 import AlignStarCard from "@/components/Goto/AlignStarCard.vue";
 import ScoreBadge from "@/components/Common/ScoreBadge.vue";
 import { card, btnGhost } from "@/constants/styles";
+import type { GotoStar } from "@/types";
 
 const { t } = useI18n();
 const store = useGotoStore();
 
 const stars = computed(() => store.stars);
+
+// Two-phase routines (Celestron EQ) group the sequence under "Alignment" / "Calibration" headers;
+// single-phase profiles render the flat list. Calibration stars are numbered C1..C4 to match the
+// sky-map markers and the hand-controller procedure.
+const hasPhases = computed(() => stars.value.some((s) => s.phase));
+const alignStars = computed(() =>
+  stars.value.filter((s) => s.phase !== "calibration"),
+);
+const calibStars = computed(() =>
+  stars.value.filter((s) => s.phase === "calibration"),
+);
+function seqLabel(s: GotoStar): string {
+  if (s.phase === "calibration") return `C${s.order - store.alignCount}`;
+  return String(s.order);
+}
 
 // Only the most-recently-centered star offers Undo, so stepping back is unambiguous.
 const lastAcceptedOrder = computed(() => {
@@ -46,7 +62,41 @@ const lastAcceptedOrder = computed(() => {
       {{ store.warnings[0] }}
     </p>
 
-    <div v-if="stars.length" class="mt-3 space-y-2">
+    <div v-if="stars.length && hasPhases" class="mt-3 space-y-2">
+      <h4
+        class="text-[11px] font-semibold uppercase tracking-wide text-slate-400"
+      >
+        {{ t("goto.sequence.phase.align") }}
+      </h4>
+      <AlignStarCard
+        v-for="s in alignStars"
+        :key="s.name"
+        :star="s"
+        :seq-label="seqLabel(s)"
+        :can-undo="s.order === lastAcceptedOrder"
+        @accept="store.accept"
+        @skip="store.skip"
+        @undo="store.undo"
+      />
+      <template v-if="calibStars.length">
+        <h4
+          class="pt-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400"
+        >
+          {{ t("goto.sequence.phase.calibration") }}
+        </h4>
+        <AlignStarCard
+          v-for="s in calibStars"
+          :key="s.name"
+          :star="s"
+          :seq-label="seqLabel(s)"
+          :can-undo="s.order === lastAcceptedOrder"
+          @accept="store.accept"
+          @skip="store.skip"
+          @undo="store.undo"
+        />
+      </template>
+    </div>
+    <div v-else-if="stars.length" class="mt-3 space-y-2">
       <AlignStarCard
         v-for="s in stars"
         :key="s.name"

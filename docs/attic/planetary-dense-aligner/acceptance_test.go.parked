@@ -1,0 +1,67 @@
+package planetary
+
+import (
+	"fmt"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/verove-jordan/astronomy/internal/fsutil"
+)
+
+// TestStackedMaster_OutResolvesBestFrame is the acceptance guard on a synthetic sequence: every frame is
+// sharp only in ONE horizontal strip and blurred everywhere else (each caught by seeing in a different
+// place), so no single frame is sharp overall. The AutoStakkert-style multi-point weighted stack assembles
+// each region from the frame that was sharpest THERE, producing a master sharp across the whole disk —
+// which must out-resolve the best single frame by the objective ≥1.05× disk-sharpness margin.
+func TestStackedMaster_OutResolvesBestFrame(t *testing.T) {
+	const W, H, K = 240, 240, 6
+	base := richDisk(W, H, 13)
+	soft := blurPlane(base, 4)
+
+	dir := t.TempDir()
+	var paths []string
+	for k := 0; k < K; k++ {
+		f := soft.Clone()
+		for y := k * H / K; y < (k+1)*H/K; y++ { // this frame's sharp strip
+			for x := 0; x < W; x++ {
+				f.Pix[0][y*W+x] = base.Pix[0][y*W+x]
+			}
+		}
+		p := filepath.Join(dir, fmt.Sprintf("f_%02d.fits", k))
+		require.NoError(t, f.WriteFITS(p))
+		paths = append(paths, p)
+	}
+
+	scores := sharpnessOf(paths)
+	best := 0.0
+	for _, s := range scores {
+		if s > best {
+			best = s
+		}
+	}
+
+	alignDir := filepath.Join(dir, "aligned")
+	require.NoError(t, fsutil.EnsureDir(alignDir))
+	res, err := warpSequence(paths, scores, alignDir, "f", true, defaultAlignCfg())
+	require.NoError(t, err)
+
+	frameReport := make([]FrameScore, K)
+	keptOrig := make([]int, K)
+	for i := range keptOrig {
+		keptOrig[i] = i
+		frameReport[i] = FrameScore{Index: i + 1, Kept: true}
+	}
+	opts := DefaultOptions()
+	opts.SeeingCull = 0 // these frames are already registered; don't cull on residual noise
+	master := filepath.Join(dir, "master")
+	_, stacked, serr := finishStack(res, opts, frameReport, keptOrig, master)
+	require.NoError(t, serr)
+	require.Greater(t, stacked, 1, "the sequence stacks")
+
+	masterLap := frameSharpness(master + ".fits")
+	assert.Greater(t, masterLap, 1.05*best,
+		"multi-point master (%.4g) out-resolves the best single frame (%.4g) by ≥1.05×", masterLap, best)
+}

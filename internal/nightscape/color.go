@@ -177,7 +177,20 @@ func splitTone(im *fits.Image, shadow, highlight [3]float64, strength, knee floa
 const highlightCeiling = 0.78
 
 func compressHighlights(im *fits.Image, knee, ceil float64) {
-	if im.C != 3 || knee <= 0 || knee >= 1 {
+	if im.C != 3 { // nightscape's callers are always RGB; keep the mono case out of this path
+		return
+	}
+	CompressHighlights(im, knee, ceil)
+}
+
+// CompressHighlights applies a soft shoulder in the luminance domain above knee (tanh), scaling each
+// pixel by the compressed/original luminance ratio so bright regions roll off toward — but never reach —
+// `ceil` while keeping their channel ratios (hue). Works on mono (C==1) and planar RGB (C==3). knee
+// outside (0,1) disables it; ceil ≤ 0 falls back to highlightCeiling. Exported so the deep-sky finish can
+// cap bright star cores just below 1.0 BEFORE the MTF autostretch (which fixes 1.0→1.0), keeping their
+// colour instead of clipping to white.
+func CompressHighlights(im *fits.Image, knee, ceil float64) {
+	if im == nil || (im.C != 1 && im.C != 3) || knee <= 0 || knee >= 1 {
 		return
 	}
 	if ceil <= 0 {
@@ -186,19 +199,22 @@ func compressHighlights(im *fits.Image, knee, ceil float64) {
 	if knee >= ceil { // keep the shoulder well-defined (asymptote above the knee)
 		knee = ceil * 0.6
 	}
-	lum := luminance(im)
+	lum := im.Pix[0]
+	if im.C == 3 {
+		lum = luminance(im)
+	}
 	for i := range lum {
 		l := float64(lum[i])
 		if l <= knee {
 			continue
 		}
-		// Shoulder that asymptotes to `ceil` (not 1.0): bright cores roll off to a golden glow while
-		// keeping their channel ratios (RGB scaled by comp/l → hue preserved).
+		// Shoulder that asymptotes to `ceil` (not 1.0): bright cores roll off while keeping their channel
+		// ratios (each channel scaled by comp/l → hue preserved).
 		comp := knee + (ceil-knee)*math.Tanh((l-knee)/(ceil-knee))
 		s := float32(comp / l)
-		im.Pix[0][i] *= s
-		im.Pix[1][i] *= s
-		im.Pix[2][i] *= s
+		for c := 0; c < im.C; c++ {
+			im.Pix[c][i] *= s
+		}
 	}
 }
 

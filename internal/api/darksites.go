@@ -33,6 +33,7 @@ func (s *Server) darkSites(w http.ResponseWriter, r *http.Request) {
 		Horizon:   q.Get("horizon") == "1",
 		ObsLat:    floatParam(q, "lat", s.cfg.LatDeg),
 		ObsLon:    floatParam(q, "lon", s.cfg.LonDeg),
+		ObsSet:    q.Has("lat") && q.Has("lon"), // drives only from the user's real location, not the default
 	})
 	writeJSON(w, http.StatusOK, result)
 }

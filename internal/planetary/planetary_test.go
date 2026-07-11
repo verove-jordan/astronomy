@@ -2,10 +2,49 @@ package planetary
 
 import (
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestStageImageFrames(t *testing.T) {
+	src := t.TempDir()
+	// A Moon capture as a FITS image series, nested in per-timestamp subfolders (ASICAP/SharpCap style),
+	// plus a hidden dir and a non-image file that must both be ignored.
+	for _, rel := range []string{
+		"autorun/2020-07-07_03_06_01Z/m_0001.FIT",
+		"autorun/2020-07-07_03_06_01Z/m_0002.fit",
+		"autorun/2020-07-07_03_06_10Z/m_0003.FIT",
+		"autorun/notes.txt",
+		".thumbs/preview.fit",
+	} {
+		p := filepath.Join(src, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+		require.NoError(t, os.WriteFile(p, []byte("x"), 0o644))
+	}
+
+	seqDir := t.TempDir()
+	n, err := stageImageFrames(src, seqDir)
+	require.NoError(t, err)
+	assert.Equal(t, 3, n, "3 FITS frames staged; the .txt and hidden-dir file ignored")
+
+	staged, err := filepath.Glob(filepath.Join(seqDir, "frame_*"))
+	require.NoError(t, err)
+	assert.Len(t, staged, 3)
+	// Flat, numbered, in acquisition (sorted-path) order.
+	for i, name := range []string{"frame_00001.fit", "frame_00002.fit", "frame_00003.fit"} {
+		assert.Equal(t, name, filepath.Base(staged[i]))
+	}
+}
+
+func TestStageImageFrames_NoFrames(t *testing.T) {
+	n, err := stageImageFrames(t.TempDir(), t.TempDir())
+	require.NoError(t, err)
+	assert.Zero(t, n, "an empty / image-less folder stages nothing (caller surfaces the error)")
+}
 
 func TestRejectLeastSharp(t *testing.T) {
 	// Scores by frame index 1..5; sharpest are 3 and 5.

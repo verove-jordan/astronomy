@@ -1,0 +1,211 @@
+package planetary
+
+import (
+	"fmt"
+	"math"
+	"math/rand"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/verove-jordan/astronomy/internal/comet"
+	"github.com/verove-jordan/astronomy/internal/fits"
+)
+
+// richDisk builds a bright disk carrying BROADBAND, non-periodic texture (blurred value noise) — a
+// lunar-like surface where the alignment-point correlation has one unambiguous peak per node (unlike the
+// periodic-spot texturedDisk, which is only meant for the sparse-grid tests).
+func richDisk(w, h int, seed int64) *fits.Image {
+	rng := rand.New(rand.NewSource(seed))
+	raw := make([]float32, w*h)
+	for i := range raw {
+		raw[i] = float32(rng.Float64())
+	}
+	tex := comet.BoxBlur(raw, w, h, 1) // locally correlated, broadband
+	im := fits.NewImage(w, h, 1)
+	cx, cy := float64(w)/2, float64(h)/2
+	rad := float64(min(w, h)) * 0.45
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if math.Hypot(float64(x)-cx, float64(y)-cy) <= rad {
+				im.Pix[0][y*w+x] = 0.3 + tex[y*w+x]
+			}
+		}
+	}
+	return im
+}
+
+// applyDenseField warps im by a KNOWN dense displacement (per-pixel), sampling im at (x+dx, y+dy) with the
+// package's Catmull-Rom kernel — so the aligner should recover exactly (dx,dy) at each point.
+func applyDenseField(im *fits.Image, disp func(x, y float64) (dx, dy float64)) *fits.Image {
+	out := fits.NewImage(im.W, im.H, 1)
+	for y := 0; y < im.H; y++ {
+		for x := 0; x < im.W; x++ {
+			dx, dy := disp(float64(x), float64(y))
+			out.Pix[0][y*im.W+x] = sampleCubic(im.Pix[0], im.W, im.H, float64(x)+dx, float64(y)+dy)
+		}
+	}
+	return out
+}
+
+// addNoise returns a copy of im with i.i.d. Gaussian noise (σ) added to the first plane.
+func addNoise(im *fits.Image, rng *rand.Rand, sigma float64) *fits.Image {
+	out := im.Clone()
+	for i := range out.Pix[0] {
+		out.Pix[0][i] += float32(rng.NormFloat64() * sigma)
+	}
+	return out
+}
+
+// sineField is a smooth, low-order (one period across the frame) mean-zero displacement field of peak
+// amplitude amp px, phase-shifted by ph — a stand-in for a frame's instantaneous atmospheric warp.
+func sineField(w, h int, amp, ph float64) func(x, y float64) (float64, float64) {
+	return func(x, y float64) (float64, float64) {
+		return amp * math.Sin(2*math.Pi*x/float64(w)+ph), amp * math.Sin(2*math.Pi*y/float64(h)+ph)
+	}
+}
+
+// denseGrid builds an apGrid + its window/gate for a W×H frame at a forced spacing (dense enough to
+// exercise the two-level path), gating the valid nodes off the (clean) reference.
+func denseGrid(ref *fits.Image, spacing int) (apGrid, []float64, []float64, []bool, int) {
+	n := gridForFrame(ref.W, ref.H, spacing)
+	g := apGrid{N: n, W: ref.W, H: ref.H}
+	cx, cy := g.centers()
+	apRadius := apWindowRadius(ref.W, ref.H, n)
+	onDisk := gateValidNodes(bandpass(ref, bandLo, bandHi), cx, cy, g.diskMask(ref, cx, cy), apRadius)
+	return g, cx, cy, onDisk, apRadius
+}
+
+// TestMeasureAPField_RecoversSmoothField: a 2-px smooth warp with low noise is recovered to <0.3 px on the
+// gated nodes, and <0.5 px everywhere on-disk after the Jacobi fill + smooth.
+func TestMeasureAPField_RecoversSmoothField(t *testing.T) {
+	const W, H = 320, 320
+	base := richDisk(W, H, 11)
+	amp := 2.0
+	field := sineField(W, H, amp, 0)
+	rng := rand.New(rand.NewSource(3))
+	target := addNoise(applyDenseField(base, field), rng, 0.01)
+
+	g, cx, cy, onDisk, apRadius := denseGrid(base, 24) // 320/24 ≈ 13 → two-level
+	require.GreaterOrEqual(t, g.N, 12, "test needs the dense two-level path")
+
+	dxGrid, dyGrid := g.uniform(0, 0)
+	valid := measureAPField(g, bandpass(base, bandLo, bandHi), bandpass(target, bandLo, bandHi),
+		cx, cy, onDisk, apRadius, 0, 0, dxGrid, dyGrid)
+
+	assert.Less(t, fieldRMSError(dxGrid, dyGrid, cx, cy, valid, field), 0.3,
+		"gated-node field error < 0.3 px")
+
+	fillField(g, dxGrid, dyGrid, valid, 0, 0)
+	assert.Less(t, fieldRMSError(dxGrid, dyGrid, cx, cy, onDisk, field), 0.5,
+		"on-disk field error < 0.5 px after fill+smooth")
+}
+
+// fieldRMSError is the RMS of (measured − known) node displacement over the mask.
+func fieldRMSError(dxGrid, dyGrid, cx, cy []float64, mask []bool, field func(x, y float64) (float64, float64)) float64 {
+	var s2 float64
+	var n int
+	for k := range mask {
+		if !mask[k] {
+			continue
+		}
+		u, v := field(cx[k], cy[k])
+		du, dv := dxGrid[k]-u, dyGrid[k]-v
+		s2 += du*du + dv*dv
+		n++
+	}
+	if n == 0 {
+		return math.Inf(1)
+	}
+	return math.Sqrt(s2 / float64(n))
+}
+
+// TestSyntheticReference_BeatsSingleFrame: at per-frame SNR≈10, measuring a frame's warp against the
+// synthetic reference (noise averaged over K frames) recovers the field ≥2× more accurately than against
+// a single (noisy) frame — the whole point of building a synthetic reference.
+func TestSyntheticReference_BeatsSingleFrame(t *testing.T) {
+	const W, H = 320, 320
+	base := richDisk(W, H, 5)
+	sigma := planeStdOnDisk(base) / 10 // SNR ≈ 10
+	amp := 2.0
+	rng := rand.New(rand.NewSource(21))
+	const K = 24
+	frame := func(ph float64) *fits.Image {
+		return addNoise(applyDenseField(base, sineField(W, H, amp, ph)), rng, sigma)
+	}
+
+	target, targetField := frame(0), sineField(W, H, amp, 0)
+	singleRef := frame(math.Pi) // one real frame → carries its own (opposite-phase) warp as error
+	// Synthetic reference: the mean of the whole sequence, whose per-frame warps average toward zero and
+	// whose noise falls as 1/√K → a clean, warp-free stand-in for the true scene.
+	acc := make([]float64, W*H)
+	for i := 0; i < K; i++ {
+		f := frame(float64(i) * 2 * math.Pi / float64(K))
+		for j, v := range f.Pix[0] {
+			acc[j] += float64(v)
+		}
+	}
+	synthRef := fits.NewImage(W, H, 1)
+	for j := range synthRef.Pix[0] {
+		synthRef.Pix[0][j] = float32(acc[j] / float64(K))
+	}
+
+	g, cx, cy, onDisk, apRadius := denseGrid(base, 24)
+	measErr := func(ref *fits.Image) float64 {
+		dxGrid, dyGrid := g.uniform(0, 0)
+		valid := measureAPField(g, bandpass(ref, bandLo, bandHi), bandpass(target, bandLo, bandHi),
+			cx, cy, onDisk, apRadius, 0, 0, dxGrid, dyGrid)
+		return fieldRMSError(dxGrid, dyGrid, cx, cy, valid, targetField)
+	}
+	errSingle := measErr(singleRef)
+	errSynth := measErr(synthRef)
+	t.Logf("field RMS error: single-frame=%.3f  synthetic=%.3f (σ=%.4f)", errSingle, errSynth, sigma)
+	assert.Less(t, errSynth, 0.5*errSingle, "synthetic reference at least halves the field error")
+}
+
+// planeStdOnDisk is the std-dev of the on-disk (>0) pixels of the first plane — the texture amplitude the
+// SNR is set against.
+func planeStdOnDisk(im *fits.Image) float64 {
+	var sum, sum2 float64
+	var n int
+	for _, v := range im.Pix[0] {
+		if v <= 0 {
+			continue
+		}
+		sum += float64(v)
+		sum2 += float64(v) * float64(v)
+		n++
+	}
+	if n == 0 {
+		return 0
+	}
+	mean := sum / float64(n)
+	return math.Sqrt(sum2/float64(n) - mean*mean)
+}
+
+// warpDiskSequence writes K frames of ref, each warped by a distinct smooth low-order field (peak ampPx)
+// plus globalShift and Gaussian noise, and returns their paths + sharpness scores. Used by the acceptance
+// guard (the stacked master must out-resolve the best single frame).
+func warpDiskSequence(t *testing.T, ref *fits.Image, k int, ampPx float64, gx, gy, noiseSigma float64) ([]string, []float64) {
+	t.Helper()
+	dir := t.TempDir()
+	rng := rand.New(rand.NewSource(99))
+	var paths []string
+	var scores []float64
+	for i := 0; i < k; i++ {
+		ph := float64(i) * 2 * math.Pi / float64(k)
+		local := sineField(ref.W, ref.H, ampPx, ph)
+		disp := func(x, y float64) (float64, float64) {
+			u, v := local(x, y)
+			return u + gx, v + gy
+		}
+		im := addNoise(applyDenseField(ref, disp), rng, noiseSigma)
+		p := filepath.Join(dir, fmt.Sprintf("seq_%03d.fits", i))
+		require.NoError(t, im.WriteFITS(p))
+		paths = append(paths, p)
+		scores = append(scores, diskSharpness(im))
+	}
+	return paths, scores
+}

@@ -30,8 +30,9 @@ var (
 
 // decodeSource decodes path into a lazily-addressed pixel source, dispatching by format: FITS in pure
 // Go; camera raws transcoded to 16-bit TIFF via sips (reusing rawconv) then decoded; everything else
-// (TIFF/PNG/JPEG) through the Go image stack.
-func decodeSource(ctx context.Context, path string) (pixelSource, error) {
+// (TIFF/PNG/JPEG) through the Go image stack. maxEdge bounds the raw transcode so a 48 MP DNG develops
+// at preview size (fast), not full resolution.
+func decodeSource(ctx context.Context, path string, maxEdge int) (pixelSource, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch {
 	case fitsExts[ext]:
@@ -42,7 +43,7 @@ func decodeSource(ctx context.Context, path string) (pixelSource, error) {
 		return &fitsSource{im: im}, nil
 
 	case rawExts[ext]:
-		tif, cleanup, err := transcodeRaw(ctx, path)
+		tif, cleanup, err := transcodeRaw(ctx, path, maxEdge)
 		if err != nil {
 			return nil, err
 		}
@@ -65,20 +66,21 @@ func decodeSource(ctx context.Context, path string) (pixelSource, error) {
 	}
 }
 
-// transcodeRaw converts a camera raw to a temporary 16-bit TIFF via rawconv (macOS sips), returning the
-// TIFF path and a cleanup func for the temp dir.
-func transcodeRaw(ctx context.Context, path string) (string, func(), error) {
+// transcodeRaw develops a camera raw to a temporary, DOWNSCALED 16-bit TIFF via rawconv (macOS sips),
+// returning the TIFF path and a cleanup func for the temp dir. Developing at maxEdge (not full
+// resolution) is what keeps a hover/preview of a 48 MP DNG near-instant instead of ~5 s.
+func transcodeRaw(ctx context.Context, path string, maxEdge int) (string, func(), error) {
 	tmp, err := os.MkdirTemp("", "astro-preview-")
 	if err != nil {
 		return "", func() {}, err
 	}
 	cleanup := func() { _ = os.RemoveAll(tmp) }
-	out, _, err := rawconv.PrepareTIFF(ctx, []string{path}, tmp, nil)
-	if err != nil {
+	dst := filepath.Join(tmp, "preview.png")
+	if err := rawconv.Thumbnail(ctx, path, dst, maxEdge); err != nil {
 		cleanup()
 		return "", func() {}, fmt.Errorf("preview: decode raw %s: %w", filepath.Base(path), err)
 	}
-	return out[0], cleanup, nil
+	return dst, cleanup, nil
 }
 
 // decodeImageFile decodes a TIFF/PNG/JPEG file into an in-memory image.Image.

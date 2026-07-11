@@ -1,0 +1,230 @@
+package planetary
+
+import (
+	"math"
+
+	"github.com/verove-jordan/astronomy/internal/comet"
+	"github.com/verove-jordan/astronomy/internal/fits"
+)
+
+// Two-level alignment-point field measurement (AutoStakkert-style). A coarse lattice on 4×-downsampled
+// BANDPASS planes seeds a full-res per-node ±2 px ZNCC search with a 2-D quadratic sub-pixel peak. Bandpass
+// (fine−coarse box blur) is robust to the limb/terminator illumination gradient a raw correlation locks
+// onto; the coarse seed keeps the full-res search tiny (fast) yet globally correct. Mislocked nodes (a
+// global-median and a local-median gate) and off-disk nodes are then filled by Jacobi relaxation from the
+// valid neighbours and one 3×3 smooth, giving a smooth, hole-free warp field.
+const (
+	apCoarseShift   = 6   // coarse search half-range on the 4× plane (px) → ±24 full-res px of local residual
+	apFineShift     = 2   // full-res per-node search half-range around a COARSE seed (px)
+	apSingleShift   = 6   // per-node search half-range when the global drift is the seed (sparse grid, no coarse)
+	apCoarseMinNode = 3   // minimum coarse-lattice side (N/4) to use the two-level path; below it, seed globally
+	apLocalGate     = 1.5 // a node whose shift deviates >this from its 5×5 valid-neighbour median is a mislock
+	apJacobiIters   = 20  // Jacobi relaxation passes that harmonic-fill the invalid / off-disk nodes
+)
+
+// measureAPField fills dxGrid/dyGrid with each ON-DISK node's ABSOLUTE sub-pixel shift onto the
+// measurement reference (both planes are full-res BANDPASS) and returns the per-node validity after the
+// median gates. Dense grids use the two-level path (coarse seed → fine ±2 px); sparse grids (small
+// planets) seed directly with the global drift and search wider (the classic behavior). Off-disk / gated
+// nodes keep the global baseline the grids arrive with (the caller fills them).
+func measureAPField(g apGrid, measBand, tgtBand *fits.Image, cx, cy []float64, onDisk []bool, radius int,
+	gdx, gdy float64, dxGrid, dyGrid []float64) []bool {
+	seedX, seedY, coarse := coarseSeedField(g, measBand, tgtBand, radius, gdx, gdy)
+	fine := apSingleShift
+	if coarse {
+		fine = apFineShift
+	}
+	valid := make([]bool, len(cx))
+	for k := range cx {
+		if !onDisk[k] {
+			continue
+		}
+		dxGrid[k], dyGrid[k] = refineNode(measBand, tgtBand, cx[k], cy[k], radius, seedX[k], seedY[k], fine)
+		valid[k] = true
+	}
+	gateGlobalMedian(dxGrid, dyGrid, valid, gdx, gdy)
+	gateLocalMedian(g, dxGrid, dyGrid, valid)
+	return valid
+}
+
+// coarseSeedField seeds each fine node's search. On a dense grid it measures a sparse (N/4)×(N/4) lattice
+// on the 4×-downsampled bandpass planes (a ±apCoarseShift small-px ZNCC seeded by the global drift) and
+// bilinearly upsamples it — so every fine node starts within a couple px of its true shift even under a
+// large seeing warp. On a sparse grid (small planet) the coarse lattice would be degenerate (its few
+// nodes fall on the disk edge / alias periodic texture), so the global drift is the seed directly.
+func coarseSeedField(g apGrid, measBand, tgtBand *fits.Image, radius int, gdx, gdy float64) (seedX, seedY []float64, coarse bool) {
+	nc := g.N / 4
+	if nc < apCoarseMinNode {
+		sx, sy := g.uniform(gdx, gdy)
+		return sx, sy, false
+	}
+	measSmall, tgtSmall := downPlane(measBand, coarseDown), downPlane(tgtBand, coarseDown)
+	cg := apGrid{N: nc, W: measBand.W, H: measBand.H}
+	ccx, ccy := cg.centers()
+	rSmall := radius / coarseDown
+	if rSmall < apCoarseShift {
+		rSmall = apCoarseShift
+	}
+	cfx, cfy := make([]float64, nc*nc), make([]float64, nc*nc)
+	for k := range ccx {
+		win := comet.Point{X: ccx[k] / coarseDown, Y: ccy[k] / coarseDown}
+		dx, dy := comet.AlignSeeded(measSmall, tgtSmall, win, rSmall, apCoarseShift, 0, gdx/coarseDown, gdy/coarseDown)
+		cfx[k], cfy[k] = dx*coarseDown, dy*coarseDown
+	}
+	seedX, seedY = make([]float64, g.N*g.N), make([]float64, g.N*g.N)
+	for j := 0; j < g.N; j++ {
+		for i := 0; i < g.N; i++ {
+			cu := (float64(i)+0.5)*float64(nc)/float64(g.N) - 0.5
+			cv := (float64(j)+0.5)*float64(nc)/float64(g.N) - 0.5
+			k := j*g.N + i
+			seedX[k], seedY[k] = cg.sampleField(cfx, cu, cv), cg.sampleField(cfy, cu, cv)
+		}
+	}
+	return seedX, seedY, true
+}
+
+// refineNode locates one node's absolute shift: a full-res integer ZNCC search over seed ± fine on the
+// bandpass planes, then a 2-D quadratic sub-pixel peak over the 3×3 around it (axis-separable 1-D
+// parabolas when the 2-D fit is not a clean concave max).
+func refineNode(measBand, tgtBand *fits.Image, cx, cy float64, radius int, seedX, seedY float64, fine int) (float64, float64) {
+	center := comet.Point{X: cx, Y: cy}
+	bx, by := math.Round(seedX), math.Round(seedY)
+	best, pbx, pby := -2.0, bx, by
+	for dy := -fine; dy <= fine; dy++ {
+		for dx := -fine; dx <= fine; dx++ {
+			if v := znccAt(measBand, tgtBand, center, radius, bx+float64(dx), by+float64(dy)); v > best {
+				best, pbx, pby = v, bx+float64(dx), by+float64(dy)
+			}
+		}
+	}
+	var s [3][3]float64
+	for j := -1; j <= 1; j++ {
+		for i := -1; i <= 1; i++ {
+			s[j+1][i+1] = znccAt(measBand, tgtBand, center, radius, pbx+float64(i), pby+float64(j))
+		}
+	}
+	du, dv, ok := peak2D(s)
+	if !ok {
+		du = parabola1D(s[1][0], s[1][1], s[1][2])
+		dv = parabola1D(s[0][1], s[1][1], s[2][1])
+	}
+	return pbx + du, pby + dv
+}
+
+// gateGlobalMedian invalidates nodes whose shift deviates from the global on-disk median by more than
+// apOutlierPx — a lone AP several px off is a mislock (flat texture, repeating pattern).
+func gateGlobalMedian(dxGrid, dyGrid []float64, valid []bool, gdx, gdy float64) {
+	var xs, ys []float64
+	for k, ok := range valid {
+		if ok {
+			xs = append(xs, dxGrid[k])
+			ys = append(ys, dyGrid[k])
+		}
+	}
+	if len(xs) < 3 {
+		return
+	}
+	mx, my := medianOf(xs), medianOf(ys)
+	for k, ok := range valid {
+		if ok && (math.Abs(dxGrid[k]-mx) > apOutlierPx || math.Abs(dyGrid[k]-my) > apOutlierPx) {
+			valid[k] = false
+		}
+	}
+}
+
+// gateLocalMedian invalidates a node whose shift deviates from its 5×5 valid-neighbour median by more than
+// apLocalGate — a local mislock the coarse global gate misses. Judged against the PRE-gate validity so
+// removals don't cascade through the neighbourhood.
+func gateLocalMedian(g apGrid, dxGrid, dyGrid []float64, valid []bool) {
+	n := g.N
+	orig := append([]bool(nil), valid...)
+	for j := 0; j < n; j++ {
+		for i := 0; i < n; i++ {
+			k := j*n + i
+			if !orig[k] {
+				continue
+			}
+			xs, ys := neighbourShifts(dxGrid, dyGrid, orig, n, i, j)
+			if len(xs) < 3 {
+				continue
+			}
+			if math.Abs(dxGrid[k]-medianOf(xs)) > apLocalGate || math.Abs(dyGrid[k]-medianOf(ys)) > apLocalGate {
+				valid[k] = false
+			}
+		}
+	}
+}
+
+// neighbourShifts collects the shifts of node (i,j)'s valid 5×5 neighbours (excluding itself).
+func neighbourShifts(dxGrid, dyGrid []float64, valid []bool, n, i, j int) (xs, ys []float64) {
+	for dj := -2; dj <= 2; dj++ {
+		for di := -2; di <= 2; di++ {
+			ii, jj := i+di, j+dj
+			if (di == 0 && dj == 0) || ii < 0 || jj < 0 || ii >= n || jj >= n {
+				continue
+			}
+			kk := jj*n + ii
+			if valid[kk] {
+				xs = append(xs, dxGrid[kk])
+				ys = append(ys, dyGrid[kk])
+			}
+		}
+	}
+	return xs, ys
+}
+
+// fillField completes the warp field: harmonic-fill the invalid / off-disk nodes from the valid ones
+// (Jacobi relaxation, init = the global drift), then one 3×3 smooth so a single node can't kink the warp.
+func fillField(g apGrid, dxGrid, dyGrid []float64, valid []bool, gdx, gdy float64) {
+	jacobiFill(g, dxGrid, valid, gdx)
+	jacobiFill(g, dyGrid, valid, gdy)
+	g.smooth(dxGrid)
+	g.smooth(dyGrid)
+}
+
+// jacobiFill relaxes the invalid nodes of v toward the mean of their 4-neighbours (Laplace/harmonic fill)
+// while holding the valid nodes fixed (Dirichlet), starting the invalid nodes at init (the global drift).
+func jacobiFill(g apGrid, v []float64, valid []bool, init float64) {
+	n := g.N
+	cur := make([]float64, len(v))
+	for k := range v {
+		if valid[k] {
+			cur[k] = v[k]
+		} else {
+			cur[k] = init
+		}
+	}
+	next := make([]float64, len(v))
+	for iter := 0; iter < apJacobiIters; iter++ {
+		for j := 0; j < n; j++ {
+			for i := 0; i < n; i++ {
+				k := j*n + i
+				if valid[k] {
+					next[k] = cur[k]
+					continue
+				}
+				next[k] = neighbourMean(cur, n, i, j)
+			}
+		}
+		cur, next = next, cur
+	}
+	copy(v, cur)
+}
+
+// neighbourMean averages node (i,j)'s in-bounds 4-neighbours (its own value when it has none).
+func neighbourMean(cur []float64, n, i, j int) float64 {
+	var sum float64
+	var cnt int
+	for _, d := range [4][2]int{{-1, 0}, {1, 0}, {0, -1}, {0, 1}} {
+		ii, jj := i+d[0], j+d[1]
+		if ii < 0 || jj < 0 || ii >= n || jj >= n {
+			continue
+		}
+		sum += cur[jj*n+ii]
+		cnt++
+	}
+	if cnt == 0 {
+		return cur[j*n+i]
+	}
+	return sum / float64(cnt)
+}

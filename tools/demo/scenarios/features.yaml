@@ -1,0 +1,192 @@
+# AstroStack — visite guidée complète (en français), voix off féminine, curseur animé, défilement et
+# interactions réelles : Ciel sombre (zoom, dessin d'une zone, Bortle, recherche, résultats, Google Maps,
+# enregistrer le lieu) et Calendrier (clic sur un événement, métadonnées, prochaines occurrences par type).
+#
+# App requise EN MARCHE : just up && just dev + just web.  Lancer : just demo features
+meta:
+  title: "AstroStack — visite des fonctionnalités"
+  lang: fr
+  viewport: [1920, 1080]
+  scale: 2
+  fps: 30
+  baseWeb: http://localhost:5173
+  baseApi: http://localhost:8080
+  voiceover: say
+  # Voix FÉMININE française disponible dans `say`. Les voix « Siri » ne sont PAS accessibles à `say` ;
+  # pour une voix vraiment naturelle, installez une voix française « Premium/Enhanced » (pas Siri) dans
+  # Réglages Système → Contenu énoncé → Voix système, puis mettez son nom exact ici.
+  voice: "Amélie"
+  # music: assets/music/ambient.mp3
+
+intro:
+  title: AstroStack
+  subtitle: Planifiez, capturez, traitez votre astrophotographie
+  seconds: 2.5
+
+steps:
+  # ===================== TRAITEMENT (5 onglets) =====================
+  - name: import
+    caption: "Traitement · Import — parcourez et inspectez vos dossiers de captures"
+    narrate: "Tout commence ici. Vous pointez AstroStack vers une nuit de captures, et il s'occupe du reste."
+    goto: /processing/import
+    dwell: 2.6
+
+  - name: import-controls
+    caption: "Inspection, mapping des canaux, aperçu de la calibration, puis un clic pour lancer le traitement"
+    scroll: { edge: bottom, ms: 2400 }
+    hover: { testid: run-pipeline }
+    dwell: 1.8
+
+  - name: live
+    caption: "Traitement · Live stack — empilez en direct depuis un dossier local ou un bucket S3"
+    narrate: "Vous pouvez même empiler en direct : l'image se précise à chaque nouvelle pose qui arrive."
+    goto: /processing/live
+    dwell: 2.6
+
+  - name: tasks
+    caption: "Traitement · Tâches — la file des travaux, avec statut et progression en direct"
+    goto: /processing/tasks
+    dwell: 2.2
+
+  - name: runs
+    caption: "Traitement · Résultats — une galerie de vos rendus, rouvrables à tout moment"
+    narrate: "Et rien ne se perd. Chaque traitement est conservé, avec son image finale et ses statistiques."
+    goto: /processing/runs
+    hover: { firstCard: true }
+    dwell: 2.6
+
+  - name: library
+    caption: "Traitement · Bibliothèque — vos maîtres de calibration réutilisables, appariés d'une session à l'autre"
+    goto: /processing/library
+    scroll: { edge: bottom, ms: 1900 }
+    dwell: 1.8
+
+  # ===================== CE SOIR — Cibles & aperçu personnalisé =====================
+  - name: tonight-targets
+    caption: "Ce soir · Cibles — les objets du ciel profond, notés pour votre lieu, votre matériel et la Lune"
+    narrate: "Passons à la planification. AstroStack vous dit quoi photographier ce soir."
+    goto: /tonight
+    dwell: 2.4
+
+  - name: tonight-setup
+    caption: "Renseignez votre lieu et votre matériel une seule fois — tout est ensuite calculé pour votre configuration"
+    narrate: "Renseignez une fois votre lieu et votre matériel, et tout est calculé rien que pour vous."
+    scroll: { by: 640, ms: 2000 }
+    dwell: 2.2
+
+  - name: tonight-preview
+    caption: "Un aperçu direct de la visibilité de chaque cible cette nuit, avec votre matériel"
+    narrate: "Vous voyez aussitôt où chaque objet se trouvera dans le ciel, et comment il sera cadré."
+    scroll: { by: 900, ms: 2400 }
+    dwell: 2.4
+
+  - name: tonight-polar
+    caption: "Ce soir · Mise en station — placez l'étoile polaire au bon endroit sur le réticule de votre viseur polaire"
+    narrate: "Il vous aide même à faire votre mise en station, pas à pas."
+    tab: "Mise en station"
+    scroll: { edge: top, ms: 800 }
+    dwell: 2.4
+
+  # ===================== CE SOIR — Ciel sombre (interaction complète) =====================
+  - name: darksky
+    caption: "Ce soir · Ciel sombre — trouvez les sites les plus sombres et dégagés autour de vous"
+    narrate: "Envie d'un ciel plus noir ? Cet outil trouve les meilleurs sites autour de vous."
+    tab: "Ciel sombre"
+    scroll: { edge: top, ms: 800 }
+    dwell: 2.8
+
+  - name: darksky-zoom
+    caption: "Zoomez sur une région"
+    mapZoom:
+      on: { css: '[aria-label="Carte de recherche de ciel sombre"]' }
+      in: 2
+      ms: 750
+    dwell: 1.6
+
+  - name: darksky-draw
+    caption: "Dessinez une zone de recherche directement sur la carte"
+    click: { role: button, text: "Dessiner une zone" }
+    drawRect:
+      on: { css: '[aria-label="Carte de recherche de ciel sombre"]' }
+      from: [0.15, 0.2]
+      to: [0.85, 0.8]
+    dwell: 1.0
+
+  - name: darksky-bortle
+    caption: "Fixez le niveau d'obscurité voulu — le Bortle maximum"
+    click: { css: '[aria-label="Bortle 5"]' }
+    dwell: 1.0
+
+  - name: darksky-search
+    caption: "Lancez la recherche des sites les plus sombres"
+    narrate: "Il analyse toute la zone et vous classe les endroits les plus sombres et les plus dégagés."
+    click: { role: button, text: "Rechercher" }
+    waitFor: { css: 'a[href^="https://www.google.com/maps/search/"]' }
+    dwell: 1.6
+
+  - name: darksky-results
+    caption: "Les meilleurs spots, classés : Bortle, SQM, altitude, ouverture d'horizon et distance"
+    scroll: { edge: bottom, ms: 2200 }
+    hover: { css: 'a[href^="https://www.google.com/maps/search/"]' }
+    dwell: 2.2
+
+  - name: darksky-coord
+    caption: "Cliquez une coordonnée pour ouvrir le site dans Google Maps"
+    narrate: "Un clic, et le site s'ouvre dans Google Maps."
+    scrollTo: { css: 'a[href^="https://www.google.com/maps/search/"]' }
+    external: { css: 'a[href^="https://www.google.com/maps/search/"]' }
+    dwell: 2.0
+
+  - name: darksky-use
+    caption: "…ou enregistrez-le comme votre lieu d'observation — les cibles sont aussitôt recalculées"
+    narrate: "Ou vous l'enregistrez comme lieu d'observation, et toutes vos cibles se recalculent aussitôt."
+    click: { role: button, text: "Utiliser" }
+    dwell: 2.4
+
+  # ===================== CALENDRIER — Par date (clic + métadonnées) =====================
+  - name: calendar-bydate
+    caption: "Calendrier · Par date — les événements rares sur une période, notés pour votre site"
+    narrate: "Et enfin, un véritable almanach du ciel : éclipses, étoiles filantes, conjonctions…"
+    goto: /calendar
+    dwell: 2.6
+
+  - name: calendar-grid
+    caption: "Une vue par mois de ce qui vaut la peine d'être capturé — les jours avec un événement sont cliquables"
+    scroll: { by: 600, ms: 2000 }
+    dwell: 1.6
+
+  - name: calendar-event
+    caption: "Cliquez un jour avec un événement pour voir son détail"
+    click: { css: ".grid.grid-cols-7 > div.cursor-pointer" }
+    dwell: 1.8
+
+  - name: calendar-metadata
+    caption: "Heure du pic, visibilité à l'œil nu, aux jumelles ou à votre instrument, magnitude, altitude, Lune — et pourquoi c'est noté ainsi"
+    narrate: "Pour chaque événement, vous savez quand et comment l'observer, et ce qu'il vaut vraiment."
+    scrollTo: { text: "Pourquoi ce score" }
+    dwell: 3.0
+
+  # ===================== CALENDRIER — Par type =====================
+  - name: calendar-bytype
+    caption: "Passez en Par type — les prochaines occurrences de n'importe quel type, dans l'ordre"
+    narrate: "Ou listez directement les prochaines occurrences du type de votre choix."
+    tab: "Par type"
+    scroll: { edge: top, ms: 800 }
+    dwell: 2.2
+
+  - name: calendar-kind
+    caption: "Choisissez un type — ici, les pluies d'étoiles filantes"
+    select: { into: { css: "select" }, value: "meteor_shower" }
+    waitFor: { css: "button[aria-pressed]" }
+    dwell: 1.6
+
+  - name: calendar-series
+    caption: "Les prochaines pluies, dans l'ordre — cliquez-en une pour son pic, sa visibilité et son score"
+    scroll: { by: 420, ms: 1800 }
+    click: { css: "button[aria-pressed]" }
+    dwell: 2.6
+
+outro:
+  title: AstroStack
+  subtitle: Planifier · Capturer · Traiter
+  seconds: 2.5

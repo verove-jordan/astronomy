@@ -54,7 +54,7 @@ func TestTypeFromDirs_Compound(t *testing.T) {
 		{"input/M27/darks/2019-08-30_00_02/x.fit", Dark},
 		{"input/sess/master_flats/x.fit", Flat},
 		{"input/sess/dark_flats/x.fit", DarkFlat},
-		{"input/sess/darkstar_nebula/L/x.fit", Unknown}, // "darkstar" is not the word "dark"
+		{"input/sess/darkstar_nebula/L/x.fit", Unknown},        // "darkstar" is not the word "dark"
 		{"input/M27/m27/data/2019-08-29_22_20/x.fit", Unknown}, // a light folder names no type
 	}
 	for _, tc := range cases {
@@ -78,10 +78,32 @@ func TestFilterFromDirs_Robust(t *testing.T) {
 		{"input/M27/m27/data/2019/x.fit", ""}, // non-filter folder
 		// Compound session name that merely mentions a filter must NOT be read as that filter.
 		{"input/2020_05_06/m81_m82_LRGB_0gain_Ha_180gain_120s/autorun/x.fit", ""},
+		// A calibration folder states its purpose, so a filter qualifier anywhere in it is intentional.
+		{"input/ngc6992/flats_0gain_Ha/autorun/x.fit", "Ha"},
+		{"input/sess/darks_0gain_300s/x.fit", ""}, // calibration folder with no filter qualifier
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {
 			assert.Equal(t, tc.want, filterFromDirs(tc.path))
+		})
+	}
+}
+
+func TestGainFromDirs(t *testing.T) {
+	cases := []struct {
+		path string
+		want int64
+	}{
+		// The bug: "300" belongs to the exposure token, not the "0gain" gain → gain is 0, not 300.
+		{"input/2020/darks_0gain_300s_-25deg/autorun/x.fit", 0},
+		{"input/C2019/offset_-15_250gain/autorun/x.fit", 250}, // legacy "<n>gain" suffix form
+		{"input/sess/flats_0gain_Ha/x.fit", 0},
+		{"input/sess/Light_gain300_30sec/x.fit", 300}, // glued "gain<n>" prefix form
+		{"input/sess/nogainhere/x.fit", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			assert.Equal(t, tc.want, gainFromDirs(tc.path))
 		})
 	}
 }

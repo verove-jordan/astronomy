@@ -20,6 +20,11 @@ type Config struct {
 	OutputDir  string // where final stacks and reports are written
 	LibraryDir string // persistent master-calibration library
 
+	// BrowseRoots are EXTRA absolute roots the UI may browse for external drives, on top of the platform
+	// removable-media defaults (macOS /Volumes; Linux /media, /mnt, /run/media). Colon- or comma-separated
+	// in ASTRO_BROWSE_ROOTS. Every /api/local/* handler confines its paths to these roots + the defaults.
+	BrowseRoots []string
+
 	// PreviewMaxEdge caps the longest edge (px) of the in-browser file-preview buffer the API decodes
 	// for the file viewer; smaller = less memory/transfer, larger = more detail when zooming.
 	PreviewMaxEdge int
@@ -32,15 +37,22 @@ type Config struct {
 
 	// Optional astro-AI host tools (invoked like Siril/GIMP, never bundled). Empty/missing →
 	// the pipeline falls back to Siril (subsky) and skips star removal.
-	GraxpertBin string // GraXpert: AI background-gradient extraction + denoise
-	StarnetBin  string // StarNet++ v2: star removal (for star-reduced finishing)
+	GraxpertBin   string // GraXpert: AI background-gradient extraction + denoise
+	GraxpertURL   string // optional host GraXpert HTTP service (cmd/graxpert-host); empty → exec GraxpertBin locally
+	GraxpertGPU   bool   // pass -gpu true (helps background-extraction on Apple Silicon; denoise stays CPU — its model is CoreML-incompatible)
+	GraxpertBatch int    // GraXpert denoise -batch_size (tiles denoised in parallel; 0 → GraXpert's default of 4)
+	StarnetBin    string // StarNet++ v2: star removal (for star-reduced finishing)
 
 	// Optional local LLM "supervisor" (opt-in via the run request / --supervise). The engine drives a
 	// host-run, OpenAI-compatible model server (LM Studio / mlx-vlm) over HTTP to auto-tune the finish.
 	// An empty URL or an unreachable server → the run uses the normal single-pass finish.
-	LLMBaseURL     string // OpenAI-compatible base, e.g. http://127.0.0.1:1234/v1
-	LLMModel       string // chat/vision model id served there
-	LLMImageFormat string // vision wire-format: "openai" (default) or "mlxvlm"
+	LLMBaseURL     string        // OpenAI-compatible base, e.g. http://127.0.0.1:1234/v1
+	LLMModel       string        // chat/vision model id served there
+	LLMImageFormat string        // vision wire-format: "openai" (default) or "mlxvlm"
+	LLMTimeout     time.Duration // max wall-clock for one chat/vision completion; 0 → no limit
+	// LLMAssistPromptExtra is appended to the AstroAgent chat system prompt (tone/policy tweaks without
+	// recompiling); the grounding rules + knob menu stay fixed in code.
+	LLMAssistPromptExtra string
 
 	// Resource limits keep a heavy stack from freezing the host (Siril defaults to all cores and
 	// 90% of RAM, which thrashes swap). MaxCPUs caps Siril's threads (setcpu); SirilMemRatio caps
@@ -67,6 +79,16 @@ type Config struct {
 	NightscapeOSCSensor string
 	PlateSolveCatalog   string
 	SirilCatalogDir     string // Siril's bundled object catalogues (for name→coords resolution)
+	// Local Gaia DR3 catalogues (downloaded once via `just download-catalogues[-spcc]`) make
+	// plate-solving and SPCC work fully offline. GaiaAstroCat is the astrometric extract FILE;
+	// GaiaXpsampDir is the DIRECTORY holding the xp_sampled chunk files. Use the LocalGaia*()
+	// accessors, which return them only when the files are actually present. LocalAsnet switches
+	// solving to a local astrometry.net install instead. SpccCatalog forces the SPCC source
+	// ("gaia" online / "localgaia"); empty lets Siril prefer local when installed.
+	GaiaAstroCat  string
+	GaiaXpsampDir string
+	LocalAsnet    bool
+	SpccCatalog   string
 
 	// Observing site + rig for the "tonight" visibility planner. Latitude/longitude default to Paris
 	// so the page works out of the box; the web UI overrides them per-session (and persists locally).
@@ -114,6 +136,22 @@ type Config struct {
 	S3AccessKeyID     string
 	S3SecretAccessKey string
 	S3UseSSL          bool
+	// S3Concurrency bounds how many files a transfer uploads/downloads in PARALLEL (0 → the transfer
+	// engine's default of 6). Raise it to saturate a fat uplink; lower it for a slow source drive whose
+	// parallel reads would thrash. Env ASTRO_S3_CONCURRENCY.
+	S3Concurrency int
+	// S3LowDisk enables the STAGED low-disk mode for full-S3 deep-sky/nebula processing runs: inputs are
+	// scanned remotely (ranged FITS-header reads) and downloaded/verified-freed one frame-type/channel wave
+	// at a time, so peak local disk ≈ one channel's frames instead of the whole dataset. The server default;
+	// a run can override it (RunRequest.LowDisk). Env ASTRO_S3_LOW_DISK (default true).
+	S3LowDisk bool
+
+	// EncryptionKey / SecretKeyFile secure the UI-managed S3 connections at rest (their secret access keys
+	// are AES-256-GCM encrypted in the DB). EncryptionKey (base64 std, 32 bytes) is the master key; when
+	// empty a random key is generated once and persisted to SecretKeyFile (default under the user config
+	// dir — deliberately OUTSIDE the data/library/output roots so it is never swept into a backup).
+	EncryptionKey string
+	SecretKeyFile string
 
 	// Light pollution. Per-site artificial sky brightness (VIIRS-derived) feeds the visibility scores
 	// (a sky-glow factor parallel to the Moon) and the location-map overlay. Sourcing is hybrid and
@@ -125,7 +163,7 @@ type Config struct {
 	LightPollutionAPIURL        string
 	LightPollutionAPIKey        string
 	LightPollutionTileURL       string
-	LightPollutionAtlas         string // offline raster path; empty → <DataDir>/lightpollution/atlas.bin
+	LightPollutionAtlas         string // offline raster path; empty → <WorkDir>/lightpollution/atlas.bin
 	LightPollutionCacheTTLHours int
 	SkyDefaultSQM               float64
 
@@ -139,6 +177,43 @@ type Config struct {
 	HorizonAzimuths         int       // azimuth samples around the horizon
 	HorizonRadiiM           []float64 // sample distances (m) along each azimuth
 	HorizonOpenThresholdDeg float64   // an azimuth is "open" below this horizon elevation angle
+
+	// Tree/forest canopy horizon. When a canopy source is active (an ETH canopy-height atlas installed, or
+	// the keyless tree-cover tiles), the dark-sky finder samples canopy height along a NEAR-field ring and
+	// adds it to the terrain elevation, so a site hemmed in by a forest scores its low horizon correctly (a
+	// 20 m treeline 30 m away blocks ~34° of sky). It is opt-in: with no canopy source the horizon is
+	// byte-identical to the terrain-only result. CanopyTileURL is a {z}/{x}/{y} tree-cover-% raster;
+	// CanopyAssumedHeightM is the height assumed where a tile/land-cover cell only reports forest presence.
+	CanopyAtlas          string  // offline canopy-height raster; empty → <WorkDir>/canopy/atlas.bin
+	CanopyTileURL        string  // keyless tree-cover-% XYZ tiles ({z}/{x}/{y}); empty → disabled
+	CanopyAssumedHeightM float64 // canopy height (m) assumed for a "forested" tile/land-cover cell
+	CanopyTreeCoverPct   float64 // a tile pixel counts as forest at/above this tree-cover %
+	CanopyCacheTTLHours  int
+	CanopySourceURL      string  // ETH 3° canopy-height COG URL template ({tile} → e.g. N45E003) for the in-app "download canopy for this area" build
+	CanopyBuildResDeg    float64 // target resolution (deg) of a downloaded canopy atlas (~0.0008 ≈ 90 m)
+
+	// Canopy-mode horizon ring (used ONLY when a canopy source is active; terrain-only keeps HorizonRadiiM /
+	// HorizonAzimuths above). Trees are a near-field effect, so the ring reaches from tens of metres out.
+	// HorizonEyeHeightM is the observer's eye/telescope height, subtracted from each obstruction angle.
+	HorizonCanopyRadiiM   []float64 // sample distances (m) along each azimuth in canopy mode
+	HorizonCanopyAzimuths int       // azimuth samples in canopy mode (finer than terrain-only)
+	HorizonEyeHeightM     float64   // observer eye height (m) subtracted from obstruction angles
+
+	// Dark-site score weights. The place score blends darkness and horizon openness. DarkSkyDarkWeight is
+	// the darkness share (openness gets the remainder). DarkSkySouthWeight blends a south-weighted openness
+	// into the openness term (the low southern horizon matters most for N-hemisphere deep-sky).
+	// DarkSkyMaxSouthBlockDeg (0 = disabled) is a hard gate on southern obstruction. Defaults reproduce
+	// today's 0.6 darkness / 0.4 openness score.
+	DarkSkyDarkWeight       float64
+	DarkSkySouthWeight      float64
+	DarkSkyMaxSouthBlockDeg float64
+
+	// Driving distance for the dark-site finder. Road distance + time from the observer to each candidate,
+	// via an OSRM routing server (keyless public demo by default — rate-limited, best-effort). It is
+	// display-only and soft-failing: on any error the finder shows the straight-line distance instead.
+	// Blank RoutingURL to disable.
+	RoutingURL           string
+	RoutingCacheTTLHours int
 
 	// Astronomy weather. Free + key-less by default: Open-Meteo (forecast + air quality), 7Timer! ASTRO
 	// (seeing/transparency) and NOAA SWPC (Kp/aurora) feed the /tonight weather overlays + forecast
@@ -163,6 +238,7 @@ func Load() *Config {
 	if catalogDir == "" { // derive from the Siril app bundle (macOS host-engine)
 		catalogDir = filepath.Clean(filepath.Join(filepath.Dir(sirilBin), "..", "Resources", "share", "siril", "catalogue"))
 	}
+	libraryDir := env("ASTRO_LIBRARY_DIR", "./library")
 	return &Config{
 		DatabaseURL:    env("DATABASE_URL", "postgres://astro:astro@localhost:5432/astrostack?sslmode=disable"),
 		APIAddr:        env("API_ADDR", ":8080"),
@@ -170,7 +246,8 @@ func Load() *Config {
 		DataDir:        env("ASTRO_DATA_DIR", "./data"),
 		WorkDir:        env("ASTRO_WORK_DIR", "./work"),
 		OutputDir:      env("ASTRO_OUTPUT_DIR", "./output"),
-		LibraryDir:     env("ASTRO_LIBRARY_DIR", "./library"),
+		LibraryDir:     libraryDir,
+		BrowseRoots:    envStrList("ASTRO_BROWSE_ROOTS"),
 		PreviewMaxEdge: envInt("PREVIEW_MAX_EDGE", 1500),
 		SirilBin:       sirilBin,
 		GimpBin:        env("GIMP_BIN", "/Applications/GIMP.app/Contents/MacOS/gimp-console-2.10"),
@@ -180,12 +257,17 @@ func Load() *Config {
 		// GraXpert/StarNet are resolved via PATH by default (pip/pipx installs land in PATH as
 		// `graxpert`); the old default pointed at a GraXpert.app that pip installs don't create, so AI
 		// background extraction was silently skipped. exec.LookPath accepts a bare name or an abs path.
-		GraxpertBin: env("GRAXPERT_BIN", "graxpert"),
-		StarnetBin:  env("STARNET_BIN", "starnet++"),
+		GraxpertBin:   env("GRAXPERT_BIN", "graxpert"),
+		GraxpertURL:   env("ASTRO_GRAXPERT_URL", ""),
+		GraxpertGPU:   envBool("ASTRO_GRAXPERT_GPU", false),
+		GraxpertBatch: envInt("ASTRO_GRAXPERT_BATCH", 0),
+		StarnetBin:    env("STARNET_BIN", "starnet++"),
 
-		LLMBaseURL:     env("ASTRO_LLM_URL", "http://127.0.0.1:1234/v1"),
-		LLMModel:       env("ASTRO_LLM_MODEL", ""),
-		LLMImageFormat: env("ASTRO_LLM_IMAGE_FORMAT", "openai"),
+		LLMBaseURL:           env("ASTRO_LLM_URL", "http://127.0.0.1:1234/v1"),
+		LLMModel:             env("ASTRO_LLM_MODEL", ""),
+		LLMImageFormat:       env("ASTRO_LLM_IMAGE_FORMAT", "openai"),
+		LLMTimeout:           time.Duration(envInt("ASTRO_LLM_TIMEOUT_SEC", 3600)) * time.Second,
+		LLMAssistPromptExtra: env("ASTRO_LLM_ASSIST_PROMPT_EXTRA", ""),
 
 		MaxCPUs:       envInt("ASTRO_MAX_CPUS", 10),
 		SirilMemRatio: envFloat("ASTRO_SIRIL_MEM_RATIO", 0.5),
@@ -206,6 +288,10 @@ func Load() *Config {
 		NightscapeOSCSensor: env("ASTRO_NIGHTSCAPE_OSC_SENSOR", ""),
 		PlateSolveCatalog:   env("ASTRO_PLATESOLVE_CATALOG", ""),
 		SirilCatalogDir:     catalogDir,
+		GaiaAstroCat:        env("ASTRO_GAIA_ASTRO_CAT", filepath.Join(libraryDir, "catalogues", "siril_cat_healpix8_astro.dat")),
+		GaiaXpsampDir:       env("ASTRO_GAIA_XPSAMP_DIR", filepath.Join(libraryDir, "catalogues")),
+		LocalAsnet:          envBool("ASTRO_LOCAL_ASNET", false),
+		SpccCatalog:         env("ASTRO_SPCC_CATALOG", ""),
 
 		LatDeg:     envFloat("ASTRO_LAT", 48.8566), // Paris by default; overridable in the UI
 		LonDeg:     envFloat("ASTRO_LON", 2.3522),
@@ -233,6 +319,10 @@ func Load() *Config {
 		S3AccessKeyID:     env("ASTRO_S3_ACCESS_KEY_ID", ""),
 		S3SecretAccessKey: env("ASTRO_S3_SECRET_ACCESS_KEY", ""),
 		S3UseSSL:          envBool("ASTRO_S3_USE_SSL", true),
+		S3Concurrency:     envInt("ASTRO_S3_CONCURRENCY", 0),
+		S3LowDisk:         envBool("ASTRO_S3_LOW_DISK", true),
+		EncryptionKey:     env("ASTRO_ENCRYPTION_KEY", ""),
+		SecretKeyFile:     env("ASTRO_SECRET_KEY_FILE", ""),
 
 		LightPollutionAPIURL: env("ASTRO_LIGHTPOLLUTION_API_URL", ""),
 		LightPollutionAPIKey: env("ASTRO_LIGHTPOLLUTION_API_KEY", ""),
@@ -253,14 +343,39 @@ func Load() *Config {
 		HorizonRadiiM:           envFloatList("ASTRO_HORIZON_RADII_M", []float64{1000, 2500}),
 		HorizonOpenThresholdDeg: envFloat("ASTRO_HORIZON_OPEN_THRESHOLD_DEG", 3),
 
+		CanopyAtlas:          env("ASTRO_CANOPY_ATLAS", ""),
+		CanopyTileURL:        env("ASTRO_CANOPY_TILE_URL", ""),
+		CanopyAssumedHeightM: envFloat("ASTRO_CANOPY_ASSUMED_HEIGHT_M", 18),
+		CanopyTreeCoverPct:   envFloat("ASTRO_CANOPY_TREECOVER_PCT", 30),
+		CanopyCacheTTLHours:  envInt("ASTRO_CANOPY_CACHE_TTL", 720),
+		// ETH Global Canopy Height 2020 (Lang et al., 10 m, CC BY 4.0) 3° COG tiles — public, range-readable,
+		// so gdal's /vsicurl/ downloads only the windows a build needs. {tile} = SW-corner token (e.g. N45E003).
+		CanopySourceURL: env("ASTRO_CANOPY_SOURCE_URL",
+			"https://libdrive.ethz.ch/index.php/s/cO8or7iOe5dT2Rt/download?path=%2F3deg_cogs&files=ETH_GlobalCanopyHeight_10m_2020_{tile}_Map.tif"),
+		CanopyBuildResDeg: envFloat("ASTRO_CANOPY_BUILD_RES_DEG", 0.0008),
+
+		HorizonCanopyRadiiM:   envFloatList("ASTRO_HORIZON_CANOPY_RADII_M", []float64{30, 60, 120, 250, 500, 1000, 2500}),
+		HorizonCanopyAzimuths: envInt("ASTRO_HORIZON_CANOPY_AZIMUTHS", 24),
+		HorizonEyeHeightM:     envFloat("ASTRO_HORIZON_EYE_HEIGHT_M", 1.6),
+
+		DarkSkyDarkWeight:       envFloat("ASTRO_DARKSKY_DARK_WEIGHT", 0.6),
+		DarkSkySouthWeight:      envFloat("ASTRO_DARKSKY_SOUTH_WEIGHT", 0),
+		DarkSkyMaxSouthBlockDeg: envFloat("ASTRO_DARKSKY_MAX_SOUTH_BLOCK", 0),
+
+		RoutingURL:           env("ASTRO_ROUTING_URL", "https://router.project-osrm.org"),
+		RoutingCacheTTLHours: envInt("ASTRO_ROUTING_CACHE_TTL", 720),
+
 		WeatherOpenMeteoURL:  env("ASTRO_WEATHER_OPENMETEO_URL", "https://api.open-meteo.com/v1/forecast"),
 		WeatherAirQualityURL: env("ASTRO_WEATHER_AIRQUALITY_URL", "https://air-quality-api.open-meteo.com/v1/air-quality"),
 		WeatherSevenTimerURL: env("ASTRO_WEATHER_SEVENTIMER_URL", "https://www.7timer.info/bin/api.pl"),
 		WeatherSWPCURL:       env("ASTRO_WEATHER_SWPC_URL", "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"),
 		WeatherGridRadiusDeg: envFloat("ASTRO_WEATHER_GRID_RADIUS_DEG", 4),
-		WeatherGridSize:      envInt("ASTRO_WEATHER_GRID_SIZE", 16),
-		WeatherCacheTTLMin:   envInt("ASTRO_WEATHER_CACHE_TTL_MIN", 30),
-		WeatherMeteoblueKey:  env("ASTRO_WEATHER_METEOBLUE_KEY", ""),
+		// 32×32 = 1024 pts over the default 8° box ≈ 0.25°/cell ≈ 27 km — about the forecast model's own
+		// resolution, so the overlay is as sharp as the data allows (was 22). Fetched as 3 chunked
+		// Open-Meteo GETs of ≤400 coords each, trimmed to 3 decimals (see fetchOpenMeteoGrid/joinFloats).
+		WeatherGridSize:     envInt("ASTRO_WEATHER_GRID_SIZE", 32),
+		WeatherCacheTTLMin:  envInt("ASTRO_WEATHER_CACHE_TTL_MIN", 30),
+		WeatherMeteoblueKey: env("ASTRO_WEATHER_METEOBLUE_KEY", ""),
 	}
 }
 
@@ -284,6 +399,22 @@ func envInt(key string, def int) int {
 
 // envFloatList parses a comma-separated list of floats (e.g. "1000,2500"), falling back to def when the
 // var is unset, empty, or malformed.
+// envStrList splits key on ":" or "," into a trimmed, non-empty string slice (nil when unset) — used for
+// path lists like ASTRO_BROWSE_ROOTS.
+func envStrList(key string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.FieldsFunc(v, func(r rune) bool { return r == ':' || r == ',' }) {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func envFloatList(key string, def []float64) []float64 {
 	v := os.Getenv(key)
 	if v == "" {
@@ -334,4 +465,31 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// LocalGaiaAstroCat returns the local Gaia astrometric catalogue path when the file is actually
+// present, else "" — callers wire it into siril.SolveOptions only when solving can really use it
+// (download once with `just download-catalogues`).
+func (c *Config) LocalGaiaAstroCat() string {
+	if c.GaiaAstroCat == "" {
+		return ""
+	}
+	if st, err := os.Stat(c.GaiaAstroCat); err != nil || st.IsDir() {
+		return ""
+	}
+	return c.GaiaAstroCat
+}
+
+// LocalGaiaXpsampDir returns the xp_sampled chunk directory when it holds at least one chunk file
+// (`just download-catalogues-spcc`), else "". Siril scans the directory itself, so a partial chunk
+// set covering only the shot sky regions is fine.
+func (c *Config) LocalGaiaXpsampDir() string {
+	if c.GaiaXpsampDir == "" {
+		return ""
+	}
+	matches, err := filepath.Glob(filepath.Join(c.GaiaXpsampDir, "siril_cat*_xpsamp_*.dat"))
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	return c.GaiaXpsampDir
 }

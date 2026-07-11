@@ -47,20 +47,69 @@ type Result struct {
 	// Iterations records each pass of the optional local-AI-agent finish supervisor (empty for a
 	// normal finish). It feeds the UI's supervisor panel directly from the run result.
 	Iterations []IterationRecord `json:"iterations,omitempty"`
+	// Quality is the objective post-render snapshot measured from the exported finish PNG on EVERY
+	// run (not only supervised ones) — the deterministic colour/clipping guardrails, persisted so a
+	// warm or clipped result is flagged in the run record instead of discovered by eye.
+	Quality *FinishQuality `json:"finish_quality,omitempty"`
 }
 
-// IterationRecord is one supervised finish render: its preview, the deterministic + model scores, the
-// model's one-line reasoning, the composite params used, and whether it was the chosen best.
-// Primitive fields only (no pipeline import) so package pipeline can populate it without a cycle.
+// FinishQuality mirrors the supervisor's finish metrics for the run record (primitive fields only —
+// the measuring code lives in internal/pipeline, which imports this package).
+type FinishQuality struct {
+	BlackClip  [3]float64 `json:"black_clip"`  // fraction of pixels at 0, per channel R,G,B
+	WhiteClip  [3]float64 `json:"white_clip"`  // fraction of pixels at 255, per channel R,G,B
+	Median     [3]float64 `json:"median"`      // per-channel median, 0..1
+	Background float64    `json:"background"`  // sky level estimate (10th-percentile luma), 0..1
+	GreenCast  float64    `json:"green_cast"`  // medianG − mean(medianR, medianB); >0 → green cast
+	WarmCast   float64    `json:"warm_cast"`   // sky red-excess on the 10th-pct background; >0 → warm
+	SignalCast float64    `json:"signal_cast"` // bright-signal green balance; <0 → magenta/pink
+	// Star-core quality: StarWarmFrac is the fraction of bright cores reading warm (red-dominant) — high
+	// = the "all stars orange" look; StarColorSpread is the stddev of their red−blue balance — low = star
+	// colours flattened to one hue (or to grey/white). Both from the rendered finish.
+	StarWarmFrac    float64 `json:"star_warm_frac"`
+	StarColorSpread float64 `json:"star_color_spread"`
+	// StarSatFrac is the fraction of bright cores that are over-saturated colour DISCS (a dense star field
+	// rendered as solid blue/magenta blobs — the cluster failure); BgChroma is the mean chroma of the
+	// darkest quarter of the frame (purple-green background MOTTLE). Both from the rendered finish.
+	StarSatFrac float64 `json:"star_sat_frac"`
+	BgChroma    float64 `json:"bg_chroma"`
+}
+
+// Defect is one issue the vision model diagnosed in a rendered finish (a fixed Kind vocabulary, a
+// low|medium|high Severity, and an optional free-text Note). Primitive fields only (no pipeline
+// import) so it can be persisted and surfaced in the UI without a cycle.
+type Defect struct {
+	Kind     string `json:"kind"`
+	Severity string `json:"severity"`
+	Note     string `json:"note,omitempty"`
+}
+
+// IterationRecord is one supervised finish render: its preview, the pipeline re-entry Tier it used,
+// the deterministic + model scores, the model's diagnosed Defects and one-line reasoning, the params
+// used, and whether it was the chosen best. Primitive fields only (no pipeline import) so package
+// pipeline can populate it without a cycle.
 type IterationRecord struct {
 	Index         int                `json:"index"`
+	Tier          string             `json:"tier,omitempty"`
 	PngPath       string             `json:"png_path"`
 	DetScore      float64            `json:"det_score"`
 	ModelScore    float64            `json:"model_score"`
 	CombinedScore float64            `json:"combined_score"`
 	Reasoning     string             `json:"reasoning"`
+	Defects       []Defect           `json:"defects,omitempty"`
 	Chosen        bool               `json:"chosen"`
 	Params        map[string]float64 `json:"params,omitempty"`
+}
+
+// StagePreview is one saved preview PNG of the image at a major processing milestone (stacked, aligned,
+// combined, colour-calibrated, star-reduced, final). Index drives the timeline order; Stage is a key the
+// UI maps to a localized label; Filter is set for per-channel milestones (L/R/G/B/Ha). Primitive fields
+// only (no pipeline import) so package pipeline can populate it without a cycle.
+type StagePreview struct {
+	Index   int    `json:"index"`
+	Stage   string `json:"stage"`
+	Filter  string `json:"filter,omitempty"`
+	PngPath string `json:"png_path"`
 }
 
 // Combine builds the final image from channel masters located in dir (referenced by basename, e.g.
@@ -79,8 +128,8 @@ func Combine(ctx context.Context, runner *siril.Runner, dir string, channels map
 
 	// Stage 2 — color calibration (color modes only), SPCC with a neutralization fallback.
 	if isColor(res.Mode) {
-		note, err := ColorCalibrate(ctx, runner, dir, "combined", ColorCalOptions{
-			Enabled: opts.ColorCalibration, RemoveGreen: opts.RemoveGreen, Solve: opts.Solve, Spcc: opts.Spcc,
+		note, _, err := ColorCalibrate(ctx, runner, dir, "combined", ColorCalOptions{
+			Enabled: opts.ColorCalibration, RemoveGreen: opts.RemoveGreen, StarField: true, Solve: opts.Solve, Spcc: opts.Spcc,
 		})
 		if err != nil {
 			return nil, err
@@ -115,12 +164,14 @@ func buildCombine(channels map[string]string, opts Options) (string, *Result) {
 	}
 
 	var b strings.Builder
-	b.WriteString("requires 1.2.0\nsetext fits\n")
+	b.WriteString("requires 1.2.0\nsetext fits\nset32bits\n")
 	switch {
 	case has("R") && has("G") && has("B"):
 		buildColor(&b, channels, has, res)
 	case has("Ha") && has("OIII") && has("SII"):
-		// Hubble (SHO) palette: R=SII, G=Ha, B=OIII.
+		// Hubble (SHO) palette: R=SII, G=Ha, B=OIII. This is the Siril-only fallback finish; the primary
+		// GIMP finish resolves a user-selectable palette (natural / HaRGB / HOO / SHO / HOS / Foraxx / mono)
+		// in internal/pipeline (palette.go / prepGimpInputs). Keep this default in sync with that table's SHO.
 		fmt.Fprintf(&b, "rgbcomp %s %s %s -out=combined\n", channels["SII"], channels["Ha"], channels["OIII"])
 		b.WriteString("load combined\n")
 		res.Mode = "SHO"

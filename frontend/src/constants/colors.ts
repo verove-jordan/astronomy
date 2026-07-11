@@ -100,6 +100,27 @@ export const CHART_TRANSIT = "#22c55e";
 export const CHART_NOW = "#e11d48";
 export const CHART_SUN = "#fbbf24"; // amber-400 (sun curve + sunset/sunrise)
 export const CHART_MOON = "#cbd5e1"; // slate-300 (moon curve + moonrise/moonset)
+export const MAP_SELECTED = "#f8fafc"; // near-white ring + label for the selected target on the sky map
+
+// Interactive GoTo sky map (raw canvas — never referenced in templates). A deep night sky, faint
+// constellation "bars", the target star glowing amber, and Moon/planet landmark hues.
+export const SKY_MAP = {
+  bgTop: "#0b1220",
+  bgBottom: "#020617",
+  star: "#e8edf6", // star fill (alpha scaled by brightness at draw time)
+  line: "rgba(129,140,248,0.35)", // constellation figure lines (brand-400, faint)
+  horizon: "#334155", // horizon circle
+  cardinal: "#94a3b8", // N/E/S/W labels
+  starLabel: "#cbd5e1", // named-star labels
+  conLabel: "rgba(148,163,184,0.75)", // constellation-name labels
+  targetCore: "#fcd34d", // amber-300 target star
+  targetRing: "#6366f1", // brand-500 highlight ring
+  targetGlow: "#fbbf24", // amber-400 glow
+  targetLabel: "#fde68a", // amber-200 target label
+  moon: "#e2e8f0",
+  moonDark: "#334155", // unlit side of the moon disc
+  planet: "#fbbf24", // amber planet dot + label
+} as const;
 
 // Score-tier hexes for the polar sky-map markers (mirror scoreTierBar in constants/styles.ts).
 export const SCORE_TIER_HEX: Record<string, string> = {

@@ -2,10 +2,14 @@ package calib
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/inspect"
@@ -25,16 +29,18 @@ func buildDeepBias(ctx context.Context, runner *siril.Runner, inv *inspect.Inven
 		return Master{}, false, "pool bias: " + err.Error()
 	}
 	paths = mergePaths(paths, pool, func(RawFrame) bool { return true })
+	paths, warn := dropMissing(paths, "bias pool")
+	paths, warn = dropNonFITS(paths, "bias pool", warn)
 	if len(paths) == 0 {
-		return Master{}, false, "" // no bias is a valid setup; nothing to warn about
+		return Master{}, false, warn // no bias is a valid setup; only the ghost count (if any) is worth a note
 	}
 
 	key := inspect.SetKey{Type: inspect.Bias, Gain: sig.Gain, Offset: sig.Offset, Bin: sig.Bin}
 	m, err := stackPooled(ctx, runner, MasterBias, key, paths, mastersDir, workDir, onProgress)
 	if err != nil {
-		return Master{}, false, err.Error()
+		return Master{}, false, joinWarn(warn, err.Error())
 	}
-	return m, true, ""
+	return m, true, warn
 }
 
 // buildDeepDark pools this session's darks for one signature with every matching dark from prior
@@ -65,9 +71,11 @@ func buildDeepDark(ctx context.Context, runner *siril.Runner, inv *inspect.Inven
 		return Master{}, false, "pool darks: " + err.Error()
 	}
 	paths = mergePaths(paths, pool, matchesTemp)
+	paths, warn := dropMissing(paths, "dark pool")
+	paths, warn = dropNonFITS(paths, "dark pool", warn)
 	if len(paths) == 0 {
-		return Master{}, false, fmt.Sprintf("no darks available for %dms g%do%d b%d @%dC",
-			sig.ExposureMs, sig.Gain, sig.Offset, sig.Bin, sig.TempBucket)
+		return Master{}, false, joinWarn(warn, fmt.Sprintf("no darks available for %dms g%do%d b%d @%dC",
+			sig.ExposureMs, sig.Gain, sig.Offset, sig.Bin, sig.TempBucket))
 	}
 
 	key := inspect.SetKey{
@@ -76,7 +84,7 @@ func buildDeepDark(ctx context.Context, runner *siril.Runner, inv *inspect.Inven
 	}
 	m, err := stackPooled(ctx, runner, MasterDark, key, paths, mastersDir, workDir, onProgress)
 	if err != nil {
-		return Master{}, false, err.Error()
+		return Master{}, false, joinWarn(warn, err.Error())
 	}
 	m.TempMilliC = int64(sig.TempBucket) * 1000
 	m.HasTemp = true
@@ -92,6 +100,59 @@ func localCalibPaths(inv *inspect.Inventory, ft inspect.FrameType, pred func(ins
 		}
 	}
 	return out
+}
+
+// dropMissing filters out pooled paths whose file is no longer on disk — e.g. raw frames freed after an
+// S3 mirror, whose catalog rows survive. A single ghost would sink the whole Siril stack (LinkFrames
+// symlinks blindly, and Siril aborts on "Opening image N failed"), losing every healthy frame with it.
+// It returns the surviving paths plus a warning naming the ghost count ("" when none).
+func dropMissing(paths []string, what string) ([]string, string) {
+	ok := paths[:0]
+	missing := 0
+	for _, p := range paths {
+		if fileExists(p) {
+			ok = append(ok, p)
+		} else {
+			missing++
+		}
+	}
+	if missing == 0 {
+		return ok, ""
+	}
+	return ok, fmt.Sprintf("%s: skipped %d frame(s) missing on disk (freed to S3?)", what, missing)
+}
+
+// dropNonFITS filters out pooled paths Siril cannot link into a master sequence (only FITS belongs
+// in the deep pools; a non-FITS row that slipped into the catalog — e.g. a processed TIFF once
+// misclassified as calibration — would sink the whole stack with a bare `link: generic error`).
+// The count is appended to warn so the run report says exactly what was excluded and why.
+func dropNonFITS(paths []string, what, warn string) ([]string, string) {
+	ok := paths[:0]
+	skipped := 0
+	for _, p := range paths {
+		switch strings.ToLower(filepath.Ext(p)) {
+		case ".fit", ".fits", ".fts":
+			ok = append(ok, p)
+		default:
+			skipped++
+		}
+	}
+	if skipped == 0 {
+		return ok, warn
+	}
+	return ok, joinWarn(warn, fmt.Sprintf("%s: skipped %d non-FITS file(s) (processed images are never stacked as calibration)", what, skipped))
+}
+
+// joinWarn joins two optional warning strings with "; ", tolerating either being empty.
+func joinWarn(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	default:
+		return a + "; " + b
+	}
 }
 
 // mergePaths appends pool frames (passing keep) to base, de-duplicating by path.
@@ -117,6 +178,23 @@ func stackPooled(ctx context.Context, runner *siril.Runner, mt MasterType, key i
 	paths []string, mastersDir, workDir string, onProgress func(siril.Progress)) (Master, error) {
 	name := masterName(mt, key)
 	outBase := filepath.Join(mastersDir, name)
+	master := Master{
+		Type: mt, Filter: key.Filter, ExposureMs: key.ExposureMs,
+		Gain: key.Gain, Offset: key.Offset, Bin: key.Bin,
+		FrameCount: len(paths), Path: outBase + ".fits",
+	}
+	// Reuse an existing master whose exact raw pool is unchanged (same frames, sizes, mtimes): the
+	// Siril stack would be byte-identical, so a reprocess of the same session skips it (minutes on a
+	// large dark/flat pool). The .sig sidecar records the pool that produced the on-disk master.
+	sig := poolSignature(paths)
+	if fileExists(outBase + ".fits") {
+		if b, err := os.ReadFile(outBase + ".sig"); err == nil && string(b) == sig {
+			if mt == MasterDark && !fileExists(DefectsListPath(master.Path)) {
+				_ = buildDefectList(master.Path, paths) // upgrade a pre-existing library master in place
+			}
+			return master, nil
+		}
+	}
 	seqDir := filepath.Join(workDir, "cal_"+name)
 	if _, err := fsutil.LinkFrames(seqDir, paths); err != nil {
 		return Master{}, err
@@ -125,21 +203,33 @@ func stackPooled(ctx context.Context, runner *siril.Runner, mt MasterType, key i
 	// shared library, two concurrent runs building the same-signature master must never let one read the
 	// other's half-written file; the rename publishes the whole master in one step (same filesystem).
 	tmpBase := filepath.Join(mastersDir, ".tmp_"+filepath.Base(workDir)+"_"+name)
-	if _, err := runner.Run(ctx, seqDir, siril.StackMasterScript("cal", tmpBase), onProgress); err != nil {
+	if _, err := runner.Run(ctx, seqDir, siril.StackMasterScript("cal", tmpBase, len(paths)), onProgress); err != nil {
 		return Master{}, fmt.Errorf("stack master %s: %w", name, err)
 	}
 	if err := os.Rename(tmpBase+".fits", outBase+".fits"); err != nil {
 		return Master{}, fmt.Errorf("publish master %s: %w", name, err)
 	}
+	_ = os.WriteFile(outBase+".sig", []byte(sig), 0o644) // record the pool for the next run's reuse check
+	if mt == MasterDark {
+		_ = buildDefectList(master.Path, paths) // soft: its note is user-visible on the session-build path
+	}
 	_ = os.RemoveAll(seqDir)
-	return Master{
-		Type:       mt,
-		Filter:     key.Filter,
-		ExposureMs: key.ExposureMs,
-		Gain:       key.Gain,
-		Offset:     key.Offset,
-		Bin:        key.Bin,
-		FrameCount: len(paths),
-		Path:       outBase + ".fits",
-	}, nil
+	return master, nil
+}
+
+// poolSignature is a stable content signature of a raw calibration pool: each frame's path, size and
+// mtime, sorted. Unchanged frames → identical signature → an identical stacked master, so it can be
+// reused instead of re-stacked.
+func poolSignature(paths []string) string {
+	parts := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if fi, err := os.Stat(p); err == nil {
+			parts = append(parts, fmt.Sprintf("%s|%d|%d", p, fi.Size(), fi.ModTime().UnixNano()))
+		} else {
+			parts = append(parts, p+"|?")
+		}
+	}
+	sort.Strings(parts)
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return hex.EncodeToString(sum[:])
 }

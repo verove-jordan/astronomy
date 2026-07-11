@@ -100,20 +100,19 @@ func TestHasCalibration(t *testing.T) {
 	}
 }
 
-// TestCalibrateLights_NoMasters is the soft-fail contract: with a cal dir set but empty (no usable
-// frames, so no master is built — no Siril needed), calibrateLights returns a "skipped" note and never
-// touches the lights.
-func TestCalibrateLights_NoMasters(t *testing.T) {
-	o := Options{DarkDir: t.TempDir(), WorkDir: t.TempDir()} // empty dark dir → buildMaster yields nil
-	note := calibrateLights(context.Background(), o, t.TempDir(), []string{"/does/not/matter.fits"})
+// TestCalibrateLights_UnreadableLight is the soft-fail contract: an unreadable reference light (needed
+// first for its dimensions) returns a "skipped" note and never touches the lights.
+func TestCalibrateLights_UnreadableLight(t *testing.T) {
+	o := Options{DarkDir: t.TempDir(), WorkDir: t.TempDir()}
+	note := calibrateLights(context.Background(), o, calPlan{}, t.TempDir(), []string{"/does/not/matter.fits"})
 	if !strings.Contains(note, "skipped") {
-		t.Fatalf("expected a 'skipped' note from an empty cal set, got %q", note)
+		t.Fatalf("expected a 'skipped' note from an unreadable light, got %q", note)
 	}
 }
 
 // TestCalibrateLights_NoLights returns early (no work) when there are no lights.
 func TestCalibrateLights_NoLights(t *testing.T) {
-	if note := calibrateLights(context.Background(), Options{DarkDir: t.TempDir(), WorkDir: t.TempDir()}, t.TempDir(), nil); note != "" {
+	if note := calibrateLights(context.Background(), Options{DarkDir: t.TempDir(), WorkDir: t.TempDir()}, calPlan{}, t.TempDir(), nil); note != "" {
 		t.Fatalf("no lights should return no note, got %q", note)
 	}
 }

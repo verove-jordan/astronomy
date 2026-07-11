@@ -69,6 +69,13 @@ func (s *Server) skyAlign(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// skyAlignProfiles lists the mount/routine presets — including phase structure (align_stars) and
+// the hand-controller star-list key — so the UI can size its count control and phase headers
+// without duplicating the registry. GET /api/sky/align/profiles
+func (s *Server) skyAlignProfiles(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"profiles": align.Profiles()})
+}
+
 // splitStarNames parses a comma-separated star-name list (the accepted/rejected query params),
 // trimming blanks.
 func splitStarNames(s string) []string {

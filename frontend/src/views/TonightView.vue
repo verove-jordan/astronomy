@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, computed, ref, watch } from "vue";
+import { onMounted, computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useSkyStore } from "@/stores/sky";
 import { useAutoRefresh } from "@/composables/useAutoRefresh";
@@ -16,12 +16,11 @@ import SkyMap from "@/components/Dataviz/SkyMap.vue";
 import AltitudeChart from "@/components/Dataviz/AltitudeChart.vue";
 import AstroWeatherPanel from "@/components/Sky/AstroWeatherPanel.vue";
 import CollapsibleCard from "@/components/Common/CollapsibleCard.vue";
+import TwoPane from "@/components/Common/TwoPane.vue";
 import TabBar from "@/components/Common/TabBar.vue";
 import IconStar from "@/components/Icons/IconStar.vue";
-import PolarScopeReticle from "@/components/Polar/PolarScopeReticle.vue";
-import PolarAlignPanel from "@/components/Polar/PolarAlignPanel.vue";
-import PolarTutorial from "@/components/Polar/PolarTutorial.vue";
 import { card, input, btnGhost, skyTypePillClass } from "@/constants/styles";
+import { scrollElementToTop } from "@/utils/scroll";
 import {
   tzForLocation,
   fmtClock,
@@ -34,11 +33,12 @@ import type { SkyTarget } from "@/types";
 const { t } = useI18n();
 const store = useSkyStore();
 
-// In-page tabs: the deep-sky planner vs the polar-alignment aid. Persisted across reloads.
+// In-page tabs: the deep-sky planner vs the dark-sky finder. Persisted across reloads. (The
+// polar-alignment aid moved to the GoTo alignment page; a stale saved "polar" falls back here.)
 const TAB_KEY = "astrostack.tonight.tab";
 const savedTab = localStorage.getItem(TAB_KEY);
-const tab = ref<"targets" | "polar" | "darksky">(
-  savedTab === "polar" || savedTab === "darksky" ? savedTab : "targets",
+const tab = ref<"targets" | "darksky">(
+  savedTab === "darksky" ? savedTab : "targets",
 );
 watch(tab, (v) => localStorage.setItem(TAB_KEY, v));
 
@@ -52,6 +52,20 @@ function useDarkSite(lat: number, lon: number) {
   tab.value = "targets";
 }
 const { enabled: autoRefresh } = useAutoRefresh(() => store.refresh(), 90_000);
+
+// Clicking a target in the table selects it and reveals its visibility chart: scroll the chart card
+// up so it sits just below the sticky header (topbar + page-tabs band), bringing chart + preview
+// into focus. Waits a tick so the chart has re-rendered for the newly selected target.
+const chartCard = ref<HTMLElement | null>(null);
+function stickyOffset(): number {
+  const tabs = document.getElementById("page-tabs");
+  return (tabs ? tabs.getBoundingClientRect().bottom : 0) + 8;
+}
+async function selectTarget(name: string) {
+  store.select(name);
+  await nextTick();
+  if (chartCard.value) scrollElementToTop(chartCard.value, stickyOffset());
+}
 
 // All "tonight" times display in the SELECTED LOCATION's timezone (from its coordinates), not the browser's.
 const tz = computed(() => {
@@ -119,6 +133,7 @@ type Row = Record<string, unknown>;
 const rows = computed<Row[]>(() =>
   filtered.value.map((tg) => ({
     name: tg.name,
+    common_name: tg.common_name ?? "",
     fav: store.isFavorite(tg.name) ? 0 : 1, // 0 sorts favorites to the top
     type: tg.type,
     palette: tg.composition.palette,
@@ -128,6 +143,7 @@ const rows = computed<Row[]>(() =>
     transit_utc_ms: tg.transit_utc_ms,
     transit_local: tg.transit_local,
     size_arcmin: tg.size_arcmin,
+    size_minor_arcmin: tg.size_minor_arcmin ?? 0,
     mag_v: tg.mag_v,
     fov_fill_pct: tg.fov_fill_pct,
     chosen_eyepiece: tg.chosen_eyepiece ?? "",
@@ -142,9 +158,14 @@ const deg = (v: unknown): string => {
   const n = Number(v);
   return Number.isFinite(n) ? `${Math.round(n)}°` : "—";
 };
-const arcmin = (v: unknown): string => {
-  const n = Number(v);
-  return n > 0 ? `${n.toFixed(1)}'` : "—";
+// Size as the true ellipse "major'×minor'" when OpenNGC supplies a minor axis, else just the major axis.
+const sizeFmt = (v: unknown, row: Row): string => {
+  const maj = Number(v);
+  if (!(maj > 0)) return "—";
+  const min = Number(row.size_minor_arcmin);
+  return min > 0
+    ? `${maj.toFixed(1)}'×${min.toFixed(1)}'`
+    : `${maj.toFixed(1)}'`;
 };
 const magFmt = (v: unknown): string => {
   const n = Number(v);
@@ -174,6 +195,10 @@ const columns = computed<Column<Row>[]>(() => [
     label: t("tonight.cols.name"),
     sortable: true,
     searchable: true,
+    // Display is the #cell-name slot; this format only feeds search so a common name ("Fireworks
+    // Galaxy") matches the query too.
+    format: (v, row) =>
+      row.common_name ? `${String(v)} ${String(row.common_name)}` : String(v),
   },
   {
     key: "type",
@@ -220,7 +245,7 @@ const columns = computed<Column<Row>[]>(() => [
     label: t("tonight.cols.size"),
     sortable: true,
     align: "right",
-    format: arcmin,
+    format: sizeFmt,
   },
   {
     key: "mag_v",
@@ -295,24 +320,17 @@ const fovH = computed(() => store.query?.equipment.fov_h_deg ?? 1);
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div>
         <h1 class="text-2xl font-semibold">{{ t("tonight.title") }}</h1>
-        <p class="text-sm text-slate-400">
-          {{
-            tab === "polar"
-              ? t("tonight.polar.subtitle")
-              : t("tonight.subtitle")
-          }}
-        </p>
+        <p class="text-sm text-slate-400">{{ t("tonight.subtitle") }}</p>
       </div>
       <div class="flex flex-wrap items-center gap-3">
         <Teleport to="#page-tabs">
           <TabBar
             :tabs="[
               { key: 'targets', label: t('tonight.tabs.targets') },
-              { key: 'polar', label: t('tonight.tabs.polar') },
               { key: 'darksky', label: t('tonight.tabs.darksky') },
             ]"
             :active="tab"
-            @select="(k) => (tab = k as 'targets' | 'polar' | 'darksky')"
+            @select="(k) => (tab = k as 'targets' | 'darksky')"
           />
         </Teleport>
         <template v-if="tab === 'targets'">
@@ -514,11 +532,19 @@ const fovH = computed(() => store.query?.equipment.fov_h_deg ?? 1);
         </template>
         <template #cell-name="{ row }">
           <button
-            class="font-medium text-brand-600 hover:underline dark:text-brand-300"
+            class="text-left"
             :aria-pressed="row.name === store.selectedName"
-            @click="store.select(String(row.name))"
+            @click="selectTarget(String(row.name))"
           >
-            {{ row.name }}
+            <span
+              class="font-medium text-brand-600 hover:underline dark:text-brand-300"
+              >{{ row.name }}</span
+            >
+            <span
+              v-if="row.common_name"
+              class="block text-xs text-slate-400 dark:text-slate-500"
+              >{{ row.common_name }}</span
+            >
           </button>
         </template>
         <template #cell-type="{ row }">
@@ -531,23 +557,28 @@ const fovH = computed(() => store.query?.equipment.fov_h_deg ?? 1);
         </template>
       </GenericTable>
 
-      <!-- Night chart: Sun + Moon + the selected object's altitude over the night -->
-      <div v-if="store.darkWindow" :class="card">
-        <h3
-          class="mb-1 text-sm font-semibold text-slate-700 dark:text-slate-200"
-        >
-          {{ t("tonight.chart.title") }}
-        </h3>
-        <AltitudeChart
-          :target="store.selected"
-          :dark-window="store.darkWindow"
-          :min-alt-deg="minAlt"
-          :now-ms="nowMs"
-          :tz="tz"
-        />
-      </div>
-
-      <AstroWeatherPanel />
+      <!-- Night chart (Sun + Moon + the selected object's altitude) beside tonight's conditions. -->
+      <TwoPane split="even">
+        <template #main>
+          <div v-if="store.darkWindow" ref="chartCard" :class="card">
+            <h3
+              class="mb-1 text-sm font-semibold text-slate-700 dark:text-slate-200"
+            >
+              {{ t("tonight.chart.title") }}
+            </h3>
+            <AltitudeChart
+              :target="store.selected"
+              :dark-window="store.darkWindow"
+              :min-alt-deg="minAlt"
+              :now-ms="nowMs"
+              :tz="tz"
+            />
+          </div>
+        </template>
+        <template #aside>
+          <AstroWeatherPanel />
+        </template>
+      </TwoPane>
 
       <div class="grid gap-4 lg:grid-cols-2">
         <TargetDetailPanel
@@ -563,14 +594,6 @@ const fovH = computed(() => store.query?.equipment.fov_h_deg ?? 1);
           <p class="mt-1 text-xs text-slate-400">{{ t("tonight.map.hint") }}</p>
         </CollapsibleCard>
       </div>
-    </section>
-
-    <section v-if="tab === 'polar'" class="space-y-4">
-      <div class="grid gap-4 lg:grid-cols-2">
-        <PolarScopeReticle />
-        <PolarAlignPanel />
-      </div>
-      <PolarTutorial />
     </section>
 
     <section v-if="tab === 'darksky'" class="space-y-4">

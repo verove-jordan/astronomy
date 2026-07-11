@@ -1,0 +1,43 @@
+# nginx site for the Vue web UI. This is a TEMPLATE: the official nginx image runs envsubst over
+# /etc/nginx/templates/*.template at startup and writes the result to /etc/nginx/conf.d/. Only
+# ${API_UPSTREAM} is substituted (NGINX_ENVSUBST_FILTER pins it) so nginx's own $uri/$host survive.
+#
+#   API_UPSTREAM=host.docker.internal:8080  -> proxy to the HOST-run Go engine (dev / `web` profile)
+#   API_UPSTREAM=engine:8080                 -> proxy to the containerized engine (`stack` profile)
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Content-hashed build assets: cache them hard (the filename changes every build) and return a REAL
+    # 404 for a missing chunk — an old tab after a redeploy requests the previous build's chunk names —
+    # instead of falling back to index.html. That keeps the browser from receiving HTML masquerading as
+    # JS/CSS (the "text/html" MIME error); the app then recovers with a single reload (router.onError).
+    location /assets/ {
+        try_files $uri =404;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # The HTML entry point references the current build's chunk names, so it must never be cached stale.
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
+    # SPA fallback: any unknown route serves the app shell.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Proxy API calls to the Go engine (host-run or containerized, per API_UPSTREAM).
+    location /api/ {
+        proxy_pass http://${API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+        # SSE: don't buffer the job progress stream.
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+    }
+}

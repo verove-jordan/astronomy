@@ -1,6 +1,9 @@
 package nightscape
 
-import "github.com/verove-jordan/astronomy/internal/fits"
+import (
+	"github.com/verove-jordan/astronomy/internal/fits"
+	"github.com/verove-jordan/astronomy/internal/imgops"
+)
 
 // Per-frame normalization. An untracked phone shot is taken in the camera app's auto mode, so ISO and
 // white balance drift frame to frame: each registered frame has a slightly different sky brightness and
@@ -57,14 +60,4 @@ func normalizeToRef(im *fits.Image, fn, ref frameNorm) {
 }
 
 // subsample returns at most n evenly-spaced samples of p (for fast percentile estimates).
-func subsample(p []float32, n int) []float32 {
-	if len(p) <= n {
-		return p
-	}
-	step := len(p) / n
-	out := make([]float32, 0, n+1)
-	for i := 0; i < len(p); i += step {
-		out = append(out, p[i])
-	}
-	return out
-}
+func subsample(p []float32, n int) []float32 { return imgops.Subsample(p, n) }

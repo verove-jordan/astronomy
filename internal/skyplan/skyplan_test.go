@@ -86,19 +86,41 @@ func TestMoonScore(t *testing.T) {
 
 func TestDeriveType(t *testing.T) {
 	tests := []struct {
+		name string
 		rec  skycat.Record
 		want string
 	}{
-		{skycat.Record{Name: "Sh2-155", Source: "sh2"}, "emission_nebula"},
-		{skycat.Record{Name: "LdN-1", Source: "ldn"}, "dark_nebula"},
-		{skycat.Record{Name: "M101", Source: "messier", Aliases: []string{"Pinwheel galaxy"}}, "galaxy"},
-		{skycat.Record{Name: "M13", Source: "messier", Aliases: []string{"Hercules globular cluster"}}, "globular"},
-		{skycat.Record{Name: "NGC1", Source: "ngc"}, "other"},
+		// OpenNGC type code wins when present (the reason NGC6946 no longer reads "other").
+		{"openngc galaxy", skycat.Record{Name: "NGC6946", Source: "ngc", Type: "G"}, "galaxy"},
+		{"openngc open cluster", skycat.Record{Name: "NGC869", Source: "ngc", Type: "OCl"}, "open_cluster"},
+		{"openngc reflection", skycat.Record{Name: "NGC1435", Source: "ngc", Type: "RfN"}, "reflection_nebula"},
+		{"openngc planetary", skycat.Record{Name: "NGC7009", Source: "ngc", Type: "PN"}, "planetary_nebula"},
+		{"openngc snr", skycat.Record{Name: "NGC6960", Source: "ngc", Type: "SNR"}, "supernova_remnant"},
+		// Fallbacks for rows OpenNGC does not type.
+		{"sh2 emission", skycat.Record{Name: "Sh2-155", Source: "sh2"}, "emission_nebula"},
+		{"ldn dark", skycat.Record{Name: "LdN-1", Source: "ldn"}, "dark_nebula"},
+		{"keyword galaxy", skycat.Record{Name: "M101", Source: "messier", Aliases: []string{"Pinwheel galaxy"}}, "galaxy"},
+		{"keyword globular", skycat.Record{Name: "M13", Source: "messier", Aliases: []string{"Hercules globular cluster"}}, "globular"},
+		{"untyped other", skycat.Record{Name: "NGC1", Source: "ngc"}, "other"},
 	}
 	for _, tt := range tests {
-		t.Run(tt.want, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, deriveType(tt.rec))
 		})
+	}
+}
+
+func TestMapOpenNGCType(t *testing.T) {
+	cases := map[string]string{
+		"G": "galaxy", "GPair": "galaxy", "GTrpl": "galaxy", "GGroup": "galaxy",
+		"OCl": "open_cluster", "GCl": "globular", "PN": "planetary_nebula",
+		"HII": "emission_nebula", "EmN": "emission_nebula", "Cl+N": "emission_nebula",
+		"RfN": "reflection_nebula", "SNR": "supernova_remnant", "Neb": "nebula",
+		"DrkN": "dark_nebula", "*Ass": "cluster",
+		"*": "", "**": "", "Dup": "", "": "", // non-imaging / empty → no mapping
+	}
+	for code, want := range cases {
+		assert.Equal(t, want, mapOpenNGCType(code), "code %q", code)
 	}
 }
 

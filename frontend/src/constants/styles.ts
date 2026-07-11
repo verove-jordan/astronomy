@@ -26,8 +26,15 @@ export const card =
 export const cardElevated =
   "rounded-lg border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-surface-elevated";
 
+// Form fields harmonize with the indigo brand (buttons are brand-600 #4f46e5): a faint indigo-tinted
+// surface + a soft indigo border at rest, brightening to a full brand ring on focus — instead of the
+// old blue-shifted slate-900 fill, which read as a different (blue) hue next to the indigo buttons.
 export const input =
-  "w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100";
+  "w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-brand-800/60 dark:bg-brand-900/20 dark:text-slate-100 dark:placeholder-slate-500";
+
+// checkbox tints native checkboxes/radios to the brand indigo (accent-color = brand-600 #4f46e5, the
+// button color), replacing the browser's default blue so they match the buttons and focus rings exactly.
+export const checkbox = "accent-brand-600";
 
 export const th =
   "cursor-pointer select-none whitespace-nowrap px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100";
@@ -77,7 +84,7 @@ export const frameTypeCardFallback = "border-l-4 border-l-slate-400";
 export const frameTypeCardClass = (t?: string): string =>
   frameTypeCard[t ?? ""] ?? frameTypeCardFallback;
 
-// statusPill: job status chip colors (incl. cancelled).
+// statusPill: job status chip colors (incl. cancelled + paused).
 export const statusPill: Record<string, string> = {
   queued:
     "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
@@ -88,6 +95,7 @@ export const statusPill: Record<string, string> = {
   failed: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
   cancelled:
     "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300",
+  paused: "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300",
 };
 
 // Folder entry pill: base vs selected (the capture chosen to process).
@@ -134,8 +142,12 @@ export const skyTypePill: Record<string, string> = {
     "bg-rose-100 text-rose-800 ring-1 ring-rose-200 dark:bg-rose-900/40 dark:text-rose-300 dark:ring-rose-800/50",
   planetary_nebula:
     "bg-cyan-100 text-cyan-800 ring-1 ring-cyan-200 dark:bg-cyan-900/40 dark:text-cyan-300 dark:ring-cyan-800/50",
+  reflection_nebula:
+    "bg-sky-100 text-sky-800 ring-1 ring-sky-200 dark:bg-sky-900/40 dark:text-sky-300 dark:ring-sky-800/50",
   dark_nebula:
     "bg-slate-200 text-slate-700 ring-1 ring-slate-300 dark:bg-slate-700/50 dark:text-slate-200 dark:ring-slate-600",
+  open_cluster:
+    "bg-amber-100 text-amber-800 ring-1 ring-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:ring-amber-800/50",
   cluster:
     "bg-amber-100 text-amber-800 ring-1 ring-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:ring-amber-800/50",
   globular:

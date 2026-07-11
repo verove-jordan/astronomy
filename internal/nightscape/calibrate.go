@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 
+	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/inspect"
@@ -18,26 +20,48 @@ import (
 // beyond the cap are dropped with a warning rather than risking an out-of-memory.
 const maxCalFrames = 24
 
-// hasCalibration reports whether any calibration-frame folder was supplied.
-func hasCalibration(o Options) bool {
-	return o.DarkDir != "" || o.FlatDir != "" || o.BiasDir != ""
+// hasCalibration reports whether any calibration frames were supplied this run — an explicit folder
+// or frames auto-detected among the input stills.
+// phoneMasterPath returns a matched phone master's local file path, or "" when nothing matched.
+func phoneMasterPath(m *calib.PhoneMaster) string {
+	if m == nil {
+		return ""
+	}
+	return m.Path
 }
 
-// calibrateLights builds dark/flat/bias masters from the configured folders and calibrates each light
-// FITS in seqDir in place, in LINEAR light: load the (gamma) light → linearize → subtract the dark
-// (else the bias) → divide the normalized flat → clamp → re-encode gamma → save. Calibration is only
-// valid in linear light, but the gamma round-trip keeps the downstream register + compose (which
-// linearizes each frame again) byte-compatible with the uncalibrated path, so only this opt-in branch
-// changes. Soft-fail: any problem returns a note and leaves the lights untouched, so a bad or empty
-// calibration set never breaks the proven path. Offset == bias; a dark already contains the bias, so
-// the bias master is used only when no dark is supplied.
-func calibrateLights(ctx context.Context, o Options, seqDir string, lightNames []string) string {
+func hasCalibration(o Options) bool {
+	return o.DarkDir != "" || o.FlatDir != "" || o.BiasDir != "" ||
+		len(o.DarkFrames) > 0 || len(o.FlatFrames) > 0 || len(o.BiasFrames) > 0
+}
+
+// calibrateLights obtains the dark/flat/bias masters (built from this run's cal frames, else reused
+// from the library) and calibrates each light FITS in seqDir in place, in LINEAR light: load the
+// (gamma) light → linearize → subtract the dark (else the bias) → divide the normalized flat → clamp →
+// re-encode gamma → save. Calibration is only valid in linear light, but the gamma round-trip keeps the
+// downstream register + compose (which linearizes each frame again) byte-compatible with the
+// uncalibrated path, so only this opt-in branch changes. Soft-fail: any problem returns a note and
+// leaves the lights untouched, so a bad or empty calibration set never breaks the proven path. Offset ==
+// bias; a dark already contains the bias, so the bias master is used only when no dark is supplied.
+func calibrateLights(ctx context.Context, o Options, plan calPlan, seqDir string, lightNames []string) string {
 	if len(lightNames) == 0 {
 		return ""
 	}
-	dark, dn := buildMaster(ctx, o, o.DarkDir, "dark")
-	bias, bn := buildMaster(ctx, o, o.BiasDir, "bias")
-	flat, fn := buildMaster(ctx, o, o.FlatDir, "flat")
+	// Read the reference light first: its developed dimensions complete the light key used to select
+	// library masters, and it is the pixel-for-pixel template every master must match.
+	ref, err := fits.ReadImage(lightNames[0])
+	if err != nil {
+		return "calibration skipped (read light: " + err.Error() + ")"
+	}
+	key := plan.light
+	key.Width, key.Height = ref.W, ref.H
+	sel := calib.MatchPhoneCalibration(key, plan.masters)
+	// Pull the matched phone masters back from the S3 library mirror if their files are absent locally.
+	o.ensureMasters(ctx, []string{phoneMasterPath(sel.Dark), phoneMasterPath(sel.Bias), phoneMasterPath(sel.Flat)})
+
+	dark, dn := buildOrReusePhoneMaster(ctx, o, "dark", key, sel.Dark)
+	bias, bn := buildOrReusePhoneMaster(ctx, o, "bias", key, sel.Bias)
+	flat, fn := buildOrReusePhoneMaster(ctx, o, "flat", key, sel.Flat)
 	notes := joinNotes(dn, bn, fn)
 	if dark == nil && bias == nil && flat == nil {
 		if notes != "" {
@@ -48,10 +72,6 @@ func calibrateLights(ctx context.Context, o Options, seqDir string, lightNames [
 
 	// Masters must match the lights pixel-for-pixel; drop any that don't (e.g. cal frames shot at a
 	// different resolution) so a mismatch degrades to "less calibration", never a crash.
-	ref, err := fits.ReadImage(lightNames[0])
-	if err != nil {
-		return "calibration skipped (read light: " + err.Error() + ")"
-	}
 	dark, notes = matchOrDrop(dark, ref, "dark", notes)
 	bias, notes = matchOrDrop(bias, ref, "bias", notes)
 	flat, notes = matchOrDrop(flat, ref, "flat", notes)
@@ -81,6 +101,7 @@ func calibrateLights(ctx context.Context, o Options, seqDir string, lightNames [
 		if err != nil {
 			return fmt.Sprintf("calibration aborted (read %s: %v); %d lights done", filepath.Base(name), err, done)
 		}
+		normalizeADU(im) // Siril convert output is 0..65535 ADU; bring it to [0,1] before linearize
 		linearizeSRGB(im)
 		switch {
 		case dark != nil:
@@ -105,12 +126,12 @@ func calibrateLights(ctx context.Context, o Options, seqDir string, lightNames [
 	return summary
 }
 
-// buildMaster develops the raws (or links the FITS) in dir, converts them to FITS via Siril, and
-// returns their per-channel, per-pixel median in linear light. Returns (nil, note) when dir is empty,
-// unreadable, or the convert/read fails — the caller treats a nil master as "this calibration type
+// buildMaster develops the raw frames (and links any FITS), converts them to FITS via Siril, and
+// returns their per-channel, per-pixel median in linear light. Returns (nil, note) when the set is
+// empty or the develop/convert/read fails — the caller treats a nil master as "this calibration type
 // unavailable" and proceeds.
-func buildMaster(ctx context.Context, o Options, dir, tag string) (*fits.Image, string) {
-	if dir == "" {
+func buildMaster(ctx context.Context, o Options, raws []string, tag string) (*fits.Image, string) {
+	if len(raws) == 0 {
 		return nil, ""
 	}
 	tmp := filepath.Join(o.WorkDir, "cal_"+tag)
@@ -118,24 +139,12 @@ func buildMaster(ctx context.Context, o Options, dir, tag string) (*fits.Image, 
 		return nil, tag + ": " + err.Error()
 	}
 	capped := ""
-	if raws, _ := inspect.ListRawFrames(dir); len(raws) > 0 {
-		if len(raws) > maxCalFrames {
-			capped = fmt.Sprintf("%s: used %d of %d frames (cap)", tag, maxCalFrames, len(raws))
-			raws = raws[:maxCalFrames]
-		}
-		if _, _, err := rawconv.PrepareTIFF(ctx, raws, tmp, nil); err != nil {
-			return nil, tag + ": develop: " + err.Error()
-		}
-	} else if ff, _ := inspect.ListFITSFrames(dir); len(ff) > 0 {
-		if len(ff) > maxCalFrames {
-			capped = fmt.Sprintf("%s: used %d of %d frames (cap)", tag, maxCalFrames, len(ff))
-			ff = ff[:maxCalFrames]
-		}
-		if _, err := fsutil.LinkFrames(tmp, ff); err != nil {
-			return nil, tag + ": stage: " + err.Error()
-		}
-	} else {
-		return nil, tag + " dir has no usable frames"
+	if len(raws) > maxCalFrames {
+		capped = fmt.Sprintf("%s: used %d of %d frames (cap)", tag, maxCalFrames, len(raws))
+		raws = raws[:maxCalFrames]
+	}
+	if err := stageCalFrames(ctx, raws, tmp); err != nil {
+		return nil, tag + ": " + err.Error()
 	}
 	if _, err := o.Siril.Run(ctx, tmp, siril.ConvertScript(tag), nil); err != nil {
 		return nil, tag + ": convert: " + err.Error()
@@ -147,6 +156,72 @@ func buildMaster(ctx context.Context, o Options, dir, tag string) (*fits.Image, 
 		return nil, tag + ": " + err.Error()
 	}
 	return master, capped
+}
+
+// stageCalFrames prepares calibration frames into dir for Siril `convert`: raws are developed to TIFF
+// (sips → PrepareTIFF), FITS frames are linked in place.
+func stageCalFrames(ctx context.Context, frames []string, dir string) error {
+	var raws, fitsFrames []string
+	for _, p := range frames {
+		if isFITSPath(p) {
+			fitsFrames = append(fitsFrames, p)
+		} else {
+			raws = append(raws, p)
+		}
+	}
+	if len(raws) > 0 {
+		if _, _, err := rawconv.PrepareTIFF(ctx, raws, dir, nil); err != nil {
+			return fmt.Errorf("develop: %w", err)
+		}
+	}
+	if len(fitsFrames) > 0 {
+		if _, err := fsutil.LinkFrames(dir, fitsFrames); err != nil {
+			return fmt.Errorf("stage: %w", err)
+		}
+	}
+	return nil
+}
+
+func isFITSPath(p string) bool {
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".fits", ".fit", ".fts":
+		return true
+	}
+	return false
+}
+
+// calFrames returns the calibration raws for a role: the frames auto-detected among the input stills
+// plus any frames under the explicitly-supplied folder, de-duplicated (a folder the user points at may
+// overlap the input dir).
+func calFrames(o Options, tag string) []string {
+	var dir string
+	var frames []string
+	switch tag {
+	case "dark":
+		dir, frames = o.DarkDir, o.DarkFrames
+	case "bias":
+		dir, frames = o.BiasDir, o.BiasFrames
+	case "flat":
+		dir, frames = o.FlatDir, o.FlatFrames
+	}
+	seen := make(map[string]bool)
+	var out []string
+	add := func(p string) {
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	for _, p := range frames {
+		add(p)
+	}
+	if dir != "" {
+		raws, _ := inspect.ListRawFrames(dir)
+		for _, p := range raws {
+			add(p)
+		}
+	}
+	return out
 }
 
 // medianMaster reads every frame (linearizing each) and returns their per-channel, per-pixel median.
@@ -162,6 +237,7 @@ func medianMaster(paths []string) (*fits.Image, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", filepath.Base(p), err)
 		}
+		normalizeADU(im) // cal frames are Siril convert output (0..65535 ADU)
 		linearizeSRGB(im)
 		imgs = append(imgs, im)
 	}
@@ -186,9 +262,19 @@ func medianMaster(paths []string) (*fits.Image, error) {
 
 // matchOrDrop returns m if it matches ref's dimensions, else nil plus an appended note — so a
 // differently-sized calibration master degrades the run to "less calibration" instead of a crash.
+// An exactly-TRANSPOSED master (portrait vs landscape of the same sensor) is still dropped — the
+// 90° direction is ambiguous from dims alone and a wrong guess would misplace the fixed-pattern
+// noise, which is worse than no calibration — but the note names the real cause: an old raw
+// developer baked the EXIF rotation into one side (dcraw_emu now runs -t 0, so re-developing the
+// masters fixes it for good).
 func matchOrDrop(m, ref *fits.Image, tag, notes string) (*fits.Image, string) {
 	if m == nil {
 		return nil, notes
+	}
+	if m.W == ref.H && m.H == ref.W && m.C == ref.C && m.W != m.H {
+		return nil, joinNotes(notes, fmt.Sprintf(
+			"%s master %dx%d is TRANSPOSED vs light %dx%d (orientation was baked by an old raw develop) — dropped; rebuild the master so both are sensor-native",
+			tag, m.W, m.H, ref.W, ref.H))
 	}
 	if m.W != ref.W || m.H != ref.H || m.C != ref.C {
 		return nil, joinNotes(notes, fmt.Sprintf("%s master %dx%d≠light %dx%d, dropped", tag, m.W, m.H, ref.W, ref.H))

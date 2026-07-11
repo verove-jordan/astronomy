@@ -55,7 +55,23 @@ export async function postprocess(
   // 3. Concatenate, then build + mux audio against the real combined duration.
   const combined = await concat(ordered, rec.workDir);
   const totalSec = await probeDuration(combined);
-  const voices = await synthVoiceovers(lines, rec.workDir);
+  const voices = await synthVoiceovers(lines, rec.workDir, {
+    voice: meta.voice,
+    rate: meta.voiceRate,
+    lang: meta.lang,
+  });
+  // Serialize narration so lines never overlap: each starts no earlier than the previous one ends (plus
+  // a short breath). Keeps the audio smooth even when a line runs longer than its step.
+  const GAP = 0.35;
+  voices.sort((a, b) => a.atSec - b.atSec);
+  for (let i = 1; i < voices.length; i++) {
+    const prevEnd = voices[i - 1].atSec + voices[i - 1].durSec;
+    if (voices[i].atSec < prevEnd + GAP) voices[i].atSec = prevEnd + GAP;
+  }
+  const lastEnd = voices.length ? voices[voices.length - 1].atSec + voices[voices.length - 1].durSec : 0;
+  if (lastEnd > totalSec + 0.5) {
+    console.warn(`! narration (${lastEnd.toFixed(1)}s) exceeds the video (${totalSec.toFixed(1)}s) — trim text or add dwell.`);
+  }
   const audio = await buildAudio({ workDir: rec.workDir, totalSec, music: opts.music, voices });
 
   await mkdir(path.dirname(opts.outFile), { recursive: true });

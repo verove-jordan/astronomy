@@ -12,34 +12,74 @@ import (
 // (ZNCC) — robust to per-channel brightness/contrast — i.e. spatial-domain phase correlation focused on
 // the coma. Used to cross-align the per-channel comet stacks so the colour comet has no channel offset.
 func AlignToReference(ref, target *fits.Image, center Point, radius int, maxShift float64) (dx, dy float64) {
+	// Blur at coma scale: point-like stars (a few px, co-located across channels so they pull the
+	// correlation toward zero shift) fade away, while the extended coma survives — so the correlation
+	// locks onto the comet, not the star field.
+	return AlignToReferenceBlur(ref, target, center, radius, maxShift, 10)
+}
+
+// AlignToReferenceBlur is AlignToReference with an explicit pre-blur radius. Surface imaging
+// (Moon/planets) passes a SMALL blur so the correlation locks onto sharp craters/limb detail; comet
+// coma uses ~10 to fade stars. blur <= 0 correlates the raw planes (finest, noisiest). The integer ZNCC
+// peak is refined by a 1-D parabola per axis (see AlignSeeded), not the old ¼-pixel grid.
+func AlignToReferenceBlur(ref, target *fits.Image, center Point, radius int, maxShift float64, blur int) (dx, dy float64) {
+	return AlignSeeded(ref, target, center, radius, maxShift, blur, 0, 0)
+}
+
+// AlignSeeded searches integer offsets over round(seed) ± maxShift, then refines the correlation peak by
+// a 1-D parabola per axis on the peak's four integer neighbours, and returns the ABSOLUTE sub-pixel shift
+// registering target onto ref. Fitting the parabola at INTEGER offsets is deliberate: there zncc samples
+// exact pixels (no bilinear smoothing), so the correlation surface is interpolation-bias-free and the
+// vertex localizes the peak to ~0.05–0.1 px with no FFT. seed=(0,0) reproduces the un-seeded aligner; a
+// caller with a known global drift passes it as the seed so the small ±maxShift search measures only the
+// local residual — letting the total shift be measured against the ORIGINAL frame, with no pre-translate.
+func AlignSeeded(ref, target *fits.Image, center Point, radius int, maxShift float64, blur int, seedX, seedY float64) (dx, dy float64) {
 	if ref == nil || target == nil || ref.W != target.W || ref.H != target.H {
-		return 0, 0
+		return seedX, seedY
 	}
-	// Blur both planes at coma scale first: point-like stars (a few px, and co-located across channels so
-	// they pull the correlation toward zero shift) fade away, while the extended coma survives — so the
-	// correlation locks onto the comet, not the star field.
-	const comaBlur = 10
-	ref = &fits.Image{W: ref.W, H: ref.H, C: 1, Pix: [][]float32{boxBlur(ref.Pix[0], ref.W, ref.H, comaBlur)}}
-	target = &fits.Image{W: target.W, H: target.H, C: 1, Pix: [][]float32{boxBlur(target.Pix[0], target.W, target.H, comaBlur)}}
-	best, bx, by := -2.0, 0.0, 0.0
+	if blur > 0 {
+		ref = &fits.Image{W: ref.W, H: ref.H, C: 1, Pix: [][]float32{boxBlur(ref.Pix[0], ref.W, ref.H, blur)}}
+		target = &fits.Image{W: target.W, H: target.H, C: 1, Pix: [][]float32{boxBlur(target.Pix[0], target.W, target.H, blur)}}
+	}
+	bx, by, c0 := integerPeak(ref, target, center, radius, maxShift, seedX, seedY)
+	sx := bx + parabola(zncc(ref, target, center, radius, bx-1, by), c0, zncc(ref, target, center, radius, bx+1, by))
+	sy := by + parabola(zncc(ref, target, center, radius, bx, by-1), c0, zncc(ref, target, center, radius, bx, by+1))
+	return sx, sy
+}
+
+// integerPeak returns the integer offset (bx,by) maximizing ZNCC over round(seed) ± maxShift, plus that
+// peak's correlation value (for the parabolic refine).
+func integerPeak(ref, target *fits.Image, center Point, radius int, maxShift, seedX, seedY float64) (bx, by, best float64) {
+	best = -2
+	baseX, baseY := math.Round(seedX), math.Round(seedY)
 	maxI := int(maxShift)
-	for sy := -maxI; sy <= maxI; sy++ {
-		for sx := -maxI; sx <= maxI; sx++ {
-			if c := zncc(ref, target, center, radius, float64(sx), float64(sy)); c > best {
-				best, bx, by = c, float64(sx), float64(sy)
+	for dy := -maxI; dy <= maxI; dy++ {
+		for dx := -maxI; dx <= maxI; dx++ {
+			ox, oy := baseX+float64(dx), baseY+float64(dy)
+			if c := zncc(ref, target, center, radius, ox, oy); c > best {
+				best, bx, by = c, ox, oy
 			}
 		}
 	}
-	// Refine to ¼-pixel around the integer peak.
-	cx, cy := bx, by
-	for sy := cy - 0.75; sy <= cy+0.75+1e-9; sy += 0.25 {
-		for sx := cx - 0.75; sx <= cx+0.75+1e-9; sx += 0.25 {
-			if c := zncc(ref, target, center, radius, sx, sy); c > best {
-				best, bx, by = c, sx, sy
-			}
-		}
+	return bx, by, best
+}
+
+// parabola returns the sub-integer peak offset from a concave 3-point fit (correlation values at -1,0,+1
+// relative to the integer peak), clamped to ±0.5. It returns 0 when the samples are not a concave
+// interior maximum (a flat or degenerate window), leaving the integer peak unshifted.
+func parabola(cMinus, c0, cPlus float64) float64 {
+	den := cMinus - 2*c0 + cPlus
+	if den >= 0 {
+		return 0
 	}
-	return bx, by
+	d := 0.5 * (cMinus - cPlus) / den
+	if d < -0.5 {
+		return -0.5
+	}
+	if d > 0.5 {
+		return 0.5
+	}
+	return d
 }
 
 // zncc is the zero-mean normalized cross-correlation in [-1,1] between ref (at center) and target

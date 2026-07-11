@@ -3,14 +3,13 @@ package pipeline
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/verove-jordan/astronomy/internal/calib"
-	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/grade"
 	"github.com/verove-jordan/astronomy/internal/inspect"
+	"github.com/verove-jordan/astronomy/internal/photom"
 	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/skycat"
 	"github.com/verove-jordan/astronomy/internal/store"
@@ -27,14 +26,19 @@ func processChannelGroups(ctx context.Context, opts Options, object, filter stri
 		Object:     object,
 		Filter:     filter,
 		ExposureMs: rep.Key.ExposureMs,
-		Selection:  calib.MatchForLight(rep.Key, masters), // representative selection (notes/UI)
+		Selection:  calib.MatchForLightExcluding(rep.Key, masters, opts.CalibExclude), // representative selection (notes/UI)
 	}
 
-	var calibrated []string     // calibrated frame paths, in registration order
-	var frames []*inspect.Frame // matching frame metadata, same order, for grading
+	var calibrated []string         // calibrated frame paths, in registration order
+	var frames []*inspect.Frame     // matching frame metadata, same order, for grading
+	var photomGroups []photom.Group // per-group calibrated frames, for photometric normalization
 	for gi, g := range groups {
 		cm, notes := flats.mastersFor(ctx, opts, g, masters, workRun)
 		ch.Selection.Notes = append(ch.Selection.Notes, notes...)
+		// Pull from the S3 library mirror if absent locally, then resolve the dark's defect sidecar —
+		// after the pull, so a mirrored map is found (missing map = soft -cc=dark fallback).
+		opts.ensureMasters(ctx, []string{cm.Dark, cm.Flat, cm.Bias, calib.DefectsListPath(cm.Dark)})
+		cm.BadPixelMap = calib.DefectsListFor(cm.Dark)
 
 		grpDir := filepath.Join(workRun, fmt.Sprintf("light_%s_g%d", sanitize(filter), gi))
 		if _, err := fsutil.LinkFrames(grpDir, framePaths(g.Frames)); err != nil {
@@ -46,14 +50,34 @@ func processChannelGroups(ctx context.Context, opts Options, object, filter stri
 			return ch
 		}
 		base := siril.CalibratedSeq("light", cm) // "pp_light" with masters, else "light"
+		gp := calibratedFramePaths(grpDir, base, len(g.Frames))
+		// ASICAP mono captures stamp a spurious BAYERPAT card that Siril propagates onto these calibrated
+		// copies — where it can derail the parity plate-solve and the merged registration (the frames are
+		// treated as un-debayered CFA). Strip it BEFORE probing; the hardlinked originals stay untouched.
+		if note := stripBayerPattern(gp); note != "" {
+			ch.Selection.Notes = append(ch.Selection.Notes, note)
+		}
 		// Correct a mirror/parity flip (e.g. a session shot through a star diagonal) before the merge:
-		// a mirrored session can never be aligned by rotation, so its calibrated frames are flipped here.
+		// a mirrored session can never be aligned by rotation, so its calibrated frames are flipped here —
+		// and the flip is verified by re-probing before it is trusted (see parityCache.correct).
 		if note := parity.correct(ctx, g, grpDir, base, len(g.Frames)); note != "" {
 			ch.Selection.Notes = append(ch.Selection.Notes, note)
 		}
-		calibrated = append(calibrated, calibratedFramePaths(grpDir, base, len(g.Frames))...)
+		calibrated = append(calibrated, gp...)
 		frames = append(frames, g.Frames...)
+		photomGroups = append(photomGroups, buildPhotomGroup(g, gp))
 		ch.InputFrames += len(g.Frames)
+	}
+
+	// Photometric normalization: sessions shot at different exposure/gain/temperature have different
+	// linear scales, which Siril's addscale only partly absorbs. Measure each group's curve and map it
+	// onto the reference group's scale/offset (in place) before the merge, so a mixed-settings stack is
+	// clean. Single-session (one group) → identity → skipped. Soft-fail: notes only, never abort.
+	if opts.Preset != nil && opts.Preset.PhotomNorm && len(photomGroups) > 1 {
+		markReferenceGroup(photomGroups, groups)
+		records, notes := photom.NormalizeGroups(ctx, photomGroups)
+		ch.Photom = records
+		ch.Selection.Notes = append(ch.Selection.Notes, notes...)
 	}
 
 	// Co-register all calibrated frames into one sequence (no further calibration), then grade+stack.
@@ -100,10 +124,10 @@ func newFlatCache(p ReuseProvider) *flatCache {
 // the flat is this run's flat for the current session, or the group's own session flat for prior data.
 func (c *flatCache) mastersFor(ctx context.Context, opts Options, g lightGroup,
 	masters []calib.Master, workRun string) (siril.CalibMasters, []string) {
-	sel := calib.MatchForLight(g.Key, masters)
+	sel := calib.MatchForLightExcluding(g.Key, masters, opts.CalibExclude)
 	dark, flat, bias := sel.Masters()
 	if g.Current {
-		return siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias}, nil
+		return siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias, DarkOptimize: sel.DarkOptimize}, nil
 	}
 	// Prior session: replace the (possibly wrong-session) flat with this session's own.
 	sessionFlat, note := c.sessionFlat(ctx, opts, g, bias, workRun)
@@ -111,7 +135,7 @@ func (c *flatCache) mastersFor(ctx context.Context, opts Options, g lightGroup,
 	if note != "" {
 		notes = append(notes, note)
 	}
-	return siril.CalibMasters{Dark: dark, Flat: sessionFlat, Bias: bias}, notes
+	return siril.CalibMasters{Dark: dark, Flat: sessionFlat, Bias: bias, DarkOptimize: sel.DarkOptimize}, notes
 }
 
 // sessionFlat builds (once) a master flat from a prior session's raw flats for the group's filter.
@@ -132,12 +156,21 @@ func (c *flatCache) sessionFlat(ctx context.Context, opts Options, g lightGroup,
 		return "", fmt.Sprintf("session %d: flat lookup failed: %v", g.SessionID, err)
 	}
 	var paths []string
+	missing := 0
 	for _, r := range rows {
-		if r.Filter == g.Filter {
-			paths = append(paths, r.Path)
+		if r.Filter != g.Filter {
+			continue
 		}
+		if !fileExists(r.Path) { // freed to S3 — one ghost symlink would sink the whole flat stack
+			missing++
+			continue
+		}
+		paths = append(paths, r.Path)
 	}
 	if len(paths) == 0 {
+		if missing > 0 {
+			return "", fmt.Sprintf("session %d: %d raw flat(s) missing on disk (freed to S3?) — flat correction skipped for its frames", g.SessionID, missing)
+		}
 		return "", fmt.Sprintf("session %d: no flats for filter %q — flat correction skipped for its frames", g.SessionID, g.Filter)
 	}
 
@@ -147,7 +180,7 @@ func (c *flatCache) sessionFlat(ctx context.Context, opts Options, g lightGroup,
 	if _, err := fsutil.LinkFrames(buildDir, paths); err != nil {
 		return "", fmt.Sprintf("session %d: %v", g.SessionID, err)
 	}
-	if _, err := opts.Runner.Run(ctx, buildDir, siril.StackFlatScript("flat", outBase, biasPath), nil); err != nil {
+	if _, err := opts.Runner.Run(ctx, buildDir, siril.StackFlatScript("flat", outBase, biasPath, len(paths)), nil); err != nil {
 		return "", fmt.Sprintf("session %d: build flat failed: %v", g.SessionID, err)
 	}
 	c.built[key] = outBase + ".fits"
@@ -183,8 +216,9 @@ func parityKey(g lightGroup) string {
 }
 
 // correct flips group g's calibrated frames (named base_00001…base_0000n in grpDir) when its parity
-// differs from the target, so it can co-register with the other sessions. It returns a human-facing note
-// when it flips a session or cannot determine its parity, and "" when nothing was needed.
+// differs from the target, so it can co-register with the other sessions. The flip is then VERIFIED by
+// re-probing before it is trusted. It returns a human-facing note when it flips a session, reverts an
+// unverified flip, or cannot determine parity, and "" when nothing was needed.
 func (pc *parityCache) correct(ctx context.Context, g lightGroup, grpDir, base string, n int) string {
 	sign, note := pc.signFor(ctx, g, grpDir, base)
 	if sign == 0 || sign == parityTargetSign {
@@ -197,7 +231,27 @@ func (pc *parityCache) correct(ctx context.Context, g lightGroup, grpDir, base s
 	if _, err := pc.runner.Run(ctx, grpDir, siril.MirrorFramesScript(names), nil); err != nil {
 		return fmt.Sprintf("session %d: parity flip failed (%v) — frames left unmirrored", g.SessionID, err)
 	}
-	return fmt.Sprintf("session %d: mirror-corrected (parity flip) so it stacks with the other sessions", g.SessionID)
+	return pc.verifyFlip(ctx, g, grpDir, names)
+}
+
+// verifyFlip re-probes the first frame after a mirror flip: measurement and correction must agree
+// before opposite-parity frames enter the merge. A probe that STILL reads mirrored means parity cannot
+// be trusted for these files (a header quirk steering Siril's load, a solver fluke) — the flip is
+// undone, the session cached as undetermined so its sibling groups are left alone, and a warning
+// returned. An undetermined re-probe keeps the flip (the original reading stands), with a note.
+func (pc *parityCache) verifyFlip(ctx context.Context, g lightGroup, grpDir string, names []string) string {
+	sign, _ := probeImageParity(ctx, pc.runner, pc.solve, grpDir, names[0])
+	switch sign {
+	case parityTargetSign:
+		return fmt.Sprintf("session %d: mirror-corrected (parity flip, verified) so it stacks with the other sessions", g.SessionID)
+	case 0:
+		return fmt.Sprintf("session %d: mirror-corrected (parity flip; verification probe undetermined)", g.SessionID)
+	}
+	pc.seen[parityKey(g)] = 0 // this session's parity readings are unreliable — don't flip its other groups
+	if _, err := pc.runner.Run(ctx, grpDir, siril.MirrorFramesScript(names), nil); err != nil {
+		return fmt.Sprintf("session %d: parity flip did not verify AND undo failed (%v) — frames may be mirrored", g.SessionID, err)
+	}
+	return fmt.Sprintf("session %d: parity flip did not verify (probe still reads mirrored) — frames left as captured", g.SessionID)
 }
 
 // signFor returns the cached parity sign for g's session, plate-solving one reference frame on first sight.
@@ -214,29 +268,12 @@ func (pc *parityCache) signFor(ctx context.Context, g lightGroup, grpDir, base s
 	return sign, ""
 }
 
-// solveParity plate-solves the first calibrated frame (without flipping it) and reads the parity from the
-// WCS. It returns 0 and a warning when solving or reading the WCS fails — the group is then left unflipped
-// (no worse than before: if it really is mirrored, its frames simply fail to register and are graded out).
+// solveParity plate-solves the first calibrated frame (without flipping it) and reads the parity from
+// the WCS via the shared probe (parity.go). It returns 0 and a warning when solving or reading fails —
+// the group is then left unflipped (no worse than before: a truly mirrored group simply fails to
+// register and is graded out).
 func (pc *parityCache) solveParity(ctx context.Context, grpDir, base string) (int, string) {
-	const probe = "_parity_probe"
-	ref := fmt.Sprintf("%s_%05d", base, 1)
-	if _, err := pc.runner.Run(ctx, grpDir, siril.ParityProbeScript(ref, probe, pc.solve), nil); err != nil {
-		return 0, "parity undetermined (plate-solve failed) — flip not applied"
-	}
-	probePath := filepath.Join(grpDir, probe+".fits")
-	defer func() { _ = os.Remove(probePath) }()
-	f, err := fits.Open(probePath)
-	if err != nil {
-		return 0, "parity undetermined (no solved WCS) — flip not applied"
-	}
-	det, ok := f.Header.CDDeterminant()
-	if !ok {
-		return 0, "parity undetermined (WCS lacks CD/PC matrix) — flip not applied"
-	}
-	if det < 0 {
-		return -1, ""
-	}
-	return 1, ""
+	return probeImageParity(ctx, pc.runner, pc.solve, grpDir, fmt.Sprintf("%s_%05d", base, 1))
 }
 
 // orderedPlanFilters returns the plan's channel filters in canonical order (L first).

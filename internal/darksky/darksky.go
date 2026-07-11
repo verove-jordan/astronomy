@@ -12,6 +12,7 @@ import (
 
 	"github.com/verove-jordan/astronomy/internal/elevation"
 	"github.com/verove-jordan/astronomy/internal/lightpollution"
+	"github.com/verove-jordan/astronomy/internal/routing"
 )
 
 // Scanner samples sky brightness over an area (implemented by *lightpollution.Provider).
@@ -24,23 +25,68 @@ type HorizonScorer interface {
 	Horizon(ctx context.Context, lat, lon float64) (elevation.Horizon, string)
 }
 
+// Router resolves road distance + time from the observer to each candidate (implemented by
+// *routing.Provider). It is display-only — it never changes the ranking — and soft-fails to the
+// straight-line distance when routing is unavailable.
+type Router interface {
+	DriveMatrix(ctx context.Context, srcLat, srcLon float64, dstLats, dstLons []float64) ([]routing.Drive, string)
+}
+
+// ScoreConfig tunes the blended place score. DarkWeight is the darkness share (openness gets the rest).
+// SouthWeight blends a south-weighted openness into the openness term (the low southern sky matters most
+// for N-hemisphere deep-sky). MaxSouthBlockDeg (0 = disabled) heavily penalises a site whose southern
+// horizon is blocked above that angle. The zero value + defaultScoreConfig reproduce the historical
+// 0.6·darkness + 0.4·openness score.
+type ScoreConfig struct {
+	DarkWeight       float64
+	SouthWeight      float64
+	MaxSouthBlockDeg float64
+}
+
+func defaultScoreConfig() ScoreConfig { return ScoreConfig{DarkWeight: 0.6} }
+
+// Option configures a Finder at construction, keeping New's positional signature stable for existing callers.
+type Option func(*Finder)
+
+// WithScore sets the blended-score weights (clamped to sane ranges).
+func WithScore(sc ScoreConfig) Option {
+	return func(f *Finder) {
+		sc.DarkWeight = clamp01(sc.DarkWeight)
+		sc.SouthWeight = clamp01(sc.SouthWeight)
+		if sc.MaxSouthBlockDeg < 0 {
+			sc.MaxSouthBlockDeg = 0
+		}
+		f.score = sc
+	}
+}
+
+// WithRouter attaches a driving-distance provider (display-only; nil = straight-line distance only).
+func WithRouter(r Router) Option { return func(f *Finder) { f.router = r } }
+
 // Finder finds the darkest, most open observing sites in a region.
 type Finder struct {
 	lp       Scanner
 	elev     HorizonScorer
 	maxCells int
 	horizonN int // how many top candidates get horizon scoring
+	score    ScoreConfig
+	router   Router
 }
 
-// New builds a Finder. elev may be nil (horizon scoring then degrades to a dark-only ranking).
-func New(lp Scanner, elev HorizonScorer, maxCells, horizonN int) *Finder {
+// New builds a Finder. elev may be nil (horizon scoring then degrades to a dark-only ranking). Score weights
+// default to the historical 0.6/0.4 blend; pass WithScore/WithRouter to override.
+func New(lp Scanner, elev HorizonScorer, maxCells, horizonN int, opts ...Option) *Finder {
 	if maxCells < 4 {
 		maxCells = 4000
 	}
 	if horizonN < 0 {
 		horizonN = 0
 	}
-	return &Finder{lp: lp, elev: elev, maxCells: maxCells, horizonN: horizonN}
+	f := &Finder{lp: lp, elev: elev, maxCells: maxCells, horizonN: horizonN, score: defaultScoreConfig()}
+	for _, o := range opts {
+		o(f)
+	}
+	return f
 }
 
 // Query parameterizes one area search.
@@ -49,8 +95,9 @@ type Query struct {
 	MaxBortle int
 	Limit     int
 	Horizon   bool    // evaluate horizon openness for the top candidates
-	ObsLat    float64 // observer location, only for the distance column
+	ObsLat    float64 // observer location, for the distance column
 	ObsLon    float64
+	ObsSet    bool // the observer location was explicitly provided — driving distance is computed only then
 }
 
 // Candidate is one ranked dark site.
@@ -59,7 +106,9 @@ type Candidate struct {
 	Lon        float64            `json:"lon"`
 	SQM        float64            `json:"sqm"`
 	Bortle     int                `json:"bortle"`
-	DistanceKm float64            `json:"distance_km"`
+	DistanceKm float64            `json:"distance_km"`         // straight-line (great-circle) distance
+	DriveKm    float64            `json:"drive_km,omitempty"`  // road distance from the observer (0 = not computed)
+	DriveMin   float64            `json:"drive_min,omitempty"` // estimated driving time, minutes (0 = not computed)
 	Score      float64            `json:"score"`
 	ElevationM *float64           `json:"elevation_m,omitempty"`
 	Horizon    *elevation.Horizon `json:"horizon,omitempty"`
@@ -111,9 +160,15 @@ func (f *Finder) Find(ctx context.Context, q Query) *Result {
 		f.evalHorizon(ctx, cand, res)
 	}
 	for i := range cand {
-		cand[i].Score = round2(scoreCandidate(cand[i]))
+		cand[i].Score = round2(scoreCandidate(cand[i], f.score))
 	}
 	sort.SliceStable(cand, func(i, j int) bool { return cand[i].Score > cand[j].Score })
+
+	// Driving distance is meaningful only from the user's real location, so require it to be explicitly set
+	// (never the server's default site — that would show a drive from the wrong origin).
+	if f.router != nil && q.ObsSet {
+		f.evalRoutes(ctx, cand, q, res)
+	}
 
 	res.Candidates = cand
 	res.Count = len(cand)
@@ -172,15 +227,43 @@ func (f *Finder) evalHorizon(ctx context.Context, cand []Candidate, res *Result)
 	}
 }
 
-// scoreCandidate blends darkness (60%) and horizon openness (40%). When the horizon was not evaluated,
-// openness is treated as neutral (1) so the ordering falls back to darkness alone.
-func scoreCandidate(c Candidate) float64 {
+// evalRoutes fills DriveKm/DriveMin for the candidates from the routing provider (one call). It is
+// display-only and soft-fails: on any routing error the candidates keep their straight-line DistanceKm.
+func (f *Finder) evalRoutes(ctx context.Context, cand []Candidate, q Query, res *Result) {
+	lats := make([]float64, len(cand))
+	lons := make([]float64, len(cand))
+	for i := range cand {
+		lats[i], lons[i] = cand[i].Lat, cand[i].Lon
+	}
+	drives, warn := f.router.DriveMatrix(ctx, q.ObsLat, q.ObsLon, lats, lons)
+	if warn != "" {
+		res.Warnings = append(res.Warnings, warn)
+	}
+	for i := range cand {
+		if i < len(drives) && drives[i].OK {
+			cand[i].DriveKm = round1(drives[i].DistanceKm)
+			cand[i].DriveMin = math.Round(drives[i].DurationMin)
+		}
+	}
+}
+
+// scoreCandidate blends darkness and horizon openness per ScoreConfig. When the horizon was not evaluated,
+// openness is treated as neutral (1) so the ordering falls back to darkness alone. With the default config
+// (DarkWeight 0.6, SouthWeight 0, MaxSouthBlockDeg 0) this is the historical 0.6·dark + 0.4·open score.
+func scoreCandidate(c Candidate, sc ScoreConfig) float64 {
 	darkNorm := clamp01((c.SQM - 18.0) / (22.0 - 18.0))
 	openNorm := 1.0
 	if c.Horizon != nil {
-		openNorm = clamp01(c.Horizon.OpennessPct / 100.0)
+		open := c.Horizon.OpennessPct
+		if sc.SouthWeight > 0 {
+			open = (1-sc.SouthWeight)*open + sc.SouthWeight*c.Horizon.SouthOpennessPct
+		}
+		openNorm = clamp01(open / 100.0)
+		if sc.MaxSouthBlockDeg > 0 && c.Horizon.SouthObstructionDeg > sc.MaxSouthBlockDeg {
+			openNorm = 0 // southern sky blocked past the gate — unusable for deep-sky
+		}
 	}
-	return 0.6*darkNorm + 0.4*openNorm
+	return sc.DarkWeight*darkNorm + (1-sc.DarkWeight)*openNorm
 }
 
 // haversineKm is the great-circle distance between two lat/lon points, in kilometres.

@@ -6,7 +6,12 @@ import Pill from "@/components/Common/Pill.vue";
 import IconCompassArrow from "@/components/Icons/IconCompassArrow.vue";
 import { btnPrimary, btnGhost } from "@/constants/styles";
 
-const props = defineProps<{ star: GotoStar; canUndo?: boolean }>();
+// seqLabel overrides the order bubble for phase-aware sequences ("C1".."C4" calibration markers).
+const props = defineProps<{
+  star: GotoStar;
+  canUndo?: boolean;
+  seqLabel?: string;
+}>();
 const emit = defineEmits<{
   accept: [string];
   skip: [string];
@@ -14,6 +19,13 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
+
+// The headline is the exact hand-controller label when the mount has a star catalogue — that is the
+// name the user scrolls to on the telecommand; the catalog name stays as a secondary hint.
+const displayName = computed(() => props.star.hc_name || props.star.name);
+const showCatalogName = computed(
+  () => !!props.star.hc_name && props.star.hc_name !== props.star.name,
+);
 
 const cardClass = computed(() => {
   switch (props.star.status) {
@@ -40,12 +52,15 @@ const isAccepted = computed(() => props.star.status === "accepted");
       <div
         class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-200 text-sm font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-100"
       >
-        {{ star.order }}
+        {{ seqLabel ?? star.order }}
       </div>
       <div class="min-w-0 flex-1">
         <div class="flex flex-wrap items-center gap-2">
           <span class="font-semibold text-slate-800 dark:text-slate-100">{{
-            star.name
+            displayName
+          }}</span>
+          <span v-if="showCatalogName" class="text-xs text-slate-400">{{
+            t("goto.card.catalogName", { name: star.name })
           }}</span>
           <Pill
             color-class="bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-200"

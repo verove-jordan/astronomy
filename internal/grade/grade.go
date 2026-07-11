@@ -20,6 +20,10 @@ type Metric struct {
 	TrailScore    float64 `json:"trail_score"`
 	Rejected      bool    `json:"rejected"`
 	RejectReason  string  `json:"reject_reason,omitempty"`
+	// ShiftX/ShiftY are the frame's registration translation vs the reference (pixels) — the
+	// capture-time pointing offsets the dither/drift diagnostic reads.
+	ShiftX float64 `json:"shift_x,omitempty"`
+	ShiftY float64 `json:"shift_y,omitempty"`
 }
 
 // Options are the rejection thresholds. Zero value is not useful; use DefaultOptions.

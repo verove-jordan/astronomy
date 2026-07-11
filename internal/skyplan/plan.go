@@ -26,11 +26,10 @@ func New(catalogDir string) *Planner { return &Planner{catalogDir: catalogDir} }
 // Plan scores every catalog object for the night bracketing prm.At, returning the ranked top-`Limit`
 // targets plus tonight's darkness summary.
 func (p *Planner) Plan(ctx context.Context, prm Params) (*Result, error) {
-	cat, err := skycat.LoadCatalog(p.catalogDir)
-	if err != nil {
-		return nil, fmt.Errorf("load catalog: %w", err)
-	}
-	records := cat.Records()
+	// Load prefers the on-disk Siril catalogue and falls back to the embedded snapshot when the
+	// engine can't read one (the Docker image's distro Siril ships a foreign catalogue format), so
+	// the planner always has objects to score.
+	records := skycat.Load(p.catalogDir).Records()
 
 	res := &Result{}
 	if len(records) == 0 {
@@ -120,9 +119,16 @@ func scoreOne(rec skycat.Record, prm Params, window astro.DarkWindow, moon astro
 		RADeg:   rec.RADeg,
 		DecDeg:  rec.DecDeg,
 	}
+	if len(rec.CommonNames) > 0 {
+		t.CommonName = rec.CommonNames[0] // the primary friendly name ("Fireworks Galaxy")
+	}
+	t.Morphology = rec.Morphology
 	t.Composition = compositionFor(rec, t.Type)
 	if rec.HasDiameter {
 		t.SizeArcmin = rec.DiameterArcmin
+	}
+	if rec.HasMinorAxis {
+		t.SizeMinorArcmin = rec.MinorAxisArcmin
 	}
 	if rec.HasMag {
 		t.MagV = rec.MagV
@@ -142,7 +148,10 @@ func scoreOne(rec skycat.Record, prm Params, window astro.DarkWindow, moon astro
 	_, status := astro.HourAngleForAltitude(prm.MinAltDeg, prm.Lat, rec.DecDeg)
 	t.Flags.Circumpolar = status == astro.AlwaysAbove
 
-	if rec.HasMag && rec.HasDiameter {
+	switch {
+	case rec.HasSurfBr: // OpenNGC's catalogued surface brightness is authoritative
+		t.SurfaceBrightness = round1(rec.SurfBr)
+	case rec.HasMag && rec.HasDiameter:
 		t.SurfaceBrightness = round1(surfaceBrightness(rec.MagV, math.Pi*(rec.DiameterArcmin/2)*(rec.DiameterArcmin/2)))
 	}
 	framingFOVMin, view := applyEyepiece(&t, prm, rec)
@@ -175,10 +184,11 @@ func scoreOne(rec skycat.Record, prm Params, window astro.DarkWindow, moon astro
 	fr, frKnown := framingScore(rec.DiameterArcmin, framingFOVMin, rec.HasDiameter)
 	sub.Framing, t.Flags.FramingKnown = fr, frKnown
 	det, detKnown := detectabilityScore(rec.MagV, rec.DiameterArcmin, prm.Optics.ApertureMM, rec.HasMag && rec.HasDiameter)
-	sens := moonSensitivity(t.Type, detKnown, t.SurfaceBrightness)
+	sbKnown := rec.HasSurfBr || (rec.HasMag && rec.HasDiameter) // OpenNGC gives SB even without both mag+diameter
+	sens := moonSensitivity(t.Type, sbKnown, t.SurfaceBrightness)
 	if prm.Mode == "visual" {
 		det, detKnown = visualDetectabilityScore(t.Type, rec.MagV, rec.DiameterArcmin, prm.Optics.ApertureMM, view, rec.HasMag, rec.HasDiameter)
-		sens = moonSensitivityVisual(t.Type, rec.HasMag && rec.HasDiameter, t.SurfaceBrightness)
+		sens = moonSensitivityVisual(t.Type, sbKnown, t.SurfaceBrightness)
 	}
 	sub.Detectability, t.Flags.DetectabilityKnown = det, detKnown
 

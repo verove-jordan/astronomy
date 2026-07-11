@@ -18,6 +18,7 @@ export interface DemoApi {
   caption(text: string): void;
   clearCaption(): void;
   spotlight(rect: { x: number; y: number; w: number; h: number } | null): void;
+  scrollToY(y: number, ms: number): Promise<void>;
   pos(): { x: number; y: number };
 }
 
@@ -152,12 +153,32 @@ export function demoRuntime(cfg: RuntimeConfig): void {
     spot.style.opacity = "1";
   }
 
+  // Eased window scroll to an absolute Y (clamped to the scrollable range). Returns a Promise the
+  // driver awaits, so a tour can scroll a page at a controlled, human pace.
+  function scrollToY(y: number, ms: number): Promise<void> {
+    const startY = window.scrollY;
+    const maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    const target = Math.max(0, Math.min(y, maxY));
+    const dur = Math.max(1, ms);
+    const start = performance.now();
+    return new Promise<void>((resolve) => {
+      const tick = (now: number) => {
+        const k = Math.min(1, (now - start) / dur);
+        window.scrollTo(0, startY + (target - startY) * ease(k));
+        if (k < 1) requestAnimationFrame(tick);
+        else resolve();
+      };
+      requestAnimationFrame(tick);
+    });
+  }
+
   window.__demo = {
     moveCursor,
     ripple,
     caption,
     clearCaption,
     spotlight,
+    scrollToY,
     pos: () => ({ x: cx, y: cy }),
   };
 }

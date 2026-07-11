@@ -250,6 +250,26 @@ func (s *Store) RawCalibPaths(ctx context.Context, q calib.RawQuery) ([]calib.Ra
 	return out, nil
 }
 
+// FramesByPaths returns the catalogued frame rows for the given local paths (any frame type), so the
+// low-disk remote scan can plan a previously-processed capture straight from the catalog — full
+// classification (type/filter/exposure/gain/offset/bin/temp/date) without reading any FITS. Paths not in
+// the catalog are simply absent from the result (the caller falls back to a header/token scan for those).
+func (s *Store) FramesByPaths(ctx context.Context, paths []string) ([]FrameRow, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	const sql = `
+SELECT session_id, path, frame_type, filter, exposure_ms, gain, cam_offset, bin_x, temp_milli_c, has_temp, date_obs_ms
+FROM frames
+WHERE path = ANY($1)`
+	rows, err := s.pool.Query(ctx, sql, paths)
+	if err != nil {
+		return nil, fmt.Errorf("query frames by paths: %w", err)
+	}
+	defer rows.Close()
+	return scanFrameRows(rows)
+}
+
 func scanFrameRows(rows pgx.Rows) ([]FrameRow, error) {
 	var out []FrameRow
 	for rows.Next() {

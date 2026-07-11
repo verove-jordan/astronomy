@@ -1,7 +1,10 @@
-# Compose runs only the stateful / support services. The Go engine and (in dev) the Vite
-# frontend run on the HOST via `just`, because they drive host-installed Siril/GIMP — see
-# CLAUDE.md "Host-engine exception". The frontend production image is added under the `web`
-# profile (M10); `adminer` is under `tools`.
+# Two run modes, one file (services opt in via profiles):
+#   • host-dev (default, daily macOS loop): only `db` here; the Go engine + Vite run on the HOST via
+#     `just dev`/`just web` because they drive host-installed Siril/GIMP — see CLAUDE.md "Host-engine
+#     exception". `adminer` is under `tools`; the prod frontend image under `web`.
+#   • full-container (`stack` profile): `engine` (Linux Siril/GIMP/GraXpert baked in) + `frontend` +
+#     `db` — portable to a Linux server. Add the `ai` profile (Linux+GPU) to also run the VLM in a
+#     container; on macOS keep the VLM native (ASTRO_LLM_URL → host) since Docker has no Metal.
 
 name: astrostack
 
@@ -44,17 +47,120 @@ services:
       context: .
       dockerfile: docker/frontend.Dockerfile
     restart: unless-stopped
-    profiles: ["web"]
+    # `web` = host-dev (proxy to the host engine); `stack` = full container (proxy to the engine svc).
+    profiles: ["web", "stack"]
     ports:
       - "${WEB_PORT_PROD:-8082}:80"
+    environment:
+      # nginx templates the /api upstream at startup. Default = the host-run engine; `just stack` sets
+      # API_UPSTREAM=engine:8080. The filter keeps envsubst off nginx's own $uri/$host.
+      API_UPSTREAM: ${API_UPSTREAM:-host.docker.internal:8080}
+      NGINX_ENVSUBST_FILTER: API_UPSTREAM
     extra_hosts:
-      # let nginx proxy /api to the host-run Go engine
+      # let nginx proxy /api to the host-run Go engine (host-dev mode)
       - "host.docker.internal:host-gateway"
+    networks:
+      - astrostack
+
+  # Full-container engine: astrostack serve (API + worker) with Linux Siril/GIMP/GraXpert/ffmpeg baked
+  # in. Portable to a Linux server. On macOS this runs CPU-only headless — see CLAUDE.md (host-dev is
+  # still the faster daily path). No Go changes: every tool path is an env var set in the image.
+  engine:
+    build:
+      context: .
+      dockerfile: docker/engine.Dockerfile
+      args:
+        # Build identity for /api/health + run records (.dockerignore excludes .git, so it must
+        # arrive as an arg). just stack/stack-build export GIT_DESCRIBE/BUILD_TIME.
+        GIT_DESCRIBE: ${GIT_DESCRIBE:-dev}
+        BUILD_TIME: ${BUILD_TIME:-}
+    restart: unless-stopped
+    profiles: ["stack"]
+    # No platform pin → built for the HOST arch (arm64 on Apple Silicon, amd64 on Linux) so Siril/GIMP
+    # run natively, no emulation. The Dockerfile installs Siril per-arch. Cross-build with
+    # `docker buildx build --platform linux/amd64 …` when producing a server image from a Mac.
+    # Match the host UID/GID that owns the bind-mounted data on Linux (defaults to the image's app
+    # user). On Docker Desktop (macOS) ownership is mapped for you and this can be left unset.
+    user: "${UID:-10001}:${GID:-10001}"
+    # CWD = the host repo root so the (relative-default) config dirs resolve to the SAME absolute paths
+    # the host engine used — it stores absolute paths in Postgres + run.json. Run compose from the repo root.
+    working_dir: ${PWD}
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-astro}:${POSTGRES_PASSWORD:-astro}@db:5432/${POSTGRES_DB:-astrostack}?sslmode=disable
+      API_ADDR: ":8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Data dirs = the host's real paths (mirrored by the volumes below), so pre-existing rows (sessions,
+      # frames, masters) + run.json (absolute /Users/.../{input,output,library}/…) resolve unchanged, and
+      # host-dev stays interchangeable with the container.
+      ASTRO_DATA_DIR: ${PWD}/input
+      ASTRO_OUTPUT_DIR: ${PWD}/output
+      ASTRO_LIBRARY_DIR: ${PWD}/library
+      ASTRO_WORK_DIR: ${PWD}/work
+      # Confine the "Drives" browser to the mounted external-drive root (the /Volumes bind above). macOS
+      # host → /Volumes; Linux server → set ASTRO_DRIVES_DIR to your mount root (e.g. /media). The engine
+      # is Linux so its built-in roots are /media,/mnt,/run/media — this adds the macOS mount point.
+      ASTRO_BROWSE_ROOTS: ${ASTRO_DRIVES_DIR:-/Volumes}
+      # Finish supervisor (opt-in, soft-fail). Default reaches a NATIVE mlx server on the host (macOS);
+      # on Linux+GPU `just stack-ai` sets ASTRO_LLM_URL=http://ai:11434/v1 + ASTRO_LLM_MODEL=qwen2.5vl:32b.
+      ASTRO_LLM_URL: ${ASTRO_LLM_URL:-http://host.docker.internal:1234/v1}
+      ASTRO_LLM_MODEL: ${ASTRO_LLM_MODEL:-}
+      ASTRO_LLM_IMAGE_FORMAT: ${ASTRO_LLM_IMAGE_FORMAT:-openai}
+      # Optional host GraXpert service (cmd/graxpert-host, `just run-graxpert-service`): offload denoise /
+      # background-extraction to a NATIVE macOS process — the container can't reach the host binary or GPU.
+      # Empty (default) → use the in-container CPU GraXpert (no regression). Set it (e.g. to the host
+      # service below) to run GraXpert natively, e.g. for the on-demand "Denoise final" action.
+      ASTRO_GRAXPERT_URL: ${ASTRO_GRAXPERT_URL:-}
+    ports:
+      - "${ENGINE_PORT:-8080}:8080"
+    volumes:
+      # Mirror each data dir at its SAME host path (${PWD} = repo root) so the absolute paths the host
+      # engine stored in Postgres + run.json resolve unchanged inside the container. input is
+      # read-WRITE: the pipeline never modifies raw captures (it writes only to work/ and output/),
+      # but the S3 "download & inspect" import writes downloaded capture folders INTO input, so a
+      # read-only mount broke it ("mkdir …/input/…: read-only file system"). Matches the host engine,
+      # where input is a normal writable folder.
+      - ${PWD}/input:${PWD}/input          # capture data (import writes here; pipeline only reads)
+      - ${PWD}/library:${PWD}/library      # calibration masters (shared, read-write)
+      - ${PWD}/output:${PWD}/output        # final stacks + reports
+      - ${PWD}/work:${PWD}/work            # scratch
+      # External drives for the "Drives → Copy to S3" page. On a macOS host they live under /Volumes and
+      # Docker Desktop shares them (verified: nested drive mounts show through the parent bind). On a Linux
+      # server set ASTRO_DRIVES_DIR to your mount root (e.g. /media or /mnt). READ-ONLY — the copy only ever
+      # reads from the drive — and mounted at the SAME path so it matches ASTRO_BROWSE_ROOTS and the paths
+      # the UI shows. The host engine (just run) sees /Volumes natively, so this mount is stack-only.
+      - ${ASTRO_DRIVES_DIR:-/Volumes}:${ASTRO_DRIVES_DIR:-/Volumes}:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - astrostack
+
+  # Opt-in containerized VLM for the finish supervisor (Linux + NVIDIA only — needs
+  # nvidia-container-toolkit). OpenAI-compatible on :11434. On macOS DON'T run this profile; use the
+  # native `just run-ia-model` (Metal) instead — Docker on macOS has no GPU passthrough.
+  ai:
+    image: ollama/ollama:${OLLAMA_TAG:-0.6.8}   # set OLLAMA_TAG to a tag you've verified for your driver
+    restart: unless-stopped
+    profiles: ["ai"]
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama:/root/.ollama                    # model cache (28 GB+); pull with `just ai-pull`
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
     networks:
       - astrostack
 
 volumes:
   pgdata:
+  ollama:
 
 networks:
   astrostack:

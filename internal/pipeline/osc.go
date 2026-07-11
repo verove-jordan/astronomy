@@ -25,6 +25,7 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 	if err := opts.Runner.Available(ctx); err != nil {
 		return nil, fmt.Errorf("siril unavailable: %w", err)
 	}
+	defer opts.freePulledMasters(ctx) // discard any phone masters pulled from the S3 library mirror this run
 	// One-shot-color source: raw stills (iPhone/DSLR), or — for older OSC captures — Bayer CFA FITS,
 	// which Siril demosaics with `convert -debayer`.
 	roots := opts.scanRoots()
@@ -65,6 +66,7 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 	res := &Result{InputDir: opts.InputDir, OutputDir: outDir, Object: object, RunID: runID}
+	opts.PriorObject = object // key for the supervisor's cross-run memory (warm start)
 
 	// Milky-Way nightscapes use the dedicated foreground-composite recipe (star-aligned sky stack +
 	// single clean foreground), not the generic OSC stack. Bayer-FITS OSC captures (no raws to
@@ -96,7 +98,7 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 	if debayer {
 		convert = "convert osc -debayer -out=.\n"
 	}
-	convReg := "requires 1.2.0\nsetext fits\n" + convert + "register osc\n"
+	convReg := "requires 1.2.0\nsetext fits\nset32bits\n" + convert + "register osc\n"
 	if cr, err := opts.Runner.Run(ctx, seqDir, convReg, opts.sirilLines("convert + register")); err != nil {
 		return nil, fmt.Errorf("convert+register: %w\n%s", err, sirilTail(cr))
 	}
@@ -122,9 +124,27 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 		Filter: "RGB", InputFrames: len(frames), StackedFrames: regCount - len(rejectedReg),
 		Metrics: metrics, OutputPath: masterBase + ".fits",
 	}}
+	// Pointing-pattern diagnosis (dithered / drift / static) from the registration offsets — the
+	// walking-noise risk evidence and its dithering advice, same as the mono channel path.
+	if d := ditherReport(metrics); d != nil {
+		res.Channels[0].Dither = d
+		res.Channels[0].Selection.Notes = append(res.Channels[0].Selection.Notes, "capture offsets: "+d.Note)
+	}
+	appendDitherAdvice(res)
+
+	// Line-aware satellite/aircraft-trail masking on the registered subs before stacking (no-op unless
+	// the preset enables it — milkyway leaves it off). Soft-fail: stack as-is on any error.
+	if opts.Preset != nil && opts.Preset.TrailMaskK > 0 {
+		if summary, note, err := maskChannelTrails(seqDir, "r_osc", opts.Preset.TrailMaskK); err != nil {
+			res.Warnings = append(res.Warnings, "trail mask skipped: "+err.Error())
+		} else if summary != nil {
+			res.Channels[0].TrailMask = summary
+			res.Warnings = append(res.Warnings, note)
+		}
+	}
 
 	opts.report(Progress{Step: "stacking", Index: 2, Total: 3})
-	if st, err := opts.Runner.Run(ctx, seqDir, siril.StackSelectedScript("r_osc", regCount, rejectedReg, masterBase, ""), opts.sirilLines("stacking")); err != nil {
+	if st, err := opts.Runner.Run(ctx, seqDir, siril.StackSelectedScript("r_osc", regCount, rejectedReg, masterBase, opts.stackWeight()), opts.sirilLines("stacking")); err != nil {
 		return nil, fmt.Errorf("stacking: %w\n%s", err, sirilTail(st))
 	}
 
@@ -136,22 +156,22 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
-	// Denoise the linear OSC master (color noise) before finishing, then write a preview.
-	if d := denoiseFor("RGB", opts.Preset); d.Enabled() {
-		if _, err := opts.Runner.Run(ctx, outDir, siril.DenoiseScript("osc_master.fits", "osc_master", d), opts.sirilLines("denoise")); err != nil {
-			res.Warnings = append(res.Warnings, "denoise skipped: "+err.Error())
-		}
-	}
+	// Measure + denoise the linear OSC master (starlet when enabled, else Siril) before finishing.
+	denoiseLinearMaster(ctx, opts, &res.Channels[0], "osc_master", outDir, "RGB", opts.sirilLines("denoise"))
 	if opts.Preset != nil && opts.Preset.Previews {
 		if _, err := opts.Runner.Run(ctx, outDir, siril.PreviewScript("osc_master.fits", "osc_master_preview", 0.5), nil); err == nil {
 			res.Channels[0].PreviewPath = filepath.Join(outDir, "osc_master_preview.png")
 			opts.report(Progress{Step: "preview", Index: 2, Total: 3, Preview: res.Channels[0].PreviewPath})
+			capturePreview(ctx, opts, outDir, ordStacked, stageStacked, "", res.Channels[0].PreviewPath, false) // milestone
 		}
 	}
 
 	opts.report(Progress{Step: "finishing (GIMP)", Index: 3, Total: 3})
 	finishOSC(ctx, opts, res, masterBase+".fits", workRun, outDir)
-	writeRunJSON(outDir, res) // durable, reopenable record
+	captureFinalPNG(ctx, opts, outDir, res.Final)    // milestone: the final image
+	res.StagePreviews = collectStagePreviews(outDir) // persist the milestone timeline for reload
+	stampFinishQuality(res)                          // objective colour/clipping guardrails on every run
+	writeRunJSON(outDir, res)                        // durable, reopenable record
 	return res, nil
 }
 
@@ -168,7 +188,7 @@ func finishOSC(ctx context.Context, opts Options, res *Result, masterPath, workR
 	}
 	base := filepath.Join(stretchDir, "base")
 	// Linked + dark target background keeps the wide-field sky neutral and dark (not Siril's washed 0.25).
-	script := "requires 1.2.0\nsetext fits\n" + fmt.Sprintf("load %s\n", masterPath) +
+	script := "requires 1.2.0\nsetext fits\nset32bits\n" + fmt.Sprintf("load %s\n", masterPath) +
 		siril.SubskyCmd(deg) + siril.AutostretchCmd(true, bgLevel) + fmt.Sprintf("\nsavetif %s\n", base)
 	if st, err := opts.Runner.Run(ctx, stretchDir, script, opts.sirilLines("finishing (GIMP)")); err != nil {
 		res.Warnings = append(res.Warnings, "background extraction/stretch failed: "+err.Error()+"\n"+sirilTail(st))
@@ -185,7 +205,11 @@ func finishOSC(ctx context.Context, opts Options, res *Result, masterPath, workR
 				res.Final = &postprocess.Result{Mode: "OSC-RGB", Channels: []string{"RGB"}, Outputs: []string{g.Xcf, g.Tif, g.Png}, Notes: []string{"one-shot-color + curves (GIMP)"}}
 				return
 			} else {
-				res.Warnings = append(res.Warnings, "GIMP finishing failed, keeping Siril stretch: "+gerr.Error())
+				if ctx.Err() != nil {
+					res.Warnings = append(res.Warnings, "run cancelled — finishing skipped")
+				} else {
+					res.Warnings = append(res.Warnings, "GIMP finishing failed, keeping Siril stretch: "+gerr.Error())
+				}
 			}
 		}
 	}
@@ -196,6 +220,11 @@ func finishOSC(ctx context.Context, opts Options, res *Result, masterPath, workR
 // its result onto the standard Result/run.json contract so the UI and durable record are unchanged.
 func processNightscape(ctx context.Context, opts Options, res *Result, frames []string, workRun, outDir string) (*Result, error) {
 	opts.report(Progress{Step: "nightscape: register + composite", Index: 1, Total: 1})
+	// Separate lights from any dark/flat/bias DNGs mixed into the input (auto-classified) so cal frames
+	// calibrate the stack rather than being stacked as sky.
+	lights, darkFrames, flatFrames, biasFrames := splitCalibrationFrames(ctx, frames)
+	workAbs, _ := filepath.Abs(opts.WorkDir)
+	libDir, _ := libraryDir(opts, workAbs)
 	// GraXpert gradient removal + chroma denoise on the sky stack, honouring the preset toggle (and
 	// --no-ai, which nils the runner). nil → the auto-levels still balance the sky without it.
 	var grax *graxpert.Runner
@@ -203,23 +232,31 @@ func processNightscape(ctx context.Context, opts Options, res *Result, frames []
 		grax = opts.Graxpert
 	}
 	nopts := nightscape.Options{
-		Siril:            opts.Runner,
-		Graxpert:         grax,
-		Frames:           frames,
-		WorkDir:          workRun,
-		OutDir:           outDir,
-		Look:             nightscape.LookByName(opts.Preset.Look),
-		Brightness:       opts.Preset.BackgroundLevel,
-		ColorCalibration: opts.Preset.ColorCalibration,
-		Solve:            opts.Solve,
-		Spcc:             opts.Spcc,
-		Focal35mm:        nightscape.ReadFocal35mm(frames),
-		DarkDir:          opts.DarkDir,
-		FlatDir:          opts.FlatDir,
-		BiasDir:          opts.BiasDir,
-		ForegroundFrame:  opts.Preset.ForegroundFrame,
-		Orientation:      opts.Preset.Orientation,
-		OnProgress:       opts.sirilLines("nightscape: register + composite"),
+		Siril:                 opts.Runner,
+		Graxpert:              grax,
+		Frames:                lights,
+		WorkDir:               workRun,
+		OutDir:                outDir,
+		Look:                  nightscape.LookByName(opts.Preset.Look),
+		Brightness:            opts.Preset.BackgroundLevel,
+		SaturationScale:       opts.Preset.Saturation,
+		HighlightCeilOverride: opts.Preset.HighlightCeil,
+		ColorCalibration:      opts.Preset.ColorCalibration,
+		Solve:                 opts.Solve,
+		Spcc:                  opts.Spcc,
+		Focal35mm:             nightscape.ReadFocal35mm(lights),
+		DarkDir:               opts.DarkDir,
+		FlatDir:               opts.FlatDir,
+		BiasDir:               opts.BiasDir,
+		DarkFrames:            darkFrames,
+		FlatFrames:            flatFrames,
+		BiasFrames:            biasFrames,
+		PhoneCalib:            opts.PhoneCalib,
+		LibraryDir:            libDir,
+		LibraryMirror:         opts.LibraryMirror, // pull matched phone masters from S3 when absent locally
+		ForegroundFrame:       opts.Preset.ForegroundFrame,
+		Orientation:           opts.Preset.Orientation,
+		OnProgress:            opts.sirilLines("nightscape: register + composite"),
 	}
 	nres, err := nightscape.Process(ctx, nopts)
 	if err != nil {
@@ -235,9 +272,47 @@ func processNightscape(ctx context.Context, opts Options, res *Result, frames []
 		Outputs: []string{nres.FinalPNG, nres.CompositeFITS, nres.SkyFITS, nres.ForegroundFITS},
 		Notes:   []string{fmt.Sprintf("foreground composite, %s look (%dx%d)", nopts.Look.Name, nres.Width, nres.Height)},
 	}
+	// Optional supervised finish (opt-in): re-tune the grade (look + sky brightness) from the persisted
+	// pre-grade linear inputs, keeping the best pass. Soft-fall to the standard finish above on any error.
+	if superviseOn(ctx, opts) {
+		if final, serr := superviseFinishNightscape(ctx, opts, outDir); serr != nil {
+			res.Warnings = append(res.Warnings, "supervised milkyway finish failed, using standard finish: "+serr.Error())
+		} else {
+			res.Final = final
+		}
+	}
+	if nres.SkyFITS != "" { // milestone: the stacked sky master (linear → autostretched)
+		capturePreview(ctx, opts, outDir, ordStacked, stageStacked, "", nres.SkyFITS, true)
+	}
 	if nres.PreviewPNG != "" {
 		opts.report(Progress{Step: "nightscape: register + composite", Index: 1, Total: 1, Preview: nres.PreviewPNG})
+		capturePreview(ctx, opts, outDir, ordFinal, stageFinal, "", nres.PreviewPNG, false) // milestone: the final
 	}
+	res.StagePreviews = collectStagePreviews(outDir) // persist the milestone timeline for reload
+	stampFinishQuality(res)                          // objective colour/clipping guardrails on every run
 	writeRunJSON(outDir, res)
 	return res, nil
+}
+
+// splitCalibrationFrames classifies raw stills and separates lights from auto-detected dark/flat/bias
+// calibration frames, so cal DNGs mixed into the input dir calibrate the stack instead of being stacked
+// as sky. If classification would leave no lights (e.g. everything mislabeled), it treats every frame
+// as a light — the proven behavior — rather than starving the stack.
+func splitCalibrationFrames(ctx context.Context, frames []string) (lights, darks, flats, bias []string) {
+	for _, fr := range inspect.ClassifyRawStills(ctx, frames) {
+		switch fr.Type {
+		case inspect.Dark:
+			darks = append(darks, fr.Path)
+		case inspect.Flat:
+			flats = append(flats, fr.Path)
+		case inspect.Bias, inspect.DarkFlat:
+			bias = append(bias, fr.Path)
+		default:
+			lights = append(lights, fr.Path)
+		}
+	}
+	if len(lights) == 0 {
+		return frames, nil, nil, nil
+	}
+	return lights, darks, flats, bias
 }

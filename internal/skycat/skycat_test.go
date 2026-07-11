@@ -41,7 +41,36 @@ func TestResolve(t *testing.T) {
 	}
 }
 
-func TestResolve_NoDir(t *testing.T) {
-	_, ok := Resolve("M101", "")
-	assert.False(t, ok)
+// With no readable on-disk catalogue dir, Resolve falls back to the embedded snapshot: a well-known
+// object still resolves, while an empty or unknown name still fails.
+func TestResolve_EmbeddedFallback(t *testing.T) {
+	_, ok := Resolve("", "")
+	assert.False(t, ok, "empty name is rejected before any lookup")
+
+	_, ok = Resolve("NotARealObject999", "")
+	assert.False(t, ok, "unknown object is absent from the embedded snapshot too")
+
+	ra, dec, ok := ResolveCoords("M101", "")
+	require.True(t, ok, "M101 should resolve from the embedded catalogue with no dir given")
+	assert.InDelta(t, 210.8, ra, 1.0)
+	assert.InDelta(t, 54.35, dec, 1.0)
+}
+
+func TestLoad_FallsBackToEmbedded(t *testing.T) {
+	// An empty dir has no on-disk catalogue, so Load returns the (non-empty) embedded snapshot,
+	// whereas the pure LoadCatalog returns nothing.
+	assert.NotEmpty(t, Load(t.TempDir()).Records())
+
+	pure, err := LoadCatalog(t.TempDir())
+	require.NoError(t, err)
+	assert.Empty(t, pure.Records())
+}
+
+func TestLoad_PrefersOnDisk(t *testing.T) {
+	// When dir has a readable catalogue, Load uses it verbatim (it does not merge in the embedded one).
+	dir := t.TempDir()
+	writeCatalog(t, dir, "messier.csv", "name,ra,dec\nM1,83.6,22.0\n")
+	recs := Load(dir).Records()
+	require.Len(t, recs, 1)
+	assert.Equal(t, "M1", recs[0].Name)
 }

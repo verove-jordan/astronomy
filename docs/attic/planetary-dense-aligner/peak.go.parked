@@ -1,0 +1,52 @@
+package planetary
+
+import "math"
+
+// Sub-pixel correlation-peak localization. The alignment-point search returns an integer ZNCC peak; these
+// refine it to a fraction of a pixel. peak2D fits a full 2-D quadratic to the 3×3 neighbourhood (a closed-
+// form 9-point Savitzky-Golay), which follows a slanted/elongated correlation ridge far better than two
+// independent 1-D parabolas; parabola1D is the axis-separable fallback when the 2-D fit is not a clean max.
+
+// apPeakMax bounds a sub-pixel peak offset: a well-behaved correlation vertex sits inside ±0.75 px of the
+// integer peak; a larger solution means the quadratic is a poor local model (saddle/plateau) → reject.
+const apPeakMax = 0.75
+
+// peak2D returns the sub-pixel offset (x,y) of the vertex of the quadratic surface least-squares-fit to
+// the 3×3 ZNCC samples s[row][col] (row=y+1, col=x+1). ok is false unless the fit is a concave maximum
+// (negative-definite Hessian) with |offset| ≤ apPeakMax — the caller then falls back to 1-D parabolas.
+func peak2D(s [3][3]float64) (x, y float64, ok bool) {
+	// Savitzky-Golay quadratic coefficients on the unit 3×3 grid: f = a0 + a1·x + a2·y + a3·x² + a4·y² + a5·xy.
+	a1 := (s[0][2] - s[0][0] + s[1][2] - s[1][0] + s[2][2] - s[2][0]) / 6
+	a2 := (s[2][0] - s[0][0] + s[2][1] - s[0][1] + s[2][2] - s[0][2]) / 6
+	a3 := (s[0][0] - 2*s[0][1] + s[0][2] + s[1][0] - 2*s[1][1] + s[1][2] + s[2][0] - 2*s[2][1] + s[2][2]) / 6
+	a4 := (s[0][0] - 2*s[1][0] + s[2][0] + s[0][1] - 2*s[1][1] + s[2][1] + s[0][2] - 2*s[1][2] + s[2][2]) / 6
+	a5 := (s[0][0] - s[0][2] - s[2][0] + s[2][2]) / 4
+	// Vertex: solve ∇f = 0 → [2a3 a5; a5 2a4]·[x;y] = [−a1;−a2]. Concave max ⟺ a3<0, a4<0, det>0.
+	d := 4*a3*a4 - a5*a5
+	if a3 >= 0 || a4 >= 0 || d <= 0 {
+		return 0, 0, false
+	}
+	x = (-2*a1*a4 + a2*a5) / d
+	y = (-2*a2*a3 + a1*a5) / d
+	if math.Abs(x) > apPeakMax || math.Abs(y) > apPeakMax {
+		return 0, 0, false
+	}
+	return x, y, true
+}
+
+// parabola1D returns the sub-integer vertex of a concave 3-point parabola (samples at −1,0,+1), clamped to
+// ±apPeakMax; 0 when the three points are not a concave interior maximum.
+func parabola1D(cMinus, c0, cPlus float64) float64 {
+	den := cMinus - 2*c0 + cPlus
+	if den >= 0 {
+		return 0
+	}
+	d := 0.5 * (cMinus - cPlus) / den
+	if d < -apPeakMax {
+		return -apPeakMax
+	}
+	if d > apPeakMax {
+		return apPeakMax
+	}
+	return d
+}

@@ -21,7 +21,7 @@ import (
 // per-channel black-clip in autoStretch, neither of which is biased by the dark foreground the way
 // GraXpert's whole-frame background model was. Must run on linear data, before the auto-stretch.
 func enhanceSky(ctx context.Context, sky *fits.Image, o Options, res *Result) {
-	useGrax := o.Graxpert != nil && o.Graxpert.Available(ctx) == nil
+	useGrax := o.Graxpert != nil && o.Graxpert.Healthy(ctx) == nil
 	useSPCC := o.Siril != nil && o.ColorCalibration && o.Spcc.OSCSensor != ""
 	if !useGrax && !useSPCC {
 		return
@@ -109,7 +109,7 @@ func hasNonFinite(im *fits.Image) bool {
 // the EXIF focal length.
 func colorCalibrateSky(ctx context.Context, o Options, dir, base string, widthPx int) string {
 	solve := deriveSolve(o.Solve, o.Focal35mm, widthPx)
-	note, err := postprocess.ColorCalibrate(ctx, o.Siril, dir, base, postprocess.ColorCalOptions{
+	note, _, err := postprocess.ColorCalibrate(ctx, o.Siril, dir, base, postprocess.ColorCalOptions{
 		Enabled: true, RemoveGreen: false, Solve: solve, Spcc: o.Spcc,
 	})
 	if err != nil {

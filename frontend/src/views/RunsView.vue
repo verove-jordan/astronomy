@@ -5,6 +5,7 @@ import { useJobsStore } from "@/stores/jobs";
 import { fileUrl, thumbUrl } from "@/services/api";
 import RunResultPanels from "@/components/Common/RunResultPanels.vue";
 import FilterChip from "@/components/Common/FilterChip.vue";
+import EngineChip from "@/components/Common/EngineChip.vue";
 import Spinner from "@/components/Common/Spinner.vue";
 import { card, btnGhost } from "@/constants/styles";
 import { baseName } from "@/utils/format";
@@ -103,6 +104,8 @@ function fmtDate(ms: number): string {
             <span v-if="run.mode" class="text-xs text-slate-500">{{
               run.mode
             }}</span>
+            <!-- Engine build that produced the run; amber when older than the serving engine. -->
+            <EngineChip :engine="run.engine" />
           </div>
           <div
             class="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400"

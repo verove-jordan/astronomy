@@ -11,6 +11,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/llm"
 	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
+	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/starnet"
 )
@@ -22,6 +23,9 @@ func runRefine(args []string) error {
 	fs := flag.NewFlagSet("refine", flag.ContinueOnError)
 	modeName := fs.String("mode", "deepsky", "finish preset: deepsky|nebula")
 	noAI := fs.Bool("no-ai", false, "skip GraXpert/StarNet (keep the supervisor + Siril/GIMP finish)")
+	noSupervise := fs.Bool("no-supervise", false, "run the deterministic finish only (no VLM agent) — re-finish a stored run with the current preset/params")
+	tierCeiling := fs.String("tier", "B", "how far the agent may reach: A=composite, B=+finish prep, C=+re-stack")
+	iters := fs.Int("iters", 0, "max supervisor iterations (0 → engine default of 4, hard max 8)")
 	verbose := fs.Bool("v", false, "stream progress log lines")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -37,16 +41,19 @@ func runRefine(args []string) error {
 		return err
 	}
 	preset := mode.For(m)
-	preset.Supervise = true // refine drives the agent (soft-falls to the standard finish if the server is down)
+	preset.Supervise = !*noSupervise // refine drives the agent (soft-falls to the standard finish if the server is down); --no-supervise forces the plain deterministic finish
+	preset.SuperviseTier = *tierCeiling
+	preset.SuperviseMaxIters = *iters
 
 	cfg := config.Load()
 	ctx := context.Background()
 	var graxRunner *graxpert.Runner
 	var starRunner *starnet.Runner
 	if !*noAI {
-		graxRunner = graxpert.New(cfg.GraxpertBin)
+		graxRunner = graxpert.New(cfg.GraxpertBin, cfg.GraxpertURL).SetDefaults(cfg.GraxpertGPU, cfg.GraxpertBatch)
 		starRunner = starnet.New(cfg.StarnetBin)
 	}
+	refineSolve, refineSpcc := postprocess.SolveSpccFromConfig(cfg)
 
 	final, err := pipeline.RefineExistingRun(ctx, pipeline.Options{
 		WorkDir:    cfg.WorkDir,
@@ -54,14 +61,10 @@ func runRefine(args []string) error {
 		Gimp:       gimp.New(cfg.GimpBin, cfg.GimpHost, cfg.GimpPort),
 		Graxpert:   graxRunner,
 		Starnet:    starRunner,
-		Supervisor: llm.New(cfg.LLMBaseURL, cfg.LLMModel, cfg.LLMImageFormat),
+		Supervisor: llm.New(cfg.LLMBaseURL, cfg.LLMModel, cfg.LLMImageFormat).WithTimeout(cfg.LLMTimeout),
 		Preset:     &preset,
-		Solve:      siril.SolveOptions{FocalMM: cfg.FocalLenMM, PixelUm: cfg.PixelSizeUm, Catalog: cfg.PlateSolveCatalog},
-		Spcc: siril.SpccOptions{
-			MonoSensor: cfg.SpccMonoSensor, OSCSensor: cfg.NightscapeOSCSensor,
-			RFilter: cfg.SpccRFilter, GFilter: cfg.SpccGFilter,
-			BFilter: cfg.SpccBFilter, WhiteRef: cfg.SpccWhiteRef,
-		},
+		Solve:      refineSolve,
+		Spcc:       refineSpcc,
 		CatalogDir: cfg.SirilCatalogDir,
 		OnProgress: pipelineProgress(*verbose),
 	}, runDir)
@@ -80,8 +83,8 @@ func runRefine(args []string) error {
 			if it.Chosen {
 				mark = "★"
 			}
-			fmt.Printf("  %s iter %d  score %.1f (metrics %.1f, model %.1f)  %s\n",
-				mark, it.Index+1, it.CombinedScore, it.DetScore, it.ModelScore, it.Reasoning)
+			fmt.Printf("  %s iter %d [%s]  score %.1f (metrics %.1f, model %.1f)  %s\n",
+				mark, it.Index+1, it.Tier, it.CombinedScore, it.DetScore, it.ModelScore, it.Reasoning)
 		}
 	}
 	return nil

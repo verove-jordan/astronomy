@@ -17,6 +17,7 @@ const keyToName: Record<string, string> = {
   tasks: "jobs",
   runs: "runs",
   library: "library",
+  storage: "storage",
 };
 const nameToKey: Record<string, string> = {
   import: "import",
@@ -25,6 +26,7 @@ const nameToKey: Record<string, string> = {
   job: "tasks", // job detail lives under the Tasks tab
   runs: "runs",
   library: "library",
+  storage: "storage",
 };
 
 const tabs = computed(() => [
@@ -33,6 +35,7 @@ const tabs = computed(() => [
   { key: "tasks", label: t("processing.tabs.tasks") },
   { key: "runs", label: t("processing.tabs.runs") },
   { key: "library", label: t("processing.tabs.library") },
+  { key: "storage", label: t("processing.tabs.storage") },
 ]);
 
 const active = computed(() => nameToKey[String(route.name)] ?? "import");
@@ -47,5 +50,7 @@ function select(key: string) {
   <Teleport to="#page-tabs">
     <TabBar :tabs="tabs" :active="active" @select="select" />
   </Teleport>
-  <router-view />
+  <!-- Key by path (not fullPath, so query changes don't remount) so navigating between two job details
+       — e.g. after restarting a failed job — remounts JobView and re-opens the new job's event stream. -->
+  <router-view :key="route.path" />
 </template>

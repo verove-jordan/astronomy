@@ -1,0 +1,38 @@
+package planetary
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestRefK(t *testing.T) {
+	assert.Equal(t, 8, refK(10), "10/3 = 3 → floored at 8")
+	assert.Equal(t, 8, refK(24), "24/3 = 8")
+	assert.Equal(t, 10, refK(30), "30/3 = 10")
+	assert.Equal(t, 30, refK(300), "capped at 30")
+	assert.Equal(t, 3, refK(3), "never more than are available (below the floor)")
+}
+
+// TestBuildReference_Iterates: the synthetic-reference path (incl. the RefIters=2 re-measure+rebuild) runs
+// deterministically, writes ref_synth.fits, and produces the same gap-free aligned sequence.
+func TestBuildReference_Iterates(t *testing.T) {
+	_, paths, scores := warpDiskShifts(t, 220, 220)
+	run := func(iters int) []string {
+		out := t.TempDir()
+		cfg := defaultAlignCfg()
+		cfg.workers, cfg.refIters = 1, iters
+		res, err := warpSequence(paths, scores, out, "f", true, cfg)
+		require.NoError(t, err)
+		require.NotEmpty(t, res.paths)
+		_, err = os.Stat(filepath.Join(out, "ref_synth.fits"))
+		assert.NoError(t, err, "the synthetic reference is written for inspection")
+		return res.paths
+	}
+	one := run(1)
+	two := run(2)
+	assert.Equal(t, len(one), len(two), "the survivor count is stable across refinement passes")
+}

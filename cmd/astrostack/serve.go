@@ -16,6 +16,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/job"
 	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/store"
+	"github.com/verove-jordan/astronomy/internal/turns"
 )
 
 // sirilLimits builds the Siril resource caps (thread count, memory ratio, OS niceness) from config,
@@ -43,7 +44,10 @@ func runServe(_ []string) error {
 		fmt.Fprintf(os.Stderr, "warning: Siril unavailable — processing jobs will fail (%v)\n", err)
 	}
 
-	mgr := job.NewManager(st, runner, cfg)
+	// One shared turn hub drives both the AstroAgent chat and supervised-job conversations, so a
+	// supervised finish streams (and takes steering) over the same SSE transport as the agent.
+	hub := turns.NewSessions()
+	mgr := job.NewManager(st, runner, cfg, hub)
 	workers := cfg.MaxWorkers
 	if workers <= 0 {
 		workers = runtime.NumCPU() / 2
@@ -55,7 +59,7 @@ func runServe(_ []string) error {
 
 	srv := &http.Server{
 		Addr:    cfg.APIAddr,
-		Handler: api.New(mgr, st, cfg).Handler(),
+		Handler: api.New(mgr, st, cfg, hub).Handler(),
 	}
 	go func() {
 		<-ctx.Done()

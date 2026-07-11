@@ -52,8 +52,14 @@ steps:
     tab: "Tab label"                              # optional, clicks a role=tab
     click:    { text|css|testid|firstCard, role?, exact?, nth? }
     type:     { into: <target>, text: "…", enter: true|false }
-    hover:    <target>
-    scrollTo: <target>
+    hover:    <target>                            # glide the cursor over it (triggers hover previews)
+    scrollTo: <target>                            # smooth-scroll this element to the viewport centre
+    scroll:   { edge: top|bottom, by: <px>, ms: <ms> }  # smooth page scroll to reveal below-the-fold
+    mapZoom:  { on: <target>, in|out: <N>, ms: <ms> }  # real Leaflet zoom (double-clicks the map N times)
+    drawRect: { on: <target>, from: [fx,fy], to: [fx,fy] }  # drag a rectangle (fractions of the box)
+    select:   { into: <target>, value|label: "…" }  # choose a <select> option
+    external: <target>                            # click a link that opens a new tab, then close it
+    waitFor:  <target>                            # wait for an element to appear (async results)
     highlight: <target>                           # spotlight until the next step
     job:      { input: "input/M101", mode: deepsky, format: image, options?: {…}, run?: <target> }
     waitForJob: { until: complete|percent, percent?, maxSeconds }

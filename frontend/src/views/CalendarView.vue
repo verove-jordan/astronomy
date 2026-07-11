@@ -438,6 +438,7 @@ const location = computed(() => store.query?.location);
         :tz="tz"
         :selected-id="store.selectedId"
         sort="score"
+        max-height="40rem"
         @select="store.select"
       />
     </template>

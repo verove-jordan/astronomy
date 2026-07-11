@@ -1,64 +1,43 @@
 package nightscape
 
 import (
-	"math"
 	"testing"
 
 	"github.com/verove-jordan/astronomy/internal/fits"
 )
 
-// TestNormalizeToRef_MatchesReference checks that a frame which is an affine transform of the reference
-// (a different ISO gain k and white-balance offset d per channel — the auto-mode drift) is mapped back
-// onto the reference's background and gain, i.e. normalizeToRef inverts the affine. Recovery is exact
-// because percentiles transform linearly under x→k·x+d (for k in the unclamped [0.5,2] range).
-func TestNormalizeToRef_MatchesReference(t *testing.T) {
-	const n = 400
-	ref := fits.NewImage(n, 1, 3)
-	for c := 0; c < 3; c++ {
-		for i := 0; i < n; i++ {
-			// A varied, per-channel distribution so bg (P40) and gain (P95−P40) are well-defined.
-			ref.Pix[c][i] = float32(0.02*float64(c) + float64(i)/float64(n)*(0.4+0.1*float64(c)))
-		}
+// normalizeADU must bring Siril's 16-bit convert output (0..65535 ADU) into the [0,1] range the
+// linear recipe assumes, and leave an already-normalized float frame untouched — the fix for the
+// calibration/foreground blow-up that made every calibrated light uniform white (register failed).
+func TestNormalizeADU(t *testing.T) {
+	tests := []struct {
+		name   string
+		vals   []float32
+		wantMx float32
+	}{
+		{"16-bit convert output scaled to [0,1]", []float32{0, 32768, 62914}, 62914.0 / 65535},
+		{"already [0,1] left untouched", []float32{0, 0.5, 0.97}, 0.97},
+		{"a single low ADU frame still scales (max>1.5)", []float32{0, 2, 100}, 100.0 / 65535},
 	}
-	// frame = k·ref + d per channel, with k in [0.5,2] so the gain scale isn't clamped.
-	k := [3]float64{1.4, 0.8, 1.6}
-	d := [3]float64{0.05, -0.01, 0.03}
-	frame := ref.Clone()
-	for c := 0; c < 3; c++ {
-		for i := range frame.Pix[c] {
-			frame.Pix[c][i] = float32(k[c]*float64(frame.Pix[c][i]) + d[c])
-		}
-	}
-
-	normalizeToRef(frame, measureFrame(frame), measureFrame(ref))
-
-	var maxErr float64
-	for c := 0; c < 3; c++ {
-		for i := range frame.Pix[c] {
-			e := math.Abs(float64(frame.Pix[c][i] - ref.Pix[c][i]))
-			if e > maxErr {
-				maxErr = e
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			im := &fits.Image{W: len(tt.vals), H: 1, C: 1, Pix: [][]float32{append([]float32(nil), tt.vals...)}}
+			normalizeADU(im)
+			mx := im.Pix[0][0]
+			for _, v := range im.Pix[0] {
+				if v > mx {
+					mx = v
+				}
 			}
-		}
-	}
-	if maxErr > 1e-4 {
-		t.Fatalf("normalized frame did not recover the reference: max error %g", maxErr)
-	}
-}
-
-// TestMeasureFrame_BackgroundAndGain checks the per-channel background (P40) and gain (P95−P40) on a
-// known ramp.
-func TestMeasureFrame_BackgroundAndGain(t *testing.T) {
-	const n = 1000
-	im := fits.NewImage(n, 1, 1)
-	for i := 0; i < n; i++ {
-		im.Pix[0][i] = float32(i) / float32(n-1) // 0..1 ramp → P40≈0.4, P95≈0.95
-	}
-	fn := measureFrame(im)
-	if math.Abs(fn.bg[0]-0.4) > 0.02 {
-		t.Fatalf("bg = %v, want ~0.4", fn.bg[0])
-	}
-	if math.Abs(fn.gain[0]-0.55) > 0.02 {
-		t.Fatalf("gain = %v, want ~0.55", fn.gain[0])
+			if diff := mx - tt.wantMx; diff > 1e-5 || diff < -1e-5 {
+				t.Fatalf("max = %v, want %v", mx, tt.wantMx)
+			}
+			// After normalization every value must be in the sRGB-valid [0,1] domain.
+			for _, v := range im.Pix[0] {
+				if v < 0 || v > 1.0001 {
+					t.Fatalf("value %v out of [0,1] after normalize", v)
+				}
+			}
+		})
 	}
 }

@@ -56,16 +56,39 @@ async function moveTo(page: Page, loc: Locator, ms = MOVE_MS): Promise<void> {
 export async function click(page: Page, loc: Locator): Promise<void> {
   await moveTo(page, loc);
   await page.evaluate(() => window.__demo?.ripple());
-  await loc.click({ timeout: 15000 });
+  await loc.click({ timeout: 7000 });
 }
 
 export async function hover(page: Page, loc: Locator): Promise<void> {
   await moveTo(page, loc);
-  await loc.hover({ timeout: 15000 }).catch(() => {});
+  await loc.hover({ timeout: 7000 }).catch(() => {});
 }
 
-export async function scrollTo(_page: Page, loc: Locator): Promise<void> {
-  await loc.scrollIntoViewIfNeeded().catch(() => {});
+// Smoothly scroll an element to the vertical centre of the viewport (animated, tour-paced).
+export async function scrollTo(page: Page, loc: Locator, ms = 1200): Promise<void> {
+  const box = await loc.boundingBox().catch(() => null);
+  if (!box) return;
+  const vh = page.viewportSize()?.height ?? 1080;
+  const cur = await page.evaluate(() => window.scrollY);
+  const targetY = box.y + cur - vh / 2 + box.height / 2;
+  await page.evaluate((a) => window.__demo?.scrollToY(a.y, a.ms), { y: targetY, ms });
+}
+
+// Smoothly scroll the page itself: to an edge, or by a pixel delta (default ~half a viewport).
+export async function scrollPage(
+  page: Page,
+  opts: { by?: number; edge?: "top" | "bottom"; ms?: number },
+): Promise<void> {
+  const ms = opts.ms ?? 2500;
+  let targetY: number;
+  if (opts.edge === "top") targetY = 0;
+  else if (opts.edge === "bottom")
+    targetY = await page.evaluate(() => document.documentElement.scrollHeight);
+  else {
+    const cur = await page.evaluate(() => window.scrollY);
+    targetY = cur + (opts.by ?? 600);
+  }
+  await page.evaluate((a) => window.__demo?.scrollToY(a.y, a.ms), { y: targetY, ms });
 }
 
 export async function typeInto(
@@ -76,7 +99,7 @@ export async function typeInto(
 ): Promise<void> {
   await moveTo(page, loc);
   await page.evaluate(() => window.__demo?.ripple());
-  await loc.click({ timeout: 15000 });
+  await loc.click({ timeout: 7000 });
   await loc.fill("");
   await loc.pressSequentially(text, { delay: 45 });
   if (enter) await loc.press("Enter");
@@ -154,4 +177,103 @@ export async function waitForJob(page: Page, cfg: WaitForJob): Promise<void> {
     return;
   }
   await pb.waitFor({ state: "detached", timeout: cfg.maxSeconds * 1000 }).catch(() => {});
+}
+
+// Real Leaflet zoom via Ctrl+wheel over the map center (these maps disable plain scroll-zoom and have an
+// unsized/unclickable +/- control, and headless dblclick-zoom doesn't register — but the component's
+// custom Ctrl/⌘+wheel handler zooms about the cursor). A genuine tile reload, unlike the cosmetic `zoom`.
+export async function mapZoom(
+  page: Page,
+  loc: Locator,
+  opts: { in?: number; out?: number; ms?: number },
+): Promise<void> {
+  const ms = opts.ms ?? 600;
+  const box = await loc.boundingBox().catch(() => null);
+  if (!box) return;
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  const n = opts.out ?? opts.in ?? 1;
+  const dy = opts.out != null ? 240 : -240; // negative wheel = zoom in
+  await page.evaluate((p) => window.__demo?.moveCursor(p.x, p.y, p.ms), { x: cx, y: cy, ms: 350 });
+  await page.mouse.move(cx, cy);
+  await page.keyboard.down("Control");
+  for (let i = 0; i < n; i++) {
+    await page.mouse.wheel(0, dy);
+    await page.waitForTimeout(ms);
+  }
+  await page.keyboard.up("Control");
+}
+
+// Drag a rectangle on an element (corners as 0..1 fractions of its box) with the real mouse, while the
+// fake cursor glides in parallel. Used to draw the dark-sky search area (a plain click won't do it).
+export async function drawRect(
+  page: Page,
+  loc: Locator,
+  from: [number, number],
+  to: [number, number],
+  ms = 1200,
+): Promise<void> {
+  const box = await loc.boundingBox().catch(() => null);
+  if (!box) return;
+  const ax = box.x + from[0] * box.width;
+  const ay = box.y + from[1] * box.height;
+  const bx = box.x + to[0] * box.width;
+  const by = box.y + to[1] * box.height;
+  // Deliberate drag with small pauses so Leaflet reliably registers mousedown → mousemove → mouseup
+  // (a too-fast drag intermittently fails to form the rectangle).
+  await page.evaluate((p) => window.__demo?.moveCursor(p.x, p.y, p.ms), { x: ax, y: ay, ms: 450 });
+  await page.mouse.move(ax, ay);
+  await page.waitForTimeout(150);
+  await page.mouse.down();
+  await page.waitForTimeout(150);
+  const glide = page.evaluate((p) => window.__demo?.moveCursor(p.x, p.y, p.ms), { x: bx, y: by, ms });
+  await page.mouse.move((ax + bx) / 2, (ay + by) / 2, { steps: 12 });
+  await page.mouse.move(bx, by, { steps: 12 });
+  await glide;
+  await page.waitForTimeout(150);
+  await page.mouse.up();
+}
+
+export async function selectOption(
+  page: Page,
+  loc: Locator,
+  value?: string,
+  label?: string,
+): Promise<void> {
+  await moveTo(page, loc);
+  await page.evaluate(() => window.__demo?.ripple());
+  await loc.selectOption(label != null ? { label } : { value: value ?? "" });
+}
+
+// Click a link that opens a new tab (target=_blank) — the "handoff": show the click without depending on
+// the external page. It must NEVER stall the tour, so: (1) abort google.* loads and auto-close any popup
+// the click spawns, and (2) race the click against a timeout — Playwright's click can otherwise block on
+// the popup's slow cross-origin navigation.
+export async function clickExternalTab(page: Page, loc: Locator): Promise<void> {
+  const ctx = page.context();
+  const closePopup = (pg: import("playwright").Page) => {
+    pg.close({ runBeforeUnload: false }).catch(() => {});
+  };
+  const isGoogle = (url: URL) => /(^|\.)google\.[a-z.]+$/.test(url.hostname);
+  ctx.on("page", closePopup);
+  await ctx.route(isGoogle, (r) => r.abort().catch(() => {})).catch(() => {});
+  try {
+    await moveTo(page, loc);
+    await page.evaluate(() => window.__demo?.ripple());
+    await Promise.race([
+      loc.click({ timeout: 6000 }).catch(() => {}),
+      page.waitForTimeout(6500),
+    ]);
+    await page.waitForTimeout(500);
+  } finally {
+    ctx.off("page", closePopup);
+    await ctx.unroute(isGoogle).catch(() => {});
+  }
+}
+
+export async function waitForVisible(_page: Page, loc: Locator, ms = 20000): Promise<void> {
+  await loc
+    .first()
+    .waitFor({ state: "visible", timeout: ms })
+    .catch(() => {});
 }

@@ -1,8 +1,9 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import { apiGet, apiPost, previewUrl } from "@/services/api";
+import { apiGet, apiPost, previewUrl, withS3 } from "@/services/api";
 import { PROCESSED_GROUP_COLORS } from "@/constants/colors";
 import { baseName } from "@/utils/format";
+import { useS3Store } from "@/stores/s3";
 import type {
   BrowseEntry,
   Inventory,
@@ -42,7 +43,9 @@ export const useBrowseStore = defineStore("browse", () => {
 
   async function loadProcessed() {
     try {
-      const data = await apiGet<{ groups: ProcessedGroup[] }>("/api/processed");
+      const data = await apiGet<{ groups: ProcessedGroup[] }>(
+        withS3("/api/processed"),
+      );
       processedGroups.value = data.groups ?? [];
     } catch {
       processedGroups.value = [];
@@ -126,16 +129,67 @@ export const useBrowseStore = defineStore("browse", () => {
     }));
   }
 
-  async function browse(p?: string) {
+  // browseQuery builds the /api/browse query string, folding in the chosen S3 bucket/prefix when S3 is
+  // active so the backend returns local/cloud/both presence for each folder. `fresh` appends the
+  // cache-bypass flag the backend honours on an explicit refresh (never part of the cache key).
+  function browseQuery(p?: string, fresh = false): string {
+    const params = new URLSearchParams();
+    if (p) params.set("path", p);
+    const s3 = useS3Store();
+    if (s3.active) {
+      params.set("bucket", s3.bucket);
+      params.set("prefix", s3.prefix);
+    }
+    if (fresh) params.set("fresh", "1");
+    const qs = params.toString();
+    return qs ? `?${qs}` : "";
+  }
+
+  // Directory-listing cache + in-flight de-duplication (keyed by the bucket/prefix-aware query, minus
+  // the fresh flag). Serving the Miller-column ancestor fan-out and back-and-forth navigation from here
+  // avoids re-hitting the backend; `force` bypasses the cache and re-lists live (Refresh / bucket change).
+  const respCache = new Map<string, { path: string; entries: BrowseEntry[] }>();
+  const inFlight = new Map<
+    string,
+    Promise<{ path: string; entries: BrowseEntry[] }>
+  >();
+
+  function clearCache() {
+    respCache.clear();
+    inFlight.clear();
+  }
+
+  async function fetchBrowse(
+    p?: string,
+    force = false,
+  ): Promise<{ path: string; entries: BrowseEntry[] }> {
+    const key = browseQuery(p);
+    if (!force) {
+      const cached = respCache.get(key);
+      if (cached) return cached;
+      const pending = inFlight.get(key);
+      if (pending) return pending;
+    }
+    const req = apiGet<{ path: string; entries: BrowseEntry[] }>(
+      `/api/browse${browseQuery(p, force)}`,
+    )
+      .then((data) => {
+        const resp = { path: data.path, entries: data.entries || [] };
+        respCache.set(key, resp);
+        return resp;
+      })
+      .finally(() => inFlight.delete(key));
+    inFlight.set(key, req);
+    return req;
+  }
+
+  async function browse(p?: string, force = false) {
     loading.value = true;
     error.value = "";
     try {
-      const query = p ? `?path=${encodeURIComponent(p)}` : "";
-      const data = await apiGet<{ path: string; entries: BrowseEntry[] }>(
-        `/api/browse${query}`,
-      );
+      const data = await fetchBrowse(p, force);
       path.value = data.path;
-      entries.value = data.entries || [];
+      entries.value = data.entries;
     } catch (e) {
       error.value = (e as Error).message;
     } finally {
@@ -145,11 +199,9 @@ export const useBrowseStore = defineStore("browse", () => {
 
   // listDir returns one directory's child folders without touching the current browse state — the
   // column (Miller) view uses it to fill the ancestor columns to the left of the active folder.
-  async function listDir(p: string): Promise<BrowseEntry[]> {
-    const data = await apiGet<{ path: string; entries: BrowseEntry[] }>(
-      `/api/browse?path=${encodeURIComponent(p)}`,
-    );
-    return data.entries || [];
+  async function listDir(p: string, force = false): Promise<BrowseEntry[]> {
+    const data = await fetchBrowse(p, force);
+    return data.entries;
   }
 
   // inspect scans one or more capture folders and merges them into a single inventory (the backend
@@ -204,9 +256,11 @@ export const useBrowseStore = defineStore("browse", () => {
     clearSelected,
     browse,
     listDir,
+    clearCache,
     inspect,
     loadPreview,
     processedByPath,
+    processedGroups,
     processingHistory,
     loadProcessed,
     selectPaths,

@@ -1,0 +1,160 @@
+package planetary
+
+import (
+	"math"
+
+	"github.com/verove-jordan/astronomy/internal/fits"
+)
+
+// apGrid is the alignment-point lattice geometry: an N×N grid of correlation nodes over a W×H frame.
+// It replaces the old package-const apGridN so the node count can adapt to the frame size (Phase 3),
+// while a default N=apGridN reproduces the original 10×10 behavior byte-for-byte. All the grid helpers
+// (centres, disk mask, smoothing, field sampling, per-cell sharpness, weight fields) hang off it so the
+// resampler and the stacker read the same geometry.
+type apGrid struct{ N, W, H int }
+
+// gridDim recovers the side length N of an N×N grid slice (round(sqrt(cells))) so the free helpers that
+// keep a fixed signature for the tests (warpByGrid, pixelWeights) can infer the geometry from a grid's
+// length instead of a package constant. cells<1 → 1 (never a zero divisor).
+func gridDim(cells int) int {
+	n := int(math.Round(math.Sqrt(float64(cells))))
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// centers returns the centres of the N×N grid cells (row-major: k = j*N+i).
+func (g apGrid) centers() (cx, cy []float64) {
+	n := g.N
+	cx = make([]float64, n*n)
+	cy = make([]float64, n*n)
+	for j := 0; j < n; j++ {
+		for i := 0; i < n; i++ {
+			cx[j*n+i] = (float64(i) + 0.5) * float64(g.W) / float64(n)
+			cy[j*n+i] = (float64(j) + 0.5) * float64(g.H) / float64(n)
+		}
+	}
+	return cx, cy
+}
+
+// diskMask marks the alignment points sitting on bright surface (where correlation is meaningful).
+// Off-disk points keep the global-shift baseline, so the field smoothly holds across the dark limb.
+func (g apGrid) diskMask(im *fits.Image, cx, cy []float64) []bool {
+	bg := lowPercentile(im.Pix[0], 0.2)
+	pk := lowPercentile(im.Pix[0], 0.999)
+	thr := bg + apDiskFrac*(pk-bg)
+	mask := make([]bool, len(cx))
+	for k := range cx {
+		x, y := int(cx[k]), int(cy[k])
+		if x >= 0 && x < im.W && y >= 0 && y < im.H {
+			mask[k] = float64(im.Pix[0][y*im.W+x]) > thr
+		}
+	}
+	return mask
+}
+
+// smooth replaces each grid value with the mean of its in-bounds 3×3 neighborhood, damping a single
+// mis-measured alignment point before the field is interpolated.
+func (g apGrid) smooth(v []float64) {
+	n := g.N
+	out := make([]float64, len(v))
+	for j := 0; j < n; j++ {
+		for i := 0; i < n; i++ {
+			var sum float64
+			var cnt int
+			for dj := -1; dj <= 1; dj++ {
+				for di := -1; di <= 1; di++ {
+					ii, jj := i+di, j+dj
+					if ii < 0 || jj < 0 || ii >= n || jj >= n {
+						continue
+					}
+					sum += v[jj*n+ii]
+					cnt++
+				}
+			}
+			out[j*n+i] = sum / float64(cnt)
+		}
+	}
+	copy(v, out)
+}
+
+// uniform returns N×N dx/dy grids all equal to (dx,dy) — the global-shift baseline used off-disk and
+// when AP alignment is disabled (a pure global cubic translate).
+func (g apGrid) uniform(dx, dy float64) (dxGrid, dyGrid []float64) {
+	n := g.N * g.N
+	dxGrid = make([]float64, n)
+	dyGrid = make([]float64, n)
+	for i := 0; i < n; i++ {
+		dxGrid[i] = dx
+		dyGrid[i] = dy
+	}
+	return dxGrid, dyGrid
+}
+
+// sampleField bilinearly samples the N×N grid at fractional index (fx,fy), clamped to range.
+func (g apGrid) sampleField(field []float64, fx, fy float64) float64 {
+	n := g.N
+	fx = clampF(fx, 0, float64(n-1))
+	fy = clampF(fy, 0, float64(n-1))
+	i0, j0 := int(fx), int(fy)
+	i1, j1 := min(i0+1, n-1), min(j0+1, n-1)
+	fu, fv := fx-float64(i0), fy-float64(j0)
+	v00 := field[j0*n+i0]
+	v10 := field[j0*n+i1]
+	v01 := field[j1*n+i0]
+	v11 := field[j1*n+i1]
+	return (v00*(1-fu)+v10*fu)*(1-fv) + (v01*(1-fu)+v11*fu)*fv
+}
+
+// cellSharpness measures each grid cell's local sharpness (scale-invariant Laplacian variance) on an
+// ALIGNED frame — the per-region quality that drives the multi-point stacking weights. Off-disk cells
+// return 0 (no meaningful detail to rank).
+func (g apGrid) cellSharpness(im *fits.Image, cx, cy []float64, onDisk []bool) []float64 {
+	out := make([]float64, len(cx))
+	cellW := im.W / g.N
+	cellH := im.H / g.N
+	if cellW < 3 || cellH < 3 {
+		return out
+	}
+	for k := range cx {
+		if !onDisk[k] {
+			continue
+		}
+		x0, y0 := int(cx[k])-cellW/2, int(cy[k])-cellH/2
+		out[k] = regionLaplacianVariance(im.Pix[0], im.W, im.H, x0, y0, cellW, cellH)
+	}
+	return out
+}
+
+// sampleWeight bilinearly interpolates a frame's N×N weight grid at pixel (x,y) of a w×h image.
+func (g apGrid) sampleWeight(field []float64, w, h, x, y int) float64 {
+	n := g.N
+	fx := (float64(x)+0.5)/float64(w)*float64(n) - 0.5
+	fy := (float64(y)+0.5)/float64(h)*float64(n) - 0.5
+	if fx < 0 {
+		fx = 0
+	}
+	if fy < 0 {
+		fy = 0
+	}
+	maxIdx := float64(n - 1)
+	if fx > maxIdx {
+		fx = maxIdx
+	}
+	if fy > maxIdx {
+		fy = maxIdx
+	}
+	i0, j0 := int(fx), int(fy)
+	i1, j1 := i0+1, j0+1
+	if i1 > n-1 {
+		i1 = n - 1
+	}
+	if j1 > n-1 {
+		j1 = n - 1
+	}
+	tx, ty := fx-float64(i0), fy-float64(j0)
+	a := field[j0*n+i0]*(1-tx) + field[j0*n+i1]*tx
+	b := field[j1*n+i0]*(1-tx) + field[j1*n+i1]*tx
+	return a*(1-ty) + b*ty
+}

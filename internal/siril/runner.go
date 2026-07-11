@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -53,6 +54,14 @@ type Result struct {
 var (
 	percentRe = regexp.MustCompile(`(\d+)\s?%`)
 	logPrefix = regexp.MustCompile(`^log:\s?`)
+	versionRe = regexp.MustCompile(`(?i)siril\s+v?(\d+)\.(\d+)`)
+)
+
+// The pipeline emits Siril 1.4 script syntax (e.g. rgbcomp -lum=/-out=, which older Siril silently
+// ignores), so anything below this is rejected up-front instead of failing mid-run.
+const (
+	minSirilMajor = 1
+	minSirilMinor = 4
 )
 
 // Available reports whether the siril-cli binary can be found and executed.
@@ -66,6 +75,17 @@ func (r *Runner) Available(ctx context.Context) error {
 	}
 	if !strings.Contains(strings.ToLower(string(out)), "siril") {
 		return fmt.Errorf("%s did not report a Siril version", r.bin)
+	}
+	m := versionRe.FindStringSubmatch(string(out))
+	if m == nil {
+		return fmt.Errorf("could not parse a Siril version from %q", strings.TrimSpace(string(out)))
+	}
+	major, _ := strconv.Atoi(m[1])
+	minor, _ := strconv.Atoi(m[2])
+	if major < minSirilMajor || (major == minSirilMajor && minor < minSirilMinor) {
+		return fmt.Errorf("Siril %d.%d is too old: the pipeline needs >= %d.%d — it emits 1.4 script "+
+			"syntax (e.g. `rgbcomp -lum=/-out=`) that older Siril silently ignores; install Siril 1.4.x",
+			major, minor, minSirilMajor, minSirilMinor)
 	}
 	return nil
 }
@@ -133,9 +153,34 @@ func (r *Runner) Run(ctx context.Context, workDir, script string, onProgress fun
 		if errors.As(err, &exitErr) {
 			res.ExitCode = exitErr.ExitCode()
 		}
+		// Fold Siril's own error line(s) into the error so callers (and the job UI) see the real cause
+		// ("Error opening image …: file not found") instead of a bare "exit status 1".
+		if hint := sirilErrorHint(res.Log); hint != "" {
+			return res, fmt.Errorf("siril script failed (exit %d): %s", res.ExitCode, hint)
+		}
 		return res, fmt.Errorf("siril script failed (exit %d): %w", res.ExitCode, err)
 	}
 	return res, nil
+}
+
+// sirilErrorHint pulls the most informative error line(s) out of a Siril log — Siril prints the cause and
+// a locator ("Error in line N") before "Script execution failed." — so a failed run is diagnosable.
+func sirilErrorHint(logText string) string {
+	var hits []string
+	for _, ln := range strings.Split(logText, "\n") {
+		l := strings.TrimSpace(logPrefix.ReplaceAllString(ln, ""))
+		if l == "" {
+			continue
+		}
+		low := strings.ToLower(l)
+		if strings.Contains(low, "error") || strings.Contains(low, "not found") || strings.Contains(low, "failed") {
+			hits = append(hits, l)
+		}
+	}
+	if len(hits) > 3 {
+		hits = hits[len(hits)-3:] // the last few lines are the actual cause + its locator
+	}
+	return strings.Join(hits, "; ")
 }
 
 func parsePercent(line string) int {

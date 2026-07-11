@@ -255,10 +255,11 @@ func (s *session) onSiril(step string) func(siril.Progress) {
 	}
 }
 
-// mastersFor resolves the dark/flat/bias masters for a light set.
+// mastersFor resolves the dark/flat/bias masters for a light set, plus the dark's measured defect
+// map when one exists beside it (per-frame -cc=bpm repair instead of -cc=dark).
 func mastersFor(key inspect.SetKey, masters []calib.Master) siril.CalibMasters {
 	dark, flat, bias := calib.MatchForLight(key, masters).Masters()
-	return siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias}
+	return siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias, BadPixelMap: calib.DefectsListFor(dark)}
 }
 
 // calibSignature fingerprints the calibration sets so masters are rebuilt only when they change.

@@ -44,6 +44,17 @@ apps that cannot run in a Linux container — the same reason the GIMP MCP runs 
 
 This deviation is intentional; keep it documented here and in the README.
 
+**Full-container mode (`stack` profile) coexists with the exception.** Because every tool path is a
+config env var, the engine also runs **entirely in Docker** with no Go changes — `just stack` builds an
+`engine` image (`docker/engine.Dockerfile`) that bakes in the **Linux** builds of Siril 1.4.x (AppImage,
+pinned for output parity) / GIMP 2.10 / GraXpert / ffmpeg, plus `frontend` + `db`. nginx templates its
+`/api` upstream (`API_UPSTREAM`, default host, `engine:8080` under `stack`). The finish-supervisor VLM is
+**decoupled/opt-in**: `stack` never pulls it; on Linux+GPU the `ai` profile (Ollama) serves it in a
+container, on macOS it stays native (`just run-ia-model`) since Docker has no Metal. Host-dev (above)
+stays the faster daily macOS path; `stack` is the portable/Linux-server/parity path. **StarNet++ is not
+baked in** (licence not redistributable) — mount it + set `STARNET_BIN`; it soft-fails to full stars.
+See `docs/architecture.md` → "Fully containerized mode".
+
 **Siril/GIMP integration.** Drive host `siril-cli` (default
 `/Applications/Siril.app/Contents/MacOS/siril-cli`, override via `SIRIL_BIN`) with generated `.ssf`
 scripts; parse its `progress:`/`log:`/`status:` lines for job progress. GIMP is reached via the
@@ -61,9 +72,38 @@ wiring (soft-fail) is in `internal/pipeline/enhance.go`. Per-mode toggles are `m
 and `mode.Preset.StarReduce`. `astrostack process --no-ai` skips both. **Do not add new Python** for
 these — they are external binaries.
 
+**Finish supervisor (opt-in local-AI agent) is mode-generic.** The `--supervise` run option (+ the
+post-run **Refine** panel) drives a host vision model to render → judge → re-tune → keep-best, and now
+covers **every** stacking mode, not just deep-sky. The loop (`internal/pipeline/supervise.go`,
+`measureFinish`/`scoreFinish`/`critique`) is mode-agnostic; each mode plugs in a `candidateRenderer`
+(`supervise_renderer.go`) that owns its cheap **re-finish** and tunable knobs: deepsky/nebula
+(`supervise_deepsky.go`, the staged GIMP reentry, Tier A/B/C), comet (`supervise_comet.go`, re-combine
+the star/comet masters), milkyway (`supervise_nightscape.go`, `nightscape.Regrade` over persisted linear
+sky/fg), planetary (`supervise_planetary.go`, re-run `planetary.Refinish` over the persisted masters — no
+re-stack/re-deconv). New modes re-finish only (single-stage tierA); Tier C re-stack stays deep-sky-only.
+Post-run refine dispatches by mode in `refine.go` (`RefineExistingRun`). To add a mode: implement
+`candidateRenderer` + persist its re-finish inputs, then gate the call on `superviseOn` in that mode's
+pipeline entry. Everything soft-falls to the standard finish; a run never fails because of the agent.
+
 **Persistence.** Postgres via `pgx/v5` + `sqlc`; versioned SQL migrations via `golang-migrate`.
 Per the house DB convention, `created_at`/`updated_at` are **int64 millisecond** timestamps; durations
 (exposure) are stored in ms and temperatures in milli-°C to stay integer-clean.
+
+**iPhone DNG calibration (milkyway).** Phone darks/bias/flats live in a **separate** library from the
+deep-sky Siril masters — table `phone_calib_masters` + `internal/calib/phone.go` (`PhoneMaster`,
+`MatchPhoneCalibration`), keyed by **ISO + exposure + sensor dimensions + camera model** (not
+gain/offset/bin) because they are applied **per-pixel in Go, in linear light** by the nightscape recipe,
+never by Siril `calibrate`. Kept apart so the deep-sky matcher (which ignores dimensions) can never pick
+a phone master. DNG metadata (ISO/exposure/model/dims/orientation) is read by `internal/rawmeta` — a pure-Go
+TIFF/EXIF IFD parser with an `mdls` fallback (macOS-only; Linux `stack` soft-fails to folder/filename
+classification). `inspect.ClassifyRawStills` auto-detects dark/flat/bias among raw stills (folder/filename
+tokens first, then a `sips`-downscaled pixel-stats pass reusing `classifyByStats`). Calibration runs in
+**sensor-native** space before orientation; masters are **dimension-guarded** (`matchOrDrop` +
+`sameSensor`) so a mismatched-resolution master is dropped, never applied. A milkyway run with cal frames
+auto-builds+persists masters (`nightscape/library.go`); later runs auto-reuse them by ISO/dims. NOTE: the
+optional **true-linear develop** (`LINEAR_RAW_BIN`, physically-exact subtraction) is **not** implemented —
+it needs a raw-develop binary validated against real ProRAW; today all DNGs develop via `sips` (lights and
+cal share the transform, so subtraction still cancels fixed-pattern/thermal signal).
 
 **`info.txt` sidecars + heterogeneous combine.** Older captures have bare filenames (no
 filter/gain/type); a hand-written `info.txt`/`info.txt.txt` next to them lists the capture order — one
@@ -81,6 +121,21 @@ any group not at the East-left `det<0` convention). Groups are then co-registere
 `pipeline/reuse_process.go` `processChannelGroups`. The single-session path is byte-identical. Jobs over
 the same input dir are **serialized** (`job.Manager.lockTarget`) and master writes are atomic
 (temp+rename in `calib`) so concurrent runs never corrupt the shared `library/`.
+
+**S3 storage.** Captures/results can mirror to S3 (import/process/results + sync + backup-everything) so
+local disk stays free without data loss. **S3 credentials** come from either a **UI-managed connection**
+(Processing → Storage) — endpoint/access-key/secret entered in the UI and stored in Postgres with the
+**secret AES-256-GCM encrypted at rest** (master key `ASTRO_ENCRYPTION_KEY` or an auto-generated key file
+kept OUTSIDE the backup roots; `internal/secret`) — **or** the legacy env `ASTRO_S3_*`. The **default**
+connection drives the pipeline (`s.s3Config(ctx)` / `m.s3ConfigResolved(ctx)` resolve default-connection →
+env). The **secret is decrypted only to build a client and NEVER returned to the UI or logged**
+(`store.S3Connection.SecretEnc` is `json:"-"`). Bucket + prefix are per-request UI state. Mirror layout
+under `<prefix>`: `data/`, `output/`, `backup/<stamp>/`. Transfers/backups/restores are **jobs** (own worker
+lane), `removeLocal` **verifies each file on S3 before deleting local** (aborts the folder otherwise), and
+freed previews/results serve local-first with an S3 fallback (frontend must tag file/preview/thumb URLs via
+`services/api.ts` `s3Suffix`/`withS3`). Full-S3 process mode pulls inputs → runs (engine stays local-only)
+→ pushes → frees. Backup gathers **browser-only** state (favorites/setups + AI-chat IndexedDB) UI-side
+(`utils/appstate.ts`); `.env` secrets are excluded. See `docs/architecture.md` → "S3 storage".
 
 **Code graph (gitnexus).** This repo is indexed by **gitnexus** (a code knowledge-graph; binary
 `gitnexus`, MCP server `gitnexus mcp`). Use it as the FIRST move for any "where / what / what-breaks"

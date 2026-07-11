@@ -123,10 +123,29 @@ func typeFromDirName(dir string) FrameType {
 		return Bias
 	case hasDark:
 		return Dark
-	case set["light"] || set["lights"] || set["science"] || set["object"]:
-		return Light
+	case set["light"] || set["lights"] || set["science"] || set["object"] || set["capobj"]:
+		return Light // "capobj" is SharpCap's captured-object (lights) folder
 	}
 	return Unknown
+}
+
+// processedTokens are filename words that mark a PROCESSED image (a stack/finish output someone
+// stored beside their captures), never a raw sub — e.g. "m27_R_stacked.tif". Matched per token so
+// an object name containing the letters is safe.
+var processedTokens = map[string]bool{
+	"stacked": true, "stack": true, "master": true, "combined": true, "final": true,
+	"mosaic": true, "annotated": true, "preview": true, "thumb": true, "starless": true,
+}
+
+// isProcessedName reports whether a file's base name tokens mark it as a processed output.
+func isProcessedName(path string) bool {
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	for tk := range tokenSet(base) {
+		if processedTokens[tk] {
+			return true
+		}
+	}
+	return false
 }
 
 // tokenSet splits a directory name into lowercased word tokens (on _ - . space) for keyword matching.
@@ -142,16 +161,31 @@ func isTokenSep(r rune) bool {
 	return r == '_' || r == '-' || r == '.' || r == ' '
 }
 
-// gainFromName extracts a gain from a single name token, accepting both "gain300" and the legacy
-// "0gain"/"180gain" suffix form.
+// gainFromName extracts a gain from a name, accepting both "gain300" and the legacy "0gain"/"180gain"
+// suffix form. It matches per token (split on _ - . space) so a number in a neighbouring token is never
+// swept in: in "darks_0gain_300s" the gain is 0 (from "0gain"), not 300 — the "300" is the exposure.
 func gainFromName(low string) (int64, bool) {
-	if mt := reGain.FindStringSubmatch(low); mt != nil {
-		g, err := strconv.ParseInt(mt[1], 10, 64)
-		return g, err == nil
-	}
-	if mt := reGainSuffix.FindStringSubmatch(low); mt != nil {
-		g, err := strconv.ParseInt(mt[1], 10, 64)
-		return g, err == nil
+	toks := strings.FieldsFunc(low, isTokenSep)
+	for i, tok := range toks {
+		// Suffix form first ("0gain", "180gain"): a digit-prefixed "gain" is a label, not a value to
+		// read forward from — so this must win before the glued-prefix rule on the same token.
+		if mt := reGainSuffix.FindStringSubmatch(tok); mt != nil {
+			if g, err := strconv.ParseInt(mt[1], 10, 64); err == nil {
+				return g, true
+			}
+		}
+		// Glued prefix form within one token ("gain300").
+		if mt := reGain.FindStringSubmatch(tok); mt != nil {
+			if g, err := strconv.ParseInt(mt[1], 10, 64); err == nil {
+				return g, true
+			}
+		}
+		// Separated prefix form: a standalone "gain" token followed by a number ("gain 300" / "gain_300").
+		if strings.EqualFold(tok, "gain") && i+1 < len(toks) {
+			if g, err := strconv.ParseInt(toks[i+1], 10, 64); err == nil {
+				return g, true
+			}
+		}
 	}
 	return 0, false
 }
@@ -167,17 +201,26 @@ func gainFromDirs(path string) int64 {
 	return 0
 }
 
-// filterFromDirs treats a parent dir named primarily by a filter as that filter: its FIRST token
-// (split on _ - . space) must be a known filter — so "L", "Ha", "Ha_300s", "R band", "Red", "V" all
-// resolve, while a compound session name that merely mentions a filter ("m81_m82_LRGB_0gain_Ha_120s")
-// is correctly ignored (its first token is the object, not a filter). Nearest parent wins.
+// filterFromDirs treats a parent dir named primarily by a filter as that filter. For a calibration
+// folder (flats/darks/bias) the name states its purpose, so a filter token ANYWHERE in it is an
+// intentional qualifier — "flats_0gain_Ha" is Ha flats. Otherwise only the FIRST token may be the
+// filter — so "L", "Ha", "Ha_300s", "Red", "V" resolve, while a compound session name that merely
+// mentions a filter ("m81_m82_LRGB_0gain_Ha_120s") is correctly ignored. Nearest parent wins.
 func filterFromDirs(path string) string {
 	for _, d := range parentDirs(path) {
-		head := strings.FieldsFunc(d, isTokenSep)
-		if len(head) == 0 {
+		toks := strings.FieldsFunc(d, isTokenSep)
+		if len(toks) == 0 {
 			continue
 		}
-		if f, ok := filterToken(head[0]); ok {
+		if isCalibration(typeFromDirName(d)) {
+			for _, tk := range toks {
+				if f, ok := filterToken(tk); ok {
+					return f
+				}
+			}
+			continue
+		}
+		if f, ok := filterToken(toks[0]); ok {
 			return f
 		}
 	}

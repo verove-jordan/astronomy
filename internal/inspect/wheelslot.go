@@ -55,19 +55,77 @@ func filterForSlot(legend []string, slot int) string {
 // assignByWheelSlot names every light frame under the manifest's sub-dirs from its physical wheel slot,
 // using the manifest as the slot→name legend and back-filling gain/exposure/temperature it specifies. It
 // returns false (so the caller can fall back to positional folder mapping) when no frame carries a slot.
-func assignByWheelSlot(man manifest, subdirs []string, framesByDir map[string][]*Frame) bool {
+func assignByWheelSlot(man manifest, subdirs []string, framesByDir map[string][]*Frame, inv *Inventory) bool {
 	if !anyWheelSlot(subdirs, framesByDir) {
 		return false
 	}
-	legend := legendFromManifest(man)
+	slotName := slotLegendFromSubdirs(man, subdirs, framesByDir, inv)
+	if len(slotName) == 0 {
+		slotName = defaultSlotMap() // numeric/empty info.txt → name slots by the default wheel order
+	}
 	gainByFilter, expByFilter := manifestFilterMaps(man)
 	for _, sd := range subdirs {
 		for _, fr := range framesByDir[sd] {
-			nameByWheelSlot(fr, legend)
+			nameByWheelSlotMap(fr, slotName)
 			backfillManifest(fr, man, gainByFilter, expByFilter)
 		}
 	}
 	return true
+}
+
+// slotLegendFromSubdirs learns which physical wheel slot holds which filter by pairing each chronological
+// capture sub-dir with the manifest token captured at the same position: the info.txt sequence is in
+// capture order, and so are the folders, so folder i's physical slot IS man.Slots[i]'s filter. This is
+// robust when the capture order is NOT the slot order — e.g. ngc6992 shot O3 first (physically slot 4),
+// which the old "Nth distinct filter → slot N" legend mislabeled. The mapping is self-consistent (one
+// slot → one filter across all its folders); a genuine clash means the legend and folders disagree.
+func slotLegendFromSubdirs(man manifest, subdirs []string, framesByDir map[string][]*Frame, inv *Inventory) map[int]string {
+	slotName := map[int]string{}
+	n := len(man.Slots)
+	if len(subdirs) < n {
+		n = len(subdirs)
+	}
+	for i := 0; i < n; i++ {
+		f := man.Slots[i].Filter
+		if f == "" {
+			continue
+		}
+		slot := folderSlot(framesByDir[subdirs[i]])
+		if slot == 0 {
+			continue
+		}
+		if prev, ok := slotName[slot]; ok && prev != f {
+			inv.Warnings = append(inv.Warnings, fmt.Sprintf(
+				"filter-wheel slot %d maps to both %q and %q in the info.txt legend — using %q", slot, prev, f, f))
+		}
+		slotName[slot] = f
+	}
+	if len(man.Slots) != len(subdirs) {
+		inv.Warnings = append(inv.Warnings, fmt.Sprintf(
+			"info.txt lists %d filter slots but there are %d capture folders — paired the first %d in capture order",
+			len(man.Slots), len(subdirs), n))
+	}
+	return slotName
+}
+
+// folderSlot returns the physical wheel slot shared by a capture sub-run's frames (the first non-zero).
+func folderSlot(frames []*Frame) int {
+	for _, fr := range frames {
+		if fr.WheelSlot > 0 {
+			return fr.WheelSlot
+		}
+	}
+	return 0
+}
+
+// defaultSlotMap maps slots 1,2,3,… onto the conventional wheel order, for a numeric/empty info.txt.
+func defaultSlotMap() map[int]string {
+	legend := defaultSlotLegend()
+	m := make(map[int]string, len(legend))
+	for i, f := range legend {
+		m[i+1] = f
+	}
+	return m
 }
 
 // nameRemainingWheelSlots names any still-unnamed light frame that carries a wheel slot but was not
@@ -87,6 +145,26 @@ func nameByWheelSlot(fr *Frame, legend []string) {
 		return
 	}
 	fr.Filter = filterForSlot(legend, fr.WheelSlot)
+	fr.ClassSource = SourceWheel
+	fr.FilterConfidence = 1
+	if fr.Type == Unknown {
+		fr.Type = Light
+	}
+}
+
+// nameByWheelSlotMap fills a frame's filter from its physical wheel slot via the learned slot→name map,
+// only when the frame is an uncalibrated light that still lacks a filter. A slot absent from the map
+// (captured but never named by the legend) gets a stable "S<n>" placeholder so it still groups; the
+// caller warns. Order-independent: each frame is named by its own slot.
+func nameByWheelSlotMap(fr *Frame, slotName map[int]string) {
+	if fr.Filter != "" || fr.WheelSlot == 0 || isCalibration(fr.Type) {
+		return
+	}
+	if f, ok := slotName[fr.WheelSlot]; ok {
+		fr.Filter = f
+	} else {
+		fr.Filter = fmt.Sprintf("S%d", fr.WheelSlot)
+	}
 	fr.ClassSource = SourceWheel
 	fr.FilterConfidence = 1
 	if fr.Type == Unknown {

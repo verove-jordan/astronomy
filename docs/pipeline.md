@@ -1,37 +1,82 @@
 # Pipeline
 
-How `astrostack process <dir>` turns a capture folder into a finished image.
+How `astrostack process <mode> <format> <dir>` (or a job launched from the web UI) turns a capture
+folder into a finished image. This page is the spine — each stage links to a deeper document.
+Entry point: `pipeline.Process` (`internal/pipeline/pipeline.go`); every Siril script is generated
+by `internal/siril/scripts.go` and pinned to **32-bit float** processing (`set32bits`).
 
-## Deep-sky
+## Deep-sky (the core path)
 
-1. **Inspect** (`internal/inspect`) — walk the directory, read each FITS header, and classify every
-   file as light / dark / flat / bias / dark-flat / video. Frames are grouped into *sets* by
-   object, filter, exposure, gain, offset, temperature and binning. Files without an `IMAGETYP`
-   card fall back to a sampled-ADU heuristic.
+1. **Inspect** (`internal/inspect`) — walk the folder(s) recursively and classify every file as
+   light / dark / flat / bias / dark-flat / video, grouped into *sets* by object, filter,
+   exposure, gain, offset, temperature and binning. Classification is tiered — FITS headers →
+   filename tokens → directory tokens → filter-wheel slots/sidecars → `info.txt` manifests →
+   pixel-curve statistics — and ingests 16-bit TIFF stills while excluding processed outputs.
+   Details: [modes/deepsky.md](modes/deepsky.md#detection--inputs).
 
-2. **Master calibration** (`internal/calib`) — for each calibration set, stack a master with Siril
-   (Winsorized sigma). With a database, masters are saved to a **reusable library** and an existing
-   matching master is reused instead of rebuilt; a lights-only session pulls the right masters from
-   the library. Matching rules: darks by exposure + temperature (±5 °C) + gain + offset; flats by
-   filter; bias by gain + offset.
+2. **Master calibration** (`internal/calib` — [calibration.md](calibration.md)) — stack a master
+   per calibration set with **count-adaptive rejection** (percentile ≤ 7 frames, winsorized 8–49,
+   GESD ≥ 50). With a database, masters live in a reusable **library** and raw bias/darks pool
+   **across sessions** into ever-deeper masters (noise ∝ 1/√N), with `.sig` signatures skipping
+   unchanged re-stacks. Building a master dark also scans its raw pool for a **defect map** —
+   hot, cold and *unstable/RTS* pixels — written as `<master>_defects.lst`.
 
-3. **Per channel** (`internal/pipeline` + `internal/grade`):
-   - **Calibrate + register** the lights (Siril `calibrate` then `register`).
-   - **Grade** each sub-frame from the registration metrics (FWHM, roundness, star count,
-     background) and a pure-Go Hough **trail detector**. Frames are rejected for elongated stars,
-     soft focus/seeing, clouds (few stars), or satellite/aircraft trails — robust median+MAD rules
-     that never reject a tight set and never reject everything.
-   - **Stack** only the survivors (`select`/`unselect` + `stack … -filter-incl`). Winsorized sigma
-     also clips residual trail pixels.
+3. **Calibrate + register per channel** — lights are calibrated with the matched masters (darks by
+   exact exposure ±5 °C, else a scaled dark via `-opt`; cosmetic correction via the dark's
+   **bad-pixel map**, `-cc=bpm`, falling back to `-cc=dark`), then registered (two-pass
+   homography). Cross-session groups are each calibrated with **their own session's flat**,
+   **parity-normalized** (a mirror-flipped optical train is detected by plate-solve det(CD) and
+   physically flipped, with verification), and co-registered to the common field of view
+   (`-framing=min`).
 
-4. **Co-register channels** (`internal/pipeline` → `siril.AlignMastersScript`) — the per-channel
-   masters are registered together to one reference so L/R/G/B/Ha line up before compositing.
+4. **Grade** (`internal/grade`) — per-frame registration metrics (FWHM, roundness, background,
+   star count) plus a pure-Go Hough **trail detector**. Robust median+MAD rules reject elongated
+   stars, soft frames, clouds and trailed subs — and never reject everything.
 
-5. **Finish in GIMP** (`internal/gimp`) — Siril background-extracts + stretches each channel to a
-   TIFF; the engine then drives the resident GIMP Script-Fu server (shared with the GIMP MCP) to
-   build a layered image — RGB base + L in `LAYER-MODE-LUMINANCE` + Ha red-tinted in `SCREEN` —
-   apply gentle curves/levels/saturation, and export an editable `.xcf` plus flattened TIFF/PNG.
-   If GIMP is unavailable it falls back to the Siril `rgbcomp` finish (`internal/postprocess`).
+5. **Cross-frame transient mask** (`internal/transient`) — before stacking, pixels that spike in
+   one frame against the per-pixel median across the registered subs (slow satellite trails,
+   cosmic rays) are replaced by the median, with a line-aware pass for a trail's faint wings —
+   validated so it never repaints fixed-pattern noise.
+
+6. **Stack the survivors** — `select`/`unselect` from the grading, then
+   `stack … <adaptive rejection> -norm=addscale -output_norm -weight=wfwhm -filter-incl`. The
+   rejection algorithm is sized to the **survivor count** (GESD engages on big stacks) and subs
+   are weighted by star sharpness.
+
+7. **Pointing diagnosis** (`internal/dither`) — the registration offsets classify the session as
+   *dithered / drift / static / mixed*. Drift and static leave fixed-pattern residuals correlated
+   (walking noise); the run warns once and recommends capture-time random dithering. The verdict
+   is in `run.json` and the Tasks UI's **Pointing** column.
+
+8. **Per-channel linear post** — optional GraXpert AI background extraction on each linear master,
+   then measured, chroma-weighted denoise (Siril `denoise -vst`; R/G/B defer their strongest pass
+   to the combined RGB).
+
+9. **Co-register channels + palette** — channel masters align to one reference
+   (common-FOV crop), then the **palette engine** maps filters onto RGB: natural LRGB(+Ha),
+   HaRGB, or narrowband HOO/SHO/HOS/Foraxx (with a fallback chain when filters are missing).
+
+10. **Combine + colour** — linear `rgbcomp`, a second combined-RGB gradient pass
+    (GraXpert + RBF subsky), AI colour denoise, then the **colour-calibration ladder**:
+    plate-solve + **SPCC** (offline Gaia catalogues supported) → star-field photometric gains →
+    background neutralization. **Stretch headroom** caps linear highlights so star cores keep
+    colour, then a dark-target autostretch (linked only when the colour is truly calibrated).
+
+11. **Finish in GIMP** (`internal/gimp`) — a layered composite (RGB base + L in luminance mode +
+    Ha screened in red) saved as `.xcf`, then a flattened export with curves, saturation,
+    star-core desaturation and star-safe highlight shoulders. Star clusters get a gentler
+    dedicated profile; a gated **star-quality auto-fix** repairs burnt/discoloured stars by
+    re-entering the cheapest stage. If GIMP is unavailable, the Siril `rgbcomp` finish
+    (`internal/postprocess`) takes over.
+
+12. **Persist** — outputs + a self-contained `run.json` (per-frame grades, calibration notes,
+    pointing verdict, finish-quality metrics, engine build stamp) and a milestone preview
+    timeline. A stage checkpoint enables **per-stage reruns** — edit one stage's parameters in
+    the UI and re-enter from there (`internal/pipeline/rerun.go`).
+
+Jobs launched from the UI can be **paused and resumed** (mid-stack pause reuses the finished
+channels), **cancelled** (a cancel during finishing keeps the partial result, status `cancelled`),
+and queued strictly one-at-a-time with "Add to queue".
 
 ### Optional AI enhancement (`internal/pipeline/enhance.go`)
 
@@ -41,79 +86,81 @@ continues on the Siril/GIMP path. They are invoked, never bundled (see CLAUDE.md
 
 - **GraXpert background extraction** (`internal/graxpert`) — runs on each *linear* channel master
   right after stacking (and on the OSC master), removing complex light-pollution gradients with its
-  AI model. Siril then applies only a gentle degree-1 `subsky` cleanup at finish (`backgroundDegree`
-  is always in Siril's valid [1,4] range). Enabled per mode via `Preset.BackgroundAI`.
+  AI model; a second pass cleans the combined RGB. Siril then applies only a gentle `subsky`
+  cleanup at finish. Enabled per mode via `Preset.BackgroundAI`/`CombinedBackgroundAI`.
 - **StarNet++ star reduction** (`internal/starnet`) — runs on the *flattened* GIMP composite, then
   GIMP blends the stars back over the starless image at `Preset.StarReduce` opacity
   (`result = (1-r)·starless + r·original`). Emits `final_reduced.{tif,png}` and keeps the
   `final_starless.tif` as a bonus artifact. Works for every compose mode.
 
-Each run writes its outputs and a JSON/markdown report; with the API, the full report (including
-per-frame grades) is stored on the job and rendered in the web UI's frame-review page.
+### Optional AI finish supervisor (opt-in)
 
-### Optional AI finish supervisor (opt-in, `internal/pipeline/supervise.go` + `internal/llm`)
-
-When a run **opts in** (the Import page's "Run with local AI agent" checkbox, `process … --supervise`,
-or `astrostack refine <run-dir>`), the finish becomes a bounded optimisation loop instead of a single
-pass. The heavy prep (channel combine, GraXpert, SPCC, stretch) runs once; then the fast GIMP composite
-is re-rendered a few times with varied knobs (saturation, Ha screen/black-point, chroma blur, crop).
-Each render is scored by **deterministic image metrics** *and* a local **vision model** (a host-run,
-OpenAI-compatible server — e.g. mlx-vlm on `:1234`, started with `just run-ia-model`), combined as
-`0.6·metrics + 0.4·model`, and the best render is kept. Iterations (params, scores, reasoning, the
-chosen flag) are persisted and shown in the job's supervisor panel.
-
-It is **off by default and soft-fails**: with the box unticked or the model server unreachable, the
-finish is **byte-identical** to the standard pipeline. `refine` re-tunes an existing stack with **no
-re-stacking** (it reconstructs the channels from the run's `aligned_*`/`master_*` on disk). See
-`.env.example` (`ASTRO_LLM_*`) and the README's *AI finish supervisor* section.
+When a run **opts in** (the Import page's "Run with local AI agent" checkbox, `process …
+--supervise`, or `astrostack refine <run-dir>`), the finish becomes a bounded optimisation loop —
+render → deterministic metrics + local **vision-model** critique (combined `0.6·metrics +
+0.4·model`) → re-enter at the cheapest tier (A composite / B linear prep / C re-stack) → keep the
+best pass. Off by default; with the model unreachable the finish is byte-identical to a standard
+run. Full detail: [agent.md](agent.md).
 
 ### Cross-session reuse (`internal/pipeline/reuse.go`, `internal/calib/deep.go`)
 
 Every run records its scanned frames in the Postgres **catalog** (`frames` + a `targets` table of
-canonical sky objects; ingest in `store.SaveInventory`). A later run of the same target can then
-reuse that history — driven by config (`ASTRO_REUSE_*`), surfaced in the import UI as an
-auto-discovered list the user can deselect (`POST /api/reuse/preview`):
+canonical sky objects; ingest in `store.SaveInventory`). A later run of the same target reuses that
+history — driven by config (`ASTRO_REUSE_*`), surfaced in the import UI as an auto-discovered list
+the user can deselect (`POST /api/reuse/preview`):
 
-- **More light = more integration.** Prior light frames of the same target — matched first by RA/Dec
-  **cone** (`OBJCTRA/OBJCTDEC` → degrees), falling back to normalized object name (folder name when
-  the FITS has no `OBJECT`) — are folded into the stack. Each contributing session is calibrated with
-  **its own** flats (its night's dust/vignetting), then all calibrated frames are co-registered and
-  stacked together (`processChannelGroups`). Reused frames pass the same `grade` gate as fresh ones,
-  and frames already in the current scan are de-duplicated by path so identical files never double-count.
-- **Deeper calibration = less noise.** Instead of freezing a stacked master, `BuildDeepMasters` pools
-  **every** matching raw bias/dark across all sessions (within a temperature + recency window) into one
-  deep master — so noise keeps dropping (~1/√N) as more calibration data accrues. Bias/darks are
-  sensor-only and pooled freely; **flats stay session-specific** by design.
+- **More light = more integration.** Prior light frames of the same target — matched first by
+  RA/Dec **cone**, falling back to normalized object name — are folded into the stack. Each
+  contributing session is calibrated with **its own** flats, then all calibrated frames are
+  co-registered and stacked together (`processChannelGroups`). Reused frames pass the same grading
+  gate as fresh ones and are de-duplicated by path.
+- **Deeper calibration = less noise.** `BuildDeepMasters` pools **every** matching raw bias/dark
+  across sessions into one deep master — see [calibration.md](calibration.md).
 
-Disable per run with the import toggle, or globally with `ASTRO_REUSE_ENABLED=false` (the catalog is
-still recorded). The single-session path is unchanged when no prior data matches.
+Disable per run with the import toggle, or globally with `ASTRO_REUSE_ENABLED=false` (the catalog
+is still recorded). The single-session path is unchanged when no prior data matches.
 
 ## Lunar / planetary video
 
 `astrostack video <file>` (`internal/planetary`): extract frames (ffmpeg for MP4/MOV/MKV/AVI; SER
-read by Siril) → convert to a FITS sequence → rank frames by Laplacian-variance **sharpness** in Go
-→ keep the best N% → stack (no surface alignment) → unsharp + stretch → export.
-
-High-precision multi-point planetary alignment is a known Siril-CLI limitation; for demanding
-planetary work use the Siril GUI or AutoStakkert!.
+read by Siril; a folder of stills also works) → rank frames by **full-resolution, disk-masked
+Laplacian-variance sharpness** in Go → keep the best N% → **multi-point surface alignment** (coarse
++ fine ZNCC and a 10×10 alignment-point grid, applied by a single Catmull-Rom resample) →
+**sharpness-weighted, sigma-clipped stack** with per-region (AP) quality weights → Richardson-Lucy
+**deconvolution** of the luminance → highlight-safe stretch + wavelet sharpen. The stack is
+objectively accepted only when the master out-details the best single frame (≥ 1.05×). Full
+detail: [docs/modes/planetary.md](modes/planetary.md).
 
 ## Modes
 
-`internal/mode` maps each capture mode to a `Preset` that retunes the whole pipeline:
+`internal/mode` maps each capture mode to a `Preset` that retunes the whole pipeline; a
+**preset catalog** (16 built-in situation recipes + user-saved presets, `internal/preset` +
+`/api/presets`) prefills the launch form. Each mode has a dedicated document with the fixed
+template *what & when · detection · algorithm end-to-end · preset knobs · soft-fail fallbacks ·
+AI supervisor · outputs · config* — see [docs/modes/README.md](modes/README.md):
 
-- **deepsky** — mono LRGB+Ha, balanced grading, gentle curves.
-- **nebula** — mono LRGB+Ha, lenient grading + stronger background extraction + a heavier Ha
-  screen for faint emission; enables AI background extraction and StarNet++ star reduction.
-- **milkyway** — one-shot-color (iPhone ProRAW/HEIC, jpg/png/tif) via `pipeline.ProcessOSC`:
-  debayer → register → grade → stack → GIMP curves, with strong gradient removal and natural
-  star colors.
-- **planetary** — lucky imaging (`internal/planetary`): sharpness-ranked best frames, sharpened.
+- **[deepsky](modes/deepsky.md)** — mono LRGB+Ha galaxies/clusters: per-channel
+  calibrate/register/grade/stack, channel co-registration, combined GraXpert+RBF gradient removal,
+  SPCC → star-field → neutralization colour ladder, layered GIMP finish, palettes.
+- **[nebula](modes/nebula.md)** — same engine, retuned for faint emission: lenient grading,
+  Ha-forward blend, StarNet++ star reduction on by default.
+- **[milkyway](modes/milkyway.md)** — one-shot-color nightscapes (iPhone ProRAW/DSLR raws) via
+  `pipeline.ProcessOSC` → the `internal/nightscape` foreground/sky composite recipe: photometric
+  develop, sky-only stack, per-pixel phone calibration in Go, mask-aware flatten, data-driven
+  auto-stretch, dithered export.
+- **[planetary](modes/planetary.md)** — lucky imaging (`internal/planetary`): see above.
+- **[comet](modes/comet.md)** — moving comet: one global star alignment to the mid frame,
+  multi-scale coma detection + robust track fit, dual star/comet stacks (asymmetric rejection on
+  the comet side), StarNet star-layer recomposite.
+- **[livestack](modes/livestack.md)** — watch a folder or S3 prefix during capture, calibrate each
+  new sub once, incrementally re-stack with a live preview, and run the full pipeline on Stop.
 
 The output `format` (`image`/`video`/`both`) additionally renders a Ken-Burns MP4 via
 `internal/videoout` (ffmpeg).
 
 ## Tuning
 
-Rejection thresholds (`internal/grade`, `Options`) and post-processing (`internal/postprocess`,
-`Options`) have sensible defaults; both are passed through `pipeline.Options` for callers that want
-to override them.
+Rejection thresholds (`internal/grade.Options`), post-processing (`internal/postprocess.Options`)
+and every mode knob (`internal/mode.Preset`) have sensible defaults; the launch form's
+**Advanced parameters**, saved **presets**, the per-stage **rerun** editor and the agent's param
+patches all feed the same whitelisted patch surface (`internal/pipeline/params_patch.go`).

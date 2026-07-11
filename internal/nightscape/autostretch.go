@@ -19,7 +19,10 @@ const (
 	//                     PURE black while the orange bottom survived — unnatural. Kept gentle so the now-
 	//                     homogeneous sky lands as a natural dark grey everywhere; raised by the loop only as
 	//                     needed to reach the target (capped lower, 45, to not expose the ragged top drift edge).
-	autoWhitePct = 99.9 // global white point (high → only the very brightest core saturates, not blown)
+	autoWhitePct = 99.99 // global white point: near the max so the bright Milky-Way core keeps its
+	//                      dust-lane gradient. A lower 99.9 clipped the large core to a flat 1.0 that then
+	//                      read as a "burned"/detail-less blob; compressHighlights does the actual highlight
+	//                      rolloff (to the look's ceiling), which now has real gradient to roll off.
 )
 
 // autoStretch stretches the sky so its background sits at targetBg, in place, with a GLOBAL (linked)
@@ -41,9 +44,18 @@ func autoStretch(im *fits.Image, targetBg float64, skyMask []float32) {
 	blackPct := autoBlackPct
 	bp := percentile(lum, blackPct)
 	bgNorm := (med - bp) / (wp - bp)
-	for bgNorm >= targetBg*0.9 && blackPct < 45 {
+	// Raise the black point until the background can reach the target. The cap is 60 (was 45 — too
+	// low to tame a strong light-pollution floor), but a STRUCTURE GUARD bounds the crush: the black
+	// point may climb through the noise-floor band yet never into its upper third toward the median,
+	// so faint real sky (dim Milky-Way regions) is compressed, not clipped to pure black.
+	maxBp := med - 0.35*(med-bp)
+	for bgNorm >= targetBg*0.9 && blackPct < 60 {
+		next := percentile(lum, blackPct+3)
+		if next > maxBp {
+			break
+		}
 		blackPct += 3
-		bp = percentile(lum, blackPct)
+		bp = next
 		if wp-bp < 1e-6 {
 			wp = bp + 1e-6
 		}

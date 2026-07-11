@@ -109,6 +109,112 @@ func TestPlan_AltAzAvoidsZenith(t *testing.T) {
 	}
 }
 
+func TestPlan_CelestronEQ_TwoPhaseEndToEnd(t *testing.T) {
+	p := planParams()
+	profile := Lookup("celestron-eq")
+	res := Plan(p, profile, 6, nil, nil)
+
+	require.Len(t, res.Stars, 6, "the winter Paris sky must fill 2 align + 4 calibration slots")
+	require.Contains(t, []string{"east", "west"}, res.MeridianSide)
+
+	for i, s := range res.Stars {
+		assert.NotEmpty(t, s.HCName, "%s must carry its hand-controller label", s.Name)
+		assert.True(t, inStarList("celestron", s.Name), "%s must be on the Celestron hand control", s.Name)
+		if i < 2 {
+			assert.Equal(t, "align", s.Phase)
+			assert.Equal(t, res.MeridianSide, s.MeridianSide, "align stars stay on the chosen side")
+		} else {
+			assert.Equal(t, "calibration", s.Phase)
+			assert.Equal(t, oppositeSide(res.MeridianSide), s.MeridianSide,
+				"calibration stars go across the meridian (cone-error rule)")
+		}
+	}
+	assert.Greater(t, res.QualityScore, 0.0)
+	assert.Empty(t, res.Warnings, "a rich sky needs no fallback")
+}
+
+func TestPlan_CelestronEQ_LoweredCountIsAlignOnly(t *testing.T) {
+	p := planParams()
+	res := Plan(p, Lookup("celestron-eq"), 2, nil, nil)
+	require.Len(t, res.Stars, 2)
+	for _, s := range res.Stars {
+		assert.Equal(t, "align", s.Phase)
+		assert.Equal(t, res.MeridianSide, s.MeridianSide)
+	}
+}
+
+func TestPlan_CelestronEQ_AcceptedSpanPhases(t *testing.T) {
+	p := planParams()
+	profile := Lookup("celestron-eq")
+
+	base := Plan(p, profile, 6, nil, nil)
+	require.Len(t, base.Stars, 6)
+	accepted := []string{base.Stars[0].Name, base.Stars[1].Name, base.Stars[2].Name}
+
+	res := Plan(p, profile, 6, accepted, nil)
+	require.Len(t, res.Stars, 6)
+	wantPhases := []string{"align", "align", "calibration", "calibration", "calibration", "calibration"}
+	for i, s := range res.Stars {
+		assert.Equal(t, wantPhases[i], s.Phase, "star %d", i+1)
+		if i < 3 {
+			assert.Equal(t, accepted[i], s.Name, "accepted stars stay locked in order")
+			assert.Equal(t, "accepted", s.Status)
+		}
+	}
+	assert.Equal(t, "recommended", res.Stars[3].Status, "the 4th star is the next to center")
+	assert.Equal(t, oppositeSide(res.MeridianSide), res.Stars[3].MeridianSide)
+}
+
+func TestPlan_CelestronEQ_CalibFallsBackSameSideWithWarning(t *testing.T) {
+	p := planParams()
+	profile := Lookup("celestron-eq")
+
+	// Reject every Celestron-list star that is eligible on the opposite side of the meridian, so the
+	// calibration phase has nothing across the meridian and must fall back to the alignment side.
+	base := Plan(p, profile, 2, nil, nil)
+	require.Contains(t, []string{"east", "west"}, base.MeridianSide)
+	opp := oppositeSide(base.MeridianSide)
+	var rejected []string
+	for _, c := range eligible(positionedCatalog(p), profile, opp, nil, nil) {
+		rejected = append(rejected, c.Name)
+	}
+	require.NotEmpty(t, rejected, "the fixture sky must have opposite-side candidates to reject")
+
+	res := Plan(p, profile, 6, nil, rejected)
+	require.Len(t, res.Stars, 6, "the plan must not shrink when the opposite side is empty")
+	for _, s := range res.Stars[2:] {
+		assert.Equal(t, "calibration", s.Phase)
+		assert.Equal(t, res.MeridianSide, s.MeridianSide, "fallback places calibration on the align side")
+	}
+	require.NotEmpty(t, res.Warnings)
+	assert.Contains(t, res.Warnings[0], "calibration star")
+}
+
+func TestPlan_StarListFilterApplies(t *testing.T) {
+	p := planParams()
+
+	synscan := Plan(p, Lookup("synscan-eq"), 3, nil, nil)
+	require.NotEmpty(t, synscan.Stars)
+	for _, s := range synscan.Stars {
+		assert.True(t, inStarList("synscan", s.Name), "%s must be on the SynScan hand control", s.Name)
+		assert.NotEmpty(t, s.HCName)
+		assert.Empty(t, s.Phase, "synscan-eq is single-phase")
+	}
+
+	generic := Plan(p, Lookup("eq-generic"), 3, nil, nil)
+	require.NotEmpty(t, generic.Stars)
+	for _, s := range generic.Stars {
+		assert.Empty(t, s.Phase)
+		assert.Empty(t, s.HCName, "no hand-controller list on the generic profile")
+	}
+
+	skyalign := Plan(p, Lookup("celestron-altaz"), 3, nil, nil)
+	require.NotEmpty(t, skyalign.Stars)
+	for _, s := range skyalign.Stars {
+		assert.Empty(t, s.HCName, "SkyAlign accepts any bright object — unfiltered")
+	}
+}
+
 func TestPlan_NoCandidatesWarnsInsteadOfPanicking(t *testing.T) {
 	p := planParams()
 	var all []string

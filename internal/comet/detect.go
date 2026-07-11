@@ -13,8 +13,41 @@ import (
 const (
 	DefaultBlurRadius = 24
 	DefaultWindow     = 40
-	minPeakSigma      = 6.0 // the blurred peak must stand this many MADs above the median to be a comet
+	// minPeakSigma is deliberately permissive (was 6): a faint coma at 4-5σ is a real detection when
+	// the per-frame centroids AGREE across the session — FitTrack's MAD rejection + the caller's
+	// kept-count acceptance are the consistency filter that single-frame confidence cannot be.
+	minPeakSigma = 4.0
 )
+
+// detectScales are the blur radii DetectMultiScale tries: a compact bright coma locks best at a
+// small radius, a large diffuse one at a large radius. Each candidate is scored by its blurred
+// peak's significance and the best wins.
+var detectScales = [...]int{12, DefaultBlurRadius, 48}
+
+// DetectMultiScale runs Detect at several coma scales and returns the most significant candidate —
+// the scale-matched blur maximizes the peak of a real coma while stars/noise stay suppressed.
+func DetectMultiScale(im *fits.Image, window int) (Point, bool) {
+	if im == nil || im.W == 0 || im.H == 0 {
+		return Point{}, false
+	}
+	bg, mad := medianMAD(im.Pix[0])
+	if mad <= 0 {
+		return Point{}, false
+	}
+	bestSig := 0.0
+	var bestP Point
+	for _, r := range detectScales {
+		blurred := boxBlur(im.Pix[0], im.W, im.H, r)
+		peak, pi := maxOf(blurred)
+		sig := (peak - bg) / mad
+		if sig <= minPeakSigma || sig <= bestSig {
+			continue
+		}
+		bestSig = sig
+		bestP = weightedCentroid(blurred, im.W, im.H, pi%im.W, pi/im.W, window, bg)
+	}
+	return bestP, bestSig > 0
+}
 
 // Detect estimates the comet's centroid in a star-aligned frame. It heavily blurs the image (channel 0),
 // which fades point-like stars but keeps the extended coma, finds the brightest blurred pixel, and
@@ -67,6 +100,11 @@ func weightedCentroid(v []float32, w, h, px, py, window int, bg float64) Point {
 	}
 	return Point{X: sx / sw, Y: sy / sw}
 }
+
+// BoxBlur returns a separable box-blurred copy of a single-channel plane (one horizontal then one
+// vertical pass of radius r). Exported so callers (e.g. planetary AP alignment) can pre-blur a frame
+// once and run many windowed correlations on it.
+func BoxBlur(src []float32, w, h, r int) []float32 { return boxBlur(src, w, h, r) }
 
 // boxBlur returns a separable box-blurred copy of a single-channel plane (one horizontal then one
 // vertical pass of radius r). Edges average only the in-bounds neighbors.
@@ -133,11 +171,17 @@ func medianMAD(v []float32) (med, mad float64) {
 	return med, s[len(s)/2]
 }
 
-// DetectFile reads a registered FITS frame and returns the comet centroid (with the default tuning).
+// DetectFile reads a registered FITS frame and returns the comet centroid. A blurRadius of 0 runs
+// the multi-scale detection (the default for the auto-track path); an explicit radius runs the
+// single-scale Detect.
 func DetectFile(path string, blurRadius, window int) (Point, bool, error) {
 	im, err := fits.ReadImage(path)
 	if err != nil {
 		return Point{}, false, fmt.Errorf("comet detect read %s: %w", path, err)
+	}
+	if blurRadius <= 0 {
+		p, ok := DetectMultiScale(im, window)
+		return p, ok, nil
 	}
 	p, ok := Detect(im, blurRadius, window)
 	return p, ok, nil

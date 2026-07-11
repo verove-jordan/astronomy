@@ -34,6 +34,46 @@ tools:
 web-prod:
     docker compose --profile web up -d --build frontend
 
+# --- Full-container stack (everything in Docker; portable to a Linux server) -------------------------
+# The AI model is decoupled and opt-in: `stack` never pulls or runs it. Bring it up later with `ai-up`
+# (container, Linux+GPU) or `run-ia-model` (native mlx, macOS).
+
+# Build the engine + frontend images (no model — Ollama is a pulled image, not built).
+stack-build:
+    GIT_DESCRIBE=$(git describe --tags --always --dirty) BUILD_TIME=$(date -u +%Y-%m-%dT%H:%MZ) docker compose --profile stack build
+
+# Run the whole app in containers WITHOUT the model — db + engine + frontend (UI :${WEB_PORT_PROD:-8082}, API :${ENGINE_PORT:-8080}).
+stack:
+    GIT_DESCRIBE=$(git describe --tags --always --dirty) BUILD_TIME=$(date -u +%Y-%m-%dT%H:%MZ) API_UPSTREAM=engine:8080 docker compose --profile stack up -d --build
+
+# Run the whole app in containers WITH the model (Linux+GPU; needs nvidia-container-toolkit). Then: just ai-pull
+stack-ai:
+    API_UPSTREAM=engine:8080 docker compose --profile stack --profile ai up -d --build
+
+# Stop the containerized app services (engine + frontend + ai); leaves Postgres running.
+stack-down:
+    docker compose --profile stack --profile ai stop engine frontend ai
+
+# Tail the containerized engine logs.
+stack-logs:
+    docker compose --profile stack logs -f engine
+
+# Open a shell inside the running engine container.
+engine-sh:
+    docker compose --profile stack exec engine bash
+
+# Start ONLY the Ollama model container, decoupled from the stack (Linux+GPU). Then run `just ai-pull`.
+ai-up:
+    docker compose --profile ai up -d ai
+
+# Pull the vision-model weights into the running ai container (explicit, ~heavy). Uses ASTRO_LLM_MODEL.
+ai-pull:
+    docker compose --profile ai exec ai ollama pull "${ASTRO_LLM_MODEL:-qwen2.5vl:32b}"
+
+# Stop the model container.
+ai-down:
+    docker compose --profile ai stop ai
+
 # Stop the compose stack.
 down:
     docker compose down
@@ -54,7 +94,7 @@ dev:
 web:
     cd frontend && pnpm dev
 
-# Serve the local vision model for the finish supervisor (host; first run downloads ~26 GB).
+# Serve the local vision model for the finish supervisor (host; first run downloads ~28 GB).
 run-ia-model:
     @scripts/ia-model.sh
 
@@ -66,16 +106,58 @@ stop-ia-model:
 ia-model-status:
     @curl -fsS "http://127.0.0.1:${ASTRO_LLM_PORT:-1234}/health" && echo " OK"
 
+# Serve the host GraXpert on demand so the containerized engine can offload denoise / background
+# extraction to a NATIVE process (Docker on macOS can't reach the host binary or the GPU). Foreground;
+# then set ASTRO_GRAXPERT_URL=http://host.docker.internal:8083 for `just stack` and restart the engine.
+run-graxpert-service:
+    go run ./cmd/graxpert-host
+
+# Health-check the host GraXpert service.
+graxpert-service-status:
+    @curl -fsS "http://127.0.0.1:${ASTRO_GRAXPERT_PORT:-8083}/health" && echo " OK"
+
 # Inspect a capture directory and print the inventory (host).
 inspect DIR:
     go run ./cmd/astrostack inspect "{{DIR}}"
 
-# Download/refresh the offline light-pollution atlas (hybrid fallback) into the data dir. Configure a
-# source via ASTRO_LIGHTPOLLUTION_ATLAS_URL or ..._TIFF_URL in .env (see scripts/update-light-pollution.sh).
-update-light-pollution-data:
+# Build the OFFLINE light-pollution atlas from the David Lorenz model (accurate, propagation-modeled sky
+# brightness — rural France reads Bortle 2-3, not 4-5) into the data dir. Downloaded once; every per-site /
+# finder / map query is then fully offline. REGION: france (default) | europe | world (or use the CLI's
+# --bbox for a custom area). Power-user alternative (pre-gridded URL / Falchi GeoTIFF via gdal): the script.
+update-light-pollution-data REGION="france":
+    go run ./cmd/astrostack lightpollution-atlas --region "{{REGION}}"
+
+# Legacy/power-user offline atlas via a pre-gridded URL or a Falchi/VIIRS GeoTIFF (needs gdal+jq); configure
+# ASTRO_LIGHTPOLLUTION_ATLAS_URL or ..._TIFF_URL in .env. See scripts/update-light-pollution.sh.
+update-light-pollution-data-custom:
     @scripts/update-light-pollution.sh
 
-# Run the full auto pipeline (host). MODE: deepsky|nebula|milkyway|planetary  FORMAT: image|video|both
+# Build the OFFLINE tree-canopy-height atlas for the dark-sky finder's tree-aware horizon (a spot hemmed in
+# by forest then scores its low southern horizon correctly). Point ASTRO_CANOPY_ATLAS_TIFF_URL at an ETH/Meta
+# canopy-height GeoTIFF (or /vsicurl/ URL) in .env; optional ASTRO_CANOPY_BBOX + ASTRO_CANOPY_RES_DEG (default
+# ~90 m). Needs gdal + jq. Optional + soft-fails; restart the engine to load it. See scripts/update-canopy.sh.
+update-canopy-data:
+    @scripts/update-canopy.sh
+
+# Rebuild the frontend sky-map dataset (frontend/src/assets/skymap.json): the star + constellation-line
+# figures the GoTo "Find it in the sky" map renders. Fetches the HYG catalogue + Stellarium constellations
+# (network at build time ONLY); the app then renders the sky fully offline. MAG = faintest star (default 6.0
+# = naked-eye limit). Re-run only to refresh the data or change density; commit the regenerated JSON.
+gen-skymap-data MAG="6.0":
+    go run ./cmd/astrostack skymap-data --mag "{{MAG}}"
+
+# One-time download of Siril's OFFLINE Gaia plate-solve catalogue (~1.1 GB → ~3 GB) into
+# library/catalogues — makes plate-solving (and therefore SPCC colour calibration) work with no
+# network, on the host AND in the Docker engine (same files via the /data/library volume).
+download-catalogues:
+    @scripts/download-catalogues.sh
+
+# Also fetch the offline SPCC xp_sampled chunks (~5 GB, 48 files). Optional: without them SPCC
+# falls back to the online Gaia archive (needs network at run time).
+download-catalogues-spcc:
+    @scripts/download-catalogues.sh --spcc
+
+# Run the full auto pipeline (host). MODE: deepsky|nebula|milkyway|planetary|comet  FORMAT: image|video|both
 # e.g. just process deepsky image ~/Astro/M31   ·   just process planetary video ~/Astro/moon.mp4
 process MODE FORMAT PATH *args:
     go run ./cmd/astrostack process {{args}} {{MODE}} {{FORMAT}} "{{PATH}}"
@@ -102,10 +184,16 @@ build-mcp:
     @mkdir -p {{bin}}
     go build -o {{bin}}/siril-mcp ./cmd/siril-mcp
 
-# Build all binaries + the frontend.
+# Build the host GraXpert service binary into ./bin.
+build-graxpert-host:
+    @mkdir -p {{bin}}
+    go build -o {{bin}}/graxpert-host ./cmd/graxpert-host
+
+# Build all binaries + the frontend (build identity stamped via ldflags — shows in /api/health,
+# every run record, and the UI's engine chip, so a stale-engine run is identifiable at a glance).
 build:
     @mkdir -p {{bin}}
-    go build -o {{bin}}/astrostack ./cmd/astrostack
+    go build -ldflags "-X github.com/verove-jordan/astronomy/internal/buildinfo.Version=$(git describe --tags --always --dirty) -X github.com/verove-jordan/astronomy/internal/buildinfo.BuiltAt=$(date -u +%Y-%m-%dT%H:%MZ)" -o {{bin}}/astrostack ./cmd/astrostack
     go build -o {{bin}}/siril-mcp ./cmd/siril-mcp
     @test -d frontend/node_modules && (cd frontend && pnpm build) || true
 

@@ -1,0 +1,35 @@
+# Docker build context excludes. The frontend AND engine images build from the repo root
+# (compose.yaml: context: .), so without this file Docker would ship the whole tree — including
+# the ~32 GB capture data under input/ and the 28 GB model venv — as build context on every build.
+# Keep only what a build needs: Go source (cmd/, internal/, go.mod/go.sum, migrations/), frontend/,
+# and docker/.
+
+# Capture data + engine outputs (huge, never needed to build an image)
+input/
+library/
+output/
+work/
+data/
+
+# Local model venv (~28 GB) and HF cache
+.venv-ia/
+
+# VCS + code-graph index
+.git/
+.gitnexus/
+
+# Build artifacts / hot-reload output
+bin/
+tmp/
+astrostack
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Secrets + local env (passed at runtime, never baked into a layer)
+.env
+
+# Editor / OS cruft + logs
+*.log
+.DS_Store
+scratchpad/

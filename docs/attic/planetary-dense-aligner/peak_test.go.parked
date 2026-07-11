@@ -1,0 +1,61 @@
+package planetary
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// sampleQuadratic fills the 3×3 neighbourhood of an analytic quadratic with vertex (px,py) and cross term
+// c: f = −((x−px)² + (y−py)² + c·(x−px)(y−py)), sampled at integer (x,y) ∈ {−1,0,1}².
+func sampleQuadratic(px, py, c float64) [3][3]float64 {
+	var s [3][3]float64
+	for j := -1; j <= 1; j++ {
+		for i := -1; i <= 1; i++ {
+			x, y := float64(i)-px, float64(j)-py
+			s[j+1][i+1] = -(x*x + y*y + c*x*y)
+		}
+	}
+	return s
+}
+
+func TestPeak2D_ExactOnQuadratic(t *testing.T) {
+	for _, tc := range []struct{ px, py, c float64 }{
+		{0, 0, 0}, {0.3, -0.2, 0}, {-0.5, 0.5, 0}, {0.7, 0.1, 0}, {0.25, -0.4, 0.4}, {-0.3, -0.3, -0.5},
+	} {
+		x, y, ok := peak2D(sampleQuadratic(tc.px, tc.py, tc.c))
+		require.True(t, ok, "concave quadratic must yield a peak (px=%.2f py=%.2f c=%.2f)", tc.px, tc.py, tc.c)
+		assert.InDelta(t, tc.px, x, 1e-9, "recovered x vertex")
+		assert.InDelta(t, tc.py, y, 1e-9, "recovered y vertex")
+	}
+}
+
+func TestPeak2D_RejectsNonMax(t *testing.T) {
+	// Saddle f = x² − y² (convex in x, concave in y) → not a maximum.
+	var saddle [3][3]float64
+	for j := -1; j <= 1; j++ {
+		for i := -1; i <= 1; i++ {
+			saddle[j+1][i+1] = float64(i*i) - float64(j*j)
+		}
+	}
+	_, _, ok := peak2D(saddle)
+	assert.False(t, ok, "a saddle is rejected")
+
+	// Flat field → degenerate, no peak.
+	_, _, ok = peak2D([3][3]float64{})
+	assert.False(t, ok, "a flat field is rejected")
+
+	// Concave but vertex far outside ±0.75 → rejected (poor local model).
+	_, _, ok = peak2D(sampleQuadratic(1.5, 0, 0))
+	assert.False(t, ok, "a vertex beyond ±0.75 px is rejected")
+}
+
+func TestParabola1D(t *testing.T) {
+	// Symmetric concave peak at 0.
+	assert.InDelta(t, 0.0, parabola1D(-1, 0, -1), 1e-9)
+	// Left shoulder higher (−0.5 > −1) → vertex shifts left (negative).
+	assert.InDelta(t, -1.0/6.0, parabola1D(-0.5, 0, -1), 1e-9)
+	// Convex / flat → no interior max.
+	assert.Equal(t, 0.0, parabola1D(1, 0, 1))
+}

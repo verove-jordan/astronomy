@@ -12,11 +12,12 @@ package main
 
 import (
 	"fmt"
+	"github.com/verove-jordan/astronomy/internal/buildinfo"
 	"os"
 )
 
-// version is overridden at build time with -ldflags "-X main.version=...".
-var version = "dev"
+// version reports the stamped build identity (see internal/buildinfo; "dev" for a bare `go run`).
+var version = buildinfo.String()
 
 func main() {
 	if len(os.Args) < 2 {
@@ -38,6 +39,10 @@ func main() {
 		err = runServe(os.Args[2:])
 	case "migrate":
 		err = runMigrate(os.Args[2:])
+	case "lightpollution-atlas":
+		err = runLightPollutionAtlas(os.Args[2:])
+	case "skymap-data":
+		err = runSkymapData(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("astrostack", version)
 	case "help", "--help", "-h":
@@ -64,6 +69,8 @@ Usage:
   astrostack video   <file> [flags]  process a lunar/planetary video
   astrostack serve                   run the HTTP API server
   astrostack migrate                 apply database migrations
+  astrostack lightpollution-atlas    build the offline light-pollution atlas (djlorenz model)
+  astrostack skymap-data             build the frontend star + constellation dataset (skymap.json)
   astrostack version                 print the version
 `)
 }
