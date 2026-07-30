@@ -4,6 +4,8 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"github.com/verove-jordan/astronomy/internal/filters"
 )
 
 // classifyImageType maps a FITS IMAGETYP value to a FrameType. Capture programs vary
@@ -31,36 +33,12 @@ func classifyImageType(imagetyp string) FrameType {
 // normalizeFilter trims a filter name and abbreviates the common broadband/narrowband names
 // to single tokens (L, R, G, B, Ha, OIII, SII) so grouping is stable across capture programs.
 // An unrecognized name passes through verbatim (e.g. a custom filter the user maps later).
-func normalizeFilter(raw string) string {
-	if f, ok := filterToken(raw); ok {
-		return f
-	}
-	return strings.TrimSpace(raw)
-}
+func normalizeFilter(raw string) string { return filters.Normalize(raw) }
 
 // filterToken canonicalizes a single token to a known filter name, reporting whether it is one.
-// It is the single source of truth for "is this string a filter?" used by both header/filename
-// normalization and directory-name detection. Johnson V is treated as the green channel (these
-// older LRGB sessions used R/V/B), surfaced and overridable via the filter-mapping UI.
-func filterToken(raw string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "l", "lum", "luminance", "clear":
-		return "L", true
-	case "r", "red":
-		return "R", true
-	case "g", "green", "v":
-		return "G", true
-	case "b", "blue":
-		return "B", true
-	case "ha", "h-alpha", "halpha", "h_alpha", "hydrogen-alpha":
-		return "Ha", true
-	case "oiii", "o3", "oxygen":
-		return "OIII", true
-	case "sii", "s2", "sulfur":
-		return "SII", true
-	}
-	return "", false
-}
+// The token table lives in internal/filters so the capture sequencer and the wheel-slot UI resolve
+// names exactly the way ingest does.
+func filterToken(raw string) (string, bool) { return filters.Token(raw) }
 
 // parseDateObs parses a FITS DATE-OBS into epoch milliseconds (0 if unparseable).
 func parseDateObs(s string) int64 {

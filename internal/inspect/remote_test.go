@@ -80,10 +80,34 @@ func TestFrameFromHeader_ReadsCoreCards(t *testing.T) {
 	assert.Equal(t, SourceHeader, fr.ClassSource)
 	assert.Equal(t, "Ha", fr.Filter)
 	assert.EqualValues(t, 180, fr.Gain)
+	assert.True(t, fr.HasGain, "a GAIN card marks the gain as real metadata")
 	assert.EqualValues(t, 30, fr.Offset)
 	assert.Equal(t, 2, fr.BinX)
 	assert.EqualValues(t, 300_000, fr.ExposureMs)
 	assert.Equal(t, 64, fr.Width)
 	assert.Equal(t, 48, fr.Height)
 	assert.Equal(t, "M42", fr.Object)
+}
+
+func TestFrameFromHeader_GainZeroVsAbsentAndCreator(t *testing.T) {
+	dir := t.TempDir()
+
+	// A REAL gain of 0 (the ASI1600's actual low-gain setting) with old-ASICAP provenance: only
+	// SWCREATE identifies the capture software — no INSTRUME card (task #354's five-night shape).
+	withGain0 := fitstest.Write(t, dir, "g0.fits", 8, 8, 500, map[string]string{
+		"IMAGETYP": "LIGHT", "GAIN": "0", "SWCREATE": "ASICAP",
+	})
+	f, err := fits.Open(withGain0)
+	require.NoError(t, err)
+	fr := FrameFromHeader(withGain0, f.Header)
+	assert.True(t, fr.HasGain, "gain 0 from a real GAIN card is known metadata, not a blank")
+	assert.EqualValues(t, 0, fr.Gain)
+	assert.Equal(t, "ASICAP", fr.Creator)
+
+	// No GAIN card at all (and a neutral name so no folder/filename backfill fires).
+	noGain := fitstest.Write(t, dir, "plain.fits", 8, 8, 500, map[string]string{"IMAGETYP": "LIGHT"})
+	f2, err := fits.Open(noGain)
+	require.NoError(t, err)
+	fr2 := FrameFromHeader(noGain, f2.Header)
+	assert.False(t, fr2.HasGain, "absent gain metadata must stay distinguishable from gain 0")
 }

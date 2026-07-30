@@ -19,11 +19,14 @@ type S3Connection struct {
 	SecretEnc   []byte `json:"-" db:"secret_enc"`
 	UseSSL      bool   `json:"use_ssl" db:"use_ssl"`
 	IsDefault   bool   `json:"is_default" db:"is_default"`
-	CreatedAt   int64  `json:"created_at" db:"created_at"`
-	UpdatedAt   int64  `json:"updated_at" db:"updated_at"`
+	// DefaultStorageClass is the S3 storage class uploads on this connection write with ("" → provider
+	// default). An instant class only (the API rejects an archived default). Flows into s3store.Config.
+	DefaultStorageClass string `json:"default_storage_class" db:"default_storage_class"`
+	CreatedAt           int64  `json:"created_at" db:"created_at"`
+	UpdatedAt           int64  `json:"updated_at" db:"updated_at"`
 }
 
-const s3ConnCols = `id,name,endpoint,region,access_key_id,secret_enc,use_ssl,is_default,created_at,updated_at`
+const s3ConnCols = `id,name,endpoint,region,access_key_id,secret_enc,use_ssl,is_default,default_storage_class,created_at,updated_at`
 
 // CreateS3Connection inserts a connection (never default — the caller sets the default separately in a
 // transaction) and returns its id.
@@ -31,9 +34,9 @@ func (s *Store) CreateS3Connection(ctx context.Context, c S3Connection) (int64, 
 	now := nowMs()
 	var id int64
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO s3_connections(name,endpoint,region,access_key_id,secret_enc,use_ssl,is_default,created_at,updated_at)
-		 VALUES($1,$2,$3,$4,$5,$6,false,$7,$7) RETURNING id`,
-		c.Name, c.Endpoint, c.Region, c.AccessKeyID, c.SecretEnc, c.UseSSL, now).Scan(&id)
+		`INSERT INTO s3_connections(name,endpoint,region,access_key_id,secret_enc,use_ssl,is_default,default_storage_class,created_at,updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6,false,$7,$8,$8) RETURNING id`,
+		c.Name, c.Endpoint, c.Region, c.AccessKeyID, c.SecretEnc, c.UseSSL, c.DefaultStorageClass, now).Scan(&id)
 	return id, err
 }
 
@@ -76,13 +79,13 @@ func (s *Store) GetDefaultS3Connection(ctx context.Context) (S3Connection, bool,
 
 // UpdateS3Connection updates a connection's fields. A nil secretEnc keeps the stored secret (so the UI can
 // edit a connection without re-entering the secret key); a non-nil secretEnc replaces it.
-func (s *Store) UpdateS3Connection(ctx context.Context, id int64, name, endpoint, region, accessKeyID string, secretEnc []byte, useSSL bool) error {
+func (s *Store) UpdateS3Connection(ctx context.Context, id int64, name, endpoint, region, accessKeyID string, secretEnc []byte, useSSL bool, defaultStorageClass string) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE s3_connections
 		    SET name=$2, endpoint=$3, region=$4, access_key_id=$5,
-		        secret_enc=COALESCE($6,secret_enc), use_ssl=$7, updated_at=$8
+		        secret_enc=COALESCE($6,secret_enc), use_ssl=$7, default_storage_class=$8, updated_at=$9
 		  WHERE id=$1`,
-		id, name, endpoint, region, accessKeyID, secretEnc, useSSL, nowMs())
+		id, name, endpoint, region, accessKeyID, secretEnc, useSSL, defaultStorageClass, nowMs())
 	return err
 }
 

@@ -4,10 +4,28 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path"
 	"strings"
 
 	"github.com/minio/minio-go/v7"
 )
+
+// MoveDest computes the destination key for moving src into dstFolder: src's base name placed under
+// dstFolder, keeping the trailing "/" for a folder. src is an object key, or a folder key ending "/";
+// dstFolder is a folder key ("" = bucket root). isDir reports whether src is a folder. It is the shared key
+// math for the enqueue handler (its early no-op / into-itself guards) and the move job, so both agree.
+func MoveDest(src, dstFolder string) (newKey string, isDir bool) {
+	isDir = strings.HasSuffix(src, "/")
+	base := path.Base(strings.TrimSuffix(src, "/"))
+	if dstFolder != "" && !strings.HasSuffix(dstFolder, "/") {
+		dstFolder += "/"
+	}
+	newKey = dstFolder + base
+	if isDir {
+		newKey += "/"
+	}
+	return newKey, isDir
+}
 
 // Management operations for the UI S3 explorer (create/delete buckets & folders, stream objects). These are
 // intentionally not used by the pipeline paths, which deal in whole-folder transfers.
@@ -125,7 +143,8 @@ func (c *Client) Open(ctx context.Context, bucket, key string) (io.ReadCloser, i
 
 // PutReader streams r to bucket/key. size may be -1 when unknown (minio buffers into a multipart upload).
 func (c *Client) PutReader(ctx context.Context, bucket, key string, r io.Reader, size int64) error {
-	if _, err := c.mc.PutObject(ctx, bucket, key, r, size, minio.PutObjectOptions{ContentType: contentType(key)}); err != nil {
+	opts := minio.PutObjectOptions{ContentType: contentType(key), StorageClass: c.defaultClass}
+	if _, err := c.mc.PutObject(ctx, bucket, key, r, size, opts); err != nil {
 		return fmt.Errorf("s3 put %s: %w", key, err)
 	}
 	return nil

@@ -30,6 +30,24 @@ export function formatBytes(bytes: number): string {
   return `${i === 0 || v >= 100 ? Math.round(v) : Number(v.toFixed(1))} ${units[i]}`;
 }
 
+// formatDurationClock renders an elapsed/remaining span as a clock (H:MM:SS, or M:SS under an hour), e.g.
+// 93_000 → "1:33", 3_723_000 → "1:02:03". Used for a transfer's elapsed time + ETA. "—" for a non-positive
+// or non-finite span (e.g. an ETA computed while the rate is still 0).
+export function formatDurationClock(ms: number): string {
+  if (!ms || ms < 0 || !Number.isFinite(ms)) return "—";
+  const total = Math.floor(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const p = (n: number) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${p(m)}:${p(s)}` : `${m}:${p(s)}`;
+}
+
+// formatRate renders a transfer throughput (bytes per second) as "<size>/s", e.g. 18_874_368 → "18 MB/s".
+export function formatRate(bytesPerSec: number): string {
+  return `${formatBytes(bytesPerSec)}/s`;
+}
+
 // formatTimestamp renders an epoch-ms instant as local "YYYY-MM-DD HH:MM:SS".
 export function formatTimestamp(ms: number): string {
   const d = new Date(ms);

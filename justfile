@@ -94,6 +94,28 @@ dev:
 web:
     cd frontend && pnpm dev
 
+# It runs as its OWN process so `just dev` — which restarts the engine on every source save — can
+# never drop a USB connection mid-sequence.
+#
+# Device server (simulator, or hardware with a native SDK): camera / filter wheel / mount.
+device:
+    go run ./cmd/astrostack device
+
+# ZWO ship no arm64 macOS library — their SDK, and their own ASIStudio, are x86_64 only. A native
+# arm64 process therefore cannot dlopen libASICamera2. Building JUST this sidecar as x86_64 and
+# letting Rosetta run it solves that: the engine, the frontend and every bit of stacking stay native
+# arm64 and talk to it over HTTP exactly as before. This is why device I/O lives in its own process.
+#
+# Device server built as x86_64, for real ZWO hardware on an Apple-Silicon Mac.
+device-x86:
+    @command -v arch >/dev/null && arch -x86_64 /usr/bin/true 2>/dev/null || \
+        (echo "Rosetta 2 is not installed — run: softwareupdate --install-rosetta" && exit 1)
+    GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -o bin/astrostack-x86 ./cmd/astrostack
+    ./bin/astrostack-x86 device
+
+device-status:
+    @curl -fsS "http://${ASTRO_DEVICE_ADDR:-127.0.0.1:8084}/health" && echo " OK"
+
 # Serve the local vision model for the finish supervisor (host; first run downloads ~28 GB).
 run-ia-model:
     @scripts/ia-model.sh
@@ -145,6 +167,13 @@ update-canopy-data:
 # = naked-eye limit). Re-run only to refresh the data or change density; commit the regenerated JSON.
 gen-skymap-data MAG="6.0":
     go run ./cmd/astrostack skymap-data --mag "{{MAG}}"
+
+# Rebuild the embedded deep star catalogue (internal/deepstars/catalogue/hyg_mag9.csv.gz) the
+# star-annotation endpoint uses for name labels (proper/Bayer/Flamsteed/HD). Fetches the HYG database
+# (network at generation time ONLY; same source pin as gen-skymap-data). MAG = faintest star kept.
+# Re-run only to refresh or change depth; commit the regenerated file.
+gen-deepstars-data MAG="9.0":
+    go run ./cmd/astrostack deepstars-data --mag "{{MAG}}"
 
 # One-time download of Siril's OFFLINE Gaia plate-solve catalogue (~1.1 GB → ~3 GB) into
 # library/catalogues — makes plate-solving (and therefore SPCC colour calibration) work with no

@@ -308,6 +308,52 @@ export const GRID_LAYERS: GridLayerDef[] = [
       "rgba(125,45,200,0.9)",
     ],
   },
+  // Standalone altitude-band overlays: same colours as their contribution inside the composite
+  // "clouds" render (mirrors internal/weathertile cloudBands), each with a single legend bar.
+  {
+    id: "clouds_low",
+    metric: "clouds_low",
+    labelKey: "tonight.layers.cloudLow",
+    color: bandColor([236, 240, 246], 0.95, 1.05),
+    gradient: ["rgba(236,240,246,0)", "rgba(236,240,246,0.95)"],
+  },
+  {
+    id: "clouds_mid",
+    metric: "clouds_mid",
+    labelKey: "tonight.layers.cloudMid",
+    color: bandColor([205, 215, 228], 0.7, 1.1),
+    gradient: ["rgba(205,215,228,0)", "rgba(205,215,228,0.7)"],
+  },
+  {
+    id: "clouds_high",
+    metric: "clouds_high",
+    labelKey: "tonight.layers.cloudHigh",
+    color: bandColor([190, 215, 235], 0.45, 1.15),
+    gradient: ["rgba(190,215,235,0)", "rgba(190,215,235,0.45)"],
+  },
+  {
+    // Fog / dew risk (temperature−dew-point spread, °C) — INVERSE of the % ramps: strong teal where the
+    // air is saturated (≈0 °C spread → fog forming, dew on the optics), transparent when dry (≥8 °C).
+    // Mirrors internal/weathertile dewSpreadRamp.
+    id: "fog",
+    metric: "dewspread",
+    labelKey: "tonight.layers.fog",
+    color: (spread) =>
+      rampRGBA(spread, [
+        { at: 0, rgba: [45, 190, 200, 0.8] },
+        { at: 2, rgba: [70, 185, 205, 0.62] },
+        { at: 4, rgba: [120, 190, 215, 0.38] },
+        { at: 6, rgba: [170, 200, 225, 0.18] },
+        { at: 8, rgba: [200, 215, 235, 0] },
+      ]),
+    // Legend runs less → more RISK (the label order), i.e. dry/transparent on the left, saturated on
+    // the right — the reverse of the spread axis.
+    gradient: [
+      "rgba(200,215,235,0)",
+      "rgba(120,190,215,0.38)",
+      "rgba(45,190,200,0.8)",
+    ],
+  },
 ];
 
 export function gridLayerById(id: string): GridLayerDef | undefined {

@@ -91,4 +91,9 @@ onBeforeUnmount(() => wx.pause());
       :aria-label="t('tonight.weather.timeline.scrub')"
     />
   </div>
+  <!-- Honest empty state: animated layers are on but no time axis loaded (upstream down on a cold
+       start) — say so instead of rendering nothing at all. -->
+  <p v-else class="mt-2 text-xs text-slate-500 dark:text-slate-400">
+    {{ t("tonight.weather.timeline.empty") }}
+  </p>
 </template>

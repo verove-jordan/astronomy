@@ -56,6 +56,13 @@ func TestTypeFromDirs_Compound(t *testing.T) {
 		{"input/sess/dark_flats/x.fit", DarkFlat},
 		{"input/sess/darkstar_nebula/L/x.fit", Unknown},        // "darkstar" is not the word "dark"
 		{"input/M27/m27/data/2019-08-29_22_20/x.fit", Unknown}, // a light folder names no type
+		// SharpCap nests its "CapObj" capture folder UNDER the type folder (.../darks/CapObj/<session>/).
+		// The explicit calibration grandparent must win over the nearer CapObj (which else reads as Light).
+		{"input/2023_02_27/darks/CapObj/2023-02-28_05_18_38Z/x.FIT", Dark},
+		{"input/2023_02_27/offset/CapObj/2023-02-28_05_52_24Z/x.FIT", Bias},
+		{"input/2023_02_27/flats/CapObj/2023-02-28_06_01_48Z/x.FIT", Flat},
+		// A bare CapObj object folder with no calibration ancestor is still an unlabeled light (fallback).
+		{"input/2023_02_27/triplet_m66/CapObj/2023-02-27_22_55_39Z/x.FIT", Light},
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {

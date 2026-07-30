@@ -8,6 +8,8 @@ import (
 	"sync"
 
 	"golang.org/x/sync/errgroup"
+
+	"github.com/verove-jordan/astronomy/internal/s3store"
 )
 
 // emitEvery throttles progress callbacks to at most one per this many bytes (plus one per file boundary),
@@ -25,7 +27,7 @@ const emitEvery = 1 << 20 // 1 MiB
 // be concurrency-safe. A manual pause stops SCHEDULING further files (in-flight ones finish, then it
 // returns ErrPaused); the first hard error cancels the group and is returned.
 func runUpload(ctx context.Context, client s3API, req Request, syncOnly bool, onProgress func(Progress)) (Result, error) {
-	files, totalBytes, err := walkLocalFiles(req.folderDir(), req.ExcludeDirs)
+	files, totalBytes, err := walkLocalFiles(req.folderDir(), req.ExcludeDirs, req.SkipSymlinks)
 	if err != nil {
 		return Result{}, fmt.Errorf("scan %s: %w", req.folderDir(), err)
 	}
@@ -200,10 +202,13 @@ func alreadyMirrored(req Request, rel, key string, size int64, remote map[string
 	return false, ""
 }
 
-// downloadItem is one object to pull, with its local destination and folder-relative path.
+// downloadItem is one object to pull, with its local destination and folder-relative path. class is its
+// storage class when a List reported it ("" == unknown, e.g. a plan/ledger entry, or STANDARD) — the
+// archived pre-flight skips a HEAD for a List-confirmed instant class and only probes the rest.
 type downloadItem struct {
 	key, local, rel string
 	size            int64
+	class           string
 }
 
 // runDownload pulls the folder from S3, skipping objects already present locally at the same size. Under a
@@ -213,6 +218,14 @@ func runDownload(ctx context.Context, client s3API, req Request, onProgress func
 	todo, totalBytes, err := planDownloads(ctx, client, req)
 	if err != nil {
 		return Result{}, err
+	}
+	// Pre-flight: if any object to pull is archived-and-not-restored, a GET would fail mid-stream with
+	// InvalidObjectState (which retryFile won't retry and the job layer would fail). Detect it up front and
+	// surface every offending key at once so the job can thaw them and park until they are readable.
+	if archErr, perr := preflightArchived(ctx, client, req.Bucket, todo); perr != nil {
+		return Result{}, perr
+	} else if archErr != nil {
+		return Result{}, archErr
 	}
 	prog := &progressAggregator{total: totalBytes, totalFiles: len(todo), onProgress: onProgress}
 	var mu sync.Mutex // serializes the ledger callback
@@ -296,10 +309,35 @@ func planDownloads(ctx context.Context, client s3API, req Request) ([]downloadIt
 		if fi, err := os.Stat(local); err == nil && fi.Size() == o.Size {
 			continue
 		}
-		todo = append(todo, downloadItem{key: o.Key, local: local, rel: rel, size: o.Size})
+		todo = append(todo, downloadItem{key: o.Key, local: local, rel: rel, size: o.Size, class: o.StorageClass})
 		total += o.Size
 	}
 	return todo, total, nil
+}
+
+// preflightArchived probes the pull set for archived-and-not-restored objects. It trusts a List-confirmed
+// INSTANT class (no HEAD) and issues a Readiness HEAD only for objects that are archived per List or whose
+// class is unknown (a plan/ledger entry) — so an all-hot folder costs zero HEADs and behaves exactly as
+// before (also the natural soft-fail on endpoints with no Glacier: nothing is ever archived). Any object
+// that is not readable now is collected; a non-empty set is returned as an *ArchivedError.
+func preflightArchived(ctx context.Context, client s3API, bucket string, todo []downloadItem) (*ArchivedError, error) {
+	var pending []string
+	for _, it := range todo {
+		if it.class != "" && !s3store.IsArchivedClass(it.class) {
+			continue // List reported an instant class → readable, no HEAD needed
+		}
+		rd, err := client.Readiness(ctx, bucket, it.key)
+		if err != nil {
+			return nil, err
+		}
+		if rd != s3store.Readable {
+			pending = append(pending, it.key)
+		}
+	}
+	if len(pending) > 0 {
+		return &ArchivedError{Keys: pending}, nil
+	}
+	return nil, nil
 }
 
 // progressAggregator throttles + AGGREGATES Progress callbacks across the parallel transfer workers:

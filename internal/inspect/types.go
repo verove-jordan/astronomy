@@ -35,7 +35,11 @@ type Frame struct {
 	Filter     string    `json:"filter,omitempty"`
 	ExposureMs int64     `json:"exposure_ms"`
 	Gain       int64     `json:"gain"`
-	Offset     int64     `json:"offset"`
+	// HasGain distinguishes "no GAIN metadata anywhere" from a real gain of 0 (a legitimate ZWO
+	// setting): photometric normalization must not apply a gain law to a value that is merely the
+	// int zero-value. Set wherever Gain is filled (header, sidecar, filename, manifest legend).
+	HasGain bool  `json:"has_gain,omitempty"`
+	Offset  int64 `json:"offset"`
 	// ISO is the camera ISO speed for phone/DSLR raws (read from EXIF); 0 for cooled-camera FITS,
 	// which use Gain/Offset instead. It keys phone calibration masters the way gain does for the ZWO.
 	ISO        int64 `json:"iso,omitempty"`
@@ -48,11 +52,19 @@ type Frame struct {
 	// Bayer is the colour-filter-array pattern (e.g. "GRBG") for one-shot-color frames; "" = monochrome.
 	// OSC frames must be debayered, so the mono per-filter pipeline excludes them.
 	Bayer       string `json:"bayer,omitempty"`
-	Object      string `json:"object,omitempty"`
-	Instrument  string `json:"instrument,omitempty"`
-	Telescope   string `json:"telescope,omitempty"`
+	Object     string `json:"object,omitempty"`
+	Instrument string `json:"instrument,omitempty"`
+	// Creator is the capture software (SWCREATE), e.g. "ASICAP" / "SharpCap". Old ASICAP writes NO
+	// INSTRUME card, so this is the only in-header evidence the ZWO gain law applies (task #354:
+	// its absence silently dropped the 10^(Δgain/200) factor across a g0–g450 five-night merge).
+	Creator   string `json:"creator,omitempty"`
+	Telescope string `json:"telescope,omitempty"`
 	DateObs     string `json:"date_obs,omitempty"`
 	DateObsMs   int64  `json:"date_obs_ms,omitempty"`
+	// Session is the capture-night key ("YYYY-MM-DD", local-noon bucketed from DateObsMs; "" when
+	// undated). Stamped at frame construction — NEVER in a later pass, because ScanCache shares
+	// frames read-only across scans. See session.go.
+	Session     string `json:"session,omitempty"`
 	ClassSource string `json:"class_source"`
 	// WheelSlot is the physical filter-wheel (EFW) position, 1-based; 0 = unknown. Read from the
 	// SharpCap sidecar or the filename; named to a filter via a legend (info.txt / default order).
@@ -87,6 +99,11 @@ type SetKey struct {
 	ISO        int64     `json:"iso,omitempty"`
 	TempBucket int       `json:"temp_bucket_c"`
 	Bin        int       `json:"bin"`
+	// Session is the capture-night key, set ONLY when the scan spans several known nights and ONLY
+	// for lights + flats (a night owns its sky/dust state; darks/bias are night-agnostic thermal
+	// signatures pooled across sessions). Zero for every single-night scan — sets, sort order and
+	// master names stay byte-identical to the pre-sessionization behavior. See buildSets.
+	Session string `json:"session,omitempty"`
 }
 
 // Set is a group of frames that share a SetKey.
@@ -105,6 +122,29 @@ type Inventory struct {
 	Videos           []*Frame          `json:"videos"`
 	Warnings         []string          `json:"warnings"`
 	ChannelDetection *ChannelDetection `json:"channel_detection,omitempty"`
+	// Sessions summarizes the capture nights found in the scan (per-night counts, time window and
+	// light configs), sorted by night. nil when no frame carries a DATE-OBS. See session.go.
+	Sessions []SessionInfo `json:"sessions,omitempty"`
+}
+
+// SessionInfo summarizes one capture night of the scan (Key "" = the undated bucket).
+type SessionInfo struct {
+	Key     string            `json:"key"`
+	StartMs int64             `json:"start_ms,omitempty"`
+	EndMs   int64             `json:"end_ms,omitempty"`
+	Counts  map[FrameType]int `json:"counts"`
+	Configs []SessionConfig   `json:"configs,omitempty"`
+}
+
+// SessionConfig is one distinct light-capture configuration within a night, with its frame count.
+type SessionConfig struct {
+	Filter     string `json:"filter,omitempty"`
+	ExposureMs int64  `json:"exposure_ms"`
+	Gain       int64  `json:"gain"`
+	Offset     int64  `json:"offset"`
+	Bin        int    `json:"bin"`
+	TempBucket int    `json:"temp_bucket_c"`
+	Count      int    `json:"count"`
 }
 
 // ChannelDetection summarizes signal-based filter detection so the UI can show and override it.

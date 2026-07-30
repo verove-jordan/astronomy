@@ -31,7 +31,11 @@ func TestPlan_ReturnsRequestedCountInBand(t *testing.T) {
 		assert.Equal(t, i+1, s.Order)
 		assert.GreaterOrEqual(t, s.AltDeg, profile.MinAltDeg)
 		assert.LessOrEqual(t, s.AltDeg, profile.MaxAltDeg)
-		assert.NotEmpty(t, s.Reasons)
+		require.NotEmpty(t, s.Reasons)
+		for _, r := range s.Reasons {
+			assert.NotEmpty(t, r.Code, "reasons are structured codes the UI translates")
+			assert.NotEqual(t, r.Code, r.String(), "every code must have an English rendering")
+		}
 		assert.NotEmpty(t, s.Compass)
 	}
 	assert.Equal(t, "recommended", res.Stars[0].Status, "with no accepted stars the first is the one to center now")
@@ -187,7 +191,11 @@ func TestPlan_CelestronEQ_CalibFallsBackSameSideWithWarning(t *testing.T) {
 		assert.Equal(t, res.MeridianSide, s.MeridianSide, "fallback places calibration on the align side")
 	}
 	require.NotEmpty(t, res.Warnings)
-	assert.Contains(t, res.Warnings[0], "calibration star")
+	w := res.Warnings[0]
+	assert.Equal(t, "calib_same_side", w.Code)
+	assert.Equal(t, opp, w.Side, "the warning names the dry (opposite) side")
+	assert.Equal(t, 4, w.Count, "all four calibration stars fell back")
+	assert.Contains(t, w.String(), "calibration star", "the English rendering stays readable for the agent")
 }
 
 func TestPlan_StarListFilterApplies(t *testing.T) {
@@ -223,7 +231,13 @@ func TestPlan_NoCandidatesWarnsInsteadOfPanicking(t *testing.T) {
 	}
 	res := Plan(p, Lookup("eq-generic"), 3, nil, all) // reject the entire sky
 	assert.Empty(t, res.Stars)
-	assert.NotEmpty(t, res.Warnings)
+	require.NotEmpty(t, res.Warnings)
+	w := res.Warnings[0]
+	assert.Equal(t, "few_stars", w.Code)
+	assert.Equal(t, 0, w.Available)
+	assert.Equal(t, 3, w.Requested)
+	assert.Empty(t, w.Side, "eq-generic has no meridian-side rule")
+	assert.Contains(t, w.String(), "Only 0 of 3 requested stars")
 }
 
 func meanSepStars(stars []AlignStar) float64 {

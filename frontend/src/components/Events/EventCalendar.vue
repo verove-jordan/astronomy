@@ -168,9 +168,7 @@ function pickEvent(c: Cell, e: SkyEvent) {
           <EventIcon :kind="e.kind" class="h-2.5 w-2.5 shrink-0" />
           <span class="truncate">{{ kindLabel(e, t) }}</span>
         </button>
-        <span
-          v-if="c.events.length > 2"
-          class="pl-1 text-[9px] text-slate-400"
+        <span v-if="c.events.length > 2" class="pl-1 text-[9px] text-slate-400"
           >+{{ c.events.length - 2 }}</span
         >
       </div>

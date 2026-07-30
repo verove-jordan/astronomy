@@ -46,7 +46,11 @@ function seed(): Record<string, KnobValue> {
   const out: Record<string, KnobValue> = {};
   for (const k of knobs.value) {
     const want =
-      k.kind === "toggle" ? "boolean" : k.kind === "select" ? "string" : "number";
+      k.kind === "toggle"
+        ? "boolean"
+        : k.kind === "select"
+          ? "string"
+          : "number";
     out[k.key] =
       typeof over[k.key] === want ? (over[k.key] as KnobValue) : k.def;
   }

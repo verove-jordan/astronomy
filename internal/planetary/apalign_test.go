@@ -1,6 +1,7 @@
 package planetary
 
 import (
+	"context"
 	"math"
 	"path/filepath"
 	"testing"
@@ -70,8 +71,9 @@ func TestWarpToSharpest_CorrectsLocalDistortion(t *testing.T) {
 
 	before := ssd(ref, shifted)
 	// Frame 0 is sharpest → reference (written unresampled); frame 1 is measured and warped once.
-	out, _, _, err := warpToSharpest([]string{refPath, shPath}, []float64{9, 1}, dir, "w", true)
+	res, err := warpToSharpest(context.Background(), []string{refPath, shPath}, []float64{9, 1}, dir, "w", true, 1, 0, nil)
 	require.NoError(t, err)
+	out := res.paths
 	require.Len(t, out, 2)
 
 	warped, err := fits.ReadImage(out[1])

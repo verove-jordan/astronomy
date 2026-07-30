@@ -102,6 +102,47 @@ export function precessFromJ2000(
   };
 }
 
+// tangentPlane projects (raDeg,decDeg) onto the gnomonic tangent plane at (ra0,dec0): standard
+// coordinates ξ (east-positive) / η (north-positive) in DEGREES. Mirrors astro/tangent.go — the
+// mosaic tile math — so canvas previews and Aladin hit-testing agree with the server's tiles.
+// Returns null at/beyond 90° from the tangent point.
+export function tangentPlane(
+  ra0: number,
+  dec0: number,
+  raDeg: number,
+  decDeg: number,
+): { xi: number; eta: number } | null {
+  const sinDec = Math.sin(decDeg * DEG);
+  const cosDec = Math.cos(decDeg * DEG);
+  const sinDec0 = Math.sin(dec0 * DEG);
+  const cosDec0 = Math.cos(dec0 * DEG);
+  const dRa = (raDeg - ra0) * DEG;
+  const div = sinDec * sinDec0 + cosDec * cosDec0 * Math.cos(dRa);
+  if (div < 1e-12) return null;
+  return {
+    xi: ((cosDec * Math.sin(dRa)) / div) * RAD,
+    eta: ((sinDec * cosDec0 - cosDec * sinDec0 * Math.cos(dRa)) / div) * RAD,
+  };
+}
+
+// tangentSky inverts tangentPlane (ξ/η degrees → RA/Dec degrees, RA in [0,360)).
+export function tangentSky(
+  ra0: number,
+  dec0: number,
+  xiDeg: number,
+  etaDeg: number,
+): { ra: number; dec: number } {
+  const xi = xiDeg * DEG;
+  const eta = etaDeg * DEG;
+  const sinDec0 = Math.sin(dec0 * DEG);
+  const cosDec0 = Math.cos(dec0 * DEG);
+  const norm = Math.sqrt(1 + xi * xi + eta * eta);
+  return {
+    dec: Math.asin(clamp1((sinDec0 + eta * cosDec0) / norm)) * RAD,
+    ra: norm360(ra0 + Math.atan2(xi, cosDec0 - eta * sinDec0) * RAD),
+  };
+}
+
 // apparentAltitude applies Saemundsson refraction to a geometric altitude (matches astro/coords.go).
 export function apparentAltitude(trueAltDeg: number): number {
   const r =

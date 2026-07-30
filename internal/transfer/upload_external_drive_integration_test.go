@@ -95,7 +95,7 @@ func TestIntegration_UploadExternalDriveToDashboardS3(t *testing.T) {
 		res.Files, humanBytes(res.Bytes), res.Skipped)
 
 	// End-to-end: every visible local file is now present on the mirror under the prefix.
-	local, _, err := walkLocalFiles(req.folderDir(), nil)
+	local, _, err := walkLocalFiles(req.folderDir(), nil, false)
 	require.NoError(t, err)
 	require.NotEmptyf(t, local, "no files found under %q", src)
 	objs, err := client.List(ctx, bucket, req.baseKey())

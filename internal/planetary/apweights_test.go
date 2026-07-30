@@ -1,6 +1,7 @@
 package planetary
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -10,27 +11,37 @@ import (
 	"github.com/verove-jordan/astronomy/internal/fits"
 )
 
-func TestApWeightFields(t *testing.T) {
+func TestApSelectionFields(t *testing.T) {
+	// 12 frames; cell 0's local sharpness descends 12,11,…,1 → K = max(6, 25%·12=3) = 6, so the
+	// 6th-best score (7) is the soft cutoff: well above ≈1, at the cutoff 0.5, well below ≈0.
+	const frames = 12
 	cells := apGridN * apGridN
-	a := make([]float64, cells)
-	b := make([]float64, cells)
-	a[0], b[0] = 1.0, 0.5 // frame A twice as sharp in cell 0
-	// cell 1 has detail only in frame B; cell 2 is off-disk in both (0).
-	a[1], b[1] = 0, 0.8
+	cellSharp := make([][]float64, frames)
+	for i := range cellSharp {
+		cellSharp[i] = make([]float64, cells)
+		cellSharp[i][0] = float64(frames - i) // 12, 11, …, 1
+		cellSharp[i][1] = 0                   // no detail in ANY frame → neutral
+	}
 
-	fields := apWeightFields([][]float64{a, b})
-	require.Len(t, fields, 2)
-	assert.Equal(t, 1.0, fields[0][0], "the per-cell max normalizes to 1")
-	assert.InDelta(t, 0.25, fields[1][0], 1e-9, "(0.5)^2 quality falloff")
-	assert.Equal(t, apWeightMin, fields[0][1], "no detail in A's cell 1 → floored")
-	assert.Equal(t, 1.0, fields[1][1])
-	assert.Equal(t, 1.0, fields[0][2], "cell without detail in ANY frame stays neutral")
-	assert.Equal(t, 1.0, fields[1][2])
+	fields := apSelectionFields(cellSharp)
+	require.Len(t, fields, frames)
+	assert.Greater(t, fields[0][0], 0.99, "locally sharpest frame is fully selected")
+	assert.InDelta(t, 0.5, fields[frames-7][0], 1e-9, "the K-th best score sits at the logistic midpoint")
+	assert.Less(t, fields[frames-1][0], 0.01, "locally soft frames are excluded, not floored")
+	for i := range fields {
+		assert.Equal(t, 1.0, fields[i][1], "cell without detail in ANY frame stays neutral")
+	}
+}
+
+func TestSelectionK(t *testing.T) {
+	assert.Equal(t, 6, selectionK(12), "floored at apSelectMin")
+	assert.Equal(t, 25, selectionK(100), "25% of the pool")
+	assert.Equal(t, 3, selectionK(3), "never more than the pool")
 }
 
 func TestStackWeightedFileAP_RegionalDominance(t *testing.T) {
 	// Frame A is all 1.0, frame B all 0.0; A "owns" the top-left cell, B the bottom-right. The master
-	// must track A in A's cell and B in B's cell — the whole point of multi-point quality weighting.
+	// must track A in A's cell and B in B's cell — the whole point of per-AP selection.
 	const w, h = 100, 100
 	dir := t.TempDir()
 	mk := func(name string, v float32) string {
@@ -48,13 +59,10 @@ func TestStackWeightedFileAP_RegionalDominance(t *testing.T) {
 	cells := apGridN * apGridN
 	fa := make([]float64, cells)
 	fb := make([]float64, cells)
-	for k := range fa {
-		fa[k], fb[k] = apWeightMin, apWeightMin
-	}
 	fa[0] = 1                              // A dominates the top-left cell
 	fb[apGridN*apGridN-1] = 1              // B dominates the bottom-right cell
 	master := filepath.Join(dir, "master") // .fits appended by the stacker
-	require.NoError(t, stackWeightedFileAP([]string{pa, pb}, []float64{1, 1}, [][]float64{fa, fb}, master))
+	require.NoError(t, stackWeightedFileAP(context.Background(), []string{pa, pb}, []float64{1, 1}, [][]float64{fa, fb}, master, nil))
 
 	out, err := fits.ReadImage(master + ".fits")
 	require.NoError(t, err)

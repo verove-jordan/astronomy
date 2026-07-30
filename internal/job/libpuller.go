@@ -12,10 +12,11 @@ import (
 	"github.com/verove-jordan/astronomy/internal/s3store"
 )
 
-// libS3 is the slice of the S3 client the puller needs (stat an object, download it) — an interface so the
-// pull/free logic is unit-testable with a fake. *s3store.Client satisfies it.
+// libS3 is the slice of the S3 client the puller needs (stat an object, restore it, download it) — an
+// interface so the pull/free logic is unit-testable with a fake. *s3store.Client satisfies it.
 type libS3 interface {
 	Stat(ctx context.Context, bucket, key string) (s3store.Object, bool, error)
+	Restore(ctx context.Context, bucket, key string, days int, tier s3store.RestoreTier) error
 	Download(ctx context.Context, bucket, key, localPath string, onBytes func(delta int64)) error
 }
 
@@ -50,7 +51,18 @@ func (p *s3LibPuller) Ensure(ctx context.Context, localPaths []string) error {
 			continue // already present locally — the mirror is kept, so this is the common case
 		}
 		// Only pull what the mirror actually holds; a missing object is not an error (the caller falls back).
-		if _, ok, err := p.client.Stat(ctx, p.bucket, key); err != nil || !ok {
+		obj, ok, err := p.client.Stat(ctx, p.bucket, key)
+		if err != nil || !ok {
+			continue
+		}
+		// A master archived to Glacier can't be downloaded until restored. Kick off its thaw (best-effort,
+		// idempotent) so a LATER run finds it warm, and fall back to the local rebuild this run — a run never
+		// blocks on a cold master. An already-restored (RestoreReady) master downloads normally below.
+		if obj.Archived() && !obj.RestoreReady() {
+			if !obj.RestorePending() {
+				_ = p.client.Restore(ctx, p.bucket, key, 0, s3store.TierStandard)
+			}
+			p.warn(fmt.Sprintf("library %s is archived — restoring from Glacier; used local rebuild this run", filepath.Base(lp)))
 			continue
 		}
 		if err := fsutil.EnsureDir(filepath.Dir(lp)); err != nil {

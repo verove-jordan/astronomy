@@ -54,7 +54,10 @@ export const useBackupStore = defineStore("backup", () => {
 
   // backup enqueues a snapshot job. The browser app state (localStorage + AI chats) is gathered here — only
   // the browser can read it — and posted in the body; the server stores it as appstate.json in the backup.
-  async function backup(components: BackupComponent[]): Promise<number> {
+  async function backup(
+    components: BackupComponent[],
+    storageClass = "",
+  ): Promise<number> {
     let appstate = "";
     if (components.includes("appstate")) {
       appstate = JSON.stringify(await exportAppState());
@@ -64,6 +67,7 @@ export const useBackupStore = defineStore("backup", () => {
       prefix: s3.prefix,
       components,
       appstate,
+      storage_class: storageClass,
     });
     return data.id;
   }

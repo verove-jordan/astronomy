@@ -45,7 +45,13 @@ func CalibrateLightsLive(ctx context.Context, runner *siril.Runner, newLights []
 	if _, err := fsutil.LinkFrames(stageDir, newLights); err != nil {
 		return nil, err
 	}
-	if _, err := runner.Run(ctx, stageDir, siril.CalibrateOnlyScript("light", m), onProgress); err != nil {
+	// A poll tick often delivers a single new frame: link writes no .seq for one image, so the
+	// sequence calibrate would fail — calibrate_single produces the same pp_ output.
+	calScript := siril.CalibrateOnlyScript("light", m)
+	if len(newLights) == 1 {
+		calScript = siril.CalibrateSingleScript("light", m)
+	}
+	if _, err := runner.Run(ctx, stageDir, calScript, onProgress); err != nil {
 		return nil, fmt.Errorf("calibrate new lights: %w", err)
 	}
 	base := siril.CalibratedSeq("light", m) // "pp_light"
@@ -81,6 +87,25 @@ func StackLinearLive(ctx context.Context, runner *siril.Runner, poolPaths []stri
 		return ch, err
 	}
 
+	// The pool's first frame arrives alone: Siril has no one-image sequences to register or stack,
+	// so publish the calibrated frame as the running master directly — the live view gets a first
+	// image immediately, and the next batch re-stacks the grown pool normally.
+	if len(poolPaths) == 1 {
+		masterName := "master_" + filterTag(filter)
+		outBase := filepath.Join(outDir, masterName)
+		if err := fsutil.CopyFile(poolPaths[0], outBase+".fits"); err != nil {
+			ch.Err = err.Error()
+			return ch, err
+		}
+		ch.StackedFrames = 1
+		ch.OutputPath = outBase + ".fits"
+		ch.Selection.Notes = append(ch.Selection.Notes, "only 1 frame pooled — showing it as the master (no stacking yet)")
+		if _, err := runner.Run(ctx, outDir, siril.PreviewScript(masterName+".fits", masterName+"_preview", 0.5), nil); err == nil {
+			ch.PreviewPath = filepath.Join(outDir, masterName+"_preview.png")
+		}
+		return ch, nil
+	}
+
 	// Re-link the whole pool into a fresh sequence and register it (no further calibration — the pool is
 	// already calibrated). Clean any prior batch's sequence first so disk does not grow unbounded.
 	seqDir := filepath.Join(workDir, "live_"+filterTag(filter))
@@ -99,7 +124,7 @@ func StackLinearLive(ctx context.Context, runner *siril.Runner, poolPaths []stri
 
 	base := siril.CalibratedSeq("live", noMasters) // "live"
 	reg := siril.RegisteredSeq("live", noMasters)  // "r_live"
-	metrics, rejected, regCount, err := gradeChannel(seqDir, base, frames, gradeOpts, false)
+	metrics, rejected, regCount, err := gradeChannel(seqDir, base, frames, gradeOpts, false, nil, nil)
 	if err != nil {
 		ch.Err = "grading: " + err.Error()
 		return ch, err
@@ -113,9 +138,13 @@ func StackLinearLive(ctx context.Context, runner *siril.Runner, poolPaths []stri
 
 	masterName := "master_" + filterTag(filter)
 	outBase := filepath.Join(outDir, masterName)
-	if _, err := runner.Run(ctx, seqDir, siril.StackSelectedScript(reg, regCount, rejected, outBase, "wfwhm"), onProgress); err != nil {
+	_, stackNote, err := stackSelectedOrCopy(ctx, runner, seqDir, reg, regCount, rejected, outBase, "wfwhm", onProgress)
+	if err != nil {
 		ch.Err = err.Error()
 		return ch, err
+	}
+	if stackNote != "" {
+		ch.Selection.Notes = append(ch.Selection.Notes, stackNote)
 	}
 	ch.OutputPath = outBase + ".fits"
 

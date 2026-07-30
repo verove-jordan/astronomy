@@ -48,7 +48,7 @@ func TestApplyAlignPolicy(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			res := &Result{}
-			got := applyAlignPolicy(tt.aligned, unaligned, tt.failed, res)
+			got := applyAlignPolicy(Options{}, tt.aligned, unaligned, tt.failed, res)
 			assert.Equal(t, tt.want, got)
 			if assert.NotEmpty(t, res.Warnings) {
 				assert.Contains(t, res.Warnings[len(res.Warnings)-1], tt.warn)

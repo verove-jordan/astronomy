@@ -8,13 +8,14 @@ const arcsecPerRadian = 206264.806
 
 // Optics describes the telescope + camera: focal length and aperture (mm), pixel pitch (µm), sensor
 // dimensions (px), and an optional Barlow factor. Image scale and field of view derive from these.
+// JSON names match the /api/sky equipment echo — mosaic plans persist an Optics snapshot.
 type Optics struct {
-	FocalMM    float64
-	ApertureMM float64
-	PixelUm    float64
-	SensorWpx  int
-	SensorHpx  int
-	BarlowX    float64 // optical amplifier on the focal length; ≤0 means none (×1)
+	FocalMM    float64 `json:"focal_mm"`
+	ApertureMM float64 `json:"aperture_mm"`
+	PixelUm    float64 `json:"pixel_um"`
+	SensorWpx  int     `json:"sensor_w_px"`
+	SensorHpx  int     `json:"sensor_h_px"`
+	BarlowX    float64 `json:"barlow_x"` // optical amplifier on the focal length; ≤0 means none (×1)
 }
 
 // EffectiveFocalMM is the focal length presented to the camera or eyepiece after the Barlow (if any):

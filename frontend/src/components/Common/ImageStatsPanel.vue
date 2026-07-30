@@ -14,7 +14,8 @@ const maxWhite = computed(() => Math.max(...props.m.white_clip));
 const castLabel = computed(() => {
   const v = props.m.green_cast;
   if (Math.abs(v) <= 0.02) return t("astroAgent.stats.neutral");
-  const hue = v > 0 ? t("astroAgent.stats.green") : t("astroAgent.stats.magenta");
+  const hue =
+    v > 0 ? t("astroAgent.stats.green") : t("astroAgent.stats.magenta");
   return `${hue} (${v > 0 ? "+" : ""}${v.toFixed(3)})`;
 });
 

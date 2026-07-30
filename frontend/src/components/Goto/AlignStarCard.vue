@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
-import type { GotoStar } from "@/types";
+import type { GotoStar, GotoReason } from "@/types";
 import Pill from "@/components/Common/Pill.vue";
 import IconCompassArrow from "@/components/Icons/IconCompassArrow.vue";
 import { btnPrimary, btnGhost } from "@/constants/styles";
@@ -39,6 +39,16 @@ const cardClass = computed(() => {
 });
 const isRecommended = computed(() => props.star.status === "recommended");
 const isAccepted = computed(() => props.star.status === "accepted");
+
+// reasonText renders one structured pick code with its params (mag keeps one decimal, angles are
+// whole degrees — matching the backend's former English formatting exactly).
+function reasonText(r: GotoReason): string {
+  return t(`goto.reasons.${r.code}`, {
+    mag: (r.mag ?? 0).toFixed(1),
+    alt: Math.round(r.alt ?? 0),
+    deg: Math.round(r.deg ?? 0),
+  });
+}
 </script>
 
 <template>
@@ -80,7 +90,7 @@ const isAccepted = computed(() => props.star.status === "accepted");
           />
           <span class="font-medium">{{
             t("goto.card.look", {
-              dir: star.compass,
+              dir: t(`goto.compass.${star.compass}`),
               alt: Math.round(star.alt_deg),
             })
           }}</span>
@@ -97,7 +107,9 @@ const isAccepted = computed(() => props.star.status === "accepted");
           v-if="!isAccepted && star.reasons.length"
           class="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-400"
         >
-          <li v-for="(reason, i) in star.reasons" :key="i">· {{ reason }}</li>
+          <li v-for="reason in star.reasons" :key="reason.code">
+            · {{ reasonText(reason) }}
+          </li>
         </ul>
       </div>
     </div>

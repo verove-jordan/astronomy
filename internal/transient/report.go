@@ -9,11 +9,16 @@ type Summary struct {
 	Segments   int `json:"segments"`
 	MaskedPx   int `json:"masked_px"`
 	// Line-validation observability (validated hybrid only): candidates rejected as fixed pattern
-	// (walking noise), geostationary swaths repaired, and frames whose line pass was skipped as a
-	// candidate flood. All omitempty so the plain per-pixel summary is unchanged.
+	// (walking noise), geostationary swaths repaired, and recurring corridors (belt-reused sky
+	// tracks found on the mean residual) repaired. All omitempty so the plain per-pixel summary is
+	// unchanged. (line_skipped_frames is gone: the saturated-frame skip was retired when validation
+	// became per-candidate and windowed — see maskFrameLines.)
 	Rejected      int `json:"rejected_fixed_pattern,omitempty"`
 	Geostationary int `json:"geostationary_segments,omitempty"`
-	SkippedFrames int `json:"line_skipped_frames,omitempty"`
+	Recurring     int `json:"recurring_segments,omitempty"`
+	// SatMaskedPx counts sensor-saturated core pixels repaired from the sub-ceiling median across
+	// the sequence (multi-night merges with CoreSatMask; see satmask.go).
+	SatMaskedPx int `json:"sat_masked_px,omitempty"`
 }
 
 // FrameReport records what MaskSequence changed in one registered frame (1-based Index).
@@ -21,6 +26,8 @@ type FrameReport struct {
 	Index    int
 	Segments int
 	MaskedPx int
+	// SatPx counts this frame's saturated-core pixels repaired from the sub-ceiling median.
+	SatPx int
 }
 
 // Report is the full per-frame outcome of MaskSequence.
@@ -31,19 +38,20 @@ type Report struct {
 	PerFrameFallback bool
 	width, height    int // frame dims, for the masked-fraction in Note()
 	// Line-validation counters (validated hybrid): candidates rejected as fixed pattern, geostationary
-	// swaths repaired, and frames whose line pass was skipped as a candidate flood.
-	rejected, geo, skipped int
+	// swaths repaired, and recurring corridors repaired.
+	rejected, geo, recurring int
 }
 
 // Summary rolls the per-frame reports into the compact record.
 func (r *Report) Summary() Summary {
-	s := Summary{Frames: len(r.PerFrame), Rejected: r.rejected, Geostationary: r.geo, SkippedFrames: r.skipped}
+	s := Summary{Frames: len(r.PerFrame), Rejected: r.rejected, Geostationary: r.geo, Recurring: r.recurring}
 	for _, f := range r.PerFrame {
 		if f.MaskedPx > 0 {
 			s.WithTrails++
 		}
 		s.Segments += f.Segments
 		s.MaskedPx += f.MaskedPx
+		s.SatMaskedPx += f.SatPx
 	}
 	return s
 }

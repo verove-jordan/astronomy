@@ -244,7 +244,7 @@ func (a *app) processVideo(ctx context.Context, args json.RawMessage) (string, e
 	if p.Best > 0 {
 		opts.BestPercent = p.Best
 	}
-	res, err := planetary.Process(ctx, a.runner, a.cfg.FfmpegBin, p.Path, a.cfg.WorkDir, a.cfg.OutputDir, opts,
+	res, err := planetary.Process(ctx, a.runner, a.cfg.FfmpegBin, p.Path, a.cfg.WorkDir, a.cfg.OutputDir, opts, nil,
 		func(pr siril.Progress) {
 			if pr.Line != "" {
 				fmt.Fprintf(os.Stderr, "[siril-mcp] %s\n", pr.Line)

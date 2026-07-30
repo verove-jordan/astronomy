@@ -3,6 +3,7 @@ package weather
 import (
 	"context"
 	"fmt"
+	neturl "net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,8 +45,8 @@ type omResponse struct {
 
 // fetchOpenMeteoPoint pulls the hourly point forecast (past day + next two days) for one site.
 func (p *Provider) fetchOpenMeteoPoint(ctx context.Context, lat, lon float64) (omResponse, error) {
-	url := fmt.Sprintf("%s?latitude=%s&longitude=%s&hourly=%s&wind_speed_unit=kmh&past_days=1&forecast_days=2&timezone=UTC",
-		p.openMeteoURL, ftoa(lat), ftoa(lon), strings.Join(openMeteoHourlyVars, ","))
+	url := fmt.Sprintf("%s?latitude=%s&longitude=%s&hourly=%s&wind_speed_unit=kmh&past_days=1&forecast_days=2&timezone=UTC%s",
+		p.openMeteoURL, ftoa(lat), ftoa(lon), strings.Join(openMeteoHourlyVars, ","), p.modelsParam())
 	var resp omResponse
 	if err := p.getJSON(ctx, url, &resp); err != nil {
 		return omResponse{}, err
@@ -53,11 +54,22 @@ func (p *Provider) fetchOpenMeteoPoint(ctx context.Context, lat, lon float64) (o
 	return resp, nil
 }
 
+// modelsParam renders the optional Open-Meteo `models=` pin ("" = best_match auto-selection, the
+// default; see config.WeatherOpenMeteoModels).
+func (p *Provider) modelsParam() string {
+	if p.openMeteoModels == "" {
+		return ""
+	}
+	return "&models=" + neturl.QueryEscape(p.openMeteoModels)
+}
+
 // Open-Meteo's multi-location endpoint is GET-only and request lines top out around 8 KB, so a dense
 // grid cannot ride in one URL: the coordinate list is fetched in chunked GETs, a few in flight at once.
 const (
 	gridChunkMaxPoints = 400 // ≤400 lat+lon pairs at 3 decimals ≈ 7 KB of URL — safely under the cap
-	gridChunkParallel  = 4   // concurrent chunk GETs in flight
+	gridChunkParallel  = 1   // sequential chunk GETs: a burst of parallel multi-hundred-point calls is
+	//                          exactly what trips Open-Meteo's minutely quota (the budget keeps real
+	//                          cubes to one chunk anyway; this is defense in depth)
 )
 
 // fetchOpenMeteoGrid pulls the multi-location forecast for the cloud cube. Open-Meteo returns a JSON
@@ -117,8 +129,8 @@ func (p *Provider) fetchOpenMeteoGrid(ctx context.Context, lats, lons []float64,
 // point forecast (which keeps a past day for the timeline), the animated map only shows the forecast
 // window, so past_days=0 halves the frames (and the upstream payload) the cube carries.
 func (p *Provider) fetchOpenMeteoGridChunk(ctx context.Context, lats, lons []float64, vars []string) ([]omResponse, error) {
-	url := fmt.Sprintf("%s?latitude=%s&longitude=%s&hourly=%s&past_days=0&forecast_days=2&timezone=UTC",
-		p.openMeteoURL, joinFloats(lats), joinFloats(lons), strings.Join(vars, ","))
+	url := fmt.Sprintf("%s?latitude=%s&longitude=%s&hourly=%s&past_days=0&forecast_days=2&timezone=UTC%s",
+		p.openMeteoURL, joinFloats(lats), joinFloats(lons), strings.Join(vars, ","), p.modelsParam())
 	var resp []omResponse
 	if err := p.getJSON(ctx, url, &resp); err != nil {
 		return nil, err
@@ -166,6 +178,11 @@ func omGridVars(layers []string) []string {
 			// Probability (not mm): rain amount is ~0 almost everywhere, so it never shows; the chance of
 			// precipitation varies meaningfully across the region and is what the observer cares about.
 			add("precipitation_probability")
+		case "dewspread":
+			// Fog/dew risk = temperature − dew point (computed in gridSeries): ≈0 °C means saturated air
+			// (fog forming, dew on the optics), large means dry. Two variables, still ≤10 total (weight 1×).
+			add("temperature_2m")
+			add("dew_point_2m")
 		case "clouds_low":
 			add("cloud_cover_low")
 		case "clouds_mid":
@@ -195,6 +212,8 @@ func gridSeries(h omHourly, layer string) []float64 {
 		return h.RelativeHumidity2m
 	case "precip":
 		return h.PrecipitationProbability // chance of precipitation (%), see omGridVars
+	case "dewspread":
+		return dewSpread(h.Temperature2m, h.DewPoint2m)
 	case "clouds_low":
 		return h.CloudCoverLow
 	case "clouds_mid":
@@ -204,6 +223,17 @@ func gridSeries(h omHourly, layer string) []float64 {
 	default:
 		return h.CloudCover
 	}
+}
+
+// dewSpread is the element-wise temperature−dew-point gap (°C): ≈0 → saturated air (fog forming, dew on
+// the optics), large → dry. Follows the shorter input, tolerating a truncated upstream series.
+func dewSpread(temp, dew []float64) []float64 {
+	n := min(len(temp), len(dew))
+	out := make([]float64, n)
+	for i := 0; i < n; i++ {
+		out[i] = temp[i] - dew[i]
+	}
+	return out
 }
 
 func ftoa(f float64) string { return strconv.FormatFloat(f, 'f', 4, 64) }

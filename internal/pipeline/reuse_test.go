@@ -15,13 +15,20 @@ import (
 
 type fakeProvider struct {
 	lights []store.FrameRow
+	calib  []store.FrameRow // returned by RawCalibFrames, filtered by the query's SessionID
 }
 
 func (f *fakeProvider) PriorLightFrames(_ context.Context, _ store.LightQuery) ([]store.FrameRow, error) {
 	return f.lights, nil
 }
-func (f *fakeProvider) RawCalibFrames(_ context.Context, _ store.CalibQuery) ([]store.FrameRow, error) {
-	return nil, nil
+func (f *fakeProvider) RawCalibFrames(_ context.Context, q store.CalibQuery) ([]store.FrameRow, error) {
+	var out []store.FrameRow
+	for _, r := range f.calib {
+		if q.SessionID == 0 || r.SessionID == q.SessionID {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 // currentInv builds an inventory with one L light set of two frames (the session being processed).

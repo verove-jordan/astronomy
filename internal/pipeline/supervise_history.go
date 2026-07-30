@@ -171,8 +171,9 @@ func warmStart(ctx context.Context, opts Options, working *mode.Preset) string {
 func tunableJSON(p mode.Preset) map[string]any {
 	out := map[string]any{}
 	known := knownParamKeys(p.Mode)
+	consent := consentParamKeys(p.Mode)
 	for k, v := range ParamsFor(p) {
-		if known[k] {
+		if known[k] && !consent[k] {
 			out[k] = v
 		}
 	}

@@ -248,6 +248,11 @@ each knob requires.
 | `Palette` | "" (natural) | channel→RGB mapping: natural \| hargb \| hoo \| sho \| hos \| foraxx \| mono | A (`palette`) |
 | `BackgroundDegree` | 1 | Siril `subsky` polynomial degree at finish (clamped 1–4) | B (`background_degree`) |
 | `HaScreen` | 0.42 | Ha layer screen opacity | A (`ha_screen`) |
+| `OIIIScreen` | 0 (off) | [OIII] layer screened TEAL beside the red Ha (needs OIII captured with a real B; continuum-subtracted + wash-gated like Ha) | A (`oiii_screen`) |
+| `OIIIBlackPoint` | 0 | OIII layer black-point clip before the teal screen | A (`oiii_black_point`) |
+| `SIIScreen` | 0 (off) | [SII] layer screened beside Ha/OIII (continuum-subtracted + wash-gated the same way) | A (`sii_screen`) |
+| `SIIBlackPoint` | 0 | SII layer black-point clip before the screen | A (`sii_black_point`) |
+| `SIITint` | "" (deep_red) | SII screen colour: `deep_red` (crimson, natural) or `gold` (amber, Hubble accent) | A (`sii_tint`) |
 | `Saturation` | 0.12 | final saturation boost | A (`saturation`) |
 | `Curve` | gentle S | value curve on the flattened composite | — |
 | `LumCurve` | galaxy lift | curve on the L luminance layer | — |
@@ -271,7 +276,8 @@ each knob requires.
 | `ColorCalibration` | true | run the SPCC → star-field → neutralization ladder | B (`color_calibration`) |
 | `LinkedStretch` | true | linked autostretch (honoured only when calibrated) | B (`linked_stretch`) |
 | `BackgroundLevel` | 0.06 | autostretch target sky background | B (`background_level`) |
-| `HaBlackPoint` | 0.12 | Ha layer black-point clip before the screen | A (`ha_black_point`) |
+| `HaBlackPoint` | 0.06 | Ha layer black-point clip before the screen (low: the excess layer is emission-only) | A (`ha_black_point`) |
+| `HaContinuumSub` | true | subtract the scaled broadband continuum (k·R) so the screen shows only true Ha emission | B (`ha_continuum_sub`) |
 | `HaRBF` | true | RBF-flatten the Ha layer instead of the polynomial | — |
 | `Previews` | true | per-channel + milestone preview PNGs | — |
 | `Supervise` / `SuperviseMaxIters` / `SuperviseTier` / `SuperviseTargetScore` / `SuperviseConfirmRestack` | off / 0→4 / ""→C / 0→7.0 / **false** | the opt-in AI finish supervisor (see below) | — |
@@ -387,3 +393,12 @@ the tables). Most relevant to this mode:
 | `ASTRO_MAX_CPUS`, `ASTRO_SIRIL_MEM_RATIO`, `ASTRO_SIRIL_NICE` | Siril resource caps |
 | `ASTRO_LLM_URL/MODEL/IMAGE_FORMAT/TIMEOUT_SEC` | the opt-in finish-supervisor model server |
 | `ASTRO_SUPERVISE_HISTORY` | `off` disables the supervisor's history block + warm start |
+
+### Multi-night seams & mosaic
+
+| Knob | Default | Tier | What it does |
+|---|---|---|---|
+| `seam_offset_refit` | on | C | Re-measures each night's sky pedestal inside its overlap with the anchor night and corrects it before stacking — removes the straight background steps at rotated footprint boundaries. |
+| `seam_noise_eq` | on | C | Coverage-weighted denoise that fades the grain change where fewer nights cover the sky (zero in the full-depth core). |
+| `mosaic` | off | C (consent) | Union canvas: keep every night's full field instead of cropping to the anchor frame. Never enabled by presets or warm-started reruns; forces `coverage_crop` off and `crop_frac` 0. |
+| `mosaic_fill` | `crop` | C | Never-covered regions: `crop` trims the final to the all-channel covered field; `fill` keeps the whole union with extrapolated sky + matched grain. |

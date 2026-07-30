@@ -26,7 +26,9 @@ func TestCoRegisterMasters_AlignsChannelsLeavesRefUntouched(t *testing.T) {
 	require.NoError(t, shifted.WriteFITS(rBase+".fits"))
 	before := ssd(ref, shifted)
 
-	require.NoError(t, coRegisterMasters(map[string]string{"L": lBase, "R": rBase}, "L"))
+	notes, err := coRegisterMasters(map[string]string{"L": lBase, "R": rBase}, "L", 0)
+	require.NoError(t, err)
+	assert.Empty(t, notes, "same-raster masters need no repair note")
 
 	gotR, err := fits.ReadImage(rBase + ".fits")
 	require.NoError(t, err)
@@ -38,4 +40,29 @@ func TestCoRegisterMasters_AlignsChannelsLeavesRefUntouched(t *testing.T) {
 	gotL, err := fits.ReadImage(lBase + ".fits")
 	require.NoError(t, err)
 	assert.Zero(t, ssd(ref, gotL), "L (reference) master left untouched")
+}
+
+// TestCoRegisterMasters_RepairsMismatchedRaster: a master arriving on a different canvas (job 406:
+// "smooth chroma: master dimensions differ" killed a finished stack) is resampled onto the
+// reference raster with a note, so the downstream colour smoothing/combine always reads an
+// equal-dims trio.
+func TestCoRegisterMasters_RepairsMismatchedRaster(t *testing.T) {
+	dir := t.TempDir()
+	ref := texturedDisk(256, 256)
+	lBase := filepath.Join(dir, "master_L")
+	require.NoError(t, ref.WriteFITS(lBase+".fits"))
+
+	odd := resamplePlaneTo(ref, 250, 252) // the R master landed on a different raster
+	rBase := filepath.Join(dir, "master_R")
+	require.NoError(t, odd.WriteFITS(rBase+".fits"))
+
+	notes, err := coRegisterMasters(map[string]string{"L": lBase, "R": rBase}, "L", 0)
+	require.NoError(t, err)
+	require.Len(t, notes, 1, "raster repair must be surfaced as a note")
+	assert.Contains(t, notes[0], "250x252 → 256x256")
+
+	gotR, err := fits.ReadImage(rBase + ".fits")
+	require.NoError(t, err)
+	assert.Equal(t, ref.W, gotR.W, "repaired R master width")
+	assert.Equal(t, ref.H, gotR.H, "repaired R master height")
 }

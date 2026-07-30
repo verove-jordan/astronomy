@@ -62,14 +62,34 @@ const visBars = computed(() => {
   const lim = props.limits;
   const note = (val: number, limit?: number): string => {
     if (val > 0) return "";
-    if (e.has_mag && e.magnitude != null && limit != null && e.magnitude > limit)
+    if (
+      e.has_mag &&
+      e.magnitude != null &&
+      limit != null &&
+      e.magnitude > limit
+    )
       return t("calendar.detail.tooFaint");
     return t("calendar.detail.belowHorizon");
   };
   return [
-    { label: t("calendar.vis.nakedEye"), val: v.naked_eye, limit: lim?.naked_eye, note: note(v.naked_eye, lim?.naked_eye) },
-    { label: t("calendar.vis.binocular"), val: v.binocular, limit: lim?.binocular, note: note(v.binocular, lim?.binocular) },
-    { label: t("calendar.vis.scope"), val: v.telescope, limit: lim?.telescope, note: note(v.telescope, lim?.telescope) },
+    {
+      label: t("calendar.vis.nakedEye"),
+      val: v.naked_eye,
+      limit: lim?.naked_eye,
+      note: note(v.naked_eye, lim?.naked_eye),
+    },
+    {
+      label: t("calendar.vis.binocular"),
+      val: v.binocular,
+      limit: lim?.binocular,
+      note: note(v.binocular, lim?.binocular),
+    },
+    {
+      label: t("calendar.vis.scope"),
+      val: v.telescope,
+      limit: lim?.telescope,
+      note: note(v.telescope, lim?.telescope),
+    },
   ];
 });
 
@@ -189,9 +209,10 @@ const showChart = computed(() => {
       <!-- Why this score: the factors that produced it -->
       <div v-if="factors.length" class="space-y-1">
         <div class="flex items-baseline justify-between gap-2">
-          <span class="text-xs font-medium text-slate-500 dark:text-slate-400">{{
-            t("calendar.detail.why")
-          }}</span>
+          <span
+            class="text-xs font-medium text-slate-500 dark:text-slate-400"
+            >{{ t("calendar.detail.why") }}</span
+          >
           <span class="text-[11px] text-slate-400">{{ scoreSummary }}</span>
         </div>
         <div v-for="f in factors" :key="f.key" class="flex items-center gap-2">
@@ -217,7 +238,11 @@ const showChart = computed(() => {
         <div class="text-xs font-medium text-slate-500 dark:text-slate-400">
           {{ t("calendar.detail.visibility") }}
         </div>
-        <div v-for="b in visBars" :key="b.label" class="flex items-center gap-2">
+        <div
+          v-for="b in visBars"
+          :key="b.label"
+          class="flex items-center gap-2"
+        >
           <span class="w-28 shrink-0 text-xs text-slate-500"
             >{{ b.label
             }}<span
@@ -259,7 +284,11 @@ const showChart = computed(() => {
         <div class="flex justify-between">
           <dt class="text-slate-500">{{ t("calendar.detail.moon") }}</dt>
           <dd class="tabular-nums">
-            {{ t("calendar.detail.moonIllum", { pct: Math.round(event.moon_illum * 100) }) }}
+            {{
+              t("calendar.detail.moonIllum", {
+                pct: Math.round(event.moon_illum * 100),
+              })
+            }}
           </dd>
         </div>
       </dl>
@@ -270,7 +299,9 @@ const showChart = computed(() => {
 
       <!-- The night, reusing the Tonight altitude chart (Sun/Moon + a marker at the event time) -->
       <div v-if="showChart && event.night">
-        <div class="mb-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+        <div
+          class="mb-1 text-xs font-medium text-slate-500 dark:text-slate-400"
+        >
           {{ t("calendar.detail.chart") }}
         </div>
         <AltitudeChart

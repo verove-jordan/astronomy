@@ -68,11 +68,14 @@ watchEffect(() => {
 });
 
 function channelLine(c: CalibChannel): string {
-  return [
+  const parts = [
     humanizeMs(c.exposure_ms),
     `gain ${c.gain}`,
     tempC(c.temp_bucket_c * 1000),
-  ].join(" · ");
+  ];
+  // A multi-night scan splits one filter into per-night channels — the date is what tells them apart.
+  if (c.session) parts.unshift(c.session);
+  return parts.join(" · ");
 }
 function masterLine(s: CalibSuggestion): string {
   const m = s.master;
@@ -99,7 +102,7 @@ function masterLineFull(s: CalibSuggestion): string {
   return parts.join(" · ");
 }
 function channelKey(c: CalibChannel): string {
-  return `${c.filter}|${c.exposure_ms}|${c.gain}|${c.offset}|${c.bin}|${c.temp_bucket_c}`;
+  return `${c.filter}|${c.exposure_ms}|${c.gain}|${c.offset}|${c.bin}|${c.temp_bucket_c}|${c.session ?? ""}`;
 }
 </script>
 
@@ -165,6 +168,22 @@ function channelKey(c: CalibChannel): string {
             <span class="text-slate-500 dark:text-slate-400">{{
               readonly ? masterLineFull(s) : masterLine(s)
             }}</span>
+            <span
+              class="ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+              :class="
+                s.from_capture
+                  ? 'bg-brand-500/10 text-brand-500'
+                  : 'bg-slate-500/10 text-slate-400 dark:text-slate-500'
+              "
+            >
+              {{
+                t(
+                  s.from_capture
+                    ? "calib.source.capture"
+                    : "calib.source.library",
+                )
+              }}
+            </span>
           </component>
           <p
             v-for="(n, i) in c.notes"

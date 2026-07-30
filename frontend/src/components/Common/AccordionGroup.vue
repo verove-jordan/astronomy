@@ -80,11 +80,14 @@ defineExpose({ open, toggle, isOpen });
         :aria-expanded="isOpen(it.key)"
         @click="toggle(it.key)"
       >
-        <span
-          class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400"
-        >
-          {{ it.title }}
-        </span>
+        <!-- Optional richer header content per item (chips, counters); falls back to the plain title. -->
+        <slot :name="`header-${it.key}`">
+          <span
+            class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400"
+          >
+            {{ it.title }}
+          </span>
+        </slot>
         <IconChevronDown
           class="shrink-0 text-slate-400 transition-transform motion-safe:duration-200"
           :class="isOpen(it.key) ? '' : '-rotate-90'"

@@ -9,10 +9,16 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/verove-jordan/astronomy/internal/filters"
 	"github.com/verove-jordan/astronomy/internal/siril"
 )
+
+// filterRank orders channel filters canonically: L first, then RGB, then narrowband, then anything
+// custom (alphabetical via the fallback rank + name comparison in the caller's sort).
+func filterRank(f string) int { return filters.Rank(f) }
 
 // Options tunes the post-processing chain.
 type Options struct {
@@ -51,6 +57,19 @@ type Result struct {
 	// run (not only supervised ones) — the deterministic colour/clipping guardrails, persisted so a
 	// warm or clipped result is flagged in the run record instead of discovered by eye.
 	Quality *FinishQuality `json:"finish_quality,omitempty"`
+	// MonoOutputs are the optional auxiliary monochrome deliverables saved alongside the colour final:
+	// the processed Luminance-only image and/or the combined all-channel integration. The files are
+	// also listed in Outputs (for download / S3 mirror); this typed list gives the UI a clean contract.
+	MonoOutputs []MonoOutput `json:"mono_outputs,omitempty"`
+}
+
+// MonoOutput is one auxiliary monochrome deliverable saved next to the colour final. Kind is a stable
+// key the UI localizes ("luminance" | "all_channels"); Png/Tif point at the written files (which also
+// appear in Result.Outputs). Primitive fields only so package pipeline can populate it without a cycle.
+type MonoOutput struct {
+	Kind string `json:"kind"`
+	Png  string `json:"png"`
+	Tif  string `json:"tif,omitempty"`
 }
 
 // FinishQuality mirrors the supervisor's finish metrics for the run record (primitive fields only —
@@ -110,6 +129,9 @@ type StagePreview struct {
 	Stage   string `json:"stage"`
 	Filter  string `json:"filter,omitempty"`
 	PngPath string `json:"png_path"`
+	// Session is the capture night ("YYYY-MM-DD") of a per-session milestone (the cross-session
+	// prenorm/normalized pairs); "" for run-level milestones. The UI groups timeline rows by it.
+	Session string `json:"session,omitempty"`
 }
 
 // Combine builds the final image from channel masters located in dir (referenced by basename, e.g.
@@ -162,6 +184,14 @@ func buildCombine(channels map[string]string, opts Options) (string, *Result) {
 	for f := range channels {
 		res.Channels = append(res.Channels, f)
 	}
+	// Canonical order (L first, then RGB, then narrowband): map iteration is random, and this list
+	// lands in run.json — a provenance field must not reshuffle between identical runs.
+	sort.Slice(res.Channels, func(i, j int) bool {
+		if ri, rj := filterRank(res.Channels[i]), filterRank(res.Channels[j]); ri != rj {
+			return ri < rj
+		}
+		return res.Channels[i] < res.Channels[j]
+	})
 
 	var b strings.Builder
 	b.WriteString("requires 1.2.0\nsetext fits\nset32bits\n")

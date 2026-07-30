@@ -180,9 +180,14 @@ func gotoAlign(d Deps, args json.RawMessage) (string, error) {
 			"compass": st.Compass, "order": st.Order, "status": st.Status,
 		})
 	}
+	// Warnings are structured codes for the UI; render their English form so the VLM prompt stays readable.
+	warnings := make([]string, 0, len(res.Warnings))
+	for _, w := range res.Warnings {
+		warnings = append(warnings, w.String())
+	}
 	return jsonResult(map[string]any{
 		"profile": res.Profile, "mount_type": res.MountType, "quality": res.QualityScore,
-		"stars": stars, "warnings": res.Warnings,
+		"stars": stars, "warnings": warnings,
 	})
 }
 

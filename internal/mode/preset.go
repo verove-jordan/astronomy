@@ -42,6 +42,7 @@ const (
 	Planetary Mode = "planetary" // Moon/planets via lucky imaging
 	Livestack Mode = "livestack" // watch a source + incrementally stack during a session; finalize = deepsky
 	Comet     Mode = "comet"     // moving comet: dual star/comet stack + star-layer recomposite
+	Mosaic    Mode = "mosaic"    // tiled panels of one large object: per-panel deepsky stacks + WCS assembly
 )
 
 // Format is the desired output artifact.
@@ -57,9 +58,30 @@ const (
 type ColorModel string
 
 const (
-	Mono ColorModel = "mono" // per-filter monochrome frames → LRGB+Ha
+	Mono ColorModel = "mono" // per-filter monochrome frames → LRGB+Ha/OIII/SII
 	OSC  ColorModel = "osc"  // one-shot color (Bayer) → a single RGB sequence
 )
+
+// The [SII] emission screen's colour. See Preset.SIITint.
+const (
+	// SIITintDeepRed renders [SII] as a crimson: green killed, a trace of blue kept so it separates
+	// from the Ha screen's pure red instead of simply adding to it. The physically honest choice —
+	// 672 nm really is past Hα — and the default.
+	SIITintDeepRed = "deep_red"
+	// SIITintGold renders [SII] as an amber accent. Not what the eye would see, but it is the
+	// convention the Hubble palette established for sulphur, and it makes SII structure obvious
+	// against Hα rather than merely deepening it.
+	SIITintGold = "gold"
+)
+
+// IsSIITint reports whether s names a supported [SII] tint (empty = the default, deep red).
+func IsSIITint(s string) bool {
+	switch s {
+	case "", SIITintDeepRed, SIITintGold:
+		return true
+	}
+	return false
+}
 
 // Preset bundles every tunable the pipeline reads, derived from a Mode.
 type Preset struct {
@@ -138,9 +160,87 @@ type Preset struct {
 	// PhotomNorm photometrically normalizes heterogeneous calibration groups (sessions shot at
 	// different exposure/gain/temperature) in Go before the cross-session merge: each group's linear
 	// curve is measured and mapped onto the reference group's scale/offset, so Siril's addscale only
-	// mops up per-frame drift. Default false — on real mixed-gain data it mis-measured the scale
-	// (clamped at 5×); off until validated. See internal/photom.
+	// mops up per-frame drift. Default true for the deep-sky modes; it engages only when a channel
+	// has >1 group (single-session runs never reach it). The old mis-measure on real mixed-gain data
+	// ("Ha clamped at 5×") is fixed: a flat (narrowband/pedestal) curve is seeded from the header
+	// exposure/gain instead of fitted, and the absolute clamp is wide enough for genuine cross-gain
+	// ratios. See internal/photom.
 	PhotomNorm bool
+
+	// FlattenBg subtracts each frame's OWN degree-1 sky gradient (Siril seqsubsky, mean level
+	// preserved) before a MULTI-NIGHT merged registration: the nights' gradients lie at their own
+	// field rotations, so they cannot cancel in the stack and step at footprint boundaries — the
+	// background seams of task #354. Engages only when a channel merges >1 group; soft-fails to
+	// the unflattened sequence.
+	FlattenBg bool
+
+	// SeamOffsetRefit re-measures each night's background pedestal INSIDE its registered footprint
+	// overlap with the anchor night and adds the residual offset to the night's frames before the
+	// registered pixels are written. The whole-frame photometric fit compares different sky mixes
+	// when footprints rotate, and its identity epsilon (0.2·σ_sub) passes pedestal residuals that
+	// stack into visible steps (~σ_master) — the straight cut lines of multi-night masters.
+	// Multi-group channels only; offset-only; heavily guarded, soft-fails to no-op per group.
+	SeamOffsetRefit bool
+
+	// SeamNoiseEq fades the noise-DEPTH change at the coverage boundaries of a multi-night master:
+	// a coverage-weighted starlet pass whose per-pixel strength ramps from 0 (full-depth core —
+	// byte-identical) up to √(depth ratio)−1, capped, before the standard denoise. Never-covered
+	// pixels are untouched. Multi-group channels only.
+	SeamNoiseEq bool
+
+	// Mosaic keeps EVERY night's full field: the cross-night merge lands on the union of all
+	// registered footprints (frames zero-padded to the Go-computed union bbox, re-registered, and
+	// applied on the padded anchor canvas — Siril's own framing=max yields per-frame canvases and
+	// cannot build the union) instead of cropping to the anchor night's frame. Off (default) =
+	// today's anchor-canvas behaviour, byte-identical. Consent knob: never enabled by a preset.
+	// NOTE: this is the SAME-POINTING multi-night union canvas, wire key "union_canvas" (legacy
+	// alias "mosaic") — unrelated to the tiled-panel Mode "mosaic", which forces it off.
+	Mosaic bool
+	// MosaicFill decides the never-covered region of a mosaic canvas after combine: "crop"
+	// (default) trims the final to the largest rectangle where every channel has real data;
+	// "fill" keeps the whole union with the uncovered sky extrapolated (normalized convolution +
+	// matched grain). Only meaningful when Mosaic is on.
+	MosaicFill string
+
+	// ---- Tiled-panel mosaic (Mode "mosaic") — the offset-panel assembler's knobs. ----
+
+	// MosaicOverlapExpected is the capture overlap fraction the plan promised between neighboring
+	// panels; it scales the blend feather and the segmentation sanity checks.
+	MosaicOverlapExpected float64
+	// MosaicFeatherFrac scales the center-weighted blend feather:
+	// featherPx = frac × overlap × min(panel W, H).
+	MosaicFeatherFrac float64
+	// MosaicPhotomMatch matches panel photometry on the canvas: "gain_offset" (default; sky
+	// pedestal AND transparency per panel) | "offset" | "off".
+	MosaicPhotomMatch string
+	// MosaicCanvasCrop decides the assembled canvas edges: "common" (largest rectangle every
+	// channel covers — default) | "union" (keep everything) | "plan" (crop to the plan's grid bbox).
+	MosaicCanvasCrop string
+	// MosaicMinPanelFrames drops a panel whose channels stacked fewer total frames (a stray
+	// mis-filed pointing must not become a hole-riddled pseudo-panel).
+	MosaicMinPanelFrames int
+	// MosaicPanelSource picks the panel segmentation: "auto" (p01/-style folders first, else
+	// OBJCTRA/OBJCTDEC clustering) | "folders" | "coords".
+	MosaicPanelSource string
+
+	// CoverageCrop crops the COLOUR-COMBINE inputs (never the persisted channel masters) to the
+	// largest rectangle every channel covers at CoverageMinFrac of its stacked depth. Multi-night
+	// merges leave each channel covering a different union of rotated footprints; combining them
+	// yields regional colour casts and black wedges (task #354). Falls back to the full field with
+	// a warning when the common rectangle collapses below ~35% of the canvas. Grouped runs only —
+	// single-session channels carry no coverage grid, so this is inert there.
+	CoverageCrop bool
+	// CoverageMinFrac is the per-cell depth threshold: covered = reached by at least this fraction
+	// of the channel's stacked frames (min 1).
+	CoverageMinFrac float64
+
+	// CoreSatMask repairs sensor-saturated galaxy/star cores before a MULTI-NIGHT stack: pixels at
+	// a group's post-normalization saturation ceiling are replaced from the sub-ceiling median of
+	// the nights that still see the true value (transient/satmask.go). A clipped plateau shared by
+	// several nights survives Siril's rejection (it is coherent, not an outlier) and flattens the
+	// stacked core — the "burned centre". Multi-group channels only; a pixel clipped in EVERY night
+	// is left untouched (no true value exists to restore).
+	CoreSatMask bool
 
 	// DropFilterWheelTransition drops the first frame of a run when its brightness is off (the
 	// wheel was still moving). Conditional — only off-brightness frames are dropped.
@@ -172,6 +272,26 @@ type Preset struct {
 	// default of 0.25 lifts the sky to a bright grey that reads as a washed brown haze; deep-sky
 	// finishing wants a dark sky (~0.06). 0 → engine default (0.06). See siril.AutostretchCmd.
 	BackgroundLevel float64
+	// OIIIScreen is the [OIII] layer's screen opacity when the natural family composites it as a TEAL
+	// emission layer beside the red Ha screen (broadband runs with a real B filter only — without B
+	// the OIII master already feeds the blue base). 0 (default) → off, byte-identical to before the
+	// knob: the user opts in per run to light up shock-front data the RGB base under-shows.
+	OIIIScreen float64
+	// OIIIBlackPoint is the OIII layer's black-point clip before it is teal-screened (as HaBlackPoint).
+	OIIIBlackPoint float64
+	// SIIScreen is the [SII] layer's screen opacity — the third emission twin, composited beside the
+	// red Ha and teal OIII screens on the natural family. 0 (default) → off, byte-identical to before
+	// the knob, exactly like OIIIScreen: the user opts in per run.
+	//
+	// [SII] 671.6/673.1 nm is DEEPER red than Hα, so it cannot be made "more red" than the Ha screen
+	// in sRGB — SIITint chooses how it is distinguished instead.
+	SIIScreen float64
+	// SIIBlackPoint is the SII layer's black-point clip before it is screened (as HaBlackPoint).
+	SIIBlackPoint float64
+	// SIITint selects the SII layer's colour: SIITintDeepRed (default) renders it as a crimson that
+	// reads as "deeper than Hα", SIITintGold as the amber accent the Hubble palette conditions people
+	// to expect from sulphur. Purely a look choice — the data is identical either way.
+	SIITint string
 	// HaBlackPoint clips the Ha layer's background to black before it is red-screened into the
 	// composite (GIMP levels low-input, [0,1]). Without it the Ha background pedestal screens a red
 	// wash over the whole frame (the brown sky). ~0.12 zeroes the background while keeping bright HII
@@ -194,12 +314,45 @@ type Preset struct {
 	ChromaBlur float64
 	// ChromaSmoothPx smooths ONLY the colour of the combined linear RGB (after the joint GraXpert
 	// denoise + background equalization, before SPCC) this many px, preserving the per-pixel RGB mean
-	// exactly (the same mean-preserving technique as the planetary chroma smooth): m=(R+G+B)/3,
-	// c'=m+blur(c−m). It flattens the coherent 10–30 px colour PATCHES that survive the joint denoise
-	// (and that a stretch + saturation then amplify into red/blue blotches) without touching luminance
-	// — the L layer supplies detail in LRGB, and the mean is byte-for-byte unchanged. 0 → none. See
-	// internal/pipeline/chroma.go.
+	// exactly: m=(R+G+B)/3, c'=m+blend(c−m). The blur is GAUSSIAN-shaped (three box passes, σ≈px/√3 —
+	// the old single box pass painted a literal square of smeared colour around every very bright
+	// star) and STAR-PROTECTED: residuals are winsorized to the chroma noise scale, high-SNR pixels
+	// keep their own chroma, and a dilated near-saturation core mask exempts star cores + wings. It
+	// flattens the coherent 10–30 px colour PATCHES that survive the joint denoise (which a stretch +
+	// saturation then amplify into red/blue blotches) without touching luminance — the L layer
+	// supplies detail in LRGB, and the mean is byte-for-byte unchanged. 0 → none. See
+	// internal/pipeline/chromasmooth.go.
 	ChromaSmoothPx int
+	// ChromaBgSmoothPx adds a second, much coarser mean-preserving chroma pass restricted to the sky
+	// background (luminance under ~6σ above sky, smoothstep-feathered): it flattens the large
+	// green/brown chroma mottle and residual walking-noise colour that survive the joint denoise at
+	// scales the fine pass cannot reach, while galaxies/nebulae/stars (bright pixels) keep their
+	// colour untouched. Luminance is byte-for-byte unchanged (same identity as ChromaSmoothPx).
+	// 0 → off. See internal/pipeline/chromasmooth.go.
+	ChromaBgSmoothPx int
+	// LumBoost gently lifts the L luminance curve's midtones (the value is the peak lift at
+	// mid-grey; sky-level points pinned by a shadow anchor, core/star points by a highlight
+	// anchor) — "a brighter galaxy periphery" without touching sky level, core detail or colour
+	// balance. Folded into the LumCurve spline's control points at compose time. 0 → off.
+	LumBoost float64
+	// SkyLumFlattenPx equalizes the sky's large-scale BRIGHTNESS on the stretched layers (grid
+	// pitch in px) — the luminance twin of SkyChromaFlattenPx. The linear background passes leave
+	// a ~1% sky-level residual (a stray-light glow's shape exceeds a degree-1 plane) that the
+	// stretch amplifies into a grey-on-one-side sky; this fits a robust quadratic surface to the
+	// tile sky levels (objects rejected from the fit) and equalizes the whole sky to ONE level —
+	// the darkest genuine (glow-free) sky: glow comes down, a beyond-glow corner comes up — on
+	// the colour base, the L luminance layer and the mono outputs. The shift is locally uniform,
+	// so objects keep their contrast. 0 → off (default for nebula: faint emission wings read as
+	// sky level there). See internal/pipeline/skylum.go.
+	SkyLumFlattenPx int
+	// SkyChromaFlattenPx neutralizes the sky's large-scale chroma on the STRETCHED RGB base, just
+	// before the GIMP composite (grid pitch in px). The stretch amplifies sub-percent linear
+	// background chroma residuals (RBF ringing around an edge artifact, denoise mottle) into visible
+	// left/right colour bands and coloured discs no linear pass can reliably prevent; this measures
+	// the sky chroma per tile (sky pixels only), smooths it, and subtracts a zero-sum field with
+	// SNR-feathered protection — sky turns neutral, objects keep their colour, luminance is
+	// untouched. Skipped for narrowband palettes. 0 → off. See internal/pipeline/skychroma.go.
+	SkyChromaFlattenPx int
 	// CropFrac trims this fraction off each edge of the exported image to drop ragged stacking-edge
 	// bands (dithered frame borders); the layered .xcf keeps the full frame. 0 → no crop.
 	CropFrac float64
@@ -213,9 +366,24 @@ type Preset struct {
 	// HaExcludeStars screens Ha onto extended nebulosity only (point-like stars median-filtered out),
 	// instead of over everything. The default (false) applies Ha to the whole frame.
 	HaExcludeStars bool
+	// HaContinuumSub subtracts the scaled broadband continuum (k·R, or k·L when no R) from the linear
+	// Ha master before its stretch, so the red screen shows only true Ha EMISSION: stars, the galaxy
+	// disc and the sky pedestal cancel in the subtraction, letting the stretch lift faint HII
+	// filaments the black-point clip used to erase. k is the median Ha/ref ratio over continuum-bright
+	// pixels; soft-fails to screening the full Ha layer. See internal/pipeline/hacontinuum.go.
+	HaContinuumSub bool
 
 	// Previews emits per-channel and final preview PNGs for the UI.
 	Previews bool
+
+	// EmitLuminanceMono also saves a processed monochrome image of just the L channel next to the
+	// colour final (calibrated + denoised + background-extracted + stretched — the same treatment L
+	// gets inside the LRGB composite). Default true for deepsky/nebula. See internal/pipeline mono.go.
+	EmitLuminanceMono bool
+	// EmitAllChannelMono also saves one monochrome image integrating every co-registered channel
+	// master (L/R/G/B/Ha…) into a synthetic luminance, weighted by each channel's sub-count, for
+	// maximum signal. Default false (opt-in). See internal/pipeline mono.go.
+	EmitAllChannelMono bool
 
 	// Supervise enables the optional local-AI-agent finish: when on (set by the run request /
 	// --supervise) and a host model server is reachable, the GIMP composite is re-rendered a few
@@ -264,10 +432,10 @@ func (f Format) WantsImage() bool { return f != FormatVideo }
 // ParseMode validates a mode string.
 func ParseMode(s string) (Mode, error) {
 	switch Mode(strings.ToLower(s)) {
-	case Deepsky, Nebula, Milkyway, Planetary, Livestack, Comet:
+	case Deepsky, Nebula, Milkyway, Planetary, Livestack, Comet, Mosaic:
 		return Mode(strings.ToLower(s)), nil
 	default:
-		return "", fmt.Errorf("unknown mode %q (want: deepsky, nebula, milkyway, planetary, livestack, comet)", s)
+		return "", fmt.Errorf("unknown mode %q (want: deepsky, nebula, milkyway, planetary, livestack, comet, mosaic)", s)
 	}
 }
 
@@ -284,6 +452,23 @@ func ParseFormat(s string) (Format, error) {
 // For returns the preset for a mode.
 func For(m Mode) Preset {
 	switch m {
+	case Mosaic:
+		// Tiled-panel mosaic: every panel stacks with the full deepsky tuning; the assembler owns
+		// placement and edges, so the combine-time crops and the union-canvas knob (same-pointing
+		// machinery, guarded against offset panels) are forced off.
+		p := For(Deepsky)
+		p.Mode = Mosaic
+		p.Mosaic = false
+		p.CoverageCrop = false
+		p.CropFrac = 0
+		p.SeamNoiseEq = true
+		p.MosaicOverlapExpected = 0.20
+		p.MosaicFeatherFrac = 0.6
+		p.MosaicPhotomMatch = "gain_offset"
+		p.MosaicCanvasCrop = "common"
+		p.MosaicMinPanelFrames = 3
+		p.MosaicPanelSource = "auto"
+		return p
 	case Comet:
 		// Comet mode reuses the deepsky LRGB tuning (it runs the channel pipeline twice) but enables
 		// StarNet so the star layer can be lifted. The dual star/comet stacking + recomposite is handled
@@ -307,11 +492,19 @@ func For(m Mode) Preset {
 			DenoiseChroma: 0.85, DenoiseLum: 0.30, DenoiseVST: true, DenoiseDA3D: true,
 			DenoiseStarlet: false, DenoiseAuto: false, // proven Siril denoise; the Go starlet over-cleaned real masters (σ÷7, unnatural texture) — validate before re-enabling
 			StackWeight:               "wfwhm", // weight subs by star sharpness (was unweighted for single-session)
-			PhotomNorm:                false,   // off: mis-measured real cross-gain groups (Ha clamped at 5×) — validate before re-enabling
+			PhotomNorm:                true,    // cross-session normalization (flat-curve meta seed + widened clamp fixed the old "Ha clamped at 5×" mis-measure; multi-group channels only)
+			FlattenBg:                 true,    // per-frame degree-1 gradient flatten before a multi-night merge (kills footprint-boundary seams; multi-group channels only)
+			SeamOffsetRefit:           true,    // overlap-fitted pedestal refit per night (kills the residual background steps at footprint boundaries; multi-group channels only)
+			SeamNoiseEq:               true,    // coverage-weighted starlet fade of the noise-depth step at coverage boundaries (multi-group channels only)
+			CoverageCrop:              true,    // crop the colour combine to the cross-channel common covered field (multi-night wedges/casts; masters untouched)
+			CoverageMinFrac:           0.30,    // a cell counts as covered at ≥30% of the channel's stacked depth
+			CoreSatMask:               true,    // repair sensor-saturated cores from unsaturated nights before the multi-night stack
 			BackgroundAI:              true,    // per-channel GraXpert background extraction
 			CombinedBackgroundAI:      true,    // parity with deepsky: 2nd GraXpert pass on combined RGB → homogeneous sky
 			ColorDenoiseAI:            true,    // parity with deepsky: GraXpert AI denoise on combined colour
 			ChromaSmoothPx:            6,       // parity with deepsky: mean-preserving chroma smooth on the combined RGB → flattens residual colour patches
+			ChromaBgSmoothPx:          24,      // parity with deepsky: coarse background-only chroma pass → flattens the large sky colour mottle
+			SkyChromaFlattenPx:        32,      // parity with deepsky: post-stretch sky-chroma neutralization → no banded/discy sky after the stretch amplifies linear residuals
 			StarReduce:                0.5,     // emission nebulae benefit most from star reduction
 			TrailMaskK:                3.0,     // cross-frame transient mask: clean satellite trails / cosmic rays pre-stack
 			CoreHighlightKnee:         0.64,    // roll off the L luminance core highlights → structured pink knot
@@ -321,14 +514,16 @@ func For(m Mode) Preset {
 			StretchHeadroom:           0.90, // cap linear highlights ≤0.90 before the autostretch so star cores keep colour (no hard clip to white)
 			AutoFixStars:              true, // gated post-finish repair of any residual burnt/colour-flattened stars (zero cost when clean)
 			HaExcludeStars:            true, // median-remove stars before the red Ha screen → no orange/pink star tint
+			HaContinuumSub:            true, // screen the emission-only excess (Ha − k·R): faint HII survives the clip
 			DropFilterWheelTransition: true,
 			ColorCalibration:          true,
 			LinkedStretch:             true,
 			BackgroundLevel:           0.09, // a touch brighter than deepsky to keep faint nebulosity visible
 			LumOpacity:                1.0,  // L composites at full opacity by default (the UI can lower it)
-			HaBlackPoint:              0.07, // lighter clip: Ha is the subject here, only zero the sky pedestal
+			HaBlackPoint:              0.05, // the excess layer is emission-only — clip just the stretched pedestal (was 0.07 for the raw layer)
 			HaRBF:                     true, // RBF-flatten the Ha layer so its screen can't paint a red gradient
 			Previews:                  true,
+			EmitLuminanceMono:         true, // also save a standalone processed L mono next to the colour final
 		}
 	case Milkyway:
 		return Preset{
@@ -357,11 +552,16 @@ func For(m Mode) Preset {
 	case Planetary:
 		return Preset{
 			Mode: Planetary,
-			// Seeing-compensation knobs (RefRefine/APSelectFrac/SeeingCull) stay at their zero values:
-			// on real Moon data the translation-only synthetic reference stacked SOFTER than the best
-			// single frame (lapvar gate failed), so AP fields measure against the sharpest frame instead.
+			// DoubleStack is NOT the reverted translation-only synthetic reference (which stacked
+			// softer): pass 1 is the full two-level AP-warped, canonical-geometry, per-AP-selected
+			// stack, and pass 2 re-registers the originals onto that master with a dense
+			// per-AP-seeded grid (AutoStakkert's double-stack reference); cross-channel
+			// co-registration uses the same dense field. DrizzleScale 1.5 stacks onto a finer
+			// grid by default — hundreds of sub-pixel-dithered frames genuinely add resolution
+			// there (drizzle_scale 1 returns to native).
 			Planetary: planetary.Options{
-				BestPercent: 15, Sharpen: true, APAlign: true, APWeights: true,
+				BestPercent: 15, Sharpen: true, APAlign: true, APWeights: true, DoubleStack: true,
+				Calibrate: true, DrizzleScale: 1.5,
 				Formats: []string{"png", "tif"}, Finish: planetary.DefaultFinish(),
 			},
 			Curve:    []float64{0, 0, 0.5, 0.52, 1, 1},
@@ -398,9 +598,18 @@ func For(m Mode) Preset {
 			DenoiseChroma: 0.85, DenoiseLum: 0.50, DenoiseVST: true, DenoiseDA3D: true,
 			DenoiseStarlet: false, DenoiseAuto: false, // proven Siril denoise; the Go starlet over-cleaned real masters (σ÷7, unnatural texture) — validate before re-enabling
 			StackWeight:               "wfwhm", // weight subs by star sharpness (was unweighted for single-session)
-			PhotomNorm:                false,   // off: mis-measured real cross-gain groups (Ha clamped at 5×) — validate before re-enabling
+			PhotomNorm:                true,    // cross-session normalization (flat-curve meta seed + widened clamp fixed the old "Ha clamped at 5×" mis-measure; multi-group channels only)
+			FlattenBg:                 true,    // per-frame degree-1 gradient flatten before a multi-night merge (kills footprint-boundary seams; multi-group channels only)
+			SeamOffsetRefit:           true,    // overlap-fitted pedestal refit per night (kills the residual background steps at footprint boundaries; multi-group channels only)
+			SeamNoiseEq:               true,    // coverage-weighted starlet fade of the noise-depth step at coverage boundaries (multi-group channels only)
+			CoverageCrop:              true,    // crop the colour combine to the cross-channel common covered field (multi-night wedges/casts; masters untouched)
+			CoverageMinFrac:           0.30,    // a cell counts as covered at ≥30% of the channel's stacked depth
+			CoreSatMask:               true,    // repair sensor-saturated cores from unsaturated nights before the multi-night stack
 			ChromaBlur:                0,       // 0: GraXpert AI denoise handles colour noise; no blur → crisp star halos
 			ChromaSmoothPx:            6,       // mean-preserving chroma smooth on the combined RGB → flattens residual colour patches (no luma cost)
+			ChromaBgSmoothPx:          24,      // coarse background-only chroma pass → flattens the large sky colour mottle (objects/stars keep colour)
+			SkyChromaFlattenPx:        32,      // post-stretch sky-chroma neutralization → no banded/discy sky after the stretch amplifies linear residuals
+			SkyLumFlattenPx:           64,      // post-stretch sky-level equalization → no grey-on-one-side sky (galaxy fields; nebula keeps 0 to protect faint wings)
 			CropFrac:                  0.035,   // trim ragged stacking-edge bands off the export
 			TrailMaskK:                3.0,     // cross-frame transient mask: clean satellite trails / cosmic rays pre-stack
 			CoreHighlightKnee:         0.64,    // roll off the L luminance above this so the blown nebula core dims
@@ -413,13 +622,15 @@ func For(m Mode) Preset {
 			CombinedBackgroundAI:      true,    // 2nd GraXpert pass on the combined RGB + RBF subsky → homogeneous sky
 			ColorDenoiseAI:            true,    // GraXpert AI denoise on the combined colour → no RGB chroma speckle
 			HaExcludeStars:            true,    // Ha on the galaxy/nebulosity only (stars median-removed)
+			HaContinuumSub:            true,    // screen the emission-only excess (Ha − k·R): faint HII survives the clip
 			DropFilterWheelTransition: true,
 			ColorCalibration:          true,
 			LinkedStretch:             true,
 			BackgroundLevel:           0.06, // dark, natural sky (vs Siril's washed-out 0.25 default)
-			HaBlackPoint:              0.12, // clip Ha background to black so its red screen lifts only HII knots
+			HaBlackPoint:              0.06, // the excess layer is emission-only — clip just the stretched pedestal (was 0.12 for the raw layer)
 			HaRBF:                     true, // RBF-flatten the Ha layer so its screen can't paint a red gradient
 			Previews:                  true,
+			EmitLuminanceMono:         true, // also save a standalone processed L mono next to the colour final
 		}
 	}
 }

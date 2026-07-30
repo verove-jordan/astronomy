@@ -17,6 +17,11 @@ const (
 	starDesatHi = 0.85
 )
 
+// siiTintGold is the Inputs.SIITint value that selects the amber [SII] render; anything else (including
+// the empty default) is the deep-red one. Mirrors mode.SIITintGold as a plain string so this package
+// stays dependency-free — pipeline's TestSIITintConstantsAgree pins the two together.
+const siiTintGold = "gold"
+
 // Inputs are the stretched per-component TIFFs (produced by Siril) to composite.
 type Inputs struct {
 	Base    string  // RGB or mono base image (required)
@@ -24,6 +29,32 @@ type Inputs struct {
 	Ha      string  // optional Ha layer (screened, tinted red)
 	Color   bool    // base is color → apply saturation
 	HaBlack float64 // Ha layer black-point (levels low-input, 0..1): clip its background to black so the red Screen lifts only bright HII knots, not the whole sky. 0 → no clip.
+
+	// OIII is the optional [OIII] layer, screened TEAL (red channel killed, green+blue kept) over the
+	// broadband base — the emission twin of the Ha screen, so shock fronts render in their natural
+	// blue-green beside the red HII. OIIIScreen is its FINAL screen opacity (0..1, wash-gate already
+	// applied by the caller; 0 → layer skipped); OIIIBlack its black-point clip (as HaBlack).
+	// HaExcludeStars governs both emission screens.
+	OIII       string
+	OIIIScreen float64
+	OIIIBlack  float64
+	// OIIIScreenFactor is the wash-gate attenuation measured at prep time (mirrors HaScreenFactor):
+	// persisted with the linear prep so a Tier-A re-render re-applies it to a retuned opacity.
+	// 0 (unset) or ≥1 → no attenuation.
+	OIIIScreenFactor float64
+
+	// SII is the optional [SII] layer, the third emission twin. [SII] 671.6 nm is DEEPER red than
+	// Hα 656 nm, which sRGB cannot express — pure red is already the end of the ramp — so the layer
+	// is tinted by SIITint instead: "gold" (amber, the Hubble-palette convention) or the default
+	// deep red (green killed, a trace of blue kept, giving a crimson that separates from the Ha
+	// screen rather than merely adding to it). SIIScreen is the FINAL opacity (wash gate already
+	// applied; 0 → layer skipped); SIIBlack its black-point clip. HaExcludeStars governs it too.
+	SII       string
+	SIIScreen float64
+	SIIBlack  float64
+	SIITint   string
+	// SIIScreenFactor is the wash-gate attenuation measured at prep time (as OIIIScreenFactor).
+	SIIScreenFactor float64
 
 	// ChromaBlur gaussian-blurs the colour base by this many px before the luminance layer is added.
 	// In an LRGB composite the L layer supplies all the detail, so blurring the (thin, noisy) RGB
@@ -62,6 +93,10 @@ type Inputs struct {
 	// HaExcludeStars median-filters the Ha layer before it is screened, so point-like stars drop out
 	// and the red screen lifts only extended HII nebulosity (not star halos). Default off → Ha on all.
 	HaExcludeStars bool
+	// HaScreenFactor attenuates the Ha screen opacity when the stretched Ha layer's background
+	// measured too bright to screen at full strength (the task-#355 red-wash gate). 0 (unset) or
+	// ≥1 → full opacity, byte-identical to the pre-gate behaviour; 0<f<1 multiplies the opacity.
+	HaScreenFactor float64
 	// CalibratedColor marks the base as photometrically colour-calibrated (SPCC or the star-field
 	// gain fallback). When set, the compose SKIPS its gentle green-saturation trim: the calibrated
 	// balance is correct by construction, and trimming green on top of it tips the image magenta.
@@ -81,6 +116,31 @@ type Result struct {
 // BuildImage composes a layered image in GIMP — base + optional L (Luminance blend) + optional Ha
 // (red-tinted, Screen) — saves the layered .xcf, then exports a flattened, gently curve/saturation
 // adjusted .tif and .png. The shared GIMP image is deleted afterward.
+// HaOpacity applies the red-wash gate's attenuation (HaScreenFactor) to the preset screen opacity.
+func (in Inputs) HaOpacity(base float64) float64 {
+	if in.HaScreenFactor <= 0 || in.HaScreenFactor >= 1 {
+		return base
+	}
+	return base * in.HaScreenFactor
+}
+
+// OIIIOpacity is the OIII twin of HaOpacity: the wash-gate factor applied to a (possibly retuned)
+// preset opacity.
+func (in Inputs) OIIIOpacity(base float64) float64 {
+	if in.OIIIScreenFactor <= 0 || in.OIIIScreenFactor >= 1 {
+		return base
+	}
+	return base * in.OIIIScreenFactor
+}
+
+// SIIOpacity is the SII twin of HaOpacity.
+func (in Inputs) SIIOpacity(base float64) float64 {
+	if in.SIIScreenFactor <= 0 || in.SIIScreenFactor >= 1 {
+		return base
+	}
+	return base * in.SIIScreenFactor
+}
+
 func BuildImage(c *Client, in Inputs, curve []float64, haScreen, saturation float64, outBase string) (*Result, error) {
 	res := &Result{Xcf: outBase + ".xcf", Tif: outBase + ".tif", Png: outBase + ".png"}
 	if _, err := c.Eval(composeScript(in, curve, haScreen, saturation, res)); err != nil {
@@ -134,6 +194,47 @@ func composeScript(in Inputs, curve []float64, haScreen, saturation float64, res
 		b.WriteString("    (gimp-drawable-levels ha HISTOGRAM-BLUE 0 1 TRUE 1 0 0 TRUE)\n")  // kill blue → red
 		b.WriteString("    (gimp-layer-set-mode ha LAYER-MODE-SCREEN)\n")
 		fmt.Fprintf(&b, "    (gimp-layer-set-opacity ha %.0f))\n", clamp01(haScreen)*100)
+	}
+	if in.OIII != "" && in.OIIIScreen > 0 {
+		// The OIII emission twin: same screen mechanics as Ha, tinted TEAL by killing only the red
+		// channel — [OIII] shock fronts render blue-green beside the red HII instead of sitting unused.
+		b.WriteString("  (let ((oiii (car (gimp-file-load-layer RUN-NONINTERACTIVE image " + sf(in.OIII) + "))))\n")
+		b.WriteString("    (gimp-image-insert-layer image oiii 0 -1)\n")
+		if in.HaExcludeStars { // one flag governs both emission screens
+			b.WriteString("    (plug-in-median-blur RUN-NONINTERACTIVE image oiii 8 50)\n")
+		}
+		if ob := clamp01(in.OIIIBlack); ob > 0 {
+			fmt.Fprintf(&b, "    (gimp-drawable-levels oiii HISTOGRAM-VALUE %.4f 1 TRUE 1 0 1 TRUE)\n", ob)
+		}
+		b.WriteString("    (gimp-drawable-levels oiii HISTOGRAM-RED 0 1 TRUE 1 0 0 TRUE)\n") // kill red → teal
+		b.WriteString("    (gimp-layer-set-mode oiii LAYER-MODE-SCREEN)\n")
+		fmt.Fprintf(&b, "    (gimp-layer-set-opacity oiii %.0f))\n", clamp01(in.OIIIScreen)*100)
+	}
+	if in.SII != "" && in.SIIScreen > 0 {
+		// The [SII] emission twin. Unlike Ha (pure red) and OIII (teal), sulphur has no colour of its
+		// own left to take: 672 nm is past the red primary, so a "more red than red" screen would just
+		// brighten the Ha layer and read as nothing. The two tints below both keep it legible.
+		b.WriteString("  (let ((sii (car (gimp-file-load-layer RUN-NONINTERACTIVE image " + sf(in.SII) + "))))\n")
+		b.WriteString("    (gimp-image-insert-layer image sii 0 -1)\n")
+		if in.HaExcludeStars { // one flag governs all three emission screens
+			b.WriteString("    (plug-in-median-blur RUN-NONINTERACTIVE image sii 8 50)\n")
+		}
+		if sb := clamp01(in.SIIBlack); sb > 0 {
+			fmt.Fprintf(&b, "    (gimp-drawable-levels sii HISTOGRAM-VALUE %.4f 1 TRUE 1 0 1 TRUE)\n", sb)
+		}
+		if in.SIITint == siiTintGold {
+			// Gold: kill blue outright, hold green back to ~0.62 → amber. The Hubble-palette convention
+			// for sulphur, and the most legible against Hα.
+			b.WriteString("    (gimp-drawable-levels sii HISTOGRAM-BLUE 0 1 TRUE 1 0 0 TRUE)\n")
+			b.WriteString("    (gimp-drawable-levels sii HISTOGRAM-GREEN 0 1 TRUE 1 0 0.62 TRUE)\n")
+		} else {
+			// Deep red (default): kill green, keep a trace of blue (~0.18) → crimson. Screening over the
+			// red Ha layer, that trace is what separates the two instead of simply summing with it.
+			b.WriteString("    (gimp-drawable-levels sii HISTOGRAM-GREEN 0 1 TRUE 1 0 0 TRUE)\n")
+			b.WriteString("    (gimp-drawable-levels sii HISTOGRAM-BLUE 0 1 TRUE 1 0 0.18 TRUE)\n")
+		}
+		b.WriteString("    (gimp-layer-set-mode sii LAYER-MODE-SCREEN)\n")
+		fmt.Fprintf(&b, "    (gimp-layer-set-opacity sii %.0f))\n", clamp01(in.SIIScreen)*100)
 	}
 
 	// Save the layered project (all layers preserved, full frame).

@@ -7,6 +7,8 @@ import { useAgentStore } from "@/stores/agent";
 import AppLogo from "@/components/Common/AppLogo.vue";
 import IconMoon from "@/components/Icons/IconMoon.vue";
 import IconCompassArrow from "@/components/Icons/IconCompassArrow.vue";
+import IconMosaic from "@/components/Icons/IconMosaic.vue";
+import IconTelescope from "@/components/Icons/IconTelescope.vue";
 import IconCalendar from "@/components/Icons/IconCalendar.vue";
 import IconCamera from "@/components/Icons/IconCamera.vue";
 import IconAgent from "@/components/Icons/IconAgent.vue";
@@ -29,6 +31,8 @@ const links = computed<NavLink[]>(() => {
   const base: NavLink[] = [
     { to: "/tonight", key: "nav.tonight", icon: IconMoon },
     { to: "/goto", key: "nav.goto", icon: IconCompassArrow },
+    { to: "/capture", key: "nav.capture", icon: IconTelescope },
+    { to: "/mosaic", key: "nav.mosaic", icon: IconMosaic },
     { to: "/calendar", key: "nav.calendar", icon: IconCalendar },
     {
       to: "/processing",
@@ -44,9 +48,14 @@ const links = computed<NavLink[]>(() => {
 function isActive(l: NavLink): boolean {
   return l.prefix ? route.path.startsWith(l.prefix) : route.path === l.to;
 }
-// Navigate, then close the mobile drawer (no-op on desktop where it stays open).
-function go(navigate: () => void) {
-  navigate();
+// Navigate, then close the mobile drawer (no-op on desktop where it stays open). A modifier / middle /
+// right click is left to the browser: the real <a href> opens a new tab and we must NOT also SPA-navigate
+// the current tab (nor close the drawer). vue-router's navigate() only guards those clicks when handed the
+// event, so we pass it through and short-circuit here.
+function go(e: MouseEvent, navigate: (e: MouseEvent) => void) {
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0)
+    return;
+  navigate(e);
   emit("navigate");
 }
 
@@ -116,7 +125,7 @@ const rowActive = "bg-brand-600 text-white";
           ]"
           :aria-current="isActive(l) ? 'page' : undefined"
           :title="collapsed ? t(l.key) : undefined"
-          @click="go(navigate)"
+          @click="go($event, navigate)"
         >
           <span class="grid h-5 w-5 shrink-0 place-items-center">
             <component :is="l.icon" />

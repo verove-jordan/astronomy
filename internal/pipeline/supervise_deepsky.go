@@ -150,6 +150,11 @@ func supervisorState(p mode.Preset) map[string]any {
 	return map[string]any{
 		"tierA": map[string]any{
 			"saturation": p.Saturation, "ha_screen": p.HaScreen, "ha_black_point": p.HaBlackPoint,
+			// The emission screens must appear here, not just in the knob menu: the model was being
+			// offered oiii_screen/sii_screen while never being shown their current value, so it could
+			// only ever guess whether a layer was already on and at what strength.
+			"oiii_screen": p.OIIIScreen, "oiii_black_point": p.OIIIBlackPoint,
+			"sii_screen": p.SIIScreen, "sii_black_point": p.SIIBlackPoint, "sii_tint": p.SIITint,
 			"chroma_blur": p.ChromaBlur, "crop_frac": p.CropFrac,
 			"core_highlight_knee": p.CoreHighlightKnee, "core_highlight_ceil": p.CoreHighlightCeil,
 			"highlight_knee": p.HighlightKnee, "highlight_ceil": p.HighlightCeil,
@@ -161,6 +166,7 @@ func supervisorState(p mode.Preset) map[string]any {
 			"color_calibration": p.ColorCalibration, "combined_background_ai": p.CombinedBackgroundAI,
 			"background_degree": p.BackgroundDegree, "color_denoise_ai": p.ColorDenoiseAI,
 			"star_reduce": p.StarReduce, "stretch_headroom": p.StretchHeadroom,
+			"palette": p.Palette,
 		},
 		"tierC": map[string]any{
 			"roundness_floor": p.Grade.RoundnessFloor, "fwhm_sigma": p.Grade.FWHMSigma,

@@ -186,10 +186,12 @@ func calibrateAndMergeComet(ctx context.Context, opts Options, inv *inspect.Inve
 	mergedDir = filepath.Join(workRun, "01_merged")
 	var calibrated []string
 	for _, set := range inv.SetsOfType(inspect.Light) {
-		sel := calib.MatchForLight(set.Key, masters)
+		sel := calib.MatchForLightExcluding(set.Key, masters, opts.CalibExclude, opts.ForceCalibration)
 		dark, flat, bias := sel.Masters()
 		cm := siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias, BadPixelMap: calib.DefectsListFor(dark)}
-		setDir := filepath.Join(workRun, "cal_"+sanitize(set.Key.Filter)+"_"+fmt.Sprint(set.Key.ExposureMs))
+		// The night token keeps two per-night sets of one filter+exposure (multi-night scan) in
+		// separate dirs — without it their calibrated frames would silently mix in one sequence.
+		setDir := filepath.Join(workRun, "cal_"+sanitize(set.Key.Filter)+"_"+fmt.Sprint(set.Key.ExposureMs)+nightToken(set.Key.Session))
 		if _, err := fsutil.LinkFrames(setDir, framePaths(set.Frames)); err != nil {
 			warnings = append(warnings, "comet: link "+set.Key.Filter+": "+err.Error())
 			continue
@@ -215,7 +217,7 @@ func calibrateAndMergeComet(ctx context.Context, opts Options, inv *inspect.Inve
 
 // gradeMergedComet grades the globally-registered sequence (soft-fail: on any error nothing is rejected).
 func gradeMergedComet(mergedDir string, mframes []*inspect.Frame, gradeOpts grade.Options, res *Result) []grade.Metric {
-	metrics, _, _, err := gradeChannel(mergedDir, "light", mframes, gradeOpts, false)
+	metrics, _, _, err := gradeChannel(mergedDir, "light", mframes, gradeOpts, false, nil, nil)
 	if err != nil || len(metrics) != len(mframes) {
 		if err != nil {
 			res.Warnings = append(res.Warnings, "comet: grading skipped (stacking all registered frames): "+err.Error())

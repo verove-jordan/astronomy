@@ -25,7 +25,11 @@ defineProps<{ kind: string }>();
     <!-- Lunar eclipse: Moon half-swallowed by Earth's umbra -->
     <template v-else-if="kind === 'lunar_eclipse'">
       <circle cx="12" cy="12" r="6.5" />
-      <path d="M12 5.5 a6.5 6.5 0 0 1 0 13 z" fill="currentColor" stroke="none" />
+      <path
+        d="M12 5.5 a6.5 6.5 0 0 1 0 13 z"
+        fill="currentColor"
+        stroke="none"
+      />
     </template>
 
     <!-- Conjunction: two bodies meeting -->
@@ -141,8 +145,22 @@ defineProps<{ kind: string }>();
         fill="currentColor"
         stroke="none"
       />
-      <rect x="6.4" y="11.2" width="3" height="1.6" fill="currentColor" stroke="none" />
-      <rect x="14.6" y="11.2" width="3" height="1.6" fill="currentColor" stroke="none" />
+      <rect
+        x="6.4"
+        y="11.2"
+        width="3"
+        height="1.6"
+        fill="currentColor"
+        stroke="none"
+      />
+      <rect
+        x="14.6"
+        y="11.2"
+        width="3"
+        height="1.6"
+        fill="currentColor"
+        stroke="none"
+      />
     </template>
 
     <!-- Fallback: a simple star -->

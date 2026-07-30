@@ -27,6 +27,7 @@ const (
 const (
 	causeManual = "manual" // the user clicked Pause — stays paused until the user Continues (never auto-resumed)
 	causeError  = "error"  // a transient S3 error auto-paused it — the retry sweep resumes it with backoff
+	causeThaw   = "thaw"   // waiting for a Glacier restore — the sweep re-checks at a thaw cadence (no attempt cap)
 )
 
 // Auto-resume backoff for error-caused pauses: 1,2,4,…,15 min (capped), then give up after maxRetryAttempts.
@@ -34,6 +35,16 @@ const (
 	baseRetryDelayMs = 60_000  // 1 minute
 	maxRetryDelayMs  = 900_000 // 15 minutes
 	maxRetryAttempts = 8
+)
+
+// Thaw poll cadence for a causeThaw pause: a 2 → 15 min backoff (catch a fast Expedited restore soon, then
+// settle to a steady poll), bounded NOT by an attempt count but by a 48 h wall-clock deadline — a Deep
+// Archive retrieval can genuinely take that long. The deadline is enforced in run() on re-entry, so a thaw
+// that never completes fails clearly instead of polling forever.
+const (
+	thawPollInitialMs = 120_000          // 2 min
+	thawPollMaxMs     = 900_000          // 15 min
+	thawDeadlineMs    = 48 * 3600 * 1000 // 48 h
 )
 
 // pauseGate is a one-shot cooperative pause signal for one running job. Pause() flips it; the pipeline
@@ -51,12 +62,16 @@ type resumeCheckpoint struct {
 	RunID  string `json:"run_id,omitempty"`
 	OutDir string `json:"out_dir,omitempty"`
 	Reason string `json:"reason,omitempty"`
-	// Cause is "manual" (user Pause — never auto-resumed) or "error" (transient S3 error — auto-resumed
-	// with backoff). Attempts counts the auto-resume tries so far; NextRetryMs is the earliest wall-clock
-	// ms the sweep may re-enqueue it. All zero/empty on a plain manual pause.
+	// Cause is "manual" (user Pause — never auto-resumed), "error" (transient S3 error — auto-resumed with
+	// backoff) or "thaw" (waiting for a Glacier restore — auto-resumed at a thaw cadence, no attempt cap).
+	// Attempts counts the auto-resume tries so far; NextRetryMs is the earliest wall-clock ms the sweep may
+	// re-enqueue it. All zero/empty on a plain manual pause.
 	Cause       string `json:"cause,omitempty"`
 	Attempts    int    `json:"attempts,omitempty"`
 	NextRetryMs int64  `json:"next_retry_ms,omitempty"`
+	// DeadlineMs (thaw pauses only) is the wall-clock ms past which a Glacier restore wait gives up: a thaw
+	// polls indefinitely (no attempt cap) but never beyond this. 0 on non-thaw pauses.
+	DeadlineMs int64 `json:"deadline_ms,omitempty"`
 }
 
 // pipelineResume maps the checkpoint to the pipeline's resume handle (nil unless we have a run id/dir to
@@ -128,15 +143,22 @@ func (m *Manager) sweepPausedForRetry(ctx context.Context) {
 		if err := m.Continue(ctx, j.ID); err != nil {
 			continue // queue full or no longer paused → retry on the next tick
 		}
-		m.publish(Event{JobID: j.ID, Status: store.JobRunning,
-			Step: fmt.Sprintf("auto-resuming after a transfer error (attempt %d/%d)", cp.Attempts, maxRetryAttempts)})
+		step := fmt.Sprintf("auto-resuming after a transfer error (attempt %d/%d)", cp.Attempts, maxRetryAttempts)
+		if cp.Cause == causeThaw {
+			step = "checking Glacier restore…"
+		}
+		m.publish(Event{JobID: j.ID, Status: store.JobRunning, Step: step})
 	}
 }
 
-// dueForAutoResume reports whether a paused checkpoint is an ERROR pause whose scheduled retry time has
-// arrived. Manual pauses (never auto-resumed) and exhausted error pauses (NextRetryMs 0) return false.
+// dueForAutoResume reports whether a paused checkpoint is due to auto-resume now. An ERROR pause resumes
+// when its backoff has elapsed (and it has retries left, NextRetryMs>0); a THAW pause resumes on its poll
+// schedule with NO attempt cap (its 48 h deadline is enforced by run() on re-entry). Manual pauses never.
 func dueForAutoResume(cp resumeCheckpoint, now int64) bool {
-	return cp.Cause == causeError && cp.NextRetryMs > 0 && now >= cp.NextRetryMs
+	if cp.NextRetryMs <= 0 || now < cp.NextRetryMs {
+		return false
+	}
+	return cp.Cause == causeError || cp.Cause == causeThaw
 }
 
 // Continue resumes a paused job by re-enqueueing the SAME job id onto its lane. run() reads the job's
@@ -166,7 +188,11 @@ func (m *Manager) Continue(ctx context.Context, id int64) error {
 // a fresh one would.
 func (m *Manager) laneFor(req RunRequest) chan int64 {
 	switch {
-	case req.Transfer != nil || req.Backup != nil || req.Restore != nil:
+	case req.TierChange != nil:
+		// A storage-class/thaw job runs on its own low-cost lane: its work is only Restore/Stat and cheap
+		// server-side copies (no local byte I/O), so it never queues behind a multi-hour transfer.
+		return m.thawQueue
+	case req.Transfer != nil || req.Backup != nil || req.Restore != nil || req.Move != nil:
 		return m.xferQueue
 	case req.Sequential:
 		return m.seqQueue
@@ -251,6 +277,58 @@ func s3PauseCheckpoint(phase string, err error, priorAttempts int) resumeCheckpo
 	return cp
 }
 
+// thawCheckpoint builds a causeThaw pause: the next poll is scheduled with an escalating 2→15 min backoff
+// (carried in Attempts), and DeadlineMs is threaded forward across re-parks so the 48 h give-up clock does
+// not reset each poll. phase is where the resumed job re-enters (phaseTransfer for the standalone tier job,
+// phasePull for a process run waiting on cold inputs).
+func thawCheckpoint(phase string, priorAttempts int, deadlineMs int64) resumeCheckpoint {
+	attempts := priorAttempts + 1
+	return resumeCheckpoint{
+		Phase:       phase,
+		Cause:       causeThaw,
+		Attempts:    attempts,
+		NextRetryMs: time.Now().UnixMilli() + thawBackoffMs(attempts),
+		DeadlineMs:  deadlineMs,
+		Reason:      thawReason(deadlineMs),
+	}
+}
+
+// thawDeadlineOr returns the checkpoint's existing thaw deadline, or a fresh now+48h one the first time a
+// job parks to thaw (a resume carries the original forward so the wait is bounded from the first request).
+func thawDeadlineOr(cp resumeCheckpoint) int64 {
+	if cp.DeadlineMs > 0 {
+		return cp.DeadlineMs
+	}
+	return time.Now().UnixMilli() + thawDeadlineMs
+}
+
+// thawExpired reports whether a thaw pause has passed its give-up deadline (run() fails such a job).
+func thawExpired(cp resumeCheckpoint, now int64) bool {
+	return cp.Cause == causeThaw && cp.DeadlineMs > 0 && now > cp.DeadlineMs
+}
+
+// thawBackoffMs is the poll backoff for the Nth (1-based) thaw check: 2 min doubling to a 15 min cap.
+func thawBackoffMs(attempt int) int64 {
+	delay := int64(thawPollInitialMs)
+	for i := 1; i < attempt; i++ {
+		delay *= 2
+		if delay >= thawPollMaxMs {
+			return thawPollMaxMs
+		}
+	}
+	return delay
+}
+
+// thawReason is the human status shown on a thaw-paused job (with a rough remaining-window hint).
+func thawReason(deadlineMs int64) string {
+	if deadlineMs > 0 {
+		if rem := time.Duration(deadlineMs-time.Now().UnixMilli()) * time.Millisecond; rem > 0 {
+			return fmt.Sprintf("thawing from Glacier — auto-checking (retrieval window ~%dh left)", int(rem.Hours()+0.5))
+		}
+	}
+	return "thawing from Glacier — auto-checking"
+}
+
 // retryBackoffMs is the exponential backoff for the Nth (1-based) auto-resume attempt, capped.
 func retryBackoffMs(attempt int) int64 {
 	delay := int64(baseRetryDelayMs)
@@ -264,9 +342,13 @@ func retryBackoffMs(attempt int) int64 {
 }
 
 // finishTerminal writes a terminal (failed/cancelled) status with a fresh context so it persists even if
-// the run context was cancelled, publishes the done event, and closes any conversation turn.
+// the run context was cancelled, publishes the done event, and closes any conversation turn. The error
+// also lands in the live journal (and stdout) as a ✗ line — the Step field alone never reached the log.
 func (m *Manager) finishTerminal(id int64, status string, err error) {
 	_ = m.store.FinishJob(context.Background(), id, status, nil, err.Error())
+	line := fmt.Sprintf("✗ job %s: %s", status, err.Error())
+	m.publish(Event{JobID: id, Status: status, Line: line, Ts: time.Now().UnixMilli()})
+	log.Printf("astrostack: job %d %s", id, line)
 	m.publish(Event{JobID: id, Status: status, Step: err.Error(), Done: true})
 	m.closeTurn(id, status, err.Error())
 }
@@ -282,13 +364,24 @@ func (m *Manager) finishSucceeded(id int64, p RunRequest, result json.RawMessage
 
 // resultBlob marshals a pipeline result for persistence; nil stays nil (leave the stored result untouched).
 // A json.RawMessage marshals back to its own bytes, so this also works to re-persist a prior result.
+// A marshal failure means a non-finite float (encoding/json refuses NaN/±Inf): zero those and retry
+// rather than silently storing no result at all — the empty-result half of task #353. (The deepsky
+// path normally sanitizes in writeRunJSON already; this covers results that never pass through it,
+// e.g. a cancelled run's partial result.)
 func resultBlob(res any) json.RawMessage {
 	if res == nil {
 		return nil
 	}
 	b, err := json.Marshal(res)
 	if err != nil {
-		return nil
+		if paths := pipeline.SanitizeNonFinite(res); len(paths) > 0 {
+			log.Printf("job result contained non-finite numbers (zeroed): %d field(s)", len(paths))
+			b, err = json.Marshal(res)
+		}
+		if err != nil {
+			log.Printf("job result not serializable: %v", err)
+			return nil
+		}
 	}
 	return b
 }

@@ -15,6 +15,16 @@ const router = createRouter({
       component: () => import("@/views/GotoView.vue"),
     },
     {
+      path: "/capture",
+      name: "capture",
+      component: () => import("@/views/CaptureView.vue"),
+    },
+    {
+      path: "/mosaic",
+      name: "mosaic",
+      component: () => import("@/views/MosaicView.vue"),
+    },
+    {
       path: "/calendar",
       name: "calendar",
       component: () => import("@/views/CalendarView.vue"),

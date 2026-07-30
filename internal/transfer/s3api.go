@@ -16,6 +16,10 @@ type s3API interface {
 	Stat(ctx context.Context, bucket, key string) (obj s3store.Object, ok bool, err error)
 	Upload(ctx context.Context, bucket, key, localPath string, onBytes func(delta int64)) error
 	Download(ctx context.Context, bucket, key, localPath string, onBytes func(delta int64)) error
+	// Readiness reports whether an object can be read now (instant class, or an archived object whose
+	// restore has completed) — used to pre-flight a download so archived-not-restored objects surface as
+	// an ArchivedError instead of a mid-stream InvalidObjectState failure.
+	Readiness(ctx context.Context, bucket, key string) (s3store.Readiness, error)
 }
 
 // fileRetryAttempts bounds the per-file retries of a streaming upload/download. Streaming ops retry HERE

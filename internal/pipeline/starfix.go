@@ -14,6 +14,7 @@ import (
 
 	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/postprocess"
+	"github.com/verove-jordan/astronomy/internal/siril"
 )
 
 const (
@@ -50,7 +51,8 @@ func autoFixStars(ctx context.Context, opts Options, channels map[string]string,
 	if err != nil || !report.needsFix() {
 		return // clean (or cannot judge) → zero extra cost
 	}
-	opts.report(Progress{Step: "star-fix", Line: fmt.Sprintf(
+	fixProg := opts.beginStep("star quality check")
+	fixProg(siril.Progress{Line: fmt.Sprintf(
 		"star-fix: %d stars, burnt %.2f%%, colour spread %.3f — repairing", report.Detected, report.FinalBurnt*100, report.FinalSpread)})
 	runStarFix(ctx, opts, channels, workRun, outDir, res, m, report)
 }

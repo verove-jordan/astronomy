@@ -27,6 +27,11 @@ type Config struct {
 	AccessKeyID string
 	SecretKey   string
 	UseSSL      bool
+	// DefaultStorageClass, when set, is the S3 storage class every upload writes with (empty → the
+	// provider default, i.e. STANDARD). It MUST be an INSTANT class (New rejects an archived one): the
+	// pipeline's own control writes — run.json, manifests, appstate — must stay immediately readable, so
+	// true archival is applied AFTER the fact by the tier job, never as a write default. See glacier.go.
+	DefaultStorageClass string
 }
 
 // Configured reports whether credentials are present (so callers can offer S3 features or not).
@@ -42,17 +47,40 @@ type Object struct {
 	ModTime int64  `json:"mod_time_ms"`
 	ETag    string `json:"etag,omitempty"`
 	MD5     string `json:"md5,omitempty"`
+	// StorageClass is the object's S3 storage class ("" == STANDARD; "GLACIER"/"DEEP_ARCHIVE" == archived;
+	// "GLACIER_IR" is instant despite its name). List AND Stat both carry it. See glacier.go predicates.
+	StorageClass string `json:"storage_class,omitempty"`
+	// Restore carries an archived object's thaw status. It is populated ONLY by Stat/HEAD — a List entry
+	// never reports restore status — so readiness of an archived object always needs a Stat. nil on a List
+	// entry and on any object that was never restore-requested.
+	Restore *RestoreState `json:"restore,omitempty"`
+}
+
+// RestoreState is an archived object's thaw status (from the x-amz-restore header). Ongoing means a
+// restore is in progress; a completed restore has Ongoing=false and ExpiryMs set to when the temporary
+// readable copy lapses (0 == not restored / no expiry).
+type RestoreState struct {
+	Ongoing  bool  `json:"ongoing"`
+	ExpiryMs int64 `json:"expiry_ms,omitempty"`
 }
 
 // Client is a reusable, concurrency-safe S3 client (minio.Client is safe for concurrent use).
 type Client struct {
 	mc *minio.Client
+	// defaultClass is Config.DefaultStorageClass, applied to every upload (Upload/PutReader/PutBytes) when
+	// non-empty. Guaranteed instant by New. A server-side move (Copy) preserves the source class instead.
+	defaultClass string
 }
 
-// New builds a client from cfg. Returns ErrNoCredentials when keys are missing.
+// New builds a client from cfg. Returns ErrNoCredentials when keys are missing, or an error when
+// DefaultStorageClass is an archived class (writes must stay readable — see Config.DefaultStorageClass).
 func New(cfg Config) (*Client, error) {
 	if !cfg.Configured() {
 		return nil, ErrNoCredentials
+	}
+	class := strings.ToUpper(strings.TrimSpace(cfg.DefaultStorageClass))
+	if class != "" && IsArchivedClass(class) {
+		return nil, fmt.Errorf("s3: default storage class %q is archived; use an instant class so writes stay readable", class)
 	}
 	endpoint := normalizeEndpoint(cfg.Endpoint)
 	if endpoint == "" {
@@ -66,7 +94,7 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("s3: new client: %w", err)
 	}
-	return &Client{mc: mc}, nil
+	return &Client{mc: mc, defaultClass: class}, nil
 }
 
 // ListDir returns the immediate sub-folders (common prefixes) and files directly under prefix, using the
@@ -135,13 +163,24 @@ func (c *Client) Stat(ctx context.Context, bucket, key string) (obj Object, ok b
 		}
 		return Object{}, false, fmt.Errorf("s3 stat %s: %w", key, serr)
 	}
-	return Object{
-		Key:     key,
-		Size:    info.Size,
-		ModTime: info.LastModified.UnixMilli(),
-		ETag:    strings.Trim(info.ETag, `"`),
-		MD5:     userMD5(info),
-	}, true, nil
+	obj = Object{
+		Key:          key,
+		Size:         info.Size,
+		ModTime:      info.LastModified.UnixMilli(),
+		ETag:         strings.Trim(info.ETag, `"`),
+		MD5:          userMD5(info),
+		StorageClass: info.StorageClass,
+	}
+	// x-amz-restore, when present, tells us whether an archived object is thawing or already thawed. A zero
+	// ExpiryTime (no completed restore) leaves ExpiryMs 0 rather than time.Time{}'s huge negative UnixMilli.
+	if info.Restore != nil {
+		rs := &RestoreState{Ongoing: info.Restore.OngoingRestore}
+		if !info.Restore.ExpiryTime.IsZero() {
+			rs.ExpiryMs = info.Restore.ExpiryTime.UnixMilli()
+		}
+		obj.Restore = rs
+	}
+	return obj, true, nil
 }
 
 // userMD5 extracts the content MD5 Upload records as user metadata. minio-go canonicalizes metadata keys
@@ -201,7 +240,8 @@ func (c *Client) ListBuckets(ctx context.Context) ([]string, error) {
 }
 
 func objectFrom(o minio.ObjectInfo) Object {
-	return Object{Key: o.Key, Size: o.Size, ModTime: o.LastModified.UnixMilli(), ETag: strings.Trim(o.ETag, `"`)}
+	return Object{Key: o.Key, Size: o.Size, ModTime: o.LastModified.UnixMilli(),
+		ETag: strings.Trim(o.ETag, `"`), StorageClass: o.StorageClass}
 }
 
 // normalizeEndpoint reduces a user-entered endpoint to the bare host[:port] minio-go requires: it strips a

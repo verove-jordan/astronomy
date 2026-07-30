@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/verove-jordan/astronomy/internal/channeldetect"
+	"github.com/verove-jordan/astronomy/internal/filters"
 )
 
 // The physical filter-wheel (EFW) slot — read from the SharpCap sidecar or the filename into
@@ -18,6 +18,14 @@ var rePlaceholderFilter = regexp.MustCompile(`^S\d+$`) // an unnamed slot, e.g. 
 // isCalibration reports whether a frame type is calibration/video (never named by a light wheel legend).
 func isCalibration(t FrameType) bool {
 	return t == Dark || t == Flat || t == Bias || t == DarkFlat || t == Video
+}
+
+// filterAgnosticType reports whether a type is calibrated without a per-filter identity: darks, bias,
+// dark-flats and video group filter-agnostically (their SetKey ignores Filter), so a wheel-slot filter
+// name is meaningless for them. FLATS are per-filter (SetKey includes Filter), so — like lights — they
+// ARE named from their physical wheel slot when the sidecar alias/filename gave no filter name.
+func filterAgnosticType(t FrameType) bool {
+	return t == Dark || t == Bias || t == DarkFlat || t == Video
 }
 
 // legendFromManifest returns the distinct filters in the manifest's capture order (first appearance),
@@ -38,9 +46,15 @@ func legendFromManifest(man manifest) []string {
 	return legend
 }
 
-// defaultSlotLegend is the conventional LRGB(Ha) wheel order used when no info.txt names the slots.
+// defaultSlotLegend is the conventional wheel order used when no info.txt names the slots: the full
+// canonical set, so a 7-slot wheel's narrowband positions resolve to OIII/SII instead of the "S6"/"S7"
+// placeholders. Slots past the wheel's physical count simply never occur, so this is safe for the
+// 5-slot LRGB+Ha case too.
+//
+// Deliberately NOT channeldetect.DefaultOptions().Order: that list is what *signal detection* can
+// discriminate (see its comment), which is a different and smaller question than what a slot can hold.
 func defaultSlotLegend() []string {
-	return append([]string(nil), channeldetect.DefaultOptions().Order...)
+	return filters.List()
 }
 
 // filterForSlot names a 1-based wheel slot from the legend, or a stable "S<n>" placeholder when the slot
@@ -138,10 +152,12 @@ func nameRemainingWheelSlots(inv *Inventory) {
 	}
 }
 
-// nameByWheelSlot fills a frame's filter from its wheel slot via the legend, only when the frame is an
-// uncalibrated light that still lacks a filter. Order-independent: each frame is named by its own slot.
+// nameByWheelSlot fills a frame's filter from its wheel slot via the legend, only when a light or a flat
+// still lacks a filter (darks/bias are filter-agnostic — see filterAgnosticType). Per-filter EFW flats
+// whose numeric slot alias carried no filter name are named here, so they don't collapse into one merged
+// cross-filter master flat. Order-independent: each frame is named by its own slot.
 func nameByWheelSlot(fr *Frame, legend []string) {
-	if fr.Filter != "" || fr.WheelSlot == 0 || isCalibration(fr.Type) {
+	if fr.Filter != "" || fr.WheelSlot == 0 || filterAgnosticType(fr.Type) {
 		return
 	}
 	fr.Filter = filterForSlot(legend, fr.WheelSlot)
@@ -157,7 +173,7 @@ func nameByWheelSlot(fr *Frame, legend []string) {
 // (captured but never named by the legend) gets a stable "S<n>" placeholder so it still groups; the
 // caller warns. Order-independent: each frame is named by its own slot.
 func nameByWheelSlotMap(fr *Frame, slotName map[int]string) {
-	if fr.Filter != "" || fr.WheelSlot == 0 || isCalibration(fr.Type) {
+	if fr.Filter != "" || fr.WheelSlot == 0 || filterAgnosticType(fr.Type) {
 		return
 	}
 	if f, ok := slotName[fr.WheelSlot]; ok {
@@ -181,6 +197,7 @@ func backfillManifest(fr *Frame, man manifest, gainByFilter, expByFilter map[str
 	if fr.Gain == 0 {
 		if g, ok := gainByFilter[fr.Filter]; ok {
 			fr.Gain = g
+			fr.HasGain = true
 		}
 	}
 	if fr.ExposureMs == 0 {

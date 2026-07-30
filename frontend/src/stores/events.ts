@@ -117,7 +117,8 @@ export const useEventsStore = defineStore("events", () => {
 
   // run is the shared fetch core (cache by key, in-flight dedup, AbortController, populate state).
   function run(key: string, path: string, force: boolean): Promise<void> {
-    if (!force && key === lastKey && events.value.length) return Promise.resolve();
+    if (!force && key === lastKey && events.value.length)
+      return Promise.resolve();
     if (inflight && key === lastKey) return inflight;
     controller?.abort();
     controller = new AbortController();

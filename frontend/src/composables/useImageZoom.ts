@@ -4,7 +4,19 @@ import { computed, onBeforeUnmount, onMounted, ref, type Ref } from "vue";
 // (ctrl+wheel) and the toolbar zoom about a point, two-finger/drag pans, with bounds clamping,
 // fit/reset, keyboard control, a reduced-motion transition class, and a normalized viewport rect for
 // the navigator minimap. The image uses transform-origin:0 0 and the returned `transform`.
-export function useImageZoom(container: Ref<HTMLElement | null>) {
+
+export interface ZoomOptions {
+  // maxZoomFactor caps magnification as a multiple of ACTUAL SIZE (1 image pixel per screen pixel).
+  // Browsing a finished image rarely wants more than a few times actual size, but focusing a
+  // telescope does: judging whether a star is tight means filling the view with a handful of sensor
+  // pixels. Default keeps the file viewer's existing behaviour.
+  maxZoomFactor?: number;
+}
+
+export function useImageZoom(
+  container: Ref<HTMLElement | null>,
+  opts: ZoomOptions = {},
+) {
   const scale = ref(1);
   const tx = ref(0);
   const ty = ref(0);
@@ -31,9 +43,16 @@ export function useImageZoom(container: Ref<HTMLElement | null>) {
     if (!natW.value || !cw.value) return;
     const fit = Math.min(cw.value / natW.value, ch.value / natH.value);
     minScale.value = fit > 0 ? fit : 0.05;
+    // The ceiling is expressed as a multiple of actual size (scale 1 = one image pixel per screen
+    // pixel), so it means the same thing whatever the image's dimensions — a 1024 px preview and a
+    // 4656 px sensor frame both stop at the same real magnification.
+    const ceiling = opts.maxZoomFactor ?? 1;
     maxScale.value = Math.max(
       minScale.value,
-      Math.min(16, Math.max(4, (natW.value / cw.value) * 2)),
+      Math.min(
+        Math.max(16, ceiling),
+        Math.max(4 * ceiling, (natW.value / cw.value) * 2 * ceiling),
+      ),
     );
   }
 
@@ -214,6 +233,14 @@ export function useImageZoom(container: Ref<HTMLElement | null>) {
     zoomPercent,
     canZoom,
     viewport,
+    // Raw frame refs, for overlays that must map image pixels → screen (e.g. star-name labels).
+    scale,
+    tx,
+    ty,
+    cw,
+    ch,
+    natW,
+    natH,
     setNatural,
     fit,
     reset,

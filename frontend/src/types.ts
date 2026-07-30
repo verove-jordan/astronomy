@@ -13,6 +13,10 @@ export interface Frame {
   width: number;
   height: number;
   object?: string;
+  date_obs?: string;
+  date_obs_ms?: number;
+  // Capture-night key "YYYY-MM-DD" (local-noon bucketed); absent when the frame carries no DATE-OBS.
+  session?: string;
   class_source: string;
   filter_confidence?: number;
   wheel_transition?: boolean;
@@ -28,6 +32,8 @@ export interface SetKey {
   iso?: number;
   temp_bucket_c: number;
   bin: number;
+  // Capture night of a per-night set — present only on multi-night scans, and only for lights/flats.
+  session?: string;
 }
 
 export interface FrameSet {
@@ -59,6 +65,28 @@ export interface Inventory {
   videos: Frame[];
   warnings: string[];
   channel_detection?: ChannelDetection;
+  // Per-capture-night summary (sorted by night, undated bucket last); absent when nothing is dated.
+  sessions?: SessionInfo[];
+}
+
+// SessionInfo summarizes one capture night of a scan (key "" = the undated bucket).
+export interface SessionInfo {
+  key: string;
+  start_ms?: number;
+  end_ms?: number;
+  counts: Record<string, number>; // frame counts by type (LIGHT/DARK/FLAT/BIAS/…)
+  configs?: SessionConfig[];
+}
+
+// SessionConfig is one distinct light-capture configuration within a night, with its frame count.
+export interface SessionConfig {
+  filter?: string;
+  exposure_ms: number;
+  gain: number;
+  offset: number;
+  bin: number;
+  temp_bucket_c: number;
+  count: number;
 }
 
 // PreviewImage is the decoded binary buffer from GET /api/preview: a downsampled, linearly-normalized
@@ -119,12 +147,14 @@ export interface Selection {
   notes?: string[];
 }
 
-// Calibration suggestions (POST /api/calib/preview): per inspected light channel, the library master
-// dark/flat/bias that would be applied. `id` is the per-(channel,role) key sent back to exclude one.
+// Calibration suggestions (POST /api/calib/preview): per inspected light channel, the master
+// dark/flat/bias that would be applied — built from the capture's own cal frames (from_capture) or
+// reused from the library. `id` is the per-(channel,role) key sent back to exclude one.
 export interface CalibSuggestion {
   id: string;
   role: string; // "dark" | "flat" | "bias"
   master: Master;
+  from_capture?: boolean;
 }
 export interface CalibChannel {
   filter: string;
@@ -133,11 +163,82 @@ export interface CalibChannel {
   offset: number;
   temp_bucket_c: number;
   bin: number;
+  // Capture night of the light set on a multi-night scan (groups the per-night calibration mapping).
+  session?: string;
   suggestions: CalibSuggestion[];
   notes?: string[];
 }
 export interface CalibPreview {
   channels: CalibChannel[];
+}
+
+// AlignPointsEstimate mirrors the Go struct returned by POST /api/planetary/align-points: how many
+// stacking reference points the first luminance frame supports at a given minimum detail size.
+export interface AlignPointsEstimate {
+  frame: string;
+  width: number;
+  height: number;
+  window_px: number;
+  cell_px: number;
+  per_axis: number;
+  total_points: number;
+  usable_points: number;
+  usable_fraction: number;
+  suggested_align_points: number;
+  auto_per_axis: number;
+  disc: { cx: number; cy: number; r: number; ok: boolean };
+}
+
+// SetQaReport mirrors internal/setqa.Report (POST /api/quality/sets): the pre-stack stray-light
+// check over every light set of a selection. SetQaSet.id is the inspect SetKey.ID exclusion token
+// carried by RunRequest.exclude_sets.
+export interface SetQaReason {
+  code:
+    | "border_glow"
+    | "strong_gradient"
+    | "stack_visible"
+    | "outlier_vs_siblings"
+    | "channel_imbalance";
+  border?: string;
+  channel?: string;
+  amplitude_pct: number;
+  sigma: number;
+  text: string;
+}
+export interface SetQaImpact {
+  filter: string;
+  filter_frames: number;
+  filter_integration_ms: number;
+  lost_frames: number;
+  lost_integration_ms: number;
+  lost_integration_pct: number;
+  snr_factor: number;
+  empties_filter: boolean;
+}
+export interface SetQaSet {
+  id: string;
+  key: SetKey;
+  count: number;
+  total_integration_ms: number;
+  sampled: number;
+  measured: boolean;
+  affected_frac: number;
+  border_sigma: number;
+  border_pct: number;
+  grad_sigma: number;
+  grad_pct: number;
+  worst_border?: string;
+  stacked_sigma: number;
+  score: number;
+  flagged: boolean;
+  reasons?: SetQaReason[];
+  preview_frame?: string;
+  impact: SetQaImpact;
+}
+export interface SetQaReport {
+  sets: SetQaSet[];
+  flagged: number;
+  warnings?: string[];
 }
 
 export interface ChannelResult {
@@ -151,7 +252,87 @@ export interface ChannelResult {
   selection: Selection;
   metrics?: GradeMetric[];
   dither?: DitherReport;
+  // Per-group photometric-normalization records of a cross-session merge (mirrors run.json).
+  photom?: PhotomRecord[];
+  // Per-night/per-session provenance of a cross-session merge (masters used, parity, previews).
+  groups?: GroupResult[];
   error?: string;
+  // Coverage of the anchor canvas by this channel's STACKED frames (grouped runs): fraction at the
+  // preset's minimum depth + the grayscale mask thumbnail path.
+  covered_frac?: number;
+  coverage_mask?: string;
+  canvas?: { w: number; h: number; off_x: number; off_y: number };
+  mosaic_fill?: {
+    filled_frac: number;
+    applied: boolean;
+    mask_png?: string;
+    noise_sigma?: number;
+  };
+  seam?: unknown;
+}
+
+// CombineCrop mirrors Go pipeline.CombineCrop: the coverage-derived crop of the combine inputs.
+export interface CombineCrop {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  frac: number; // rectangle area / canvas area
+  applied: boolean;
+  note?: string;
+}
+
+// PhotomRecord mirrors Go photom.GroupRecord: how one group's linear scale was mapped onto the
+// reference group before the cross-session stack.
+export interface PhotomRecord {
+  session_id?: number;
+  session?: string; // capture-night key — the UI's join key
+  label: string;
+  scale: number;
+  offset: number;
+  resid: number;
+  frames: number;
+  clamped?: boolean;
+  meta_disagree?: boolean;
+  meta_seeded?: boolean; // curves too flat to measure — scale IS the header exposure/gain prediction
+  ref?: boolean; // the photometric reference group
+  applied: boolean;
+  // Which ladder rung set the scale: measured | seeded | bg-matched | offset-only | identity.
+  method?: string;
+  // The fitted transform would have clipped the sky below zero and was degraded (scale/offset show
+  // the degraded values).
+  reverted?: boolean;
+}
+
+// GroupResult mirrors Go pipeline.GroupResult: one calibration group's provenance inside a
+// cross-session channel merge (run.json `channels[].groups`).
+export interface GroupResult {
+  session_id: number;
+  current?: boolean;
+  session?: string;
+  filter: string;
+  exposure_ms: number;
+  gain: number;
+  offset: number;
+  temp_bucket_c: number;
+  bin: number;
+  frames: number;
+  dark?: string;
+  flat?: string;
+  bias?: string;
+  flat_source?: string; // "run" | "session-rebuild" | "none"
+  parity_flipped?: boolean;
+  // Median field rotation (degrees) and footprint overlap (0..1) vs the run's anchor canvas,
+  // measured from the merged registration (multi-group channels only).
+  rotation_deg?: number;
+  overlap_frac?: number;
+  photom?: PhotomRecord;
+  // How many of this night's frames reached the channel stack vs were rejected (registration +
+  // grading) — the per-night contribution ledger.
+  stacked_frames?: number;
+  rejected_frames?: number;
+  prenorm_preview?: string;
+  normalized_preview?: string;
 }
 
 // DitherReport classifies the capture-time pointing pattern from the registration offsets:
@@ -195,7 +376,20 @@ export interface StagePreview {
   index: number;
   stage: string;
   filter?: string;
+  // Capture night of a per-session milestone (the prenorm/normalized pairs); absent for run-level ones.
+  session?: string;
+  // Mosaic panel folder ("p01"…) of a per-panel milestone; absent for run-level ones.
+  tile?: string;
   png_path: string;
+}
+
+// One auxiliary monochrome deliverable saved next to the colour final: the processed Luminance-only
+// image ("luminance") or the combined all-channel integration ("all_channels"). png/tif are also in
+// FinalResult.outputs; this typed list drives the dedicated mono viewer in RunResultPanels.
+export interface MonoOutput {
+  kind: string;
+  png: string;
+  tif?: string;
 }
 
 export interface FinalResult {
@@ -204,6 +398,7 @@ export interface FinalResult {
   outputs: string[];
   notes?: string[];
   iterations?: IterationRecord[];
+  mono_outputs?: MonoOutput[];
 }
 
 export interface RunResult {
@@ -218,6 +413,11 @@ export interface RunResult {
   masters: Master[];
   channels: ChannelResult[];
   final?: FinalResult;
+  // The capture night whose canvas every channel master was registered onto (grouped runs only).
+  anchor_night?: string;
+  // Coverage-derived crop applied to the colour-combine inputs (grouped runs): the common covered
+  // rectangle in canvas pixels, or the honest full-field fallback (applied=false + note).
+  combine_crop?: CombineCrop;
   warnings: string[];
   // Planetary / comet lucky-imaging runs return a flat result (no `final` wrapper): the stacked
   // image outputs plus frame stats. RunResultPanels falls back to these when `final` is absent.
@@ -231,6 +431,30 @@ export interface RunResult {
   iterations?: IterationRecord[];
   // Saved processing-milestone previews (stacked/aligned/combined/finish…), for the stage timeline.
   stage_previews?: StagePreview[];
+}
+
+// StarLabel is one named object on the final image (stars.json): x/y in final-image pixel coords.
+export interface StarLabel {
+  x: number;
+  y: number;
+  name: string;
+  secondary?: string; // next designation ("α Lyr" for Vega) / common name for DSOs
+  kind: "star" | "dso";
+  type?: string; // DSO display type (galaxy, emission_nebula, …)
+  mag: number; // 99 = unknown (sorts last)
+  diameter_arcmin?: number;
+}
+
+// StarAnnotations is GET/POST /api/jobs/{id}/stars — the run's persisted stars.json: the star
+// count on the linear master (windowed to the final image) plus name labels when the field's
+// astrometric solution validated.
+export interface StarAnnotations {
+  count: number;
+  image: { width: number; height: number };
+  solved: boolean;
+  solve?: { method?: string; reason?: string };
+  labels: StarLabel[];
+  computed_at?: string;
 }
 
 // PlanetaryFrame is one lucky-imaging frame's quality record (kept/rejected + sharpness score).
@@ -253,6 +477,13 @@ export interface JobParams {
   color_calibration?: boolean;
   denoise?: boolean;
   ha_exclude_stars?: boolean;
+  mosaic?: boolean; // legacy alias of union_canvas (multi-night, same pointing)
+  union_canvas?: boolean;
+  mosaic_plan_id?: number; // tiled-mosaic mode: the saved plan this run stacks
+  // Extra monochrome side-outputs (deepsky/nebula): processed Luminance-only (default on) and the
+  // combined all-channel integration (default off), saved next to the colour final.
+  output_luminance?: boolean;
+  output_mono_stack?: boolean;
   // Deep-sky colour palette (natural|hargb|hoo|sho|hos|foraxx|mono); empty/absent → natural.
   palette?: string;
   supervise?: boolean;
@@ -275,6 +506,12 @@ export interface JobParams {
     rel_path?: string;
     local_root?: string;
   };
+  // Other intercept jobs (no pipeline recipe): backup/restore/move sub-requests, and the masters-only
+  // calibration build flag (kind "masters").
+  backup?: Record<string, unknown>;
+  restore?: Record<string, unknown>;
+  move?: Record<string, unknown>;
+  build_masters?: boolean;
   // Milkyway (nightscape) run options.
   look?: string;
   brightness?: number;
@@ -286,6 +523,12 @@ export interface JobParams {
   reuse_disabled?: boolean;
   reuse_sessions?: string[];
   calib_exclude?: string[];
+  // Light sets excluded by the Import stray-light check (inspect SetKey.ID tokens dropped
+  // before grouping). Shown readonly on the job page.
+  exclude_sets?: string[];
+  // Force the available dark/flat/bias masters onto the lights even when gain/exposure/temperature don't
+  // match (relaxes the calibration matcher). Default false = strict, physically-matched calibration.
+  force_calibration_frames?: boolean;
   // Frozen snapshot of the calibration masters matched at queue time (which darks/flats/bias are included
   // and with what params) — shown on the job page. See CalibrationPanel (readonly).
   calib_plan?: CalibPreview;
@@ -293,6 +536,9 @@ export interface JobParams {
   // the agent carries, its re-entry ceiling and iteration cap.
   params?: Record<string, unknown>;
   goal?: string;
+  // Imaging target for plate-solve/SPCC seeding — a catalogue name ("M66") or "RA,Dec" — for
+  // captures whose headers/folders can't identify the field. Never renames the run.
+  target?: string;
   tier?: string;
   max_iters?: number;
   // Agent improvement series this job belongs to (0/absent = none).
@@ -312,6 +558,9 @@ export interface PresetPayload {
   color_calibration?: boolean;
   denoise?: boolean;
   ha_exclude_stars?: boolean;
+  mosaic?: boolean;
+  output_luminance?: boolean;
+  output_mono_stack?: boolean;
   drop_wheel_transition?: boolean;
   supervise?: boolean;
   params?: Record<string, unknown>;
@@ -325,6 +574,7 @@ export interface PresetItem {
   name: string;
   category?: string;
   builtin: boolean;
+  favorite?: boolean; // user presets only — built-ins are never starred
   payload: PresetPayload;
   created_at?: number;
   updated_at?: number;
@@ -384,6 +634,8 @@ export interface BrowseEntry {
   is_dir: boolean;
   local?: boolean; // present on local disk (only set when browsing with an S3 bucket)
   remote?: boolean; // present on the S3 mirror
+  storage_class?: string; // S3 explorer: "" == STANDARD; e.g. GLACIER / DEEP_ARCHIVE / GLACIER_IR
+  archived?: boolean; // S3 explorer: needs a Glacier restore before it can be downloaded
 }
 
 // S3 connection status (GET /api/s3/status). configured = credentials present in the env; reachable +
@@ -410,6 +662,8 @@ export interface ProcessedPath {
 }
 
 // One past processing (a job) and the capture folders it consumed (GET /api/processed).
+// `signature` is the backend-computed folder-set key (store.SelectionSignature) used to dedup
+// history rows and join saved-selection names/stars; optional for old-backend tolerance.
 export interface ProcessedGroup {
   job_id: number;
   kind: string;
@@ -418,6 +672,20 @@ export interface ProcessedGroup {
   format?: string;
   status: string;
   created_at_ms: number;
+  signature?: string;
+  paths: ProcessedPath[];
+}
+
+// A saved (named/starred) selection riding along GET /api/processed, with its folders annotated by
+// the same existence machinery as the groups — an orphaned selection (jobs pruned) still renders.
+export interface SavedSelectionInfo {
+  id: number;
+  name: string;
+  favorite: boolean;
+  signature: string;
+  mode?: string;
+  format?: string;
+  updated_at_ms: number;
   paths: ProcessedPath[];
 }
 
@@ -435,6 +703,8 @@ export interface ProcessedFolder {
 
 // A de-duplicated past folder-set offered for re-running in the Import "Processing history". Several
 // jobs over the same set collapse into one entry (runs counts them); the most recent supplies the rest.
+// `selection` is the saved name/star joined by signature; `jobId: 0` marks an orphaned saved selection
+// (its jobs aged out of the history window) synthesized from the saved row alone.
 export interface ProcessingHistoryEntry {
   jobId: number;
   object?: string;
@@ -443,6 +713,8 @@ export interface ProcessingHistoryEntry {
   status: string;
   createdAtMs: number;
   runs: number;
+  signature: string;
+  selection?: { id: number; name: string; favorite: boolean };
   paths: ProcessedPath[];
 }
 
@@ -513,6 +785,61 @@ export interface ReuseSessionInfo {
   frames: number;
   integration_ms: number;
   filters: string[];
+  // Distinct capture nights this prior session contributes ("YYYY-MM-DD", sorted).
+  nights?: string[];
+}
+
+// ---- POST /api/calib/plan: the joined per-session run plan (pipeline.RunPlanPreview) ----
+
+// PlanMaster is one master a group would use, with its provenance.
+export interface PlanMaster {
+  source: string; // "library" | "capture" | "session-rebuild"
+  master?: Master;
+  raw_flats?: number; // session-rebuild: how many raw flats will stack
+  suggest_id?: string; // the calib_exclude key (same identity as the calibration preview)
+}
+
+// PlanGroup is one (session, night, config) calibration group and its masters (nil role = skipped).
+export interface PlanGroup {
+  session_id: number;
+  current?: boolean;
+  session?: string;
+  exposure_ms: number;
+  gain: number;
+  offset: number;
+  temp_bucket_c: number;
+  bin: number;
+  frames: number;
+  dark?: PlanMaster;
+  flat?: PlanMaster;
+  bias?: PlanMaster;
+  notes?: string[];
+}
+
+export interface PlanChannel {
+  filter: string;
+  groups: PlanGroup[];
+}
+
+// PlanSession is one (session, capture-night) contribution to the run, current capture first.
+export interface PlanSession {
+  session_id: number;
+  current?: boolean;
+  session?: string;
+  frames: number;
+  integration_ms: number;
+  filters?: string[];
+}
+
+export interface RunPlanPreview {
+  object: string;
+  has_coords: boolean;
+  sessions?: PlanSession[];
+  channels: PlanChannel[];
+  reuse: ReuseSummary;
+  // The capture night whose canvas every channel master will be registered onto (grouped runs).
+  anchor_night?: string;
+  warnings?: string[];
 }
 
 export interface ReuseSummary {
@@ -554,6 +881,7 @@ export interface SkySubScores {
   detectability: number;
   moon: number;
   light_pollution: number; // multiplicative sky-glow factor (1 = pristine site)
+  weather?: number; // live-conditions multiplier behind score_live (absent without forecast coverage)
 }
 
 export interface SkyFlags {
@@ -601,11 +929,15 @@ export interface SkyTarget {
   dark_hours_above_min: number;
   size_arcmin: number;
   size_minor_arcmin?: number; // minor axis → true ellipse with size_arcmin
+  position_angle_deg?: number; // OpenNGC ellipse PA (deg E of N) — mosaic planner "align to object"
   mag_v: number;
   surface_brightness: number;
   fov_fill_pct: number; // NOT clamped: >100 means the target overflows the frame
   moon_sep_deg: number;
   score: number;
+  // Weather-aware score (clear-sky score × the night's hourly observability over the target's
+  // usable hours); absent when no forecast covers the selected night.
+  score_live?: number;
   subscores: SkySubScores;
   flags: SkyFlags;
   reason: string;
@@ -754,8 +1086,10 @@ export interface LocationFavorite {
   elevation_m?: number;
 }
 
-// A named, reusable telescope + camera + eyepiece rig the user can save and pick from later (persisted
-// locally, like LocationFavorite). Numeric fields are optional so a partially-filled rig can still be saved.
+// A named, reusable telescope + camera + eyepiece rig the user can save and pick from later. Now
+// persisted server-side (table equipment_setups, see stores/equipment.ts) so the desktop that plans a
+// mosaic and the phone that shoots it agree on the optics; the id is the row id as a string. Numeric
+// fields are optional so a partially-filled rig can still be saved.
 export interface EquipmentSetup {
   id: string;
   name: string;
@@ -765,7 +1099,26 @@ export interface EquipmentSetup {
   pixel_um?: number;
   sensor_w?: number;
   sensor_h?: number;
+  camera_name?: string; // filled by "use connected camera" once a camera is attached
   eyepieces: SkyEyepiece[];
+}
+
+// EquipmentSetupRow is the wire shape of GET/POST /api/equipment. Field names match the plan-request
+// optics (sensor_w_px/barlow_x); stores/equipment.ts projects it onto EquipmentSetup.
+export interface EquipmentSetupRow {
+  id: number;
+  name: string;
+  focal_mm: number;
+  aperture_mm: number;
+  pixel_um: number;
+  sensor_w_px: number;
+  sensor_h_px: number;
+  barlow_x: number;
+  camera_name: string;
+  eyepieces: SkyEyepiece[];
+  favorite: boolean;
+  created_at: number;
+  updated_at: number;
 }
 
 // Dark-sky finder (GET /api/sky/darksites): a ranked candidate observing site.
@@ -924,6 +1277,34 @@ export interface EventsResponse {
 
 // --- GoTo alignment helper (/goto) ---
 
+// GotoReason is one structured pick justification (mirrors align.Reason): the UI renders
+// t(`goto.reasons.${code}`) with the params below (only the ones the code uses are present).
+export interface GotoReason {
+  code:
+    | "very_bright"
+    | "bright"
+    | "naked_eye"
+    | "low"
+    | "high_overhead"
+    | "well_placed"
+    | "spread";
+  mag?: number;
+  alt?: number;
+  deg?: number;
+}
+
+// GotoWarning is one structured soft plan warning (mirrors align.Warning): the UI renders
+// t(`goto.warnings.${code}`); every param is optional — each code carries exactly what it uses.
+export interface GotoWarning {
+  code: "few_stars" | "calib_same_side";
+  available?: number;
+  requested?: number;
+  min_alt?: number;
+  max_alt?: number;
+  side?: "east" | "west";
+  count?: number;
+}
+
 export interface GotoStar {
   name: string;
   constellation: string;
@@ -940,7 +1321,7 @@ export interface GotoStar {
   phase?: "align" | "calibration"; // two-phase routines (Celestron EQ); absent on single-phase
   hc_name?: string; // the exact hand-controller label (profiles with a star list)
   suitability: number;
-  reasons: string[];
+  reasons: GotoReason[];
 }
 
 // GotoProfile mirrors the backend align.Profile registry entry (GET /api/sky/align/profiles):
@@ -983,7 +1364,7 @@ export interface GotoResult {
   meridian_side: "east" | "west" | "any";
   stars: GotoStar[];
   quality_score: number;
-  warnings: string[];
+  warnings: GotoWarning[];
   // Moon + naked-eye planets currently up, for the sky map's landmarks.
   sky_bodies?: SkyBody[];
 }
@@ -1077,4 +1458,382 @@ export interface WeatherFrames {
   timesteps: number[]; // epoch ms per frame
   issued_ms: number;
   warning?: string;
+}
+
+// ---- Mosaic planner (mirrors internal/mosaicplan + /api/mosaic wire shapes) ----
+
+export interface MosaicTile {
+  index: number; // row*cols+col — stable identity for capture-status keys
+  row: number;
+  col: number;
+  order: number; // 1-based serpentine capture order
+  folder: string; // "p01"… — the panel-subfolder convention
+  ra_deg: number;
+  dec_deg: number;
+  corners: [number, number][]; // [ra,dec] × TL,TR,BR,BL in frame orientation
+  alt_deg: number;
+  az_deg: number;
+  transit_utc_ms: number;
+  meridian_side: "east" | "west";
+}
+
+export interface MosaicGrid {
+  rows: number;
+  cols: number;
+  tile_w_deg: number;
+  tile_h_deg: number;
+  step_w_deg: number;
+  step_h_deg: number;
+  camera_pa_deg: number;
+  overlap_frac: number;
+}
+
+export interface MosaicQueryEcho {
+  target?: string;
+  ra_deg: number;
+  dec_deg: number;
+  size_arcmin: number;
+  size_minor_arcmin?: number;
+  object_pa_deg?: number;
+  center_ra_deg: number; // effective grid centre (the object unless hand-framed)
+  center_dec_deg: number;
+  center_moved?: boolean;
+  fov_w_deg: number;
+  fov_h_deg: number;
+  image_scale_arcsec_px: number;
+  margin_arcmin: number;
+  lat: number;
+  lon: number;
+  at_utc_ms: number;
+}
+
+export interface MosaicPreview {
+  query: MosaicQueryEcho;
+  grid: MosaicGrid;
+  tiles: MosaicTile[];
+  warnings?: string[];
+}
+
+// SkySearchResult is one hit from GET /api/sky/search — free-text lookup over the WHOLE merged
+// deep-sky catalogue (not just tonight's visible list). Optional fields are absent when the
+// catalogue has no value, so "unknown size" is distinguishable from a genuine 0.
+export interface SkySearchResult {
+  name: string;
+  ra_deg: number;
+  dec_deg: number;
+  type?: string;
+  source?: string;
+  size_arcmin?: number;
+  size_minor_arcmin?: number;
+  position_angle_deg?: number;
+  mag?: number;
+  morphology?: string;
+  common_names?: string[];
+  aliases?: string[];
+}
+
+// MosaicRequestBody is what the UI sends (preview + plan create/update). Absent fields fall back
+// to catalogue values (for a named target) or the engine's configured rig/site.
+export interface MosaicRequestBody {
+  target_name?: string;
+  ra_deg?: number;
+  dec_deg?: number;
+  center_ra_deg?: number; // hand-framed grid centre (dragged on the map); both or neither
+  center_dec_deg?: number;
+  size_arcmin?: number;
+  size_minor_arcmin?: number;
+  object_pa_deg?: number;
+  optics?: {
+    focal_mm?: number;
+    aperture_mm?: number;
+    pixel_um?: number;
+    sensor_w_px?: number;
+    sensor_h_px?: number;
+    barlow_x?: number;
+  };
+  overlap_frac?: number;
+  margin_arcmin?: number;
+  camera_pa_deg?: number;
+  rows_override?: number;
+  cols_override?: number;
+  lat?: number;
+  lon?: number;
+  at?: string; // RFC3339
+}
+
+// MosaicPlanRequest is the server's resolved snapshot stored on a saved plan (Go mosaicplan.Request).
+export interface MosaicPlanRequest {
+  ra_deg: number;
+  dec_deg: number;
+  size_arcmin: number;
+  size_minor_arcmin: number;
+  object_pa_deg: number;
+  has_object_pa: boolean;
+  center_ra_deg: number;
+  center_dec_deg: number;
+  has_center: boolean;
+  optics: {
+    focal_mm: number;
+    aperture_mm: number;
+    pixel_um: number;
+    sensor_w_px: number;
+    sensor_h_px: number;
+    barlow_x: number;
+  };
+  overlap_frac: number;
+  margin_arcmin: number;
+  camera_pa_deg: number;
+  rows_override: number;
+  cols_override: number;
+  lat: number;
+  lon: number;
+  at: string;
+}
+
+export type MosaicTileStatus = "pending" | "captured" | "skipped";
+
+// What one panel+filter actually holds on disk, reconciled from the frames themselves
+// (POST /api/mosaic/plans/{id}/reconcile → internal/mosaic/progress.go).
+export interface MosaicFilterProgress {
+  frames: number;
+  seconds: number;
+  last_ms?: number;
+  nights?: number;
+}
+
+// panel folder ("p01") → filter ("L") → tally.
+export type MosaicTileProgress = Record<
+  string,
+  Record<string, MosaicFilterProgress>
+>;
+
+// The per-filter goal for every tile: what makes a tile "done" without the user ticking a box.
+export interface MosaicCaptureTarget {
+  filter: string;
+  frames: number;
+  exposure_ms?: number;
+  gain?: number;
+  offset?: number;
+  bin?: number;
+  dither?: number;
+}
+
+export interface MosaicPlanRow {
+  id: number;
+  name: string;
+  object_name: string;
+  request: MosaicPlanRequest;
+  grid: MosaicGrid;
+  tiles: MosaicTile[];
+  tile_status: Record<string, MosaicTileStatus>;
+  capture_targets: MosaicCaptureTarget[];
+  tile_progress: MosaicTileProgress;
+  capture_root?: string;
+  reconciled_at?: number;
+  orientation_done: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface StarfieldStar {
+  ra_deg: number;
+  dec_deg: number;
+  mag: number;
+}
+
+// --- Capture subsystem (camera / filter wheel / mount + the auto-run sequencer) --------------------
+
+// DeviceStatus is GET /api/device/status: whether the separate device-server process is up.
+export interface DeviceStatus {
+  running: boolean;
+  addr: string;
+  error?: string;
+  health?: {
+    ok: boolean;
+    drivers: {
+      name: string;
+      kind: string;
+      available: boolean;
+      detail?: string;
+    }[];
+    connected: Record<string, boolean>;
+  };
+}
+
+// DeviceControl is one camera parameter as the DRIVER reports it — ranges come from the hardware,
+// never from hardcoded UI constants.
+export interface DeviceControl {
+  name: string;
+  label: string;
+  min: number;
+  max: number;
+  default: number;
+  value: number;
+  writable: boolean;
+  auto_supported: boolean;
+  auto: boolean;
+  unit?: string;
+  description?: string;
+  scale_divisor?: number;
+}
+
+export interface DeviceCameraCaps {
+  id: string;
+  name: string;
+  driver: string;
+  kind: string;
+  max_width: number;
+  max_height: number;
+  pixel_size_um: number;
+  bit_depth: number;
+  is_color: boolean;
+  has_cooler: boolean;
+  has_shutter: boolean;
+  bins: number[];
+  image_types: string[];
+  serial_number?: string;
+  sdk_version?: string;
+  min_exposure_us: number;
+  max_exposure_us: number;
+}
+
+export interface DeviceROI {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  bin: number;
+  format: string;
+}
+
+export interface DeviceCameraState {
+  connected: boolean;
+  caps?: DeviceCameraCaps;
+  controls?: DeviceControl[];
+  roi?: DeviceROI;
+  exposure?: string;
+  streaming?: boolean;
+  dropped?: number;
+}
+
+export interface DeviceWheelState {
+  connected: boolean;
+  wheel?: {
+    id: string;
+    name: string;
+    slots: number;
+    position: number;
+    moving: boolean;
+    names?: string[];
+  };
+}
+
+export interface DeviceMountState {
+  connected: boolean;
+  mount?: {
+    id: string;
+    name: string;
+    ra_deg: number;
+    dec_deg: number;
+    alt_deg: number;
+    az_deg: number;
+    slewing: boolean;
+    tracking: boolean;
+    tracking_rate?: string;
+    aligned: boolean;
+    pier_side?: string;
+    firmware?: string;
+    model?: string;
+  };
+}
+
+// LiveStats is one live frame's summary — the numbers next to the image, computed server-side so
+// the browser receives a few hundred bytes instead of 32 MB.
+export interface LiveStats {
+  min: number;
+  max: number;
+  mean: number;
+  median: number;
+  std_dev: number;
+  saturated_pct: number;
+  histogram: number[];
+  bins: number;
+  auto_lo: number;
+  auto_hi: number;
+  width: number;
+  height: number;
+  exposure_us: number;
+  gain: number;
+  temp_milli_c: number;
+  has_temp: boolean;
+  focus?: LiveFocus;
+}
+
+// LiveFocus is the focus meter's verdict: how sharp, how far out, and which way to turn.
+export interface LiveFocus {
+  score: number;
+  hfd_px: number;
+  hfd_arcsec?: number;
+  stars: number;
+  saturated: boolean;
+  reliable: boolean;
+  distance_um?: number;
+  turns?: number;
+  advice?: string;
+  best_hfd_px?: number;
+  tilt_corners?: number[];
+}
+
+// CaptureStep is one block of the auto-run: N frames through one filter at one setting.
+export interface CaptureStep {
+  filter: string;
+  slot?: number;
+  count: number;
+  exposure_us: number;
+  gain?: number;
+  offset?: number;
+  bin?: number;
+  type?: string;
+  dither_n?: number;
+  dither_px?: number;
+}
+
+export interface CaptureSequence {
+  name?: string;
+  steps: CaptureStep[];
+  interleave?: boolean;
+  repeat_block?: number;
+}
+
+export interface CaptureProgress {
+  session_id: number;
+  status: "idle" | "running" | "paused" | "completed" | "aborted" | "failed";
+  step_index: number;
+  frame_index: number;
+  total_frames: number;
+  current_filter?: string;
+  exposure_us?: number;
+  exposure_ends?: string;
+  last_path?: string;
+  message?: string;
+  error?: string;
+  started_at?: string;
+  eta_seconds?: number;
+  captured?: Record<string, number>;
+}
+
+export interface CaptureSessionRow {
+  id: number;
+  object: string;
+  root: string;
+  panel: string;
+  mosaic_plan_id: number;
+  tile_index: number;
+  sequence: CaptureSequence;
+  status: string;
+  progress: CaptureProgress;
+  total_frames: number;
+  frames_done: number;
+  started_at: number;
+  ended_at: number;
 }

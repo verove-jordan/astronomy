@@ -100,10 +100,24 @@ func typeFromToken(low string) FrameType {
 // word tokens (split on _ - . space), so decorated/compound folders like "darks_0gain_300s_-25deg",
 // "offset_-15_250gain", "flats_0gain_Ha" or "master_darks" are recognized — while a token that merely
 // contains the word (e.g. "darkstar") is not.
+//
+// An EXPLICIT calibration/light folder (darks/flats/bias/offset/lights/science/object) outranks
+// SharpCap's generic "CapObj" capture folder, regardless of proximity: SharpCap writes BOTH lights and
+// calibration into a "CapObj/" subfolder (its default captured-object name), so real trees nest it under
+// the type folder — .../darks/CapObj/<session>/x.FIT, .../flats/CapObj/... A frame there must read as a
+// DARK from the "darks" grandparent, not a LIGHT from the nearer "CapObj". CapObj therefore names a type
+// only as a fallback, when no ancestor states an explicit one (a bare .../CapObj/<session>/x.FIT is an
+// unlabeled light). Two passes keep this independent of how deep CapObj sits.
 func typeFromDirs(path string) FrameType {
-	for _, d := range parentDirs(path) {
+	dirs := parentDirs(path)
+	for _, d := range dirs {
 		if t := typeFromDirName(d); t != Unknown {
-			return t
+			return t // nearest explicit calibration/light folder wins
+		}
+	}
+	for _, d := range dirs {
+		if tokenSet(d)["capobj"] {
+			return Light // SharpCap captured-object folder: an unlabeled light, only when nothing else typed it
 		}
 	}
 	return Unknown
@@ -123,9 +137,11 @@ func typeFromDirName(dir string) FrameType {
 		return Bias
 	case hasDark:
 		return Dark
-	case set["light"] || set["lights"] || set["science"] || set["object"] || set["capobj"]:
-		return Light // "capobj" is SharpCap's captured-object (lights) folder
+	case set["light"] || set["lights"] || set["science"] || set["object"]:
+		return Light
 	}
+	// NB: "capobj" (SharpCap's default capture folder) is deliberately NOT a Light signal here — it
+	// appears under both light and calibration trees. typeFromDirs applies it only as a fallback.
 	return Unknown
 }
 
@@ -135,13 +151,15 @@ func typeFromDirName(dir string) FrameType {
 var processedTokens = map[string]bool{
 	"stacked": true, "stack": true, "master": true, "combined": true, "final": true,
 	"mosaic": true, "annotated": true, "preview": true, "thumb": true, "starless": true,
+	"autosave": true, // Siril/live-stack outputs saved beside the raws (Autosave.tif, Autosave001.tif)
 }
 
 // isProcessedName reports whether a file's base name tokens mark it as a processed output.
 func isProcessedName(path string) bool {
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	for tk := range tokenSet(base) {
-		if processedTokens[tk] {
+		// Trailing digits are a copy counter, not identity ("Autosave001", "stacked2").
+		if processedTokens[tk] || processedTokens[strings.TrimRight(tk, "0123456789")] {
 			return true
 		}
 	}

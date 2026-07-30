@@ -16,10 +16,11 @@ import (
 // here) → <prefix>/backup/<stamp>/ on S3. Credentials come from the env, never the body. POST /api/backup
 func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Bucket     string   `json:"bucket"`
-		Prefix     string   `json:"prefix"`
-		Components []string `json:"components"`
-		AppState   string   `json:"appstate"`
+		Bucket       string   `json:"bucket"`
+		Prefix       string   `json:"prefix"`
+		Components   []string `json:"components"`
+		AppState     string   `json:"appstate"`
+		StorageClass string   `json:"storage_class"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		badRequest(w, "invalid body")
@@ -27,6 +28,10 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Bucket == "" {
 		badRequest(w, "bucket is required")
+		return
+	}
+	if body.StorageClass != "" && !s3store.ValidTargetClass(body.StorageClass) {
+		badRequest(w, "storage_class must be a valid storage class")
 		return
 	}
 	if !s.s3Config(r.Context()).Configured() {
@@ -38,7 +43,7 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 		Mode: "backup",
 		Backup: &job.BackupRequest{
 			Bucket: body.Bucket, Prefix: body.Prefix, Components: body.Components,
-			AppState: body.AppState, StampMs: time.Now().UnixMilli(),
+			AppState: body.AppState, StampMs: time.Now().UnixMilli(), StorageClass: body.StorageClass,
 		},
 	}
 	id, err := s.mgr.Enqueue(r.Context(), req)

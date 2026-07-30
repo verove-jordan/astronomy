@@ -48,6 +48,7 @@ type Item struct {
 	Name      string          `json:"name"`
 	Category  string          `json:"category,omitempty"`
 	Builtin   bool            `json:"builtin"`
+	Favorite  bool            `json:"favorite,omitempty"` // user rows only; built-ins are never starred
 	Payload   json.RawMessage `json:"payload"`
 	CreatedAt int64           `json:"created_at,omitempty"`
 	UpdatedAt int64           `json:"updated_at,omitempty"`

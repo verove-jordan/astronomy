@@ -7,6 +7,7 @@
 //	astrostack process <dir> [flags]  run the full auto pipeline
 //	astrostack video   <file> [flags] process a lunar/planetary video
 //	astrostack serve                  run the HTTP API server
+//	astrostack device                 run the device server (camera / filter wheel / mount)
 //	astrostack migrate                apply database migrations
 package main
 
@@ -37,12 +38,16 @@ func main() {
 		err = runVideo(os.Args[2:])
 	case "serve":
 		err = runServe(os.Args[2:])
+	case "device":
+		err = runDevice(os.Args[2:])
 	case "migrate":
 		err = runMigrate(os.Args[2:])
 	case "lightpollution-atlas":
 		err = runLightPollutionAtlas(os.Args[2:])
 	case "skymap-data":
 		err = runSkymapData(os.Args[2:])
+	case "deepstars-data":
+		err = runDeepstarsData(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("astrostack", version)
 	case "help", "--help", "-h":
@@ -68,9 +73,11 @@ Usage:
   astrostack refine  <run-dir>       re-run the finish (local AI agent) on an existing run — no re-stack
   astrostack video   <file> [flags]  process a lunar/planetary video
   astrostack serve                   run the HTTP API server
+  astrostack device                  run the device server (camera / filter wheel / mount)
   astrostack migrate                 apply database migrations
   astrostack lightpollution-atlas    build the offline light-pollution atlas (djlorenz model)
   astrostack skymap-data             build the frontend star + constellation dataset (skymap.json)
+  astrostack deepstars-data          build the embedded deep star catalogue (internal/deepstars)
   astrostack version                 print the version
 `)
 }

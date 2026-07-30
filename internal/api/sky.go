@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/verove-jordan/astronomy/internal/lightpollution"
+	"github.com/verove-jordan/astronomy/internal/skycat"
 	"github.com/verove-jordan/astronomy/internal/skyplan"
 )
 
@@ -88,6 +89,7 @@ func (s *Server) skyTargets(w http.ResponseWriter, r *http.Request) {
 		MinAltDeg:     floatParam(q, "min_alt", 30),
 		Twilight:      twilightParam(q.Get("twilight")),
 		Limit:         intParam(q, "limit", 50),
+		MaxMag:        floatParam(q, "max_mag", 0),
 		TypeFilter:    q.Get("type"),
 		CatalogFilter: q.Get("catalog"),
 		Location:      loc,
@@ -115,6 +117,15 @@ func (s *Server) skyTargets(w http.ResponseWriter, r *http.Request) {
 	// At always yields a value plus an optional warning, so scoring never blocks on the network).
 	site, siteWarn := s.siteAt(r.Context(), prm.Lat, prm.Lon)
 	prm.SiteSQM = site.SQM
+
+	// Weather-aware live scores: the (cached) site forecast folds into a second per-target score
+	// beside the untouched clear-sky one. Soft-failing — no forecast simply means no live score.
+	if f, _ := s.weatherAt(r.Context(), prm.Lat, prm.Lon); len(f.Hours) > 0 {
+		prm.WxHours = make([]skyplan.WxSample, 0, len(f.Hours))
+		for _, h := range f.Hours {
+			prm.WxHours = append(prm.WxHours, skyplan.WxSample{TMs: h.TMs, Verdict: h.Verdict})
+		}
+	}
 
 	res, err := s.planner.Plan(r.Context(), prm)
 	if err != nil {
@@ -230,6 +241,74 @@ func (s *Server) geocode(w http.ResponseWriter, r *http.Request) {
 		out = append(out, geoResult{Label: g.DisplayName, Lat: lat, Lon: lon})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"results": out})
+}
+
+// skySearchResult is one catalogue hit. Optional photometry/geometry fields are pointers so the UI can
+// tell "unknown" from a real zero — a 0′ diameter and "no diameter recorded" plan very differently.
+type skySearchResult struct {
+	Name             string   `json:"name"`
+	RADeg            float64  `json:"ra_deg"`
+	DecDeg           float64  `json:"dec_deg"`
+	Type             string   `json:"type,omitempty"`
+	Source           string   `json:"source,omitempty"`
+	SizeArcmin       *float64 `json:"size_arcmin,omitempty"`
+	SizeMinorArcmin  *float64 `json:"size_minor_arcmin,omitempty"`
+	PositionAngleDeg *float64 `json:"position_angle_deg,omitempty"`
+	Mag              *float64 `json:"mag,omitempty"`
+	Morphology       string   `json:"morphology,omitempty"`
+	CommonNames      []string `json:"common_names,omitempty"`
+	Aliases          []string `json:"aliases,omitempty"`
+}
+
+// skySearch does free-text lookup over the WHOLE merged deep-sky catalogue, so the mosaic planner can
+// target any object rather than only the ones tonight's altitude-filtered ranked list happens to carry.
+// GET /api/sky/search?q=&limit=
+func (s *Server) skySearch(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		badRequest(w, "missing 'q'")
+		return
+	}
+	limit := clampAtoi(r.URL.Query().Get("limit"), 20, 1, 100)
+	recs := skycat.Load(s.cfg.SirilCatalogDir).Search(query, limit)
+
+	out := make([]skySearchResult, 0, len(recs))
+	for _, rec := range recs {
+		out = append(out, skySearchResultFor(rec))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": out, "count": len(out)})
+}
+
+// skySearchResultFor projects a catalogue record onto the wire shape, reusing skyplan.DeriveType so the
+// type vocabulary matches the Tonight list exactly.
+func skySearchResultFor(rec skycat.Record) skySearchResult {
+	res := skySearchResult{
+		Name:        rec.Name,
+		RADeg:       rec.RADeg,
+		DecDeg:      rec.DecDeg,
+		Type:        skyplan.DeriveType(rec),
+		Source:      rec.Source,
+		Morphology:  rec.Morphology,
+		CommonNames: rec.CommonNames,
+		Aliases:     rec.Aliases,
+	}
+	if rec.HasDiameter {
+		d := rec.DiameterArcmin
+		res.SizeArcmin = &d
+	}
+	if rec.HasMinorAxis {
+		m := rec.MinorAxisArcmin
+		res.SizeMinorArcmin = &m
+	}
+	if rec.HasPositionAngle {
+		pa := rec.PositionAngleDeg
+		res.PositionAngleDeg = &pa
+	}
+	if rec.HasMag {
+		mag := rec.MagV
+		res.Mag = &mag
+	}
+	return res
 }
 
 func floatParam(q url.Values, key string, def float64) float64 {

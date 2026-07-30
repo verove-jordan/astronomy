@@ -1,9 +1,11 @@
 package planetary
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -50,10 +52,24 @@ func TestWarpToSharpest_RecoversShift(t *testing.T) {
 	}
 	scores := []float64{10, 5, 4} // frame 0 sharpest → alignment reference
 
-	out, refPath, _, err := warpToSharpest(paths, scores, dir, "al", true)
+	// The per-frame progress hook may fire concurrently from the parallel workers — count under a lock.
+	var mu sync.Mutex
+	ticks := 0
+	res, err := warpToSharpest(context.Background(), paths, scores, dir, "al", true, 1, 0,
+		func(done, total int) {
+			mu.Lock()
+			ticks++
+			mu.Unlock()
+			assert.Equal(t, 3, total)
+		})
 	require.NoError(t, err)
+	out := res.paths
 	require.Len(t, out, 3)
-	assert.Equal(t, out[0], refPath, "frame 0 is the sharpest → the reference")
+	assert.Equal(t, out[0], res.refPath, "frame 0 is the sharpest → the reference")
+	assert.Nil(t, res.dxFields[0], "the unresampled reference carries no field")
+	require.NotNil(t, res.dxFields[1], "warped frames keep their measured field for the double-stack seed")
+	assert.Equal(t, []int{0, 1, 2}, res.srcIdx)
+	assert.Equal(t, 3, ticks, "one progress tick per aligned frame")
 
 	// Every aligned frame's feature must land back at the reference centroid (within ~1 px).
 	refX, refY := brightCentroid(ref)
@@ -66,17 +82,23 @@ func TestWarpToSharpest_RecoversShift(t *testing.T) {
 	}
 }
 
-func TestWarpToSharpest_SkipsUnreadableAndKeepsSequenceGapFree(t *testing.T) {
+// Output names are pre-assigned by INPUT position (parallel workers own their slot), so an unreadable
+// frame leaves a numbering gap — harmless by design: no Siril sequence is ever built over the aligned
+// dir, only the returned (compacted) path list is consumed.
+func TestWarpToSharpest_SkipsUnreadableLeavingNamingGap(t *testing.T) {
 	dir := t.TempDir()
 	ref := diskImage(120, 120, 60, 60, 25)
 	good := filepath.Join(dir, "g.fits")
 	require.NoError(t, ref.WriteFITS(good))
-	out, _, _, err := warpToSharpest(
+	res, err := warpToSharpest(context.Background(),
 		[]string{good, filepath.Join(dir, "missing.fits"), good},
-		[]float64{9, 1, 5}, dir, "al", true)
+		[]float64{9, 1, 5}, dir, "al", true, 1, 0, nil)
 	require.NoError(t, err)
-	// The unreadable middle frame drops; the two good frames produce a contiguous al_00001/al_00002.
-	require.Len(t, out, 2)
-	assert.Equal(t, "al_00001.fits", filepath.Base(out[0]))
-	assert.Equal(t, "al_00002.fits", filepath.Base(out[1]))
+	// The unreadable middle frame drops; the survivors keep their input-position names (slot 2 → 00003)
+	// and every parallel array stays index-aligned with the compacted output list.
+	require.Len(t, res.paths, 2)
+	assert.Equal(t, "al_00001.fits", filepath.Base(res.paths[0]))
+	assert.Equal(t, "al_00003.fits", filepath.Base(res.paths[1]))
+	assert.Len(t, res.cellSharp, 2, "cellSharp compacted alongside the aligned list")
+	assert.Equal(t, []int{0, 2}, res.srcIdx, "srcIdx maps each survivor back to its input position")
 }

@@ -62,12 +62,13 @@ func aiToolWarnings(ctx context.Context, opts Options) []string {
 			}
 		}
 	}
-	// SPCC photometric calibration: the astrometric plate-solve catalogue is installed (offline solve
-	// works) but the Gaia xp_sampled photometric chunks are not, so SPCC must fetch them online and will
-	// fall back (star-field gains / neutralization) whenever the network is slow or absent — the reason a
-	// run's stars aren't photometrically calibrated. Flag it so the miss is explained, not mysterious.
-	if opts.Preset.ColorCalibration && opts.Solve.AstroCat != "" && opts.Solve.XpsampDir == "" {
-		w = append(w, "offline SPCC photometric catalogue not installed (Gaia xp_sampled) — SPCC needs network and may fall back to star-field/neutralization; run `just download-catalogues-spcc` (~5 GB) to calibrate colour offline")
+	// SPCC photometric calibration without the local Gaia xp_sampled chunks: SPCC must fetch them
+	// online, which can be slow (minutes) or stall entirely, and it falls back (star-field gains /
+	// neutralization) whenever the network is absent — the reason a run's stars aren't
+	// photometrically calibrated OR the colour-calibration step sits silent. Flag it whenever SPCC
+	// is on, so both the slowness and the miss are explained, not mysterious.
+	if opts.Preset.ColorCalibration && opts.Solve.XpsampDir == "" {
+		w = append(w, "offline SPCC photometric catalogue not installed (Gaia xp_sampled) — SPCC fetches it online (can be slow or stall) and falls back to star-field/neutralization without network; run `just download-catalogues-spcc` (~5 GB) to calibrate colour offline")
 	}
 	return w
 }
@@ -117,13 +118,15 @@ func extractBackgroundAI(ctx context.Context, opts Options, masterPath string, o
 // that survives per-channel extraction + the combine — this is what makes the whole sky homogeneous.
 // GraXpert when available, else a deterministic RBF subsky (far better than a polynomial for an
 // asymmetric gradient). Soft-fail: returns a human-readable note, never an error; a no-op when the
-// preset disables it (CombinedBackgroundAI false).
-func extractCombinedBackground(ctx context.Context, opts Options, runner *siril.Runner, outDir, base, hdr string) (note string) {
+// preset disables it (CombinedBackgroundAI false). onProgress (may be nil) streams tool output live.
+// flattened reports whether the image was actually modified (the cache must never persist a miss).
+func extractCombinedBackground(ctx context.Context, opts Options, runner *siril.Runner, outDir, base, hdr string,
+	onProgress func(siril.Progress)) (note string, flattened bool) {
 	if opts.Preset == nil || !opts.Preset.CombinedBackgroundAI {
-		return ""
+		return "", false
 	}
 	rbf := func() (string, bool) { // RBF subsky flattens the asymmetric amp-glow/light-pollution residual
-		if _, err := runner.Run(ctx, outDir, hdr+"load "+base+"\n"+siril.SubskyRBFCmd()+"save "+base+"\n", nil); err != nil {
+		if _, err := runner.Run(ctx, outDir, hdr+"load "+base+"\n"+siril.SubskyRBFCmd()+"save "+base+"\n", onProgress); err != nil {
 			return "combined RBF subsky skipped: " + err.Error(), false
 		}
 		return "", true
@@ -132,23 +135,73 @@ func extractCombinedBackground(ctx context.Context, opts Options, runner *siril.
 	// the gradient removal ran (a silent "" made a left-behind gradient indistinguishable from a pass
 	// that worked).
 	if opts.Graxpert != nil && opts.Graxpert.Healthy(ctx) == nil {
-		if n := extractBackgroundAI(ctx, opts, filepath.Join(outDir, base+".fits"), nil); n != "" {
+		if n := extractBackgroundAI(ctx, opts, filepath.Join(outDir, base+".fits"), onProgress); n != "" {
 			// The AI pass failed at runtime — the RBF pass below is now the ONLY gradient removal,
 			// so it must still run (returning early here shipped un-flattened, blotchy skies).
 			if rn, ok := rbf(); !ok {
-				return "combined " + n + "; " + rn
+				return "combined " + n + "; " + rn, false
 			}
-			return "combined " + n + " — RBF subsky fallback applied"
+			return "combined " + n + " — RBF subsky fallback applied", true
 		}
 		if rn, ok := rbf(); !ok { // GraXpert removes most; the follow-up RBF cleans the residual it leaves
-			return "combined background: GraXpert applied; " + rn
+			return "combined background: GraXpert applied; " + rn, true
 		}
-		return "combined background extracted (GraXpert + RBF residual pass)"
+		return "combined background extracted (GraXpert + RBF residual pass)", true
 	}
 	if rn, ok := rbf(); !ok { // GraXpert absent/broken → RBF alone (deterministic, better than a polynomial here)
-		return rn
+		return rn, false
 	}
-	return "combined background flattened (RBF subsky; GraXpert unavailable)"
+	return "combined background flattened (RBF subsky; GraXpert unavailable)", true
+}
+
+// extractCombinedBackgroundCached wraps extractCombinedBackground with the same input-content cache
+// as the AI denoise: a rerun / star-fix pass whose combined RGB is byte-identical (and whose
+// GraXpert-vs-RBF mode is unchanged) reuses the flattened result instead of re-paying the pass —
+// and, by construction, the byte-identical output then also hits the denoise cache downstream.
+// Artifacts (<outDir>/linear/rgb_base_bg.fits + .sig + .note) are cleaned with the prep; the
+// recorded note is restored on a hit so run.json still says what flattened the sky. Best-effort.
+func extractCombinedBackgroundCached(ctx context.Context, opts Options, runner *siril.Runner, outDir, base, hdr string,
+	onProgress func(siril.Progress)) (note string) {
+	if opts.Preset == nil || !opts.Preset.CombinedBackgroundAI {
+		return ""
+	}
+	path := filepath.Join(outDir, base+".fits")
+	sig, err := fileSHA256(path)
+	if err != nil {
+		note, _ = extractCombinedBackground(ctx, opts, runner, outDir, base, hdr, onProgress)
+		return note
+	}
+	bgMode := "rbf"
+	if opts.Graxpert != nil && opts.Graxpert.Healthy(ctx) == nil {
+		bgMode = "graxpert"
+	}
+	sig += "|" + bgMode
+	cacheFits := filepath.Join(outDir, linearDirName, "rgb_base_bg.fits")
+	cacheSig, cacheNote := cacheFits+".sig", cacheFits+".note"
+	if fileExists(cacheFits) {
+		if b, e := os.ReadFile(cacheSig); e == nil && string(b) == sig {
+			if e := fsutil.CopyFile(cacheFits, path); e == nil {
+				n := "combined background reused from cache — input unchanged, the extraction was skipped"
+				if nb, e := os.ReadFile(cacheNote); e == nil && len(nb) > 0 {
+					n = string(nb) + " (reused from cache)"
+				}
+				if onProgress != nil { // surface the reuse the moment it happens
+					onProgress(siril.Progress{Line: n})
+				}
+				return n
+			}
+		}
+	}
+	note, flattened := extractCombinedBackground(ctx, opts, runner, outDir, base, hdr, onProgress)
+	if flattened { // persist only a genuine success (path now holds the flattened image)
+		if e := fsutil.EnsureDir(filepath.Dir(cacheFits)); e == nil {
+			if e := fsutil.CopyFile(path, cacheFits); e == nil {
+				_ = os.WriteFile(cacheSig, []byte(sig), 0o644)
+				_ = os.WriteFile(cacheNote, []byte(note), 0o644)
+			}
+		}
+	}
+	return note
 }
 
 // denoiseAI runs GraXpert AI denoising in place on a linear FITS (the combined RGB colour base). It is
@@ -156,6 +209,9 @@ func extractCombinedBackground(ctx context.Context, opts Options, runner *siril.
 // WITHOUT smearing star colour halos (unlike a gaussian blur). Soft-fail by contract: returns a
 // human-readable note, never an error, so a missing/erroring GraXpert leaves the input untouched.
 func denoiseAI(ctx context.Context, opts Options, path string, onProgress func(siril.Progress)) (note string) {
+	if n, ok := denoiseAIScaled(ctx, opts, path, onProgress); ok {
+		return n // opt-in downscaled chroma variant (ASTRO_DENOISE_SCALE); inactive → full-res below
+	}
 	out := strings.TrimSuffix(path, ".fits") + "_graxpert.fits"
 	fwd := func(p graxpert.Progress) {
 		if onProgress != nil {
@@ -188,17 +244,22 @@ func denoiseAICached(ctx context.Context, opts Options, path, outDir string, onP
 	if err != nil {
 		return denoiseAI(ctx, opts, path, onProgress)
 	}
+	sig += denoiseScaleSigSuffix(opts) // a different chroma-denoise scale must miss the cache
 	cacheFits := filepath.Join(outDir, linearDirName, "rgb_base_denoised.fits")
 	cacheSig := cacheFits + ".sig"
 	if fileExists(cacheFits) {
 		if b, e := os.ReadFile(cacheSig); e == nil && string(b) == sig {
 			if e := fsutil.CopyFile(cacheFits, path); e == nil {
-				return "denoise reused from cache — input unchanged, the AI pass was skipped"
+				const n = "denoise reused from cache — input unchanged, the AI pass was skipped"
+				if onProgress != nil { // surface the reuse the moment it happens
+					onProgress(siril.Progress{Line: n})
+				}
+				return n
 			}
 		}
 	}
 	note = denoiseAI(ctx, opts, path, onProgress)
-	if note == denoiseAppliedNote { // persist only a genuine success (path now holds the denoised image)
+	if strings.HasPrefix(note, denoiseAppliedNote) { // persist only a genuine success (the scaled variant suffixes it)
 		if e := fsutil.EnsureDir(filepath.Dir(cacheFits)); e == nil {
 			if e := fsutil.CopyFile(path, cacheFits); e == nil {
 				_ = os.WriteFile(cacheSig, []byte(sig), 0o644)

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/verove-jordan/astronomy/internal/calib"
+	"github.com/verove-jordan/astronomy/internal/filters"
 	"github.com/verove-jordan/astronomy/internal/grade"
 	"github.com/verove-jordan/astronomy/internal/inspect"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
@@ -16,7 +17,7 @@ import (
 )
 
 // liveFilterOrder is the canonical channel order for reporting (L first, matching the batch pipeline).
-var liveFilterOrder = []string{"L", "R", "G", "B", "Ha", "OIII", "SII"}
+var liveFilterOrder = filters.Canonical
 
 // session holds the mutable state of one live-stacking run: the calibration masters built so far and a
 // per-channel pool of already-calibrated frames that grows across batches.

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRejection_AdaptsToFrameCount(t *testing.T) {
@@ -81,19 +82,46 @@ func TestLightStackScript_NoCalibration(t *testing.T) {
 	assert.True(t, strings.HasPrefix(s, "requires"))
 }
 
-func TestCalibrateRegisterFramedScript_CommonFOV(t *testing.T) {
-	// The cross-session merge: no masters (already calibrated), rotation-aware homography, common-area crop.
-	s := CalibrateRegisterFramedScript("light", CalibMasters{}, "homography", "min")
-	assert.NotContains(t, s, "calibrate")
-	assert.Contains(t, s, "register light -2pass -transf=homography")
-	assert.Contains(t, s, "seqapplyreg light -framing=min")
+func TestCalibrateSingleScript_UsesCalibrateSingleOnTheConvertedFrame(t *testing.T) {
+	// A one-frame group gets no .seq from link (Siril has no one-image sequences), so the sequence
+	// `calibrate` aborts — task #352. calibrate_single addresses the converted image directly and
+	// must keep the pp_ output naming the callers derive with CalibratedSeq.
+	s := CalibrateSingleScript("light", CalibMasters{
+		Dark: "/m/d.fits", Flat: "/m/f.fits", Bias: "/m/b.fits",
+	})
+	assert.Contains(t, s, "link light -out=.")
+	assert.Contains(t, s, "calibrate_single light_00001 -dark=/m/d.fits -flat=/m/f.fits -bias=/m/b.fits -cc=dark -prefix=pp_")
+	assert.NotContains(t, s, "calibrate light", "the sequence form would abort on a one-image conversion")
 }
 
-func TestCalibrateRegisterFramedScript_WithMastersPrefixesTarget(t *testing.T) {
-	s := CalibrateRegisterFramedScript("light", CalibMasters{Dark: "/m/d.fits"}, "affine", "cog")
-	assert.Contains(t, s, "calibrate light -dark=/m/d.fits -cc=dark -prefix=pp_")
-	assert.Contains(t, s, "register pp_light -2pass -transf=affine")
-	assert.Contains(t, s, "seqapplyreg pp_light -framing=cog")
+func TestCalibrateSingleScript_NoMastersLinksOnly(t *testing.T) {
+	// With nothing to apply, the lone frame is only converted — the caller then uses light_00001
+	// directly (CalibratedSeq returns the uncalibrated name).
+	s := CalibrateSingleScript("light", CalibMasters{})
+	assert.Contains(t, s, "link light -out=.")
+	assert.NotContains(t, s, "calibrate")
+}
+
+func TestRegister2PassScript_ComputesWithoutApplying(t *testing.T) {
+	// The cross-session merge, phase 1: metrics + homographies only — the Go review runs in between.
+	s := Register2PassScript("light", "homography")
+	assert.NotContains(t, s, "calibrate")
+	assert.Contains(t, s, "register light -2pass -transf=homography")
+	assert.NotContains(t, s, "seqapplyreg")
+}
+
+func TestApplyRegistrationScript_PinsAnchorAndCanvas(t *testing.T) {
+	// Phase 2: the anchor-night reference frame pins the output canvas (framing=current).
+	s := ApplyRegistrationScript("light", 42, "current")
+	assert.Contains(t, s, "setref light 42")
+	assert.Contains(t, s, "seqapplyreg light -framing=current")
+	assert.NotContains(t, s, "register light")
+}
+
+func TestApplyRegistrationScript_ZeroRefKeepsSirilChoice(t *testing.T) {
+	s := ApplyRegistrationScript("light", 0, "current")
+	assert.NotContains(t, s, "setref")
+	assert.Contains(t, s, "seqapplyreg light -framing=current")
 }
 
 func TestCalibrateStarAlignToRefScript_PinsMiddleFrame(t *testing.T) {
@@ -157,16 +185,18 @@ func TestRegisterOnlyScript(t *testing.T) {
 }
 
 func TestStackSelectedScript_Weighted(t *testing.T) {
+	// The sequence is addressed exactly as Siril names it — frame prefix + trailing "_" — so the
+	// script triggers no sequence-name-lookup recovery noise.
 	s := StackSelectedScript("r_light", 10, []int{3}, "/out/master_L", "wfwhm")
-	assert.Contains(t, s, "select r_light 1 10")
-	assert.Contains(t, s, "unselect r_light 3 3")
-	assert.Contains(t, s, "stack r_light rej winsorized 3 3 -norm=addscale -output_norm -weight=wfwhm -filter-incl -out=/out/master_L")
+	assert.Contains(t, s, "select r_light_ 1 10")
+	assert.Contains(t, s, "unselect r_light_ 3 3")
+	assert.Contains(t, s, "stack r_light_ rej winsorized 3 3 -norm=addscale -output_norm -weight=wfwhm -filter-incl -out=/out/master_L")
 }
 
 func TestStackSelectedScript_UnweightedIsByteIdentical(t *testing.T) {
 	// Empty weight must leave the single-session/OSC stack command exactly as it was.
 	s := StackSelectedScript("r_light", 10, nil, "/out/master_L", "")
-	assert.Contains(t, s, "stack r_light rej winsorized 3 3 -norm=addscale -output_norm -filter-incl -out=/out/master_L")
+	assert.Contains(t, s, "stack r_light_ rej winsorized 3 3 -norm=addscale -output_norm -filter-incl -out=/out/master_L")
 	assert.NotContains(t, s, "-weight=")
 }
 
@@ -179,6 +209,26 @@ func TestStackSelectedScript_RejectionSizedToSurvivors(t *testing.T) {
 	// All 60 kept → GESD kicks in for the large stack.
 	s = StackSelectedScript("r_light", 60, nil, "/out/m", "wfwhm")
 	assert.Contains(t, s, "rej generalized 0.3 0.05")
+}
+
+func TestIntegrateChannelsScript_Weighted(t *testing.T) {
+	// Links the staged, co-registered channel masters as sequence `synth` and stacks them. The stack
+	// must address the linked sequence with its trailing separator ("synth_"), use addscale
+	// normalization + sub-count weighting, and a gentle winsorized rejection (this Siril has no bare
+	// "mean" — the average grammar needs a rejection method + two sigmas).
+	s := IntegrateChannelsScript("synth", "/out/synthlum", "nbstack")
+	assert.True(t, strings.HasPrefix(s, "requires"))
+	assert.Contains(t, s, "link synth -out=.\n")
+	assert.Contains(t, s, "stack synth_ rej none -norm=addscale -output_norm -weight=nbstack -out=/out/synthlum\n")
+	assert.NotContains(t, s, "register")
+	assert.NotContains(t, s, "-norm=additive") // 'additive' is silently ignored by Siril; the token is 'add'/'addscale'
+}
+
+func TestIntegrateChannelsScript_Unweighted(t *testing.T) {
+	// Empty weight → no -weight flag emitted (unweighted stack).
+	s := IntegrateChannelsScript("synth", "/out/synthlum", "")
+	assert.Contains(t, s, "stack synth_ rej none -norm=addscale -output_norm -out=/out/synthlum\n")
+	assert.NotContains(t, s, "-weight=")
 }
 
 func TestDenoiseScript(t *testing.T) {
@@ -370,6 +420,81 @@ func TestDefaultPlanetaryFinish_HasHeadroom(t *testing.T) {
 	assert.InDelta(t, 0.85, DefaultPlanetaryFinish().Headroom, 1e-9)
 }
 
+func TestPlanetaryFinishScript_IgnoresEarthshineGain(t *testing.T) {
+	// Pins the gain==0 byte-identity guarantee at its root: the finish script never varies with the
+	// earthshine knob — the lift is a Go step between the finish and export scripts.
+	fin := DefaultPlanetaryFinish()
+	base := PlanetaryFinishScript("", "", "", "", "/m/master_mono", "/o/out", true, fin, []string{"png", "tif"})
+	fin.EarthshineGain = 1.2
+	assert.Equal(t, base, PlanetaryFinishScript("", "", "", "", "/m/master_mono", "/o/out", true, fin, []string{"png", "tif"}))
+}
+
+func TestPlanetaryFinishScript_ShadowLift(t *testing.T) {
+	// shadow_lift slides the ght symmetry point SP = 0.18·(1−s) + 0.04·s into the shadows. s=0 must
+	// emit the exact historical literal (byte-parity anchor); the descending SP values pin monotonicity.
+	tests := []struct {
+		name    string
+		lift    float64
+		wantGht string
+	}{
+		{"off is the historical literal", 0, "ght -D=0.600 -SP=0.18 -HP=0.850\n"},
+		{"moderate lift", 0.35, "-SP=0.131"},
+		{"half lift", 0.5, "-SP=0.110"},
+		{"full lift", 1, "-SP=0.040"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fin := DefaultPlanetaryFinish()
+			fin.ShadowLift = tt.lift
+			s := PlanetaryFinishScript("", "", "", "", "/m/master_mono", "/o/out", true, fin, []string{"png"})
+			assert.Contains(t, s, tt.wantGht)
+		})
+	}
+}
+
+func TestPlanetaryFinishScript_ShadowLiftChangesOnlyTheGhtLine(t *testing.T) {
+	// A lift must move exactly one line — the ght stretch — and nothing else in the finish chain.
+	fin := DefaultPlanetaryFinish()
+	base := strings.Split(PlanetaryFinishScript("", "", "", "", "/m/mono", "/o/out", true, fin, []string{"png"}), "\n")
+	fin.ShadowLift = 0.6
+	lifted := strings.Split(PlanetaryFinishScript("", "", "", "", "/m/mono", "/o/out", true, fin, []string{"png"}), "\n")
+	require.Equal(t, len(base), len(lifted), "line count is unchanged")
+	diffs := 0
+	for i := range base {
+		if base[i] != lifted[i] {
+			diffs++
+			assert.True(t, strings.HasPrefix(lifted[i], "ght "), "the only changed line is the ght stretch, got %q", lifted[i])
+		}
+	}
+	assert.Equal(t, 1, diffs, "exactly one line differs")
+}
+
+func TestPlanetarySplitFinish_MatchesSingleScript(t *testing.T) {
+	// The split finish (compose + tone) is built from the same tone writer as the historical single
+	// script, so the two can never drift. For mono the tone script IS the single script.
+	fin := DefaultPlanetaryFinish()
+	single := PlanetaryFinishScript("", "", "", "", "/m/mono", "/o/out", true, fin, []string{"png"})
+	tone := PlanetaryToneScript("/m/mono", "/o/out", false, true, fin, []string{"png"})
+	assert.Equal(t, single, tone)
+
+	// TrueLum, like EarthshineGain, never changes the scripts themselves.
+	off := fin
+	off.TrueLum = false
+	assert.Equal(t, single, PlanetaryFinishScript("", "", "", "", "/m/mono", "/o/out", true, off, []string{"png"}))
+
+	c := PlanetaryComposeScript("/m/R", "/m/G", "/m/B", "/m/L", "/o/out")
+	assert.Contains(t, c, "rgbcomp /m/R /m/G /m/B -lum=/m/L -out=/o/out\n")
+	assert.NotContains(t, PlanetaryComposeScript("/m/R", "/m/G", "/m/B", "", "/o/out"), "-lum")
+}
+
+func TestExportScript(t *testing.T) {
+	s := ExportScript("/o/out", []string{"png", "tif"})
+	assert.Contains(t, s, "load /o/out\n")
+	assert.Contains(t, s, "savepng /o/out\n")
+	assert.Contains(t, s, "savetif /o/out\n")
+	assert.Less(t, strings.Index(s, "load "), strings.Index(s, "savepng "), "load precedes the saves")
+}
+
 func TestAlignMastersScript_CommonFOV(t *testing.T) {
 	// Channel masters register 2-pass and are applied with -framing=min: a channel with an offset
 	// footprint (e.g. Ha) must not leave a zero-coverage strip that the layer stretch would turn into
@@ -378,4 +503,29 @@ func TestAlignMastersScript_CommonFOV(t *testing.T) {
 	assert.Contains(t, s, "link ch -out=.")
 	assert.Contains(t, s, "register ch -2pass")
 	assert.Contains(t, s, "seqapplyreg ch -framing=min")
+}
+
+func TestPhotometricCalibrateScript(t *testing.T) {
+	s := PhotometricCalibrateScript("rgb_base", "rgb_base",
+		SolveOptions{Coords: "170.06,12.99", FocalMM: 740, PixelUm: 3.8, AstroCat: "/lib/cat/astro.dat"})
+	assert.Contains(t, s, "set core.catalogue_gaia_astro=/lib/cat/astro.dat")
+	assert.Contains(t, s, "load rgb_base")
+	assert.Contains(t, s, "platesolve 170.06,12.99 -focal=740.0 -pixelsize=3.80 -catalog=localgaia")
+	assert.Contains(t, s, "pcc\n")
+	assert.NotContains(t, s, "spcc", "the PCC rung must not invoke SPCC")
+}
+
+func TestFlattenRegister2PassScript(t *testing.T) {
+	// One atomic script: link → per-frame background flatten → 2-pass register over the FLATTENED
+	// sequence (a seqsubsky failure fails the whole script; the caller retries unflattened).
+	s := FlattenRegister2PassScript("light", "homography", 1)
+	assert.Contains(t, s, "link light -out=.")
+	assert.Contains(t, s, "seqsubsky light 1 -prefix=flat_")
+	assert.Contains(t, s, "register flat_light -2pass -transf=homography")
+	assert.Equal(t, "flat_light", FlattenedSeq("light"))
+}
+
+func TestFlattenRegister2PassScript_ClampsDegree(t *testing.T) {
+	assert.Contains(t, FlattenRegister2PassScript("light", "", 0), "seqsubsky light 1 ")
+	assert.Contains(t, FlattenRegister2PassScript("light", "", 9), "seqsubsky light 4 ")
 }

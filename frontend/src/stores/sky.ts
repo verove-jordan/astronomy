@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { apiGet } from "@/services/api";
+import { useEquipmentStore } from "@/stores/equipment";
 import type {
   SkyTarget,
   SkyEyepiece,
@@ -27,6 +28,7 @@ export interface SkyQuery {
   min_alt?: number;
   twilight?: "astro" | "nautical";
   limit?: number;
+  max_mag?: number; // limiting magnitude: hide objects fainter than this (≥ MAG_ALL = off)
   mode?: "camera" | "visual"; // "visual" → score for the eye through the eyepiece kit
   eyepieces?: string; // encoded kit "focal:afov:label,…" (visual mode)
   at?: string; // RFC3339 instant to plan for; omitted = real-time (server "now")
@@ -34,6 +36,14 @@ export interface SkyQuery {
 
 const STORAGE_KEY = "astrostack.sky.query";
 const EP_KEY = "astrostack.sky.eyepieces";
+
+// TARGET_LIMIT is how many score-ranked rows every fetch asks for. The backend's own default (50)
+// is what used to hide galaxies: fainter objects rank below the cut under moonlight/light
+// pollution, so the magnitude slider needs a deep pool to reveal anything. Scoring all ~12k
+// records happens server-side regardless — the limit only bounds the payload.
+const TARGET_LIMIT = 400;
+// MAG_ALL is the slider's right end: at or beyond it no max_mag is sent (show everything).
+export const MAG_ALL = 16;
 
 // DEFAULT_KIT mirrors the engine's default eyepiece set (a sane FC-100 visual kit) so the editor is
 // populated out of the box before the user customizes it.
@@ -103,17 +113,6 @@ function loadLocationFavorites(): LocationFavorite[] {
   }
 }
 
-const SETUP_KEY = "astrostack.sky.equipmentSetups";
-
-function loadSetups(): EquipmentSetup[] {
-  try {
-    const raw = localStorage.getItem(SETUP_KEY);
-    return raw ? (JSON.parse(raw) as EquipmentSetup[]) : [];
-  } catch {
-    return [];
-  }
-}
-
 function queryString(q: SkyQuery): string {
   const p = new URLSearchParams();
   for (const [k, v] of Object.entries(q)) {
@@ -136,7 +135,13 @@ export const useSkyStore = defineStore("sky", () => {
   const favorites = ref<Set<string>>(loadFavorites()); // object names, persisted locally
   const locationFavorites = ref<LocationFavorite[]>(loadLocationFavorites()); // saved sites, persisted
   const eyepieceKit = ref<SkyEyepiece[]>(loadKit()); // visual-mode kit, persisted locally
-  const equipmentSetups = ref<EquipmentSetup[]>(loadSetups()); // saved telescope/camera/eyepiece rigs
+
+  // Saved telescope/camera rigs now live server-side (stores/equipment.ts) so the desktop planner and
+  // the phone at the scope share them; this store keeps the old surface so existing callers are
+  // unchanged. The equipment store imports any legacy localStorage rigs on its first load.
+  const equipment = useEquipmentStore();
+  void equipment.load();
+  const equipmentSetups = computed<EquipmentSetup[]>(() => equipment.setups);
 
   let lastKey = "";
   let inflight: Promise<void> | null = null;
@@ -148,7 +153,9 @@ export const useSkyStore = defineStore("sky", () => {
 
   async function fetch(next?: SkyQuery, force = false): Promise<void> {
     if (next) params.value = { ...params.value, ...next };
-    const key = queryString(params.value);
+    const effective: SkyQuery = { limit: TARGET_LIMIT, ...params.value };
+    if ((effective.max_mag ?? MAG_ALL) >= MAG_ALL) delete effective.max_mag;
+    const key = queryString(effective);
     if (!force && key === lastKey && targets.value.length) return; // cache hit
     if (inflight && key === lastKey) return inflight; // in-flight dedup
     controller?.abort();
@@ -282,40 +289,23 @@ export const useSkyStore = defineStore("sky", () => {
   }
 
   // --- Equipment setups (named telescope + camera + eyepiece rigs) -----------------------------------
-  function persistSetups() {
-    try {
-      localStorage.setItem(SETUP_KEY, JSON.stringify(equipmentSetups.value));
-    } catch {
-      // ignore quota / private-mode errors
-    }
-  }
-  // saveEquipmentSetup adds a named rig, or updates the one with the same (case-insensitive) name so
-  // re-saving after a tweak overwrites rather than duplicates. Returns its id.
+  // Thin delegates to the server-backed equipment store: same call signatures the UI already uses,
+  // so nothing downstream changed when these moved off localStorage. The server upserts by name, so
+  // re-saving a tweaked rig still overwrites rather than duplicating.
   function saveEquipmentSetup(setup: Omit<EquipmentSetup, "id">): string {
     const name = setup.name.trim();
     if (!name) return "";
-    const existing = equipmentSetups.value.find(
-      (s) => s.name.toLowerCase() === name.toLowerCase(),
+    void equipment.save(setup);
+    return (
+      equipment.setups.find((s) => s.name.toLowerCase() === name.toLowerCase())
+        ?.id ?? ""
     );
-    if (existing) {
-      Object.assign(existing, setup, { name, id: existing.id });
-      persistSetups();
-      return existing.id;
-    }
-    const id = `eq${Date.now().toString(36)}`;
-    equipmentSetups.value.push({ ...setup, name, id });
-    persistSetups();
-    return id;
   }
   function removeEquipmentSetup(id: string) {
-    equipmentSetups.value = equipmentSetups.value.filter((s) => s.id !== id);
-    persistSetups();
+    void equipment.remove(id);
   }
   function renameEquipmentSetup(id: string, name: string) {
-    const s = equipmentSetups.value.find((x) => x.id === id);
-    if (!s || !name.trim()) return;
-    s.name = name.trim();
-    persistSetups();
+    void equipment.rename(id, name);
   }
 
   return {

@@ -1,5 +1,6 @@
 import { onBeforeUnmount, onMounted, ref, watch, type Ref } from "vue";
 import { precessFromJ2000, equatorialToHorizontal } from "@/utils/astro";
+import { MILKY_WAY } from "@/utils/galactic";
 import { SKY_MAP } from "@/constants/colors";
 import type { SkyMapData } from "@/composables/useSkyCatalog";
 
@@ -31,10 +32,35 @@ interface Opts {
   target: () => SkyTargetView | null;
   bodies: () => SkyBodyView[];
   bodyLabel: (name: string) => string;
+  // Optional draw-time alpha for the Moon/planets (the time slider fades them: their alt/az is
+  // server-computed at the base instant) and localized cardinal-point labels (N/E/S/W).
+  bodiesAlpha?: () => number;
+  cardinalLabel?: (code: string) => string;
 }
 
 const FOV_MIN = 2;
 const FOV_MAX = 140;
+
+// Per-strip fill alpha for the procedural Milky Way band (outer → core); multiplied by the
+// per-sample brightness so the bulge glows and the anticentre stays a whisper.
+const MW_STRIP_ALPHA = [0.05, 0.06, 0.07];
+
+const MILKYWAY_KEY = "astrostack.goto.milkyway";
+// Module-shared so the card chart and the fullscreen modal chart stay in sync (default ON).
+const milkyWayOn = ref(localStorage.getItem(MILKYWAY_KEY) !== "0");
+
+// useMilkyWayToggle exposes the shared Milky Way layer switch (persisted across sessions).
+export function useMilkyWayToggle() {
+  function toggle() {
+    milkyWayOn.value = !milkyWayOn.value;
+    try {
+      localStorage.setItem(MILKYWAY_KEY, milkyWayOn.value ? "1" : "0");
+    } catch {
+      // ignore quota / private-mode errors
+    }
+  }
+  return { milkyWayOn, toggle };
+}
 
 // useSkyMapCanvas renders an interactive alt/az sky (stars, constellation figures + names, Moon/planets,
 // horizon, target highlight) on a raw canvas, with drag-to-pan and wheel/pinch zoom. It redraws only on
@@ -48,6 +74,14 @@ export function useSkyMapCanvas(opts: Opts) {
   let starAlt: Float32Array | null = null;
   let starAz: Float32Array | null = null;
 
+  // Milky Way band edge vertices in alt/az, [strip][sample] — recomputed with the stars.
+  interface EdgeAltAz {
+    alt: Float32Array;
+    az: Float32Array;
+  }
+  let mwTop: EdgeAltAz[] | null = null;
+  let mwBot: EdgeAltAz[] | null = null;
+
   let ctx: CanvasRenderingContext2D | null = null;
   let cssW = 0;
   let cssH = 0;
@@ -56,7 +90,13 @@ export function useSkyMapCanvas(opts: Opts) {
   function recomputeAltAz() {
     const d = opts.data.value;
     const obs = opts.observer();
-    if (!d || !obs) {
+    if (!obs) {
+      starAlt = starAz = null;
+      mwTop = mwBot = null;
+      return;
+    }
+    recomputeMilkyWay(obs);
+    if (!d) {
       starAlt = starAz = null;
       return;
     }
@@ -69,6 +109,37 @@ export function useSkyMapCanvas(opts: Opts) {
       const h = equatorialToHorizontal(p.ra, p.dec, obs.lat, obs.lon, obs.atMs);
       starAlt[i] = h.alt;
       starAz[i] = h.az;
+    }
+  }
+
+  // recomputeMilkyWay piggybacks the per-time recompute for the band vertices (a few hundred points).
+  function recomputeMilkyWay(obs: Observer) {
+    const n = MILKY_WAY.samples;
+    const toAltAz = (ra: number, dec: number): { alt: number; az: number } => {
+      const p = precessFromJ2000(ra, dec, obs.atMs);
+      return equatorialToHorizontal(p.ra, p.dec, obs.lat, obs.lon, obs.atMs);
+    };
+    mwTop = [];
+    mwBot = [];
+    for (let s = 0; s < MILKY_WAY.strips; s++) {
+      const top: EdgeAltAz = {
+        alt: new Float32Array(n),
+        az: new Float32Array(n),
+      };
+      const bot: EdgeAltAz = {
+        alt: new Float32Array(n),
+        az: new Float32Array(n),
+      };
+      for (let i = 0; i < n; i++) {
+        const ht = toAltAz(MILKY_WAY.topRa[s][i], MILKY_WAY.topDec[s][i]);
+        top.alt[i] = ht.alt;
+        top.az[i] = ht.az;
+        const hb = toAltAz(MILKY_WAY.botRa[s][i], MILKY_WAY.botDec[s][i]);
+        bot.alt[i] = hb.alt;
+        bot.az[i] = hb.az;
+      }
+      mwTop.push(top);
+      mwBot.push(bot);
     }
   }
 
@@ -116,12 +187,44 @@ export function useSkyMapCanvas(opts: Opts) {
     c.fillStyle = grad;
     c.fillRect(0, 0, cssW, cssH);
 
+    drawMilkyWay(c);
     drawHorizon(c);
     drawConstellations(c);
     drawStars(c);
     drawBodies(c);
     drawLabels(c);
     drawTarget(c);
+  }
+
+  // drawMilkyWay fills the nested band strips as per-segment quads beneath everything else, skipping
+  // segments at projection/horizon discontinuities exactly like constellation lines do.
+  function drawMilkyWay(c: CanvasRenderingContext2D) {
+    if (!milkyWayOn.value || !mwTop || !mwBot) return;
+    c.fillStyle = SKY_MAP.milkyWay;
+    for (let s = 0; s < MILKY_WAY.strips; s++) {
+      const top = mwTop[s];
+      const bot = mwBot[s];
+      for (let i = 0; i + 1 < MILKY_WAY.samples; i++) {
+        if (top.alt[i] <= 0 || top.alt[i + 1] <= 0) continue;
+        if (bot.alt[i] <= 0 || bot.alt[i + 1] <= 0) continue;
+        const a = project(top.alt[i], top.az[i]);
+        const b = project(top.alt[i + 1], top.az[i + 1]);
+        const d = project(bot.alt[i + 1], bot.az[i + 1]);
+        const e = project(bot.alt[i], bot.az[i]);
+        if (!a.front || !b.front || !d.front || !e.front) continue;
+        const bright =
+          (MILKY_WAY.brightness[i] + MILKY_WAY.brightness[i + 1]) / 2;
+        c.globalAlpha = MW_STRIP_ALPHA[s] * bright;
+        c.beginPath();
+        c.moveTo(a.x, a.y);
+        c.lineTo(b.x, b.y);
+        c.lineTo(d.x, d.y);
+        c.lineTo(e.x, e.y);
+        c.closePath();
+        c.fill();
+      }
+    }
+    c.globalAlpha = 1;
   }
 
   function drawHorizon(c: CanvasRenderingContext2D) {
@@ -144,14 +247,15 @@ export function useSkyMapCanvas(opts: Opts) {
     c.fillStyle = SKY_MAP.cardinal;
     c.font = "600 12px system-ui, sans-serif";
     c.textAlign = "center";
-    for (const [az, label] of [
+    for (const [az, code] of [
       [0, "N"],
       [90, "E"],
       [180, "S"],
       [270, "W"],
     ] as const) {
       const p = project(0, az);
-      if (p.front && onScreen(p)) c.fillText(label, p.x, p.y - 6);
+      if (p.front && onScreen(p))
+        c.fillText(opts.cardinalLabel?.(code) ?? code, p.x, p.y - 6);
     }
   }
 
@@ -195,6 +299,8 @@ export function useSkyMapCanvas(opts: Opts) {
   }
 
   function drawBodies(c: CanvasRenderingContext2D) {
+    // Faded while the time slider is scrubbed: body positions are server-computed at the base time.
+    c.globalAlpha = opts.bodiesAlpha?.() ?? 1;
     for (const b of opts.bodies()) {
       if (b.alt <= 0) continue; // (list is already above-horizon; guard anyway)
       const p = project(b.alt, b.az);
@@ -211,6 +317,7 @@ export function useSkyMapCanvas(opts: Opts) {
       c.textAlign = "left";
       c.fillText(opts.bodyLabel(b.name), p.x + 7, p.y + 4);
     }
+    c.globalAlpha = 1;
   }
 
   // A small moon disc with an approximate terminator for the illuminated fraction k.
@@ -425,6 +532,14 @@ export function useSkyMapCanvas(opts: Opts) {
     () => resetToTarget(),
   );
   watch(() => opts.bodies(), scheduleDraw, { deep: true });
+  // The Milky Way toggle and the body fade are draw-time-only inputs; localized canvas text
+  // (cardinal points, body names) changes with the locale — all just need a redraw.
+  watch(milkyWayOn, scheduleDraw);
+  watch(() => opts.bodiesAlpha?.() ?? 1, scheduleDraw);
+  watch(
+    () => (opts.cardinalLabel?.("W") ?? "W") + opts.bodyLabel("moon"),
+    scheduleDraw,
+  );
 
   return { fovDeg, zoomBy, resetToTarget, wholeSky };
 }

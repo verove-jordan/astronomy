@@ -93,7 +93,7 @@ plate-solving + SPCC**, download the Gaia catalogues once: `just download-catalo
 
 | Mode | Input | Pipeline |
 |------|-------|----------|
-| `deepsky` | mono FITS (L/R/G/B/Ha…) | calibrate → grade → stack per channel → co-register → GIMP LRGB+Ha composite (palettes: natural/HaRGB/HOO/SHO/Foraxx/mono) |
+| `deepsky` | mono FITS (L/R/G/B/Ha/OIII/SII) | calibrate → grade → stack per channel → co-register → GIMP LRGB composite with Ha/OIII/SII emission screens (palettes: natural/HaRGB/HOO/SHO/HOS/Foraxx/mono) |
 | `nebula` | mono FITS | deepsky retuned for faint emission: lenient grading, Ha-forward, star reduction |
 | `milkyway` | one-shot-color (iPhone ProRAW/HEIC, DSLR raw) | photometric develop → sky-only stack → foreground composite + graded look |
 | `planetary` | video (SER/AVI/MP4/MOV) or stills | lucky imaging: sharpness-rank → multi-point align → AP-weighted stack → deconvolve |
@@ -112,8 +112,25 @@ How stacking works stage by stage: [docs/pipeline.md](docs/pipeline.md) · per-m
   Live (live stacking), Tasks (jobs with SSE progress, pause/resume, per-stage rerun, the
   supervisor panel), Runs (on-disk gallery), Library (calibration masters), Storage (S3
   connections, sync, verified free-local, backup/restore). Page-by-page: [docs/ui.md](docs/ui.md).
+- **Capture** — live view with histogram, viewfinder and zoom; full camera control (exposure, gain,
+  offset, cooling, USB bandwidth and everything else the camera reports); filter wheel with named
+  slots; a multi-filter auto-run sequencer; a focus-quality meter; mount GoTo with plate-solve
+  centring; SER video recording and a calibration wizard.
 - **AstroAgent** — a local-model chat with confirmation-gated tools over your jobs, data and sky:
   [docs/agent.md](docs/agent.md).
+
+### Connecting real hardware
+
+Devices run in a separate process, started with `just device` (a full simulator, no hardware needed).
+
+For a **real ZWO camera or filter wheel on an Apple-Silicon Mac**, use `just device-x86` instead. ZWO
+publish no arm64 macOS library — their SDK and their own ASIStudio are x86_64 only — so the sidecar is
+built for x86_64 and run under Rosetta, while the engine and all stacking stay native arm64. The
+libraries are picked up from ASIStudio automatically, or set `ASI_SDK_LIB` / `EFW_SDK_LIB`. Details in
+[docs/architecture.md](docs/architecture.md).
+
+The mount speaks the Celestron NexStar protocol over the hand controller's USB port (`just device`
+lists candidate serial ports).
 
 ## Configuration
 

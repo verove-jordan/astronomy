@@ -9,8 +9,10 @@ package planetary
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +22,9 @@ import (
 	"time"
 
 	"github.com/verove-jordan/astronomy/internal/buildinfo"
+	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/comet"
+	"github.com/verove-jordan/astronomy/internal/filters"
 	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/inspect"
@@ -33,9 +37,19 @@ type Options struct {
 	BestPercent int                   // keep this percent of the sharpest frames (default 15 — real lucky imaging)
 	Sharpen     bool                  // apply wavelet sharpening + CLAHE to the final image
 	APAlign     bool                  // run multi-point (alignment-point) warping to correct atmospheric distortion
-	APWeights   bool                  // multi-point QUALITY weighting: each region dominated by the frames sharpest there
+	APWeights   bool                  // per-AP top-K SELECTION: each region stacks only the frames sharpest there
+	DoubleStack bool                  // re-align the originals onto the pass-1 master (dense AP grid) and re-stack
+	Calibrate   bool                  // apply master dark/flat to the frames (masters from the capture's own cal frames or the library; soft-skips when none match)
 	Formats     []string              // output formats: png, tif, fits
 	Finish      siril.PlanetaryFinish // stretch/sharpen/contrast/saturation of the finish (tuned by the supervisor)
+	// DrizzleScale stacks onto a finer output grid (1 / 1.5 / 2 — snapped): hundreds of
+	// sub-pixel-dithered frames genuinely add resolution on the finer raster. Costs ×scale²
+	// memory/time through warp, stack, deconv and finish. ≤0 (a zero-value Options) = native.
+	DrizzleScale float64
+	// AlignPoints overrides the dense alignment-point grid with a TOTAL point count
+	// (AutoStakkert-style, user-friendly): per-axis N = clamp(round(√AlignPoints), 10, 48) — up to
+	// 48×48 = 2304 points. 0 = auto (min(w,h)/120 px cells capped at 32×32 — today's formula).
+	AlignPoints int
 
 	// Richardson-Lucy deconvolution of the luminance (0 → the package defaults 2.8 / 18 / 700).
 	// The old constants (FWHM 3, 10 iters, alpha 1800) were so strongly regularized the deconv was
@@ -45,9 +59,11 @@ type Options struct {
 	DeconvAlpha float64
 }
 
-// DefaultOptions returns sensible defaults.
+// DefaultOptions returns sensible defaults (drizzle 1.5× — the sharpness the lucky stack
+// gathers deserves the finer grid by default; set 1 to stack at native resolution).
 func DefaultOptions() Options {
-	return Options{BestPercent: 15, Sharpen: true, APAlign: true, APWeights: true, Formats: []string{"png", "tif"}, Finish: DefaultFinish()}
+	return Options{BestPercent: 15, Sharpen: true, APAlign: true, APWeights: true, DoubleStack: true,
+		Calibrate: true, Formats: []string{"png", "tif"}, Finish: DefaultFinish(), DrizzleScale: 1.5}
 }
 
 // DefaultFinish is the original mineral-Moon finish tuning (see siril.DefaultPlanetaryFinish).
@@ -58,7 +74,7 @@ type FrameScore struct {
 	Index  int     `json:"index"`            // 1-based position within its channel
 	File   string  `json:"file"`             // source frame basename
 	Filter string  `json:"filter,omitempty"` // "" for a mono run
-	Score  float64 `json:"score"`            // sharpness (Laplacian variance); higher = sharper
+	Score  float64 `json:"score"`            // sharpness (noise-corrected band-pass detail); higher = sharper
 	Kept   bool    `json:"kept"`             // included in the stack
 }
 
@@ -75,11 +91,12 @@ type Result struct {
 	// base path (no extension) in the output dir — the re-finish inputs the supervised finish and a
 	// post-run refine re-run the finish over (no re-stack, no re-deconvolution).
 	Masters map[string]string `json:"masters,omitempty"`
-	// BestFrameLapVar / MasterLapVar are the scale-invariant disk sharpness of the best kept input
-	// frame vs the finished detail master — the objective "the stack must out-detail the best single
-	// frame" acceptance (pass: master ≥ 1.05× best frame; a miss lands in Notes as a warning).
-	BestFrameLapVar float64 `json:"best_frame_lapvar,omitempty"`
-	MasterLapVar    float64 `json:"master_lapvar,omitempty"`
+	// BestFrameDetail / MasterDetail are the noise-corrected band-pass detail (quality.go) of
+	// the best kept input frame vs the finished detail master — the objective "the stack must
+	// out-detail the best single frame" acceptance (pass: master ≥ 1.05× best frame; a miss
+	// lands in Notes as a warning; the comparison values are always logged as an info note).
+	BestFrameDetail float64 `json:"best_frame_detail,omitempty"`
+	MasterDetail    float64 `json:"master_detail,omitempty"`
 	Sharpen         bool    `json:"sharpen,omitempty"`  // whether the finish sharpens (from Options.Sharpen)
 	OutBase         string  `json:"out_base,omitempty"` // canonical final base path (<outDir>/<object>_stack)
 	// Run identity (mirrors pipeline.Result) so the run lives at output/<object>/<run_id> and a post-run
@@ -107,8 +124,12 @@ var imageExts = map[string]bool{
 var fitsExts = map[string]bool{".fits": true, ".fit": true, ".fts": true}
 
 // Process runs the full lucky-imaging pipeline on a folder of frames, a video file, or a SER.
+// extras (nil-safe) carries the pipeline wiring: the Import multi-select roots (cal-frame folders live
+// beside the lights folder), the calibration source (nil → uncalibrated, the historical behavior —
+// only consulted for folder inputs, whose frames carry the metadata masters match on), and the
+// overall-percent hook for the job bar.
 func Process(ctx context.Context, runner *siril.Runner, ffmpegBin, inputPath, workDir, outDir string,
-	opts Options, onProgress func(siril.Progress)) (*Result, error) {
+	opts Options, extras *RunExtras, onProgress func(siril.Progress)) (*Result, error) {
 	if opts.BestPercent <= 0 || opts.BestPercent > 100 {
 		opts.BestPercent = 50
 	}
@@ -141,36 +162,106 @@ func Process(ctx context.Context, runner *siril.Runner, ffmpegBin, inputPath, wo
 	runRoot := filepath.Join(workAbs, "planetary_"+object)
 	_ = os.RemoveAll(runRoot)
 
-	// 1. Source frames into per-channel groups of FITS paths (filter "" = a single mono group).
+	// Live-note sink: every note is both persisted on the Result AND reported to the live journal the
+	// moment it happens — a run that skips calibration must say so while it runs, not at the end.
+	addNote := func(s string) {
+		res.Notes = append(res.Notes, s)
+		report(onProgress, s)
+	}
+	prog := newRunProgress(extras.onPercent())
+
+	// 1. Classify the input into per-channel SOURCE groups (folder) or a converted mono sequence
+	// (video/SER). Folder frames materialize one channel at a time below, so scratch peaks at a single
+	// channel instead of the whole capture.
 	report(onProgress, "preparing frames")
-	groups, order, err := sourceChannels(ctx, runner, ffmpegBin, inputPath, workAbs, object, onProgress)
+	in, err := sourceChannels(ctx, runner, ffmpegBin, inputPath, extras.roots(inputPath), workAbs, object, onProgress)
 	if err != nil {
 		return nil, err
 	}
-	if len(order) == 0 {
+	if len(in.order) == 0 {
 		return nil, fmt.Errorf("no frames to process in %s", inputPath)
 	}
+	for _, n := range in.notes {
+		addNote(n)
+	}
 
-	// 2. Per channel: rank → keep best % → surface-align → normalized stack → linear master.
+	// 1b. Process only the channels the finish consumes: a full R/G/B trio → the LRGB combine uses
+	// L,R,G,B; otherwise the mono finish uses the first canonical channel alone. Skipped channels (e.g.
+	// an Ha set beside LRGB) never convert, so they cost no scratch or time.
+	used, skipped := usedChannels(in.order)
+	for _, f := range skipped {
+		addNote(fmt.Sprintf("skipping unused channel %s (%d frames) — not used by the %s finish",
+			channelLabel(f), len(in.groups[f]), finishLabel(used)))
+	}
+
+	// 1c. Calibration masters, built/reused once for the run (folder inputs only — video frames carry
+	// no matchable metadata). Any failure is a note, never a run error.
+	calSrc := extras.calib()
+	var calMasters []calib.Master
+	if calSrc != nil && calSrc.Build != nil && in.inv != nil {
+		report(onProgress, "building calibration masters")
+		m, warns, berr := calSrc.Build(ctx, in.inv, filepath.Join(runRoot, "calmasters"))
+		for _, w := range warns {
+			addNote(w)
+		}
+		switch {
+		case berr != nil && ctx.Err() != nil:
+			return nil, berr
+		case berr != nil:
+			addNote("calibration masters unavailable: " + berr.Error())
+		default:
+			calMasters = m
+		}
+	}
+
+	// 2. Per channel: materialize → calibrate → rank → keep best % → surface-align → normalized stack →
+	// linear master, then drop the channel's frame scratch (only its small master survives to the finish).
+	chSpan := (100 - finishWeight) / float64(len(used))
 	masters := map[string]string{} // filter → master base path (no extension)
-	for _, filter := range order {
-		report(onProgress, "stacking "+channelLabel(filter))
-		master, frames, kept, serr := stackChannel(ctx, runner, groups[filter], filter, workAbs, object, opts, onProgress)
+	for _, filter := range used {
+		report(onProgress, "processing "+channelLabel(filter))
+		prog.phase(chSpan * phaseMaterialize)
+		frames, framesDir := in.frames[filter], in.stagedDir[filter]
+		if frames == nil {
+			frames, framesDir, err = materializeChannel(ctx, runner, inputPath, in.groups[filter], filter, workAbs, object, onProgress)
+			if err != nil {
+				return nil, err
+			}
+		}
+		chDir := filepath.Join(runRoot, "ch_"+channelLabel(filter))
+		prog.phase(chSpan * phaseCalibrate)
+		if len(calMasters) > 0 {
+			report(onProgress, "calibrating "+channelLabel(filter))
+			var cnotes []string
+			frames, cnotes, err = calibrateChannel(ctx, frames, filter, in.inv, calMasters, calSrc.Exclude, calSrc.Force, chDir, runRoot, prog.tick)
+			if err != nil {
+				return nil, err
+			}
+			for _, n := range cnotes {
+				addNote(n)
+			}
+		}
+		master, frameReport, kept, chNotes, serr := stackChannel(ctx, runner, frames, filter, workAbs, object, opts, prog, chSpan, onProgress)
+		res.Notes = append(res.Notes, chNotes...)
 		if serr != nil {
 			return nil, fmt.Errorf("stack %s: %w", channelLabel(filter), serr)
 		}
+		cleanupChannel(runRoot, chDir, framesDir)
 		masters[filter] = master
-		res.Frames = append(res.Frames, frames...)
-		res.FrameCount += len(groups[filter])
+		res.Frames = append(res.Frames, frameReport...)
+		res.FrameCount += len(frames)
 		res.StackedFrames += kept
 	}
+	prog.phase(finishWeight)
 
 	// 3. Finish: co-register channels + colour LRGB combine when R/G/B exist, else the mono master.
 	report(onProgress, "finishing")
 	outBase := filepath.Join(runDir, object+"_stack")
 	r, g, b, l, mono := masters["R"], masters["G"], masters["B"], masters["L"], ""
 	if r != "" && g != "" && b != "" {
-		if cerr := coRegisterMasters(masters, refChannel(masters)); cerr != nil {
+		coNotes, cerr := coRegisterMasters(masters, refChannel(masters), opts.AlignPoints)
+		res.Notes = append(res.Notes, coNotes...)
+		if cerr != nil {
 			return nil, fmt.Errorf("co-register channels: %w", cerr)
 		}
 		// Deconvolve the LUMINANCE only (best SNR): it carries the surface detail. Then soften the colour
@@ -182,13 +273,20 @@ func Process(ctx context.Context, runner *siril.Runner, ffmpegBin, inputPath, wo
 			if derr := deconvolveMaster(ctx, runner, l, opts, onProgress); derr != nil {
 				return nil, fmt.Errorf("deconvolve luminance: %w", derr)
 			}
-			if serr := smoothChroma(masters, chromaBlur); serr != nil {
-				return nil, fmt.Errorf("smooth chroma: %w", serr)
+			chromaRadius := int(math.Round(chromaBlur * SnapDrizzle(opts.DrizzleScale)))
+			if serr := smoothChroma(masters, chromaRadius); serr != nil {
+				// Mismatched channel canvases (e.g. one channel's double-stack pass rebuilt while
+				// another kept its pass-1 master) must degrade to un-smoothed colour, not kill a
+				// multi-hour stack at its very last step.
+				if !errors.Is(serr, errChromaDimsMismatch) {
+					return nil, fmt.Errorf("smooth chroma: %w", serr)
+				}
+				res.Notes = append(res.Notes, "colour smoothing skipped: "+serr.Error())
 			}
 		}
 		res.Notes = append(res.Notes, "colour LRGB lucky-imaging stack (per-filter surface alignment)")
 	} else {
-		mono = masters[order[0]]
+		mono = masters[used[0]]
 		if opts.Sharpen && mono != "" {
 			report(onProgress, "deconvolving")
 			if derr := deconvolveMaster(ctx, runner, mono, opts, onProgress); derr != nil {
@@ -222,7 +320,7 @@ func Process(ctx context.Context, runner *siril.Runner, ffmpegBin, inputPath, wo
 	if l != "" {
 		detailFilter = "L"
 	} else if mono != "" {
-		detailFilter = order[0]
+		detailFilter = used[0]
 	}
 	detailMaster := l
 	if detailMaster == "" {
@@ -230,27 +328,35 @@ func Process(ctx context.Context, runner *siril.Runner, ffmpegBin, inputPath, wo
 	}
 	if detailMaster != "" {
 		for _, fr := range res.Frames {
-			if fr.Kept && fr.Filter == detailFilter && fr.Score > res.BestFrameLapVar {
-				res.BestFrameLapVar = fr.Score
+			if fr.Kept && fr.Filter == detailFilter && fr.Score > res.BestFrameDetail {
+				res.BestFrameDetail = fr.Score
 			}
 		}
-		res.MasterLapVar = frameSharpness(detailMaster + ".fits")
-		if res.BestFrameLapVar > 0 && res.MasterLapVar > 0 && res.MasterLapVar < 1.05*res.BestFrameLapVar {
+		res.MasterDetail = masterDetailNative(detailMaster+".fits", SnapDrizzle(opts.DrizzleScale))
+		res.Notes = append(res.Notes, fmt.Sprintf(
+			"detail metric: master %.3g vs best single frame %.3g (acceptance gate ≥1.05×)",
+			res.MasterDetail, res.BestFrameDetail))
+		if res.BestFrameDetail > 0 && res.MasterDetail > 0 && res.MasterDetail < 1.05*res.BestFrameDetail {
 			res.Notes = append(res.Notes, fmt.Sprintf(
-				"warning: stacked master sharpness (%.3g) below 1.05x the best single frame (%.3g) — check alignment/selection",
-				res.MasterLapVar, res.BestFrameLapVar))
+				"warning: stacked master detail (%.3g) below 1.05x the best single frame (%.3g) — check alignment/selection",
+				res.MasterDetail, res.BestFrameDetail))
 		}
 	}
 
-	script := siril.PlanetaryFinishScript(r, g, b, l, mono, outBase, opts.Sharpen, opts.Finish, opts.Formats)
-	if _, err := runner.Run(ctx, runDir, script, onProgress); err != nil {
-		return nil, err
+	finishNotes, ferr := runFinish(ctx, runner, runDir, r, g, b, l, mono, outBase, opts.Sharpen, opts.Finish, opts.Formats, onProgress)
+	res.Notes = append(res.Notes, finishNotes...)
+	if ferr != nil {
+		return nil, ferr
 	}
 	for _, f := range opts.Formats {
 		res.Outputs = append(res.Outputs, outBase+"."+f)
 	}
 	res.Notes = append(res.Notes,
 		fmt.Sprintf("sub-pixel surface alignment; kept best %d%% of frames by sharpness", opts.BestPercent))
+	if scale := SnapDrizzle(opts.DrizzleScale); scale != 1 {
+		res.Notes = append(res.Notes, fmt.Sprintf("drizzle ×%.1f super-resolution grid", scale))
+	}
+	prog.finish()
 	return res, nil
 }
 
@@ -291,40 +397,58 @@ func Refinish(ctx context.Context, runner *siril.Runner, outDir string, masters 
 	if r == "" && g == "" && b == "" && mono == "" {
 		return nil, fmt.Errorf("planetary refinish: no masters")
 	}
-	script := siril.PlanetaryFinishScript(r, g, b, l, mono, outBase, sharpen, fin, formats)
-	if _, err := runner.Run(ctx, outDir, script, nil); err != nil {
+	notes, err := runFinish(ctx, runner, outDir, r, g, b, l, mono, outBase, sharpen, fin, formats, nil)
+	if err != nil {
 		return nil, err
 	}
-	res := &Result{OutBase: outBase, Sharpen: sharpen, Masters: masters}
+	res := &Result{OutBase: outBase, Sharpen: sharpen, Masters: masters, Notes: notes}
 	for _, f := range formats {
 		res.Outputs = append(res.Outputs, outBase+"."+f)
 	}
 	return res, nil
 }
 
-// sourceChannels prepares the frames as one or more channels of ranked-and-alignable FITS paths. A
-// folder with a filter wheel (≥2 mono filters) yields one group per filter (colour); anything else —
-// a mono folder, a single-filter folder, a video, or a SER — yields a single "" mono group.
-func sourceChannels(ctx context.Context, runner *siril.Runner, ffmpegBin, inputPath, workAbs, object string,
-	onProgress func(siril.Progress)) (map[string][]string, []string, error) {
+// channelInputs is the classified, un-materialized input of a run: per-filter SOURCE frame paths
+// (folder runs — converted one channel at a time to bound scratch) or pre-materialized FITS (video/SER),
+// plus the scan inventory that calibration matches against (folder runs only).
+type channelInputs struct {
+	groups    map[string][]string // filter → source paths (folder runs)
+	frames    map[string][]string // filter → already-materialized FITS (video/SER)
+	stagedDir map[string]string   // filter → scratch dir holding those frames ("" / absent = none yet)
+	order     []string            // canonical channel order over every classified group
+	inv       *inspect.Inventory  // folder runs only; nil for video/SER
+	notes     []string
+}
+
+// sourceChannels prepares a run's channel inputs. A folder is classified only (no conversion yet),
+// merging every Import-selected root — darks/flats/offsets folders beside the lights feed the masters
+// build; a video/SER is extracted+converted immediately into a single pre-materialized mono group.
+func sourceChannels(ctx context.Context, runner *siril.Runner, ffmpegBin, inputPath string, roots []string,
+	workAbs, object string, onProgress func(siril.Progress)) (channelInputs, error) {
 	if info, statErr := os.Stat(inputPath); statErr == nil && info.IsDir() {
-		return sourceFolderChannels(ctx, runner, inputPath, workAbs, object, onProgress)
+		return classifyFolderChannels(ctx, roots)
 	}
 	frames, err := convertVideo(ctx, runner, ffmpegBin, inputPath, workAbs, object, onProgress)
 	if err != nil {
-		return nil, nil, err
+		return channelInputs{}, err
 	}
-	return map[string][]string{"": frames}, []string{""}, nil
+	return channelInputs{
+		frames:    map[string][]string{"": frames},
+		stagedDir: map[string]string{"": filepath.Join(workAbs, "planetary_"+object, "mono")},
+		order:     []string{""},
+	}, nil
 }
 
-// sourceFolderChannels classifies a capture folder with inspect. If it used a filter wheel (≥2 distinct
-// mono filters), it returns one group of FITS frames per filter (for a colour combine); otherwise it
-// stages every still as one mono group. FITS frames are used in place (no Siril convert needed).
-func sourceFolderChannels(ctx context.Context, runner *siril.Runner, inputPath, workAbs, object string,
-	onProgress func(siril.Progress)) (map[string][]string, []string, error) {
-	inv, err := inspect.ScanWithOptions(ctx, inputPath, inspect.ScanOptions{})
+// classifyFolderChannels scans the capture roots (the Import multi-select — one folder or several) and
+// groups the light frames per filter — source paths only. A filter wheel (≥2 distinct mono filters)
+// yields one group per filter (colour); anything else a single "" mono group. The mono group prefers
+// the classified lights (+ still-unknown stills), so a darks/ or flats/ sub-folder is no longer swept
+// into the sequence; a folder whose stills never enter the inventory at all (PNG/JPG) leaves the group
+// empty and materializeChannel falls back to the old recursive blind walk.
+func classifyFolderChannels(ctx context.Context, roots []string) (channelInputs, error) {
+	inv, err := inspect.ScanMany(ctx, roots, inspect.ScanOptions{})
 	if err != nil {
-		return nil, nil, err
+		return channelInputs{}, err
 	}
 	byFilter := map[string][]string{}
 	for _, fr := range inv.Frames {
@@ -339,23 +463,22 @@ func sourceFolderChannels(ctx context.Context, runner *siril.Runner, inputPath, 
 		}
 	}
 	if len(distinct) < 2 {
-		// Mono (or unclassified): stage every still in the folder as one sequence.
-		dir := filepath.Join(workAbs, "planetary_"+object, "mono")
-		if err := fsutil.EnsureDir(dir); err != nil {
-			return nil, nil, err
+		// Mono (or single-filter): one group of every usable still, in stable order.
+		var srcs []string
+		excluded := 0
+		for _, fr := range inv.Frames {
+			if fr.Type == inspect.Light || fr.Type == inspect.Unknown {
+				srcs = append(srcs, fr.Path)
+			} else {
+				excluded++
+			}
 		}
-		n, err := stageImageFrames(inputPath, dir)
-		if err != nil {
-			return nil, nil, err
+		sort.Strings(srcs)
+		in := channelInputs{groups: map[string][]string{"": srcs}, order: []string{""}, inv: inv}
+		if excluded > 0 && len(srcs) > 0 {
+			in.notes = append(in.notes, fmt.Sprintf("excluded %d calibration frame(s) from the mono sequence", excluded))
 		}
-		if n == 0 {
-			return nil, nil, fmt.Errorf("no image frames found in %s (expected FITS/TIFF/PNG/raw stills)", inputPath)
-		}
-		frames, cerr := convertSeq(ctx, runner, dir, onProgress)
-		if cerr != nil {
-			return nil, nil, cerr
-		}
-		return map[string][]string{"": frames}, []string{""}, nil
+		return in, nil
 	}
 
 	groups := map[string][]string{}
@@ -363,13 +486,84 @@ func sourceFolderChannels(ctx context.Context, runner *siril.Runner, inputPath, 
 		if filter == "" {
 			continue // stray unfiltered frames are not a colour channel
 		}
-		fitsFrames, err := framesAsFITS(ctx, runner, paths, filepath.Join(workAbs, "planetary_"+object, "ch_"+channelLabel(filter)), onProgress)
-		if err != nil {
-			return nil, nil, fmt.Errorf("prepare %s frames: %w", filter, err)
-		}
-		groups[filter] = fitsFrames
+		groups[filter] = paths
 	}
-	return groups, channelOrder(groups), nil
+	return channelInputs{groups: groups, order: channelOrder(groups), inv: inv}, nil
+}
+
+// usedChannels splits the classified channel order into the channels the finish consumes and the rest:
+// a full R/G/B trio → the LRGB combine uses only L,R,G,B; otherwise the mono finish uses the first
+// canonical channel alone (identical to the historical order[0] pick).
+func usedChannels(order []string) (used, skipped []string) {
+	present := map[string]bool{}
+	for _, f := range order {
+		present[f] = true
+	}
+	if present["R"] && present["G"] && present["B"] {
+		for _, f := range order {
+			if f == "L" || f == "R" || f == "G" || f == "B" {
+				used = append(used, f)
+			} else {
+				skipped = append(skipped, f)
+			}
+		}
+		return used, skipped
+	}
+	if len(order) > 0 {
+		used, skipped = order[:1], order[1:]
+	}
+	return used, skipped
+}
+
+// finishLabel names the finish a skipped-channel note refers to.
+func finishLabel(used []string) string {
+	if len(used) > 1 {
+		return "LRGB"
+	}
+	if len(used) == 1 {
+		return channelLabel(used[0]) + "-only"
+	}
+	return "mono"
+}
+
+// materializeChannel turns one channel's source frames into rankable/alignable FITS, converting only
+// when needed: an all-FITS colour group is used in place (no convert, real names in the report);
+// anything else is staged and Siril-converted into the channel scratch. Returns the frame paths plus
+// the scratch dir that holds them ("" when the sources are used in place).
+func materializeChannel(ctx context.Context, runner *siril.Runner, inputPath string, srcs []string,
+	filter, workAbs, object string, onProgress func(siril.Progress)) ([]string, string, error) {
+	runRoot := filepath.Join(workAbs, "planetary_"+object)
+	if filter == "" {
+		dir := filepath.Join(runRoot, "mono")
+		if err := fsutil.EnsureDir(dir); err != nil {
+			return nil, "", err
+		}
+		var n int
+		var err error
+		if len(srcs) > 0 {
+			n, err = stageFiles(srcs, dir, "frame")
+		} else {
+			n, err = stageImageFrames(inputPath, dir)
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		if n == 0 {
+			return nil, "", fmt.Errorf("no image frames found in %s (expected FITS/TIFF/PNG/raw stills)", inputPath)
+		}
+		frames, cerr := convertSeq(ctx, runner, dir, onProgress)
+		return frames, dir, cerr
+	}
+	dir := filepath.Join(runRoot, "ch_"+channelLabel(filter))
+	frames, err := framesAsFITS(ctx, runner, srcs, dir, onProgress)
+	if err != nil {
+		return nil, "", fmt.Errorf("prepare %s frames: %w", filter, err)
+	}
+	staged := dir
+	if len(frames) > 0 && !underDir(frames[0], runRoot) {
+		staged = "" // all-FITS group used in place — nothing was staged
+	}
+	return frames, staged, nil
 }
 
 // framesAsFITS returns FITS paths for the given source frames: when they are already FITS they are used
@@ -407,8 +601,12 @@ func convertVideo(ctx context.Context, runner *siril.Runner, ffmpegBin, inputPat
 	}
 	switch ext := strings.ToLower(filepath.Ext(inputPath)); {
 	case videoExts[ext]:
-		if err := extractFrames(ctx, ffmpegBin, inputPath, dir); err != nil {
+		pixFmt, err := extractFrames(ctx, ffmpegBin, inputPath, dir)
+		if err != nil {
 			return nil, err
+		}
+		if pixFmt != "" {
+			report(onProgress, "extracting video frames at 16-bit ("+pixFmt+")")
 		}
 	case ext == ".ser":
 		abs, _ := filepath.Abs(inputPath)
@@ -436,17 +634,26 @@ func convertSeq(ctx context.Context, runner *siril.Runner, dir string, onProgres
 	return frames, nil
 }
 
-// stackChannel runs the lucky-imaging stack for one channel: rank by sharpness, keep the best %, surface-
-// align the kept frames to the sharpest, and normalize-stack them into a linear master. It returns the
-// master base path (no extension), the per-frame report, and the number of frames stacked.
+// stackChannel runs the lucky-imaging stack for one channel: rank by sharpness, keep the best %,
+// surface-align the kept frames to the sharpest, normalize-stack them into a linear master, then —
+// with DoubleStack — re-register the originals onto that master (dense AP grid) and re-stack. It
+// returns the master base path (no extension), the per-frame report, the number of frames stacked
+// and run notes. The ranking, alignment and stack run on bounded parallel workers; prog/chSpan
+// drive the run's score/align/stack progress phases.
 func stackChannel(ctx context.Context, runner *siril.Runner, frames []string, filter, workAbs, object string,
-	opts Options, onProgress func(siril.Progress)) (string, []FrameScore, int, error) {
+	opts Options, prog *runProgress, chSpan float64, onProgress func(siril.Progress)) (string, []FrameScore, int, []string, error) {
 	if len(frames) == 0 {
-		return "", nil, 0, fmt.Errorf("no frames")
+		return "", nil, 0, nil, fmt.Errorf("no frames")
 	}
+	prog.phase(chSpan * phaseScore)
+	report(onProgress, "ranking "+channelLabel(filter))
 	scores := make([]float64, len(frames))
-	for i, f := range frames {
-		scores[i] = frameSharpness(f)
+	if err := forEachFrame(ctx, len(frames), planetaryWorkers(), func(i int) error {
+		scores[i] = frameSharpness(frames[i]) // 0 on read failure, same as the serial loop
+		prog.tick(i+1, len(frames))
+		return nil
+	}); err != nil {
+		return "", nil, 0, nil, err
 	}
 	rejected := rejectLeastSharp(scores, opts.BestPercent)
 	rej := map[int]bool{}
@@ -468,40 +675,79 @@ func stackChannel(ctx context.Context, runner *siril.Runner, frames []string, fi
 	chDir := filepath.Join(workAbs, "planetary_"+object, "ch_"+channelLabel(filter))
 	alignDir := filepath.Join(chDir, "aligned")
 	if err := fsutil.EnsureDir(alignDir); err != nil {
-		return "", frameReport, 0, err
+		return "", frameReport, 0, nil, err
 	}
 	// Register the kept frames onto the sharpest one and warp each with a SINGLE Catmull-Rom resample.
 	// When multi-point alignment is on (and >1 frame) the warp also cancels the local atmospheric
-	// distortion a single global shift can't; otherwise it is one global cubic shift.
+	// distortion a single global shift can't; otherwise it is one global cubic shift. With DoubleStack
+	// the channel's align/stack progress budget splits across the two passes (bar shaping only).
 	apAlign := opts.APAlign && len(keptPaths) > 1
+	doubleStack := apAlign && opts.DoubleStack && len(keptPaths) >= doubleStackMin
+	alignSpan, stackSpan := chSpan*phaseAlign, chSpan*phaseStack
+	if doubleStack {
+		alignSpan, stackSpan = alignSpan*0.5, stackSpan*0.35
+	}
+	prog.phase(alignSpan)
 	if apAlign {
 		report(onProgress, "multi-point aligning "+channelLabel(filter))
+	} else {
+		report(onProgress, "aligning "+channelLabel(filter))
 	}
-	aligned, _, cellSharp, err := warpToSharpest(keptPaths, keptScores, alignDir, "f", apAlign)
+	pass1, err := warpToSharpest(ctx, keptPaths, keptScores, alignDir, "f", apAlign, SnapDrizzle(opts.DrizzleScale), opts.AlignPoints, prog.tick)
 	if err != nil {
-		return "", frameReport, 0, err
+		return "", frameReport, 0, nil, err
 	}
-	if len(aligned) == 0 {
-		return "", frameReport, 0, fmt.Errorf("no frames survived alignment")
+	if len(pass1.paths) == 0 {
+		return "", frameReport, 0, nil, fmt.Errorf("no frames survived alignment")
 	}
 	// Sharpness-weighted stack (Go, not Siril): weight each aligned frame by its own sharpness so the
 	// lucky-sharp frames dominate and the master rivals a single frame, instead of the blurry average a
-	// plain mean produces — and, with APWeights, each REGION is dominated by the frames sharpest there
-	// (AutoStakkert-style multi-point quality). Siril can't weight a starless stack, so this is done
-	// in-process (stack.go).
+	// plain mean produces — and, with APWeights, each REGION is built from only the frames that were
+	// sharpest there (AutoStakkert-style per-AP top-K SELECTION, apSelectionFields). Siril can't weight
+	// a starless stack, so this is done in-process (stack.go).
+	prog.phase(stackSpan)
+	report(onProgress, "stacking "+channelLabel(filter))
 	master := filepath.Join(chDir, "master_"+channelLabel(filter)) // no extension; .fits added on write
-	alignedScores := make([]float64, len(aligned))
-	for i, a := range aligned {
-		alignedScores[i] = frameSharpness(a)
+	if serr := stackAligned(ctx, pass1.paths, pass1.cellSharp, opts, master, prog.tick); serr != nil {
+		return "", frameReport, 0, nil, fmt.Errorf("weighted stack %s: %w", channelLabel(filter), serr)
+	}
+	stacked := len(pass1.paths)
+	var notes []string
+	if pass1.note != "" {
+		notes = append(notes, channelLabel(filter)+": "+pass1.note)
+	}
+	if pass1.gridNote != "" {
+		notes = append(notes, channelLabel(filter)+": "+pass1.gridNote)
+	}
+	if doubleStack {
+		note, n2 := runDoubleStack(ctx, keptPaths, pass1, chDir, alignDir, master, filter, opts, prog,
+			chSpan*phaseAlign*0.5, chSpan*phaseStack*0.65, onProgress)
+		if note != "" {
+			notes = append(notes, note)
+		}
+		if n2 > 0 {
+			stacked = n2
+		}
+	}
+	return master, frameReport, stacked, notes, nil
+}
+
+// stackAligned scores the aligned frames, builds the per-AP selection fields and runs the
+// sharpness-weighted stack into masterPath — shared by the pass-1 and double-stack stacks.
+func stackAligned(ctx context.Context, aligned []string, cellSharp [][]float64, opts Options,
+	masterPath string, tick func(done, total int)) error {
+	scores := make([]float64, len(aligned))
+	if err := forEachFrame(ctx, len(aligned), planetaryWorkers(), func(i int) error {
+		scores[i] = frameSharpness(aligned[i])
+		return nil
+	}); err != nil {
+		return err
 	}
 	var apFields [][]float64
 	if opts.APWeights && len(cellSharp) == len(aligned) && len(cellSharp) > 1 {
-		apFields = apWeightFields(cellSharp)
+		apFields = apSelectionFields(cellSharp)
 	}
-	if serr := stackWeightedFileAP(aligned, alignedScores, apFields, master); serr != nil {
-		return "", frameReport, 0, fmt.Errorf("weighted stack %s: %w", channelLabel(filter), serr)
-	}
-	return master, frameReport, len(aligned), nil
+	return stackWeightedFileAP(ctx, aligned, scores, apFields, masterPath, tick)
 }
 
 // Richardson-Lucy deconvolution defaults: a small Gaussian PSF approximating the seeing/optics blur,
@@ -514,12 +760,15 @@ const (
 	deconvAlphaDefault = 700
 )
 
-// deconvParams resolves the run's Richardson-Lucy settings (Options overrides, else the defaults).
+// deconvParams resolves the run's Richardson-Lucy settings (Options overrides, else the
+// defaults). The PSF FWHM is a NATIVE-pixel quantity, so it scales with the drizzle grid —
+// the same physical seeing blur spans scale× more output pixels.
 func deconvParams(opts Options) (fwhm float64, iters int, alpha float64) {
 	fwhm, iters, alpha = deconvFWHMDefault, deconvItersDefault, deconvAlphaDefault
 	if opts.DeconvFWHM > 0 {
 		fwhm = opts.DeconvFWHM
 	}
+	fwhm *= SnapDrizzle(opts.DrizzleScale)
 	if opts.DeconvIters > 0 {
 		iters = opts.DeconvIters
 	}
@@ -535,6 +784,10 @@ func deconvolveMaster(ctx context.Context, runner *siril.Runner, master string, 
 	_, err := runner.Run(ctx, filepath.Dir(master), siril.DeconvolveLuminanceScript(master, fwhm, iters, int(alpha)), onProgress)
 	return err
 }
+
+// errChromaDimsMismatch marks R/G/B masters whose canvases disagree — colour smoothing is then
+// impossible and the caller degrades to the un-smoothed trio instead of failing the run.
+var errChromaDimsMismatch = errors.New("smooth chroma: master dimensions differ")
 
 // chromaBlur is the smoothing radius for the R/G/B COLOUR DIFFERENCES before the LRGB combine. Each
 // channel stack aligns to its OWN sharpest frame, so their atmospheric micro-warps disagree coherently
@@ -563,7 +816,8 @@ func smoothChroma(masters map[string]string, radius int) error {
 	}
 	r, g, b := ims["R"].Pix[0], ims["G"].Pix[0], ims["B"].Pix[0]
 	if len(g) != len(r) || len(b) != len(r) {
-		return fmt.Errorf("smooth chroma: master dimensions differ")
+		return fmt.Errorf("%w: R %dx%d, G %dx%d, B %dx%d", errChromaDimsMismatch,
+			ims["R"].W, ims["R"].H, ims["G"].W, ims["G"].H, ims["B"].W, ims["B"].H)
 	}
 	mean := make([]float32, len(r))
 	for i := range mean {
@@ -591,30 +845,42 @@ func smoothChroma(masters map[string]string, radius int) error {
 // subsequent rgbcomp has no channel-to-channel offset. Each per-filter stack was aligned to its OWN
 // sharpest frame (captured at a different instant), so the channels start not just globally shifted but
 // with DIFFERENT per-AP atmospheric-warp residuals — a single global translation leaves green/red fringes
-// in the corners. So each non-reference master is warped onto the reference with the SAME full
-// displacement field the per-frame lucky alignment uses (global centroid+coarse+fine ZNCC baseline + a
-// per-AP local field over the lit disk, one Catmull-Rom resample). ZNCC is contrast-normalized, so the
-// cross-filter (R/G/B vs L) correlation on the high-SNR lunar surface is reliable.
-func coRegisterMasters(masters map[string]string, refFilter string) error {
+// in the corners. So each non-reference master is warped onto the reference with the SAME two-level
+// displacement field the per-frame lucky alignment uses (global centroid+coarse+fine ZNCC baseline →
+// coarse 10×10 AP field → dense seeded refinement, one Catmull-Rom resample) — the dense level keeps
+// the channels registered at the sub-coarse-cell scale the colours are judged at. ZNCC is
+// contrast-normalized, so the cross-filter (R/G/B vs L) correlation on the high-SNR surface is reliable.
+func coRegisterMasters(masters map[string]string, refFilter string, alignPoints int) ([]string, error) {
 	ref, err := fits.ReadImage(masters[refFilter] + ".fits")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	rc := newRefContext(ref)
+	rcD := denseContextFrom(ref, rc, alignPoints)
+	var notes []string
 	for f, base := range masters {
 		if f == refFilter {
 			continue
 		}
 		im, err := fits.ReadImage(base + ".fits")
 		if err != nil {
-			return err
+			return notes, err
 		}
-		aligned := warpFrameToRef(im, rc.blur, rc.small, rc.x, rc.y, rc.gWin, rc.gRadius, rc.cx, rc.cy, rc.onDisk, rc.apRadius, true)
+		// Every master must live on the reference raster before the field measurement: the channels
+		// stack independently (and soft-fail passes independently), so a master arriving at another
+		// canvas is repaired here — the downstream colour smoothing/combine reads the trio blind.
+		if im.W != ref.W || im.H != ref.H {
+			notes = append(notes, fmt.Sprintf("%s master resampled %dx%d → %dx%d to match the %s reference",
+				channelLabel(f), im.W, im.H, ref.W, ref.H, channelLabel(refFilter)))
+			im = resamplePlaneTo(im, ref.W, ref.H)
+		}
+		dxG, dyG := measureTwoLevelField(im, &rc, &rcD)
+		aligned := warpByGrid(im, dxG, dyG)
 		if err := aligned.WriteFITS(base + ".fits"); err != nil {
-			return err
+			return notes, err
 		}
 	}
-	return nil
+	return notes, nil
 }
 
 // refChannel picks the luminance channel as the colour-combine reference when present, else any channel.
@@ -633,9 +899,13 @@ func refChannel(masters map[string]string) string {
 	return ""
 }
 
+// CanonicalFilters is the channel preference order shared by channelOrder and the align-points
+// estimator's first-frame pick.
+var CanonicalFilters = filters.Canonical
+
 // channelOrder returns the channels present, in canonical L,R,G,B,… order (others appended sorted).
 func channelOrder(groups map[string][]string) []string {
-	canon := []string{"L", "R", "G", "B", "Ha", "OIII", "SII"}
+	canon := CanonicalFilters
 	var order []string
 	seen := map[string]bool{}
 	for _, f := range canon {
@@ -766,54 +1036,31 @@ func rejectLeastSharp(scores []float64, bestPercent int) []int {
 	return rejected
 }
 
-// frameSharpness ranks a frame by FULL-RESOLUTION Laplacian variance over the lit disk only,
-// normalized by the disk's own dynamic range (scale-invariant). The previous ranking measured a
-// 512-px downsample — at that scale crater-level detail is gone, so "keep the best N%" selected on
-// coarse contrast, nearly noise with respect to seeing. Full-res on-disk variance ranks by exactly
-// the detail the stack must preserve; one frame in memory at a time.
+// frameSharpness ranks a frame at FULL RESOLUTION over the lit disk only, with the
+// noise-corrected band-pass detail metric (see quality.go): it isolates crater-scale
+// structure and discounts the frame's own noise floor, so "keep the best N%" selects on
+// exactly the detail the stack must preserve — a noisier frame can no longer outrank a
+// sharper one. One frame in memory at a time.
 func frameSharpness(path string) float64 {
 	im, err := fits.ReadImage(path)
 	if err != nil {
 		return 0
 	}
-	return diskSharpness(im)
+	return detailSNR(im)
 }
 
-// diskSharpness is the scale-invariant Laplacian variance over the lit disk of a frame's first
-// plane (off-disk sky/limb pixels contribute nothing but noise to the metric).
-func diskSharpness(im *fits.Image) float64 {
-	p := im.Pix[0]
-	w, h := im.W, im.H
-	if w < 3 || h < 3 {
+// masterDetailNative scores a (possibly drizzled) master on the frames' NATIVE raster: the
+// band-pass metric is frequency-selective, so the scaled master must come back to native
+// before its score is compared against per-frame scores in the acceptance gate.
+func masterDetailNative(path string, scale float64) float64 {
+	im, err := fits.ReadImage(path)
+	if err != nil {
 		return 0
 	}
-	bg := lowPercentile(p, 0.2)
-	pk := lowPercentile(p, 0.999)
-	if pk-bg <= 1e-9 {
-		return 0
+	if scale != 1 {
+		im = resamplePlane(im, 1/scale)
 	}
-	thr := float32(bg + apDiskFrac*(pk-bg))
-	var sum, sum2 float64
-	n := 0
-	for y := 1; y < h-1; y++ {
-		row := y * w
-		for x := 1; x < w-1; x++ {
-			c := p[row+x]
-			if c <= thr {
-				continue
-			}
-			lap := float64(4*c - p[row+x-1] - p[row+x+1] - p[row-w+x] - p[row+w+x])
-			sum += lap
-			sum2 += lap * lap
-			n++
-		}
-	}
-	if n < 100 {
-		return 0
-	}
-	mean := sum / float64(n)
-	v := sum2/float64(n) - mean*mean
-	return v / ((pk - bg) * (pk - bg))
+	return detailSNR(im)
 }
 
 // laplacianVariance is a standard focus/sharpness metric: higher means sharper.
@@ -839,16 +1086,23 @@ func laplacianVariance(grid []float64, w, h int) float64 {
 	return sum2/float64(n) - mean*mean
 }
 
-func extractFrames(ctx context.Context, ffmpegBin, video, destDir string) error {
+// extractFrames explodes a video into PNG frames, at 16 bits when the stream carries more
+// than 8 (videoprobe.go). Returns the requested pix_fmt ("" = ffmpeg's 8-bit default).
+func extractFrames(ctx context.Context, ffmpegBin, video, destDir string) (string, error) {
 	if ffmpegBin == "" {
 		ffmpegBin = "ffmpeg"
 	}
-	cmd := exec.CommandContext(ctx, ffmpegBin, "-y", "-i", video,
-		filepath.Join(destDir, "f_%05d.png"))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("ffmpeg extract: %w\n%s", err, lastLines(string(out), 5))
+	pixFmt := pngPixFmtFor(videoPixFmt(ctx, ffprobeBinFor(ffmpegBin), video))
+	args := []string{"-y", "-i", video}
+	if pixFmt != "" {
+		args = append(args, "-pix_fmt", pixFmt)
 	}
-	return nil
+	args = append(args, filepath.Join(destDir, "f_%05d.png"))
+	cmd := exec.CommandContext(ctx, ffmpegBin, args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return pixFmt, fmt.Errorf("ffmpeg extract: %w\n%s", err, lastLines(string(out), 5))
+	}
+	return pixFmt, nil
 }
 
 func report(onProgress func(siril.Progress), step string) {

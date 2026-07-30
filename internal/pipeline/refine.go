@@ -14,7 +14,6 @@ import (
 	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/planetary"
 	"github.com/verove-jordan/astronomy/internal/postprocess"
-	"github.com/verove-jordan/astronomy/internal/siril"
 )
 
 // RefineExistingRun re-runs ONLY the finish on an already-stacked run whose per-channel masters live
@@ -70,10 +69,8 @@ func RefineExistingRun(ctx context.Context, opts Options, runDir string) (*postp
 
 	prior.OutputDir = outDir
 	prior.Final = nil
-	onProgress := func(p siril.Progress) {
-		opts.report(Progress{Step: "refine finish", Line: p.Line, Sample: p.Sample})
-	}
-	finishAligned(ctx, opts, channels, prior, workRun, outDir, onProgress)
+	// No stepper on a refine: finishAligned's stages stream index-less lines through opts.report.
+	finishAligned(ctx, opts, channels, prior, workRun, outDir)
 	if prior.Final == nil {
 		if n := len(prior.Warnings); n > 0 {
 			return nil, fmt.Errorf("refine finish failed: %s", prior.Warnings[n-1])
@@ -155,6 +152,20 @@ func refinePlanetary(ctx context.Context, opts Options, outDir string) (*postpro
 	}
 	r := &planetary.Result{Masters: masters, Sharpen: opts.Preset.Planetary.Sharpen, OutBase: outBase}
 
+	if opts.Preset != nil && !opts.Preset.Supervise {
+		// Deterministic refine (e.g. `astrostack refine -no-supervise`): re-finish once with the
+		// requested preset/params, no agent loop — same contract as the deepsky path.
+		std, perr := planetary.Refinish(ctx, opts.Runner, outDir, masters, opts.Preset.Planetary.Sharpen,
+			opts.Preset.Planetary.Finish, opts.Preset.Planetary.Formats, outBase)
+		if perr != nil {
+			return nil, fmt.Errorf("refine standard finish failed: %w", perr)
+		}
+		final := &postprocess.Result{Mode: "planetary", Outputs: std.Outputs, Notes: std.Notes}
+		prior.Final = final
+		writeRunJSON(outDir, prior)
+		return final, nil
+	}
+
 	final, err := superviseFinishPlanetary(ctx, opts, r)
 	if err != nil {
 		// Soft-fall: a refine must never hard-fail because the finish supervisor (local VLM) is unavailable
@@ -169,7 +180,7 @@ func refinePlanetary(ctx context.Context, opts Options, outDir string) (*postpro
 		final = &postprocess.Result{
 			Mode:    "planetary",
 			Outputs: std.Outputs,
-			Notes:   []string{"standard planetary finish (supervisor unavailable: " + err.Error() + ")"},
+			Notes:   append([]string{"standard planetary finish (supervisor unavailable: " + err.Error() + ")"}, std.Notes...),
 		}
 	}
 	// Refresh run.json with the refined finish (+ iterations) so a reopened refine shows the new result,
@@ -191,7 +202,9 @@ func reconstructPlanetaryMasters(outDir string) map[string]string {
 }
 
 // reconstructChannelsFromDisk maps each prior channel filter to its on-disk master basename in outDir,
-// preferring the co-registered aligned_<tag> over the unaligned master_<tag>. Missing files are skipped.
+// preferring the coverage-cropped combine_<tag> (what the original combine actually consumed on a
+// multi-night run), then the co-registered aligned_<tag>, then the unaligned master_<tag>. Missing
+// files are skipped.
 func reconstructChannelsFromDisk(outDir string, prior []ChannelResult) map[string]string {
 	channels := map[string]string{}
 	for _, ch := range prior {
@@ -200,6 +213,8 @@ func reconstructChannelsFromDisk(outDir string, prior []ChannelResult) map[strin
 		}
 		tag := filterTag(ch.Filter)
 		switch {
+		case fileExists(filepath.Join(outDir, "combine_"+tag+".fits")):
+			channels[ch.Filter] = "combine_" + tag
 		case fileExists(filepath.Join(outDir, "aligned_"+tag+".fits")):
 			channels[ch.Filter] = "aligned_" + tag
 		case fileExists(filepath.Join(outDir, "master_"+tag+".fits")):

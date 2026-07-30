@@ -63,4 +63,17 @@ func TestForPresetsDiffer(t *testing.T) {
 	assert.Equal(t, Mono, com.Color)
 	assert.Greater(t, com.StarReduce, 0.0)
 	assert.False(t, com.Supervise)
+
+	// Chroma NR defaults (anti-drift pins): the fine pass keeps its legacy radius, and the coarse
+	// background-only pass ships on for the colour modes — the large sky-mottle fix depends on it.
+	assert.Equal(t, 6, deep.ChromaSmoothPx)
+	assert.Equal(t, 24, deep.ChromaBgSmoothPx)
+	assert.Equal(t, 6, neb.ChromaSmoothPx)
+	assert.Equal(t, 24, neb.ChromaBgSmoothPx)
+
+	// Photometric cross-session normalization ships ON for the deep-sky modes (anti-drift pin): the
+	// flat-curve meta seed + widened clamp fixed the mixed-gain mis-measure that had it disabled, and
+	// it only ever engages on multi-group channels.
+	assert.True(t, deep.PhotomNorm)
+	assert.True(t, neb.PhotomNorm)
 }

@@ -5,6 +5,8 @@ import { useI18n } from "vue-i18n";
 import { useJobsStore } from "@/stores/jobs";
 import { useBrowseStore } from "@/stores/browse";
 import { useAgentStore } from "@/stores/agent";
+import { usePresetsStore, payloadFromRunParams } from "@/stores/presets";
+import { useMosaicStore } from "@/stores/mosaic";
 import { useJobStream } from "@/composables/useJobStream";
 import { fileUrl } from "@/services/api";
 import {
@@ -21,20 +23,30 @@ import RunResultPanels from "@/components/Common/RunResultPanels.vue";
 import SupervisorPanel from "@/components/Common/SupervisorPanel.vue";
 import SupervisorChat from "@/components/Common/SupervisorChat.vue";
 import StagePreviewTimeline from "@/components/Common/StagePreviewTimeline.vue";
+import ChannelSessionProgress from "@/components/Common/ChannelSessionProgress.vue";
+import MosaicPanelProgress from "@/components/Mosaic/MosaicPanelProgress.vue";
 import StageParamEditor from "@/components/Common/StageParamEditor.vue";
 import SeriesTimeline from "@/components/Common/SeriesTimeline.vue";
 import EnvWarnings from "@/components/Common/EnvWarnings.vue";
 import ParamChips from "@/components/Common/ParamChips.vue";
 import TwoPane from "@/components/Common/TwoPane.vue";
 import StatGrid from "@/components/Common/StatGrid.vue";
-import { btnDanger, btnGhost, btnPrimary, card } from "@/constants/styles";
-import { baseName, formatBytes } from "@/utils/format";
+import {
+  btnDanger,
+  btnGhost,
+  btnPrimary,
+  card,
+  input,
+} from "@/constants/styles";
+import { baseName, formatBytes, humanizeMs } from "@/utils/format";
 import type { Inventory } from "@/types";
 
+import { compareFilters } from "@/constants/filters";
 const props = defineProps<{ id: string }>();
 const { t } = useI18n();
 const router = useRouter();
 const jobsStore = useJobsStore();
+const mosaicStore = useMosaicStore();
 const browseStore = useBrowseStore();
 const agent = useAgentStore();
 // Set (this session) for a supervised/refine run: the id of its live steerable conversation turn.
@@ -56,14 +68,77 @@ const {
   rssBytes,
   cpuPercent,
   peakRssBytes,
+  cpuCores,
   bytesDone,
   bytesTotal,
   bytesPerSec,
   iterations,
   stagePreviews,
+  photomRecords,
+  currentSession,
   seed,
   reconnect,
 } = useJobStream(jobId, () => jobsStore.get(jobId), false); // connect only for live jobs (below)
+
+// Tiled-mosaic runs: the panel folders the plan expects, so the per-panel board shows the whole
+// grid greyed out from the start instead of materialising a row at a time.
+const mosaicPanelFolders = computed<string[]>(() => {
+  const id = job.value?.params?.mosaic_plan_id;
+  if (!id) return [];
+  const plan = mosaicStore.plans.find((p) => p.id === id);
+  return [...(plan?.tiles ?? [])]
+    .sort((a, b) => a.order - b.order)
+    .map((tile) => tile.folder);
+});
+
+// Cross-session runs: the capture nights + channels the run is expected to work through — from the
+// frozen calibration plan (survives reload; its channels are night-split, one per (config, night)),
+// unioned with whatever the live stream discovers.
+const expectedNights = computed<string[]>(() => {
+  const set = new Set<string>();
+  for (const c of job.value?.params?.calib_plan?.channels ?? [])
+    if (c.session) set.add(c.session);
+  for (const p of stagePreviews.value) if (p.session) set.add(p.session);
+  for (const r of photomRecords.value) if (r.session) set.add(r.session);
+  return [...set].sort();
+});
+const expectedChannels = computed<string[]>(() => {
+  const set = new Set<string>();
+  for (const c of job.value?.params?.calib_plan?.channels ?? [])
+    if (c.filter) set.add(c.filter);
+  for (const p of stagePreviews.value)
+    if (p.session && p.filter) set.add(p.filter);
+  return [...set].sort(compareFilters);
+});
+// Which nights actually have data per channel (uneven channel sets — task #312's 2020 night shot
+// only L/R): the board renders "—" for the other cells instead of forever-pending chips.
+const nightCoverage = computed<Record<string, string[]>>(() => {
+  const map: Record<string, Set<string>> = {};
+  const add = (f: string | undefined, s: string | undefined) => {
+    if (!f || !s) return;
+    (map[f] ??= new Set()).add(s);
+  };
+  for (const c of job.value?.params?.calib_plan?.channels ?? [])
+    add(c.filter, c.session);
+  for (const p of stagePreviews.value) add(p.filter, p.session);
+  return Object.fromEntries(Object.entries(map).map(([f, s]) => [f, [...s]]));
+});
+
+// excludedSetChip prettifies an exclude_sets token ("LIGHT|obj|R|e120000|g139o21b1|…|s:night")
+// into "R · night · exposure" for the provenance chips; the raw token stays in the title.
+function excludedSetChip(id: string): string {
+  const p = id.split("|");
+  if (p.length < 4) return id;
+  const parts: string[] = [];
+  if (p[2]) parts.push(p[2]);
+  const session = p[p.length - 1]?.startsWith("s:")
+    ? p[p.length - 1].slice(2)
+    : "";
+  if (session) parts.push(session);
+  const exp = Number(p[3]?.startsWith("e") ? p[3].slice(1) : NaN);
+  if (Number.isFinite(exp) && exp > 0) parts.push(humanizeMs(exp));
+  return parts.length ? parts.join(" · ") : id;
+}
 
 const reInv = ref<Inventory | null>(null);
 const cancelling = ref(false);
@@ -72,7 +147,7 @@ const cancelling = ref(false);
 const isTransfer = computed(() => bytesTotal.value > 0);
 
 // Live readouts for the running job, packed into a compact StatGrid: transferred/throughput for an S3
-// copy, else the running subprocess's CPU/RAM.
+// copy, else the whole engine tree's CPU/RAM (engine + Siril/GraXpert/StarNet/GIMP/ffmpeg).
 const progressStats = computed(() => {
   if (isTransfer.value) {
     return [
@@ -86,12 +161,28 @@ const progressStats = computed(() => {
       },
     ];
   }
+  // "10.8 / 12 cores" reads the true load at a glance; % of one core is the fallback when the
+  // stream predates cpu_cores.
+  const cpu = cpuCores.value
+    ? t("job.cores", {
+        used: (cpuPercent.value / 100).toFixed(1),
+        total: cpuCores.value,
+      })
+    : `${Math.round(cpuPercent.value)}%`;
   const s = [
-    { label: t("job.cpu"), value: `${Math.round(cpuPercent.value)}%` },
-    { label: t("job.memory"), value: formatBytes(rssBytes.value) },
+    { label: t("job.cpu"), value: cpu, hint: t("job.cpuHint") },
+    {
+      label: t("job.memory"),
+      value: formatBytes(rssBytes.value),
+      hint: t("job.memoryHint"),
+    },
   ];
   if (peakRssBytes.value)
-    s.push({ label: t("job.peak"), value: formatBytes(peakRssBytes.value) });
+    s.push({
+      label: t("job.peak"),
+      value: formatBytes(peakRssBytes.value),
+      hint: t("job.peakHint"),
+    });
   return s;
 });
 
@@ -104,9 +195,14 @@ onMounted(async () => {
       title: t("supervisorChat.convTitle", { id: jobId }),
     });
   }
-  void browseStore.loadProcessed(); // per-folder local/S3 truth for the "Remove local files" action
   await jobsStore.get(jobId);
   const jb = jobsStore.current;
+  // Per-folder local/S3 truth for the "Remove local files" action — but that button only ever appears on a
+  // succeeded full-S3 run, so fetch it single-job-scoped (not the whole /api/processed window) and only when
+  // it can matter. Every other job skips the call entirely.
+  if (jb?.status === "succeeded" && jb.params?.storage_mode === "s3") {
+    void browseStore.loadProcessedFor(jobId);
+  }
   if (jb?.log_tail) seed(jb.log_tail.split("\n"));
   // Open the SSE stream only for a job that can still emit events. A finished job's state is fully
   // in the fetched row — opening a stream for it just spends a connection (and, on a loaded engine,
@@ -436,6 +532,75 @@ async function continueJobAction() {
     continuing.value = false;
   }
 }
+
+// ── Save this run as a preset (optionally starred) ────────────────────────────────────────────────
+// A succeeded pipeline run's persisted params ARE the recipe (payloadFromRunParams picks the preset
+// subset), so a good result can be kept as a named preset right here. Intercept jobs (transfer/backup/
+// restore/move/masters) carry no recipe and never offer it.
+const presetsStore = usePresetsStore();
+const canSavePreset = computed(() => {
+  const p = job.value?.params;
+  return (
+    job.value?.status === "succeeded" &&
+    !!p?.mode &&
+    !p?.transfer &&
+    !p?.backup &&
+    !p?.restore &&
+    !p?.move &&
+    !p?.build_masters
+  );
+});
+const presetSaveOpen = ref(false);
+const presetName = ref("");
+const presetFavorite = ref(false);
+const presetSaveError = ref("");
+const presetSaved = ref(false);
+
+function openPresetSave() {
+  void presetsStore.list(); // ensure the dedupe/collision checks see the existing presets
+  const mode = String(job.value?.params?.mode ?? "run");
+  const base = `${mode} #${jobId}`;
+  const taken = new Set(
+    presetsStore.userPresets.map((p) => p.name.toLowerCase()),
+  );
+  let name = base;
+  for (let i = 2; taken.has(name.toLowerCase()); i++) name = `${base} ${i}`;
+  presetName.value = name;
+  presetFavorite.value = false;
+  presetSaveError.value = "";
+  presetSaveOpen.value = true;
+}
+
+async function savePresetFromRun() {
+  const name = presetName.value.trim();
+  const params = job.value?.params;
+  if (!name || !params) return;
+  // Never silently overwrite an existing preset from here (save() upserts by name).
+  const clash = presetsStore.userPresets.some(
+    (p) => p.name.toLowerCase() === name.toLowerCase(),
+  );
+  if (clash) {
+    presetSaveError.value = t("preset.nameTaken");
+    return;
+  }
+  presetSaveError.value = "";
+  try {
+    await presetsStore.save(
+      name,
+      payloadFromRunParams(params as Record<string, unknown>),
+    );
+    if (presetFavorite.value) {
+      const saved = presetsStore.userPresets.find(
+        (p) => p.name.toLowerCase() === name.toLowerCase(),
+      );
+      if (saved) await presetsStore.setFavorite(saved.id, true);
+    }
+    presetSaveOpen.value = false;
+    presetSaved.value = true;
+  } catch (e) {
+    presetSaveError.value = (e as Error).message;
+  }
+}
 </script>
 
 <template>
@@ -447,7 +612,7 @@ async function continueJobAction() {
         {{ t("run.modes." + job.params.mode) }} ·
         {{ t("run.formats." + (job.params.format || "image")) }}
       </span>
-      <ParamChips :params="job?.params" show-goal />
+      <ParamChips :params="job?.params" show-goal show-knobs />
       <span
         v-if="job?.params?.goal"
         class="text-xs italic text-slate-400"
@@ -455,6 +620,59 @@ async function continueJobAction() {
       >
         {{ t("run.chips.goal", { goal: truncate(job.params.goal, 60) }) }}
       </span>
+      <template v-if="canSavePreset">
+        <button
+          v-if="!presetSaveOpen && !presetSaved"
+          type="button"
+          :class="btnGhost"
+          :title="t('preset.saveFromRunHint')"
+          @click="openPresetSave"
+        >
+          ☆ {{ t("preset.saveFromRun") }}
+        </button>
+        <span
+          v-else-if="presetSaved"
+          class="text-xs text-success-600 dark:text-success-300"
+        >
+          ★ {{ t("preset.savedFromRun") }}
+        </span>
+        <template v-else>
+          <input
+            v-model="presetName"
+            type="text"
+            :class="[input, 'w-56']"
+            :placeholder="t('preset.saveName')"
+            @keyup.enter="savePresetFromRun"
+            @keyup.esc="presetSaveOpen = false"
+          />
+          <label class="flex cursor-pointer items-center gap-1 text-xs">
+            <input
+              v-model="presetFavorite"
+              type="checkbox"
+              class="accent-brand-500"
+            />
+            {{ t("preset.saveFavorite") }}
+          </label>
+          <button
+            type="button"
+            :class="btnPrimary"
+            :disabled="!presetName.trim()"
+            @click="savePresetFromRun"
+          >
+            {{ t("preset.saveBtn") }}
+          </button>
+          <button
+            type="button"
+            :class="btnGhost"
+            @click="presetSaveOpen = false"
+          >
+            {{ t("preset.cancel") }}
+          </button>
+          <span v-if="presetSaveError" class="text-xs text-danger">{{
+            presetSaveError
+          }}</span>
+        </template>
+      </template>
       <span v-if="result?.input_dir" class="text-sm text-slate-500">{{
         baseName(result.input_dir)
       }}</span>
@@ -585,6 +803,26 @@ async function continueJobAction() {
               :excluded="job?.params?.calib_exclude ?? []"
               readonly
             />
+            <!-- Light sets the user excluded in the Import stray-light check (provenance). -->
+            <section v-if="job?.params?.exclude_sets?.length" :class="card">
+              <h2 class="mb-2 text-lg font-medium">
+                {{
+                  t("setqa.excludedOnRun", {
+                    n: job.params.exclude_sets.length,
+                  })
+                }}
+              </h2>
+              <div class="flex flex-wrap gap-1 text-xs">
+                <span
+                  v-for="id in job.params.exclude_sets"
+                  :key="id"
+                  class="rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-600 dark:text-amber-400"
+                  :title="id"
+                >
+                  {{ excludedSetChip(id) }}
+                </span>
+              </div>
+            </section>
             <ChannelMappingList v-if="detection" :detection="detection" />
             <!-- Live preview sits directly under the progression + information cards. -->
             <section v-if="previewUrl" :class="card">
@@ -606,8 +844,25 @@ async function continueJobAction() {
         </template>
       </TwoPane>
 
+      <!-- Cross-session run: the per-night calibrate → normalize board (mounted only multi-night). -->
+      <ChannelSessionProgress
+        v-if="expectedNights.length > 1"
+        :sessions="expectedNights"
+        :channels="expectedChannels"
+        :previews="stagePreviews"
+        :photom="photomRecords"
+        :coverage="nightCoverage"
+        :current-session="currentSession"
+      />
+      <!-- Tiled-mosaic run: the per-panel stack → solve → assemble board. -->
+      <MosaicPanelProgress
+        v-if="job?.params?.mode === 'mosaic'"
+        :previews="stagePreviews"
+        :expected-folders="mosaicPanelFolders"
+        :current-folder="currentSession"
+      />
       <!-- Supervised finish: stream the agent's iterations (preview + defects + scores) as they land. -->
-      <StagePreviewTimeline :live="stagePreviews" />
+      <StagePreviewTimeline :live="stagePreviews" :photom="photomRecords" />
       <SupervisorPanel v-if="iterations.length" :live="iterations" />
     </template>
 
@@ -701,6 +956,7 @@ async function continueJobAction() {
       <RunResultPanels
         :result="result"
         :rerunnable="canRerun"
+        :job-id="job?.status === 'succeeded' ? jobId : undefined"
         @rerun-stage="openStageEditor"
       />
       <SupervisorPanel :result="result" :live="iterations" />

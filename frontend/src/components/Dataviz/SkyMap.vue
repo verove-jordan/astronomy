@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onBeforeUnmount, ref } from "vue";
 import { use } from "echarts/core";
 import { ScatterChart } from "echarts/charts";
 import { PolarComponent, TooltipComponent } from "echarts/components";
@@ -8,7 +8,17 @@ import VChart from "vue-echarts";
 import { useI18n } from "vue-i18n";
 import { useSkyStore } from "@/stores/sky";
 import { scoreTier } from "@/constants/styles";
-import { SCORE_TIER_HEX, CHART_AXIS, CHART_GRID, MAP_SELECTED } from "@/constants/colors";
+import {
+  SCORE_TIER_HEX,
+  CHART_AXIS,
+  CHART_GRID,
+  MAP_SELECTED,
+} from "@/constants/colors";
+import { altAzAt } from "@/utils/altaz";
+import { tzForLocation, fmtClock } from "@/utils/tz";
+import IconPlay from "@/components/Icons/IconPlay.vue";
+import IconPause from "@/components/Icons/IconPause.vue";
+import type { SkyTarget } from "@/types";
 
 use([ScatterChart, PolarComponent, TooltipComponent, CanvasRenderer]);
 
@@ -24,15 +34,86 @@ interface SkyPoint {
   itemStyle?: { color: string };
 }
 
-// Only targets currently above the horizon can be plotted on the sky now.
+// ----- Night playbar: scrub the map through the selected night (positions recomputed per step). ---
+// scrubMs == null → "live": plot the payload's alt_now/az_now exactly as before. A scrubbed instant
+// recomputes each target's alt/az client-side (utils/altaz mirrors the backend math), so the dots
+// wheel around the pole as the night advances.
+const SCRUB_STEP_MS = 15 * 60 * 1000;
+const PLAY_TICK_MS = 500;
+
+const scrubMs = ref<number | null>(null);
+const playing = ref(false);
+let playTimer: ReturnType<typeof setInterval> | null = null;
+
+const nightStartMs = computed(() => store.darkWindow?.night_start_ms ?? 0);
+const nightEndMs = computed(() => store.darkWindow?.night_end_ms ?? 0);
+const site = computed(() => store.query?.location ?? null);
+const playbarReady = computed(
+  () =>
+    !!site.value &&
+    nightStartMs.value > 0 &&
+    nightEndMs.value > nightStartMs.value,
+);
+const tz = computed(() => {
+  const l = site.value;
+  return l
+    ? tzForLocation(l.lat, l.lon)
+    : Intl.DateTimeFormat().resolvedOptions().timeZone;
+});
+const scrubLabel = computed(() =>
+  scrubMs.value == null
+    ? t("tonight.map.playbar.live")
+    : fmtClock(scrubMs.value, tz.value),
+);
+
+function posOf(tg: SkyTarget): { alt: number; az: number } {
+  const l = site.value;
+  if (scrubMs.value == null || !l)
+    return { alt: tg.alt_now_deg, az: tg.az_now_deg };
+  const p = altAzAt(tg.ra_deg, tg.dec_deg, l.lat, l.lon, scrubMs.value);
+  return { alt: p.altDeg, az: p.azDeg };
+}
+
+function stopPlaying() {
+  playing.value = false;
+  if (playTimer) {
+    clearInterval(playTimer);
+    playTimer = null;
+  }
+}
+function togglePlay() {
+  if (playing.value) {
+    stopPlaying();
+    return;
+  }
+  if (!playbarReady.value) return;
+  if (scrubMs.value == null) scrubMs.value = nightStartMs.value;
+  playing.value = true;
+  playTimer = setInterval(() => {
+    const next = (scrubMs.value ?? nightStartMs.value) + SCRUB_STEP_MS;
+    scrubMs.value = next > nightEndMs.value ? nightStartMs.value : next;
+  }, PLAY_TICK_MS);
+}
+function onSlider(e: Event) {
+  stopPlaying();
+  scrubMs.value = Number((e.target as HTMLInputElement).value);
+}
+function resetLive() {
+  stopPlaying();
+  scrubMs.value = null;
+}
+onBeforeUnmount(stopPlaying);
+
+// Only targets above the horizon (at the plotted instant) can be drawn on the sky.
 const points = computed<SkyPoint[]>(() =>
   store.targets
-    .filter((tg) => tg.alt_now_deg > 0)
-    .map((tg) => ({
+    .map((tg) => ({ tg, p: posOf(tg) }))
+    .filter(({ p }) => p.alt > 0)
+    .map(({ tg, p }) => ({
       name: tg.name,
-      value: [90 - tg.alt_now_deg, tg.az_now_deg],
-      altNow: Math.round(tg.alt_now_deg),
-      azNow: Math.round(tg.az_now_deg),
+      value: [90 - p.alt, p.az] as [number, number],
+      altNow: Math.round(p.alt),
+      azNow: Math.round(p.az),
       itemStyle: { color: SCORE_TIER_HEX[scoreTier(tg.score)] },
     })),
 );
@@ -42,26 +123,30 @@ const points = computed<SkyPoint[]>(() =>
 // visible instead of silently vanishing.
 const selectedOverlay = computed<SkyPoint[]>(() => {
   const tg = store.selected;
-  if (!tg || tg.alt_now_deg <= 0) return [];
+  if (!tg) return [];
+  const p = posOf(tg);
+  if (p.alt <= 0) return [];
   return [
     {
       name: tg.name,
-      value: [90 - tg.alt_now_deg, tg.az_now_deg],
-      altNow: Math.round(tg.alt_now_deg),
-      azNow: Math.round(tg.az_now_deg),
+      value: [90 - p.alt, p.az],
+      altNow: Math.round(p.alt),
+      azNow: Math.round(p.az),
     },
   ];
 });
 
 const belowHorizonHint = computed<SkyPoint[]>(() => {
   const tg = store.selected;
-  if (!tg || tg.alt_now_deg > 0) return [];
+  if (!tg) return [];
+  const p = posOf(tg);
+  if (p.alt > 0) return [];
   return [
     {
       name: tg.name,
-      value: [89, tg.az_now_deg], // pinned just inside the horizon rim at its azimuth
-      altNow: Math.round(tg.alt_now_deg),
-      azNow: Math.round(tg.az_now_deg),
+      value: [89, p.az], // pinned just inside the horizon rim at its azimuth
+      altNow: Math.round(p.alt),
+      azNow: Math.round(p.az),
       below: true,
     },
   ];
@@ -118,7 +203,11 @@ const option = computed(() => ({
       z: 10,
       silent: true,
       data: selectedOverlay.value,
-      itemStyle: { color: "transparent", borderColor: MAP_SELECTED, borderWidth: 3 },
+      itemStyle: {
+        color: "transparent",
+        borderColor: MAP_SELECTED,
+        borderWidth: 3,
+      },
       label: {
         show: true,
         formatter: (p: any) => p.data.name,
@@ -155,5 +244,47 @@ function onClick(p: any) {
 </script>
 
 <template>
-  <VChart :option="option" autoresize class="h-96 w-full" @click="onClick" />
+  <div>
+    <VChart :option="option" autoresize class="h-96 w-full" @click="onClick" />
+    <!-- Night playbar: scrub target positions across the selected night. -->
+    <div
+      v-if="playbarReady"
+      class="mt-1 flex items-center gap-2 px-2 text-xs text-slate-400"
+    >
+      <button
+        type="button"
+        class="flex h-7 w-7 items-center justify-center rounded-full bg-slate-700/60 text-white hover:bg-slate-600"
+        :aria-label="
+          playing
+            ? t('tonight.map.playbar.pause')
+            : t('tonight.map.playbar.play')
+        "
+        @click="togglePlay"
+      >
+        <IconPause v-if="playing" color="currentColor" />
+        <IconPlay v-else color="currentColor" />
+      </button>
+      <input
+        type="range"
+        class="flex-1 accent-brand-500"
+        :min="nightStartMs"
+        :max="nightEndMs"
+        :step="SCRUB_STEP_MS"
+        :value="scrubMs ?? nightStartMs"
+        :aria-label="t('tonight.map.playbar.scrub')"
+        @input="onSlider"
+      />
+      <span class="w-14 text-center font-medium tabular-nums text-slate-300">
+        {{ scrubLabel }}
+      </span>
+      <button
+        v-if="scrubMs != null"
+        type="button"
+        class="rounded-full bg-slate-700/60 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-slate-600"
+        @click="resetLive"
+      >
+        {{ t("tonight.map.playbar.live") }}
+      </button>
+    </div>
+  </div>
 </template>

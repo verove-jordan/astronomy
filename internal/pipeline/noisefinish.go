@@ -2,7 +2,9 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"time"
 
 	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/noise"
@@ -67,7 +69,17 @@ func measureNoise(masterPath string, ch *ChannelResult) (noise.Report, bool) {
 func applyDenoise(ctx context.Context, opts Options, masterName, outDir string, base siril.DenoiseOptions,
 	effMod float64, onProgress func(siril.Progress)) string {
 	if opts.Preset.DenoiseStarlet {
-		return starletDenoiseFile(filepath.Join(outDir, masterName+".fits"), effMod)
+		// Pure-Go pass with no tool output — bracket it so the silence reads as work, not a hang.
+		line := func(l string) {
+			if onProgress != nil {
+				onProgress(siril.Progress{Line: l})
+			}
+		}
+		line(fmt.Sprintf("▶ starlet denoise %s (strength %.2f) …", masterName, effMod))
+		started := time.Now()
+		note := starletDenoiseFile(filepath.Join(outDir, masterName+".fits"), effMod)
+		line("✓ starlet denoise " + masterName + " done in " + time.Since(started).Round(time.Second).String())
+		return note
 	}
 	base.Modulation = clampFloat(effMod, 0, 0.95) // Siril needs modulation < 1 to blend
 	if _, err := opts.Runner.Run(ctx, outDir, siril.DenoiseScript(masterName+".fits", masterName, base), onProgress); err != nil {

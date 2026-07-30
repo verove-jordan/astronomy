@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { apiGet } from "@/services/api";
 import { useSkyStore } from "@/stores/sky";
 import type {
@@ -50,6 +50,17 @@ export const useGotoStore = defineStore("goto", () => {
 
   const prefs = loadPrefs();
   const params = ref<GotoQuery>({ profile: prefs.profile, count: prefs.count });
+
+  // Ephemeral sky-map time-slider offset (ms from the base query instant) — deliberately NOT
+  // persisted: it is a "how does the sky move" scrub, not a setting. Any change of the base
+  // datetime (new fetch, custom time, accept/skip re-plan) snaps the slider back to 0.
+  const timeOffsetMs = ref(0);
+  watch(
+    () => query.value?.at_utc_ms,
+    () => {
+      timeOffsetMs.value = 0;
+    },
+  );
 
   // The alignment sequence the user is working through (per session, not persisted): stars they have
   // centered (locked) and stars they have skipped (excluded + replaced). The server re-plans around
@@ -236,6 +247,7 @@ export const useGotoStore = defineStore("goto", () => {
     loading,
     error,
     params,
+    timeOffsetMs,
     accepted,
     rejected,
     stars,

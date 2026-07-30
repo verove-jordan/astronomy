@@ -15,13 +15,25 @@ func regionBlockBits(z int) int {
 	return z - 3
 }
 
+// regionZoomCap folds every zoom deeper than this onto its z8 ancestor block: past z8 the forecast grid
+// has no finer data to offer (the provider's step floor ≈ Open-Meteo's native resolution), so deeper
+// zooms would only mint new region scales — each a fresh multi-hundred-point cube fetch per zoom level,
+// which is exactly the request volume that starved the free-tier quota.
+const regionZoomCap = 8
+
 // TileRegion returns the shared weather-cube region (centre lat/lon + radius°) for map tile (z,x,y): the
 // tile is snapped to a 2^bits block so all tiles in the block resolve to ONE cube (one cached fetch,
 // continuous across tile edges) and the radius spans the block. Adjacent blocks overlap via the provider's
 // fetch margin, so tile edges stay seamless. This is what makes a whole viewport reuse one cached cube.
+// The frames endpoint anchors to the SAME quantizer (LatLonToTile + TileRegion), so its cube and the
+// tiles' cube share one cache key — one upstream fetch serves the scrubber axis and every metric.
 func TileRegion(z, x, y int) (centerLat, centerLon, radiusDeg float64) {
 	if z < 0 {
 		z = 0
+	}
+	if z > regionZoomCap {
+		shift := z - regionZoomCap
+		x, y, z = x>>shift, y>>shift, regionZoomCap
 	}
 	block := 1 << regionBlockBits(z)
 	rx := (x / block) * block
@@ -34,6 +46,37 @@ func TileRegion(z, x, y int) (centerLat, centerLon, radiusDeg float64) {
 	centerLat = (latN + latS) / 2
 	radiusDeg = math.Max(math.Abs(lonE-lonW), math.Abs(latN-latS)) / 2
 	return centerLat, centerLon, radiusDeg
+}
+
+// LatLonToTile is the slippy-map inverse of tile2lon/tile2lat: the (x,y) of the tile containing
+// (lat,lon) at zoom z, clamped to the valid range. The frames endpoint uses it to resolve the SAME
+// block region (and so the same cube cache key) as the tiles the map is about to request.
+func LatLonToTile(lat, lon float64, z int) (x, y int) {
+	if z < 0 {
+		z = 0
+	}
+	// Web-Mercator's pole singularity: clamp to its latitude limit so tan/cos stay finite.
+	if lat > 85.0511 {
+		lat = 85.0511
+	} else if lat < -85.0511 {
+		lat = -85.0511
+	}
+	n := math.Exp2(float64(z))
+	x = int(math.Floor((lon + 180) / 360 * n))
+	latRad := lat * math.Pi / 180
+	y = int(math.Floor((1 - math.Log(math.Tan(latRad)+1/math.Cos(latRad))/math.Pi) / 2 * n))
+	limit := int(n) - 1
+	if x < 0 {
+		x = 0
+	} else if x > limit {
+		x = limit
+	}
+	if y < 0 {
+		y = 0
+	} else if y > limit {
+		y = limit
+	}
+	return x, y
 }
 
 func tile2lon(x, z int) float64 {

@@ -36,6 +36,11 @@ type Master struct {
 	Bin        int        `json:"bin"`
 	FrameCount int        `json:"frame_count"`
 	Path       string     `json:"path"`
+	// Session is the capture-night key of a per-night master ("" = night-blind). Only FLATS of a
+	// multi-night scan carry one (dust/orientation state is per-night); such masters are run-local —
+	// never saved to the library (master_frames has no night column) and never satisfied BY a
+	// night-blind library master (see masterMatchesSet). In-memory + run.json only.
+	Session string `json:"session,omitempty"`
 }
 
 // tempTolC is the sensor-temperature tolerance (°C) when matching a dark to a light.
@@ -88,20 +93,17 @@ func buildOne(ctx context.Context, runner *siril.Runner, set inspect.Set, built 
 		return Master{}, nil, err
 	}
 
-	var script string
-	if mt == MasterFlat {
-		biasPath := flatBias(set.Key, built)
-		script = siril.StackFlatScript("cal", outBase, biasPath, len(paths))
-	} else {
-		script = siril.StackMasterScript("cal", outBase, len(paths))
-	}
-	if _, err := runner.Run(ctx, seqDir, script, onProgress); err != nil {
+	stackNote, err := stackMasterSet(ctx, runner, set.Key, built, seqDir, outBase, paths, onProgress)
+	if err != nil {
 		return Master{}, nil, fmt.Errorf("stack master %s: %w", name, err)
 	}
 
 	var qcWarn []string
+	if stackNote != "" {
+		qcWarn = append(qcWarn, stackNote)
+	}
 	if mt == MasterFlat {
-		qcWarn = analyzeFlatMaster(outBase+".fits", paths)
+		qcWarn = append(qcWarn, analyzeFlatMaster(outBase+".fits", paths)...)
 	}
 	if mt == MasterDark {
 		if note := buildDefectList(outBase+".fits", paths); note != "" {
@@ -122,7 +124,66 @@ func buildOne(ctx context.Context, runner *siril.Runner, set inspect.Set, built 
 		Bin:        set.Key.Bin,
 		FrameCount: set.Count,
 		Path:       outBase + ".fits",
+		Session:    set.Key.Session,
 	}, qcWarn, nil
+}
+
+// stackMasterSet runs one calibration set's stack script. A FLAT whose own calibration step
+// failed (an unusable/mismatched bias) is retried UNCALIBRATED with a warning note: the bias
+// pedestal is a tiny fraction of a flat's illumination level, while losing the flat costs the
+// whole night's vignetting/dust correction (a 2020 flat set died this way in task #312 and its
+// lights went un-flat-fielded). The retry runs on fresh links in a sibling dir — the first
+// attempt's convert products would otherwise poison a re-conversion in place.
+func stackMasterSet(ctx context.Context, runner *siril.Runner, key inspect.SetKey, built []Master,
+	seqDir, outBase string, paths []string, onProgress func(siril.Progress)) (string, error) {
+	// A single-frame pool (an S3-freed set's last frame on disk, a vendor-made master file) cannot
+	// be stacked — Siril has no one-image sequences — and used to fail the whole category ("No
+	// sequence `cal' found"), silently costing the night its flat. Convert and promote the lone
+	// frame instead: the task-#352 trade, applied to calibration masters.
+	if len(paths) == 1 {
+		if err := promoteLoneCalFrame(ctx, runner, seqDir, outBase, onProgress); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("master %s: single-frame pool — the lone frame was promoted unstacked (no outlier rejection%s)",
+			filepath.Base(outBase), loneFlatSuffix(key)), nil
+	}
+	if masterByFrameType[key.Type] != MasterFlat {
+		_, err := runner.Run(ctx, seqDir, siril.StackMasterScript("cal", outBase, len(paths)), onProgress)
+		return "", err
+	}
+	biasPath := flatBias(key, built)
+	_, err := runner.Run(ctx, seqDir, siril.StackFlatScript("cal", outBase, biasPath, len(paths)), onProgress)
+	if err == nil || biasPath == "" {
+		return "", err
+	}
+	retryDir := seqDir + "_uncal"
+	defer func() { _ = os.RemoveAll(retryDir) }()
+	if _, lerr := fsutil.LinkFrames(retryDir, paths); lerr != nil {
+		return "", err // the retry could not even start — report the original failure
+	}
+	if _, rerr := runner.Run(ctx, retryDir, siril.StackFlatScript("cal", outBase, "", len(paths)), onProgress); rerr != nil {
+		return "", err // the retry changed nothing — report the original failure
+	}
+	return fmt.Sprintf("flat %s: stacked WITHOUT its bias — flat calibration failed (%v)",
+		filepath.Base(outBase), err), nil
+}
+
+// promoteLoneCalFrame converts a single-frame calibration pool and publishes the lone converted
+// frame as the master.
+func promoteLoneCalFrame(ctx context.Context, runner *siril.Runner, seqDir, outBase string,
+	onProgress func(siril.Progress)) error {
+	if _, err := runner.Run(ctx, seqDir, siril.ConvertScript("cal"), onProgress); err != nil {
+		return err
+	}
+	return fsutil.CopyFile(filepath.Join(seqDir, "cal_00001.fits"), outBase+".fits")
+}
+
+// loneFlatSuffix adds the flat-specific caveat to the single-frame promotion note.
+func loneFlatSuffix(key inspect.SetKey) string {
+	if masterByFrameType[key.Type] == MasterFlat {
+		return ", no flat-bias calibration"
+	}
+	return ""
 }
 
 // flatBias finds a bias (or dark-flat) master matching a flat set's gain/offset/bin.
@@ -159,6 +220,11 @@ func masterName(mt MasterType, k inspect.SetKey) string {
 	name += fmt.Sprintf("_g%do%d_b%d", k.Gain, k.Offset, k.Bin)
 	if mt != MasterBias {
 		name += fmt.Sprintf("_%dC", k.TempBucket)
+	}
+	if k.Session != "" {
+		// Per-night flat sets of a multi-night scan: unique file per night, else the two nights'
+		// stacks silently overwrite each other. Single-night keys carry no Session → names unchanged.
+		name += "_n" + k.Session
 	}
 	return name
 }

@@ -1,6 +1,7 @@
 package planetary
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -12,11 +13,14 @@ import (
 )
 
 func TestSharpnessWeights_EmphasizesSharpest(t *testing.T) {
-	w := sharpnessWeights([]float64{100, 50, 10, 0})
+	w := sharpnessWeights([]float64{100, 50, 10, 0}, stackWeightPow)
 	assert.InDelta(t, 1.0, w[0], 1e-9, "sharpest → weight 1")
 	assert.InDelta(t, 0.125, w[1], 1e-6, "half sharpness → 0.5^3")
 	assert.Equal(t, stackWeightMin, w[2], "0.1^3 is below the floor")
 	assert.Equal(t, stackWeightMin, w[3], "zero sharpness → floor")
+
+	flat := sharpnessWeights([]float64{100, 50}, stackWeightPowSelected)
+	assert.InDelta(t, 0.5, flat[1], 1e-9, "selection mode flattens the global preference to pow 1")
 }
 
 func toGrid(im *fits.Image) []float64 {
@@ -41,7 +45,7 @@ func TestStackWeightedFile_SharperThanPlainMean(t *testing.T) {
 		paths[i] = filepath.Join(dir, fmt.Sprintf("f_%02d.fits", i))
 		require.NoError(t, im.WriteFITS(paths[i]))
 	}
-	require.NoError(t, stackWeightedFile(paths, scores, filepath.Join(dir, "m")))
+	require.NoError(t, stackWeightedFile(context.Background(), paths, scores, filepath.Join(dir, "m")))
 	m, err := fits.ReadImage(filepath.Join(dir, "m.fits"))
 	require.NoError(t, err)
 

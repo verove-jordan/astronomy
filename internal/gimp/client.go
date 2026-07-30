@@ -22,11 +22,12 @@ const maxScript = 0xFFFF
 
 // Client is a connection broker to the resident GIMP Script-Fu server.
 type Client struct {
-	bin     string
-	host    string
-	port    int
-	timeout time.Duration
-	mu      sync.Mutex
+	bin         string
+	host        string
+	port        int
+	timeout     time.Duration // server boot + dial budget
+	evalTimeout time.Duration // whole Eval round-trip budget — a composite step, not a ping
+	mu          sync.Mutex
 }
 
 // New returns a GIMP client for the given gimp-console binary and Script-Fu server address.
@@ -37,7 +38,11 @@ func New(bin, host string, port int) *Client {
 	if port == 0 {
 		port = 10008
 	}
-	return &Client{bin: bin, host: host, port: port, timeout: 60 * time.Second}
+	// evalTimeout bounds one Script-Fu request end-to-end. A layered composite of a 30+ MP canvas
+	// legitimately runs several minutes when the box is saturated by concurrent stacks (a 60 s
+	// deadline killed job 397's finished chain at its last step); 10 min still catches a truly hung
+	// GIMP without failing honest work under load.
+	return &Client{bin: bin, host: host, port: port, timeout: 60 * time.Second, evalTimeout: 10 * time.Minute}
 }
 
 func (c *Client) addr() string { return fmt.Sprintf("%s:%d", c.host, c.port) }
@@ -101,7 +106,7 @@ func (c *Client) Eval(script string) (string, error) {
 		return "", err
 	}
 	defer func() { _ = conn.Close() }()
-	_ = conn.SetDeadline(time.Now().Add(c.timeout))
+	_ = conn.SetDeadline(time.Now().Add(c.evalTimeout))
 
 	payload := []byte(script)
 	header := []byte{'G', byte(len(payload) >> 8), byte(len(payload) & 0xFF)}

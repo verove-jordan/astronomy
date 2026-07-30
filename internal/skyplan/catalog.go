@@ -6,12 +6,12 @@ import (
 	"github.com/verove-jordan/astronomy/internal/skycat"
 )
 
-// deriveType resolves the display object type. It prefers the authoritative OpenNGC type code
+// DeriveType resolves the display object type. It prefers the authoritative OpenNGC type code
 // (overlaid onto NGC/IC/M records by internal/skycat) and falls back to the source catalog +
 // name/alias keywords for rows OpenNGC does not cover (Sh2/LDN and un-typed entries). Used only for
 // display, filtering and the Moon-sensitivity heuristic — never directly in the score. Values match
 // the frontend's SkyObjectType vocabulary.
-func deriveType(rec skycat.Record) string {
+func DeriveType(rec skycat.Record) string {
 	if t := mapOpenNGCType(rec.Type); t != "" {
 		return t
 	}

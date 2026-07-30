@@ -14,6 +14,7 @@ optional tool degrades the result, never fails the run), and the opt-in AI finis
 | `planetary` | Lucky imaging (Moon/planets): native-res sharpness ranking, multi-point warp, AP-weighted stack, RL deconvolution | `pipeline.ProcessPlanetary` (`internal/pipeline/planetary.go`) → `planetary.Process` (`internal/planetary/planetary.go`) | [planetary.md](planetary.md) |
 | `comet` | Moving comet: one global star alignment, auto-fit motion track, dual star/comet stacks, StarNet star-layer recomposite | `pipeline.ProcessComet` (`internal/pipeline/comet.go`) | [comet.md](comet.md) |
 | `livestack` | Watch a folder/S3 prefix during capture: calibrate each new sub once, incrementally re-stack with a live preview, finalize with the full pipeline on Stop | `livestack.Run` (`internal/livestack`) → `pipeline.Process`/`ProcessOSC` | [livestack.md](livestack.md) |
+| `mosaic` | Tiled panels of one large object: per-panel deepsky stacks, one plate-solve per panel, WCS assembly onto a single photometrically-matched canvas, standard finish | `pipeline.ProcessMosaic` (`internal/pipeline/mosaicmode.go`) + `internal/mosaic` | [mosaic.md](mosaic.md) |
 
 `livestack` is not a separate *recipe*: the live session incrementally re-stacks while capturing
 and **finalizes through the deepsky (or OSC) path** — its preset is the deepsky preset retagged

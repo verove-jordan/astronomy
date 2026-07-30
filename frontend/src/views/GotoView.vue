@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { useGotoStore } from "@/stores/goto";
 import { useSkyStore } from "@/stores/sky";
 import AlignmentSequence from "@/components/Goto/AlignmentSequence.vue";
+import MosaicContinueCard from "@/components/Mosaic/MosaicContinueCard.vue";
 import AlignmentSkyMap from "@/components/Goto/AlignmentSkyMap.vue";
 
 // The interactive sky map bundles a raw canvas + the star/constellation dataset — load it lazily so it
@@ -11,6 +12,8 @@ import AlignmentSkyMap from "@/components/Goto/AlignmentSkyMap.vue";
 const StarChart = defineAsyncComponent(
   () => import("@/components/Goto/StarChart.vue"),
 );
+import StarChartModal from "@/components/Goto/StarChartModal.vue";
+import MountTuningPanel from "@/components/Goto/MountTuningPanel.vue";
 import PolarScopeReticle from "@/components/Polar/PolarScopeReticle.vue";
 import PolarAlignPanel from "@/components/Polar/PolarAlignPanel.vue";
 import PolarTutorial from "@/components/Polar/PolarTutorial.vue";
@@ -102,6 +105,9 @@ watch(
 function onPick(lat: number, lon: number) {
   store.setLocation(lat, lon);
 }
+
+// Fullscreen sky map (a second StarChart instance in a modal filling the content area).
+const mapExpanded = ref(false);
 </script>
 
 <template>
@@ -124,6 +130,8 @@ function onPick(lat: number, lon: number) {
         <PolarAlignPanel />
       </div>
     </section>
+
+    <MosaicContinueCard />
 
     <!-- Step 2 — GoTo star alignment. -->
     <h2 class="text-sm font-semibold text-slate-700 dark:text-slate-200">
@@ -224,7 +232,7 @@ function onPick(lat: number, lon: number) {
           <p class="mb-2 text-xs text-slate-400">
             {{ t("goto.sky.subtitle") }}
           </p>
-          <StarChart />
+          <StarChart @expand="mapExpanded = true" />
         </div>
         <div :class="card">
           <h3
@@ -248,5 +256,13 @@ function onPick(lat: number, lon: number) {
 
     <!-- Reference material: the polar-scope setup walkthrough, collapsed by default. -->
     <PolarTutorial />
+
+    <!-- Known mount issues & free compensations, keyed to the selected mount model. -->
+    <MountTuningPanel />
+
+    <!-- Fullscreen sky map, beside the nav rail. -->
+    <StarChartModal v-if="mapExpanded" @close="mapExpanded = false">
+      <StarChart fill />
+    </StarChartModal>
   </div>
 </template>

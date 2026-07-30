@@ -29,28 +29,47 @@ const drawerOpen = ref(false);
 // The page-tab band (#page-tabs) pins just below the top chrome. On lg+ the sidebar owns the chrome and
 // the (lg:hidden) mobile bar collapses to 0 height, so the band pins at the very top; on mobile the band
 // pins right below the bar. Track the bar's live height in a CSS var so the band stays flush either way.
-const rootEl = ref<HTMLElement | null>(null);
+// Both vars live on <html> so body-teleported overlays (StarChartModal) can read them too.
 const headerEl = ref<HTMLElement | null>(null);
 let ro: ResizeObserver | null = null;
 function syncTopbarHeight() {
   const h = headerEl.value?.offsetHeight ?? 0;
-  rootEl.value?.style.setProperty("--topbar-h", `${h}px`);
+  document.documentElement.style.setProperty("--topbar-h", `${h}px`);
 }
+
+// Same pattern for the rail width (--rail-w): fullscreen panels position beside the desktop rail so
+// the nav stays reachable. Below lg the rail is an off-canvas drawer overlaying content ⇒ 0.
+const sidebar = ref<InstanceType<typeof AppSidebar> | null>(null);
+const lgQuery = window.matchMedia("(min-width: 1024px)");
+function syncRailWidth() {
+  const aside = (sidebar.value?.$el ?? null) as HTMLElement | null;
+  const w = lgQuery.matches ? (aside?.offsetWidth ?? 0) : 0;
+  document.documentElement.style.setProperty("--rail-w", `${w}px`);
+}
+
 onMounted(() => {
   syncTopbarHeight();
-  ro = new ResizeObserver(syncTopbarHeight);
+  syncRailWidth();
+  ro = new ResizeObserver(() => {
+    syncTopbarHeight();
+    syncRailWidth();
+  });
   if (headerEl.value) ro.observe(headerEl.value);
+  const aside = sidebar.value?.$el as HTMLElement | undefined;
+  if (aside) ro.observe(aside);
+  lgQuery.addEventListener("change", syncRailWidth);
   void agent.refreshStatus(); // immediate check so the link appears without waiting a full interval
   agentPoll.value = true;
 });
 onBeforeUnmount(() => {
   ro?.disconnect();
   ro = null;
+  lgQuery.removeEventListener("change", syncRailWidth);
 });
 </script>
 
 <template>
-  <div ref="rootEl" class="min-h-screen bg-surface-deep lg:flex">
+  <div class="min-h-screen bg-surface-deep lg:flex">
     <NightSky :dark="true" />
 
     <!-- Mobile drawer backdrop -->
@@ -63,6 +82,7 @@ onBeforeUnmount(() => {
 
     <!-- Left rail: sticky on desktop, off-canvas drawer on mobile. -->
     <AppSidebar
+      ref="sidebar"
       class="fixed inset-y-0 left-0 z-50 transition-transform motion-safe:duration-200 lg:sticky lg:top-0 lg:z-30 lg:translate-x-0 lg:self-start"
       :class="
         drawerOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'

@@ -71,8 +71,7 @@ export const eventKindPill: Record<string, string> = {
     "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
   lunar_eclipse:
     "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300",
-  conjunction:
-    "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300",
+  conjunction: "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300",
   opposition:
     "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
   elongation:

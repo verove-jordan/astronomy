@@ -1,6 +1,11 @@
 import { ref, onUnmounted } from "vue";
 import { eventsUrl } from "@/services/api";
-import type { LogLine, IterationRecord, StagePreview } from "@/types";
+import type {
+  LogLine,
+  IterationRecord,
+  PhotomRecord,
+  StagePreview,
+} from "@/types";
 
 interface JobEvent {
   job_id: number;
@@ -10,9 +15,12 @@ interface JobEvent {
   line?: string;
   ts?: number; // wall-clock ms a log line was captured
   preview?: string;
-  rss_bytes?: number; // live resident memory of the running step's subprocess
+  session?: string; // capture night ("YYYY-MM-DD") a per-session sub-step event belongs to
+  photom?: PhotomRecord; // one group's photometric-normalization record, streamed as measured
+  rss_bytes?: number; // live resident memory of the whole engine tree (engine + every tool)
   cpu_percent?: number; // live CPU usage (100 == one core)
-  peak_rss_bytes?: number; // peak resident memory seen this step
+  peak_rss_bytes?: number; // job-wide peak engine memory
+  cpu_cores?: number; // host core count (context for cpu_percent)
   bytes_done?: number; // S3 transfer: bytes copied so far
   bytes_total?: number; // S3 transfer: total bytes to copy
   bytes_per_sec?: number; // S3 transfer: smoothed throughput (débit)
@@ -56,6 +64,7 @@ export function useJobStream(
   const rssBytes = ref(0);
   const cpuPercent = ref(0);
   const peakRssBytes = ref(0);
+  const cpuCores = ref(0);
   // S3 transfer byte progress + throughput (0 for non-transfer jobs, which never send these fields).
   const bytesDone = ref(0);
   const bytesTotal = ref(0);
@@ -63,8 +72,12 @@ export function useJobStream(
   // Supervised-finish iterations accumulated live (upsert by index, so the winner's re-emit with
   // chosen=true updates its card in place). Empty for non-supervised runs.
   const iterations = ref<IterationRecord[]>([]);
-  // Processing-milestone previews accumulated live (upsert by index → the ordered timeline).
+  // Processing-milestone previews accumulated live (upsert by identity → the ordered timeline).
   const stagePreviews = ref<StagePreview[]>([]);
+  // Per-group photometric-normalization records streamed live (cross-session runs only).
+  const photomRecords = ref<PhotomRecord[]>([]);
+  // The capture night the run is currently working on ("" between per-session sub-steps).
+  const currentSession = ref("");
 
   // Monotonic id stamped on every log line so the console keeps a stable :key when the ring buffer trims.
   let seq = 0;
@@ -75,12 +88,29 @@ export function useJobStream(
       .map((row) => ({ ...parseLogRow(row), seq: seq++ }));
   }
 
-  // upsert a milestone preview by index. Fed by both the live singular `stage_preview` events and the
+  // Milestone identity: stage + filter + session. Upserting by index alone silently overwrites a card
+  // whenever two producers pick the same ordinal (parallel channels, per-session pairs) — the
+  // composite key keeps every distinct milestone while re-emits still update in place; `index` stays
+  // the ORDER, not the identity.
+  const stageKey = (sp: StagePreview) =>
+    `${sp.stage}|${sp.filter ?? ""}|${sp.session ?? ""}`;
+
+  // upsert a milestone preview. Fed by both the live singular `stage_preview` events and the
   // reconnect snapshot's `stage_previews` array, so a page reloaded mid-run restores the whole timeline.
   function upsertStage(sp: StagePreview) {
-    const at = stagePreviews.value.findIndex((x) => x.index === sp.index);
+    const key = stageKey(sp);
+    const at = stagePreviews.value.findIndex((x) => stageKey(x) === key);
     if (at >= 0) stagePreviews.value[at] = sp;
     else stagePreviews.value.push(sp);
+  }
+
+  // upsert a photom record by (filter-bearing label, session) — a group re-measure updates in place.
+  function upsertPhotom(rec: PhotomRecord) {
+    const at = photomRecords.value.findIndex(
+      (x) => x.label === rec.label && (x.session ?? "") === (rec.session ?? ""),
+    );
+    if (at >= 0) photomRecords.value[at] = rec;
+    else photomRecords.value.push(rec);
   }
 
   // The stream closes itself when the job reaches a done/paused event. reconnect() re-opens it — used
@@ -114,6 +144,13 @@ export function useJobStream(
       rssBytes.value = e.rss_bytes;
       cpuPercent.value = e.cpu_percent ?? 0;
       peakRssBytes.value = e.peak_rss_bytes ?? e.rss_bytes;
+      if (e.cpu_cores) cpuCores.value = e.cpu_cores;
+    }
+    // A paused job's engine sampler is gone: zero the live readings (the peak is history, keep it)
+    // so the header doesn't freeze on the last pre-pause sample.
+    if (e.status === "paused") {
+      rssBytes.value = 0;
+      cpuPercent.value = 0;
     }
     // Transfer byte progress. bytes_total marks a transfer event; bytes_done/bytes_per_sec are omitted
     // when zero (omitempty), so default them rather than leave a stale value from an earlier tick.
@@ -129,6 +166,8 @@ export function useJobStream(
       if (at >= 0) iterations.value[at] = e.iteration;
       else iterations.value.push(e.iteration);
     }
+    if (e.session !== undefined) currentSession.value = e.session;
+    if (e.photom) upsertPhotom(e.photom);
     if (e.stage_preview) upsertStage(e.stage_preview);
     if (e.stage_previews) e.stage_previews.forEach(upsertStage);
     if (e.preview) preview.value = e.preview;
@@ -152,11 +191,14 @@ export function useJobStream(
     rssBytes,
     cpuPercent,
     peakRssBytes,
+    cpuCores,
     bytesDone,
     bytesTotal,
     bytesPerSec,
     iterations,
     stagePreviews,
+    photomRecords,
+    currentSession,
     seed,
     reconnect: connect,
   };

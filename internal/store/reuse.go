@@ -39,6 +39,9 @@ type FrameRow struct {
 	TempMilliC int64  `json:"temp_milli_c"`
 	HasTemp    bool   `json:"has_temp"`
 	DateObsMs  int64  `json:"date_obs_ms"`
+	// Instrument feeds the photometric gain-law check for reused frames (task #354: dropping it
+	// here made cross-session merges silently skip the ZWO 10^(Δgain/200) factor).
+	Instrument string `json:"instrument,omitempty"`
 }
 
 // rowQuerier is satisfied by both *pgxpool.Pool and pgx.Tx, so target upsert can run inside the
@@ -181,7 +184,7 @@ type LightQuery struct {
 // distance; the name branch matches LOWER(object) against the supplied aliases.
 func (s *Store) PriorLightFrames(ctx context.Context, q LightQuery) ([]FrameRow, error) {
 	const sql = `
-SELECT session_id, path, frame_type, filter, exposure_ms, gain, cam_offset, bin_x, temp_milli_c, has_temp, date_obs_ms
+SELECT session_id, path, frame_type, filter, exposure_ms, gain, cam_offset, bin_x, temp_milli_c, has_temp, date_obs_ms, instrument
 FROM frames
 WHERE frame_type = 'LIGHT' AND session_id <> $1
   AND (
@@ -217,7 +220,7 @@ type CalibQuery struct {
 // session) within the recency window. Temperature bucketing is applied by the caller (calib).
 func (s *Store) RawCalibFrames(ctx context.Context, q CalibQuery) ([]FrameRow, error) {
 	const sql = `
-SELECT session_id, path, frame_type, filter, exposure_ms, gain, cam_offset, bin_x, temp_milli_c, has_temp, date_obs_ms
+SELECT session_id, path, frame_type, filter, exposure_ms, gain, cam_offset, bin_x, temp_milli_c, has_temp, date_obs_ms, instrument
 FROM frames
 WHERE frame_type = ANY($1) AND gain = $2 AND cam_offset = $3 AND bin_x = $4
   AND ($5 = 0 OR date_obs_ms >= $5)
@@ -259,7 +262,7 @@ func (s *Store) FramesByPaths(ctx context.Context, paths []string) ([]FrameRow, 
 		return nil, nil
 	}
 	const sql = `
-SELECT session_id, path, frame_type, filter, exposure_ms, gain, cam_offset, bin_x, temp_milli_c, has_temp, date_obs_ms
+SELECT session_id, path, frame_type, filter, exposure_ms, gain, cam_offset, bin_x, temp_milli_c, has_temp, date_obs_ms, instrument
 FROM frames
 WHERE path = ANY($1)`
 	rows, err := s.pool.Query(ctx, sql, paths)
@@ -275,7 +278,7 @@ func scanFrameRows(rows pgx.Rows) ([]FrameRow, error) {
 	for rows.Next() {
 		var r FrameRow
 		if err := rows.Scan(&r.SessionID, &r.Path, &r.FrameType, &r.Filter, &r.ExposureMs,
-			&r.Gain, &r.Offset, &r.Bin, &r.TempMilliC, &r.HasTemp, &r.DateObsMs); err != nil {
+			&r.Gain, &r.Offset, &r.Bin, &r.TempMilliC, &r.HasTemp, &r.DateObsMs, &r.Instrument); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

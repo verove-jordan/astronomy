@@ -245,16 +245,14 @@ function syncWeatherOverlay(id: string) {
 }
 
 // maybeFetchWeather loads the lightweight frames index (the scrubber's time axis) for the current map
-// centre whenever an animated weather layer is on. Unlike the old cube, this does NOT need to refetch on
-// pan/zoom — the forecast hours are the same across the region and the tiles carry the data — so it runs
-// only on mount / toggle / site change.
+// centre + zoom whenever an animated weather layer is on. The zoom lets the backend anchor the request
+// to the same tile-block region the tiles resolve, so this fetch pre-warms exactly the cube the tiles
+// read. The forecast hours are the same across the region, so it runs only on mount / toggle / site
+// change — Leaflet fetches per-viewport tiles itself, and a zoomed cube warms on demand.
 function maybeFetchWeather(force = false) {
   if (!lmap || !anyWeatherEnabled()) return;
   const c = lmap.getCenter();
-  const b = lmap.getBounds();
-  const radius =
-    Math.max(b.getNorth() - b.getSouth(), b.getEast() - b.getWest()) / 2;
-  void weather.fetchFrames(c.lat, c.lng, radius, force);
+  void weather.fetchFrames(c.lat, c.lng, Math.round(lmap.getZoom()), force);
 }
 
 // syncRainviewerOverlay adds/removes/repaints one live layer: it paints the frame nearest the playhead
@@ -610,6 +608,15 @@ function choose(r: GeoResult) {
           >{{ t("tonight.layers.live") }}</span
         >
       </label>
+      <!-- Degraded-weather badge: the layers fail SOFT (stale frames or transparent tiles), so without
+           this the difference between "clear skies" and "the data feed is down" was invisible. -->
+      <span
+        v-if="anyWeatherEnabled() && weather.warning"
+        :title="weather.warning"
+        class="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400"
+      >
+        {{ t("tonight.layers.weatherDegraded") }}
+      </span>
     </div>
     <WeatherTimeline v-if="anyAnimatedEnabled()" />
     <LightPollutionLegend v-if="isEnabled('lightPollution')" />

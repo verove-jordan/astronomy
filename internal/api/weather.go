@@ -93,9 +93,13 @@ type weatherFramesResponse struct {
 	Warning   string     `json:"warning,omitempty"`
 }
 
-// skyWeatherGridFrames returns just the cube's frames + coverage (no floats). Fetching it also warms the
-// provider's cube cache that skyWeatherTile then reuses. ETag'd so a re-fetch of an unchanged forecast is a
-// 304. GET /api/sky/weather/grid/frames
+// skyWeatherGridFrames returns just the cube's frames + coverage (no floats). It anchors its region to
+// the SAME weathertile.TileRegion block quantizer the tile handler uses (via the map zoom `z`), so this
+// fetch warms exactly the cube every subsequent tile request reads — one upstream fetch serves the
+// scrubber axis and all metrics. (The old map-center+radius snap produced a different cache key from the
+// tiles, so nothing was actually shared.) The time axis is trimmed to the scrub window: the observer
+// plans tonight, not a 48 h film. ETag'd so a re-fetch of an unchanged forecast is a 304.
+// GET /api/sky/weather/grid/frames?lat&lon&z
 func (s *Server) skyWeatherGridFrames(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	lat := floatParam(q, "lat", s.cfg.LatDeg)
@@ -104,11 +108,33 @@ func (s *Server) skyWeatherGridFrames(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "lat/lon out of range")
 		return
 	}
-	radius := floatParam(q, "radius", 0)
-	g, warn := s.weatherGridAt(r.Context(), lat, lon, radius, splitCSV(q.Get("layers")))
-	resp := weatherFramesResponse{BBox: g.BBox, Timesteps: g.Timesteps, IssuedMs: g.IssuedMs, Warning: warn}
-	etag := fmt.Sprintf(`W/"wxf-%d-%d"`, g.IssuedMs, len(g.Timesteps))
+	z := intParam(q, "z", 8)
+	if z < 0 {
+		z = 0
+	} else if z > 19 {
+		z = 19
+	}
+	tx, ty := weathertile.LatLonToTile(lat, lon, z)
+	cLat, cLon, radius := weathertile.TileRegion(z, tx, ty)
+	g, warn := s.weatherGridAt(r.Context(), cLat, cLon, radius, nil)
+	resp := weatherFramesResponse{BBox: g.BBox, Timesteps: scrubWindow(g.Timesteps, time.Now()), IssuedMs: g.IssuedMs, Warning: warn}
+	etag := fmt.Sprintf(`W/"wxf-%d-%d"`, g.IssuedMs, len(resp.Timesteps))
 	writeJSONCached(w, r, http.StatusOK, etag, "private, max-age=300", resp)
+}
+
+// scrubWindow trims the cube's hourly axis to [now−1h, now+24h] — tonight through tomorrow's dawn. The
+// cube itself keeps its full window (the tile handler renders any requested frame), only the scrubber
+// range is bounded.
+func scrubWindow(timesteps []int64, now time.Time) []int64 {
+	lo := now.Add(-time.Hour).UnixMilli()
+	hi := now.Add(24 * time.Hour).UnixMilli()
+	out := make([]int64, 0, len(timesteps))
+	for _, t := range timesteps {
+		if t >= lo && t <= hi {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // skyWeatherTile server-renders one animated weather-overlay tile (metric at a frame time) as a PNG,
@@ -119,7 +145,7 @@ func (s *Server) skyWeatherGridFrames(w http.ResponseWriter, r *http.Request) {
 func (s *Server) skyWeatherTile(w http.ResponseWriter, r *http.Request) {
 	metric := r.PathValue("metric")
 	switch metric {
-	case "clouds", "humidity", "precip":
+	case "clouds", "clouds_low", "clouds_mid", "clouds_high", "humidity", "precip", "dewspread":
 	default:
 		badRequest(w, "unknown metric")
 		return
@@ -133,7 +159,12 @@ func (s *Server) skyWeatherTile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cLat, cLon, radius := weathertile.TileRegion(z, x, y)
-	g, _ := s.weatherGridAt(r.Context(), cLat, cLon, radius, []string{metric})
+	g, warn := s.weatherGridAt(r.Context(), cLat, cLon, radius, []string{metric})
+	if warn != "" {
+		// A tile is an <img> load — the browser can't read a body, but the header makes a degraded
+		// upstream visible in the Network tab instead of an indistinguishable transparent PNG.
+		w.Header().Set("X-Weather-Warning", warn)
+	}
 	if len(g.Timesteps) == 0 {
 		// Upstream degraded (e.g. Open-Meteo's daily-request limit → 429) and no cube is cached. Serve a
 		// transparent tile with a SHORT cache instead of a 502: a 200 means Leaflet simply shows no overlay

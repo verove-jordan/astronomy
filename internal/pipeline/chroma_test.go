@@ -90,7 +90,7 @@ func TestChromaSmoothRGB_PreservesMeanFlattensColour(t *testing.T) {
 	path := filepath.Join(dir, "rgb_base.fits")
 	require.NoError(t, im.WriteFITS(path))
 
-	note, err := chromaSmoothRGB(path, 12)
+	note, err := chromaSmoothRGB(path, chromaSmoothOpts{FinePx: 12})
 	require.NoError(t, err)
 	assert.Contains(t, note, "chroma smoothed")
 
@@ -114,15 +114,15 @@ func TestChromaSmoothRGB_PreservesMeanFlattensColour(t *testing.T) {
 func TestChromaSmoothRGB_NoopOnMonoOrZeroRadius(t *testing.T) {
 	dir := t.TempDir()
 	mono := writeMono(t, dir, "L", 0.2, 0.6)
-	note, err := chromaSmoothRGB(mono, 8)
+	note, err := chromaSmoothRGB(mono, chromaSmoothOpts{FinePx: 8})
 	require.NoError(t, err)
 	assert.Empty(t, note, "mono image → no-op")
 
 	rgb := filepath.Join(dir, "rgb.fits")
 	require.NoError(t, fits.NewImage(8, 8, 3).WriteFITS(rgb))
-	note, err = chromaSmoothRGB(rgb, 0)
+	note, err = chromaSmoothRGB(rgb, chromaSmoothOpts{})
 	require.NoError(t, err)
-	assert.Empty(t, note, "radius 0 → no-op")
+	assert.Empty(t, note, "both radii 0 → no-op")
 }
 
 func TestIsRGBChannel(t *testing.T) {

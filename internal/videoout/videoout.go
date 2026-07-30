@@ -5,6 +5,11 @@ package videoout
 import (
 	"context"
 	"fmt"
+	"image"
+	_ "image/jpeg" // header probe for RenderAuto
+	_ "image/png"  // header probe for RenderAuto
+	"math"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -20,6 +25,47 @@ type Options struct {
 // DefaultOptions returns a 12s 720p clip.
 func DefaultOptions() Options {
 	return Options{Seconds: 12, Width: 1280, Height: 720}
+}
+
+// defaultArea is the 720p-equivalent pixel budget OptionsFor sizes any aspect against.
+const defaultArea = 1280 * 720
+
+// OptionsFor sizes the clip to the SOURCE aspect ratio with the same pixel budget as the 720p
+// default (both dims even for yuv420p): a 4:3 sensor or a mosaic union canvas is no longer
+// stretched into 16:9. Non-positive dims fall back to DefaultOptions.
+func OptionsFor(srcW, srcH int) Options {
+	if srcW <= 0 || srcH <= 0 {
+		return DefaultOptions()
+	}
+	aspect := float64(srcW) / float64(srcH)
+	w := int(math.Sqrt(defaultArea * aspect))
+	w -= w % 2
+	h := int(float64(w) / aspect)
+	h -= h % 2
+	if w < 2 || h < 2 {
+		return DefaultOptions()
+	}
+	return Options{Seconds: 12, Width: w, Height: h}
+}
+
+// RenderAuto probes the still's dimensions (PNG/JPEG header) and renders with the matching aspect.
+func RenderAuto(ctx context.Context, ffmpegBin, image, out string) error {
+	w, h := imageDims(image)
+	return Render(ctx, ffmpegBin, image, out, OptionsFor(w, h))
+}
+
+// imageDims decodes just the image header ((0,0) on any error — OptionsFor then falls back).
+func imageDims(path string) (int, int) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, 0
+	}
+	defer f.Close()
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil {
+		return 0, 0
+	}
+	return cfg.Width, cfg.Height
 }
 
 // Render produces a Ken-Burns MP4 from a still image.

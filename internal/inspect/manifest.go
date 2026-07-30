@@ -195,6 +195,7 @@ func applySlot(man manifest, slot manifestSlot, frames []*Frame) {
 		}
 		if fr.Gain == 0 && slot.HasGain {
 			fr.Gain = slot.Gain
+			fr.HasGain = true
 		}
 		if fr.ExposureMs == 0 && slot.ExposureMs > 0 {
 			fr.ExposureMs = slot.ExposureMs

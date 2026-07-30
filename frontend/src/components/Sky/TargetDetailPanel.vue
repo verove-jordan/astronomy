@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import type { SkyTarget } from "@/types";
 import {
+  btnGhost,
   card,
   scoreTier,
   scoreTierBar,
@@ -75,9 +76,23 @@ const sizeText = computed(() => {
 <template>
   <div :class="card" role="region" aria-live="polite">
     <template v-if="target">
-      <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200">
-        {{ t("tonight.detail.title", { name: target.name }) }}
-      </h3>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200">
+          {{ t("tonight.detail.title", { name: target.name }) }}
+        </h3>
+        <router-link
+          :to="{ name: 'mosaic', query: { object: target.name } }"
+          :class="btnGhost"
+          class="!px-2 !py-1 text-xs"
+          >{{ t("tonight.detail.planMosaic") }}</router-link
+        >
+      </div>
+      <p
+        v-if="target.fov_fill_pct > 100"
+        class="mt-1 text-xs text-amber-600 dark:text-amber-400"
+      >
+        {{ t("tonight.detail.mosaicHint") }}
+      </p>
 
       <AladinView
         class="mt-2"

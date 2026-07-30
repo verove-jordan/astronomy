@@ -7,14 +7,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 
 	"github.com/verove-jordan/astronomy/internal/buildinfo"
 	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/dither"
+	"github.com/verove-jordan/astronomy/internal/filters"
 	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/gimp"
@@ -24,6 +27,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/libmirror"
 	"github.com/verove-jordan/astronomy/internal/llm"
 	"github.com/verove-jordan/astronomy/internal/mode"
+	"github.com/verove-jordan/astronomy/internal/mosaic"
 	"github.com/verove-jordan/astronomy/internal/noise"
 	"github.com/verove-jordan/astronomy/internal/photom"
 	"github.com/verove-jordan/astronomy/internal/postprocess"
@@ -108,11 +112,20 @@ type Options struct {
 	// default; CLI/MCP/host-dev unchanged). See internal/pipeline/stager.go + internal/job/stager.go.
 	Stager InputStager
 
+	// MosaicPlan is the saved capture plan a Mode "mosaic" run references (resolved from Postgres by
+	// the job manager — the pipeline stays DB-free): panel labels/validation, expected tile centers
+	// as plate-solve hints, and the canvas center. nil → panels are auto-detected.
+	MosaicPlan *mosaic.Plan
+
 	// LibraryMirror, when set, pulls a matched calibration master back from the S3 library mirror when its
 	// file is absent locally (the library is kept as a synced mirror, but a given machine may not hold every
 	// file), then frees the transiently-pulled copies after the run. nil → local-only (the default; the
 	// library must be on disk). See internal/libmirror + internal/job/libpuller.go.
 	LibraryMirror libmirror.Puller
+
+	// steps is the run's named-step progress tracker (set by Process; nil for OSC/refine/CLI and
+	// the supervised/star-fix re-entries, which must never advance the main bar). progress_steps.go.
+	steps *stepper
 
 	// FilterMapping is an optional user override (detected/known filter → chosen channel; "" or
 	// "ignore" excludes it), applied during the scan.
@@ -120,6 +133,16 @@ type Options struct {
 	// Solve / Spcc are the plate-solve + SPCC inputs for color calibration (from config).
 	Solve siril.SolveOptions
 	Spcc  siril.SpccOptions
+	// TargetHint is the user-declared imaging target — a catalogue name ("M66", "NGC 3628") or an
+	// explicit "RA,Dec" position — tried ahead of any header/folder-derived resolution when seeding
+	// the plate-solve (and therefore SPCC). Optional; naming of the run is never derived from it.
+	TargetHint string
+	// DenoiseScale (0,1) runs the joint AI colour denoise on a downscaled copy and transfers only
+	// the chroma back (ASTRO_DENOISE_SCALE; ≤0 or ≥1 → the byte-identical full-resolution pass).
+	DenoiseScale float64
+	// ChannelParallel stacks up to N channels concurrently (ASTRO_CHANNEL_PARALLEL; ≤1 → the
+	// byte-identical serial loop). Forced serial in low-disk staged mode. See parallel.go.
+	ChannelParallel int
 	// CatalogDir is Siril's bundled object-catalogue dir, used to resolve the target name → coords
 	// for plate-solving when the FITS header lacks RA/Dec.
 	CatalogDir string
@@ -132,6 +155,13 @@ type Options struct {
 	// CalibExclude holds SuggestID keys (per light-set, per role) the user unchecked in the Import
 	// "Calibration" panel; the matcher drops those darks/flats/bias from each channel's selection.
 	CalibExclude []string
+	// ExcludeSets holds canonical inspect.SetKey.ID tokens the user chose to drop in the Import
+	// stray-light check; those whole light sets are removed from the scan before grouping/stacking.
+	ExcludeSets []string
+	// ForceCalibration relaxes the calibration matcher's gain/offset/bin, exposure and sensor-temperature
+	// gates so the available dark/flat/bias masters are applied to the lights even when they don't match
+	// (the Import "force these calibration frames" toggle). false → the strict, physically-matched default.
+	ForceCalibration bool
 
 	// Resume, when set, continues a previously paused run: the run reuses Resume.RunID/OutDir so the
 	// per-channel masters already stacked on disk are found and those channels skipped. nil → a fresh run.
@@ -215,6 +245,12 @@ type Progress struct {
 	Line    string         `json:"line,omitempty"`
 	Preview string         `json:"preview,omitempty"` // a preview PNG path, emitted as it is produced
 	Sample  *sysmon.Sample `json:"-"`                 // live CPU/RAM of the step's subprocess; not serialized
+	// Session attributes the event to one capture night ("YYYY-MM-DD") inside a cross-session
+	// channel step — the UI's per-night progress rows key on it. "" = run-level (unchanged).
+	Session string `json:"session,omitempty"`
+	// Photom streams one group's photometric-normalization record the moment NormalizeGroups
+	// produced it, so the job UI shows the ×scale/offset chips live (they also land in run.json).
+	Photom *photom.GroupRecord `json:"photom,omitempty"`
 	// Iteration carries one completed supervised-finish pass as it happens, so the UI can stream the
 	// agent's iterations (preview + defects + scores) live instead of only after the job finishes.
 	Iteration *postprocess.IterationRecord `json:"iteration,omitempty"`
@@ -237,6 +273,11 @@ type ChannelResult struct {
 	// Photom records the per-group photometric normalization applied before a heterogeneous merge
 	// (different exposure/gain/temperature sessions), so run.json shows how each group was scaled.
 	Photom []photom.GroupRecord `json:"photom,omitempty"`
+	// Groups is the per-night/per-session provenance of a cross-session merge: which masters actually
+	// calibrated each group, the flat's origin, the parity flip, the normalization record and the
+	// before/after previews. Populated ONLY by the grouped path — a single-session channel (the fast
+	// path) never sets it, so its run.json stays byte-identical.
+	Groups []GroupResult `json:"groups,omitempty"`
 	// Noise is the measured sky noise/SNR of the linear master before and after denoising, so the UI
 	// and supervisor can see how much noise was present and how much the denoiser removed.
 	Noise *noise.Summary `json:"noise,omitempty"`
@@ -245,7 +286,28 @@ type ChannelResult struct {
 	// Dither classifies the capture-time pointing pattern (dithered / drift / static) from the
 	// registration offsets — the walking-noise risk diagnosis and its dithering advice.
 	Dither *dither.Report `json:"dither,omitempty"`
-	Err    string         `json:"error,omitempty"`
+	// Warnings are channel-scoped soft-failures (partial registration, restored frames, lone-frame
+	// master); each is also emitted to the live journal when it happens and promoted to the run's
+	// warning list by recordChannelOutcome.
+	Warnings []string `json:"warnings,omitempty"`
+	Err      string   `json:"error,omitempty"`
+	// CoveredFrac is the fraction of the anchor canvas this channel's STACKED frames cover at the
+	// preset's minimum depth; CoverageMask is the grayscale thumbnail of that coverage. Grouped
+	// (multi-night) channels only — the inputs of the coverage-aware combine crop.
+	CoveredFrac  float64 `json:"covered_frac,omitempty"`
+	CoverageMask string  `json:"coverage_mask,omitempty"`
+	// coverage is the in-process grid behind CoveredFrac (not serialized; run.json carries the
+	// summary + PNG instead — 250k cells have no business in a JSON row).
+	coverage *coverageGrid
+	// Seam records the multi-night seam repair applied to this channel (overlap offset refit +
+	// coverage-weighted noise equalization) — provenance for every correction and every skip.
+	Seam *SeamRepair `json:"seam,omitempty"`
+	// Canvas is the mosaic union-canvas geometry of this channel's master (Preset.Mosaic grouped
+	// runs only): dims + the anchor frame's origin offset — the coordinate key for the coverage
+	// grid, the sky fill and the cross-channel padding.
+	Canvas *CanvasInfo `json:"canvas,omitempty"`
+	// MosaicFill records the sky fill of the union's never-covered margins (mosaic runs only).
+	MosaicFill *FillRecord `json:"mosaic_fill,omitempty"`
 }
 
 // Result summarizes a completed run. It is both the API/DB job result and the durable on-disk
@@ -262,7 +324,16 @@ type Result struct {
 	Channels  []ChannelResult           `json:"channels"`
 	Final     *postprocess.Result       `json:"final,omitempty"`
 	Reuse     *ReuseSummary             `json:"reuse,omitempty"` // prior data folded into this run
-	Warnings  []string                  `json:"warnings"`
+	// AnchorNight is the capture night whose canvas every channel master was registered onto (grouped
+	// multi-night/reuse runs only — absent for single-session runs).
+	AnchorNight string `json:"anchor_night,omitempty"`
+	// CombineCrop records the coverage-derived crop applied to the colour-combine inputs (grouped
+	// runs with CoverageCrop on): the common covered rectangle, or the honest union fallback.
+	CombineCrop *CombineCrop `json:"combine_crop,omitempty"`
+	// MosaicAssembly records a Mode "mosaic" run's panel assembly (segmentation, per-panel solves,
+	// photometric matching, canvas + seam metrics). See mosaicassemble.go.
+	MosaicAssembly *MosaicResult `json:"mosaic_assembly,omitempty"`
+	Warnings       []string      `json:"warnings"`
 	// Engine identifies the build that produced this run (buildinfo; "dev" for un-stamped binaries) —
 	// so a result from a stale Docker engine is identifiable instead of masquerading as current code.
 	Engine string `json:"engine,omitempty"`
@@ -273,6 +344,8 @@ type Result struct {
 	// toggles), so run.json is a durable provenance record for comparing runs even after the job row is
 	// gone. Storage/agent flags are job-level (jobs.params) and not visible here.
 	Options *RunOptions `json:"options,omitempty"`
+	// Timings is the per-step wall-time breakdown ("where did the two hours go?"), in step order.
+	Timings []StepTiming `json:"timings,omitempty"`
 }
 
 // RunOptions is the compact, resolved algorithmic configuration of a run (from the preset), persisted
@@ -282,11 +355,18 @@ type RunOptions struct {
 	ColorCalibration bool    `json:"color_calibration,omitempty"`
 	Denoise          bool    `json:"denoise,omitempty"`
 	HaExcludeStars   bool    `json:"ha_exclude_stars,omitempty"`
+	HaContinuumSub   bool    `json:"ha_continuum_sub,omitempty"`
 	DropTransition   bool    `json:"drop_transition,omitempty"`
 	BackgroundAI     bool    `json:"background_ai,omitempty"`
 	StarReduce       float64 `json:"star_reduce,omitempty"`
 	StackWeight      string  `json:"stack_weight,omitempty"`
+	Mosaic           bool    `json:"mosaic,omitempty"`
+	MosaicFill       string  `json:"mosaic_fill,omitempty"`
+	SeamOffsetRefit  bool    `json:"seam_offset_refit,omitempty"`
+	SeamNoiseEq      bool    `json:"seam_noise_eq,omitempty"`
 	Palette          string  `json:"palette,omitempty"`
+	LuminanceMono    bool    `json:"luminance_mono,omitempty"`
+	AllChannelMono   bool    `json:"all_channel_mono,omitempty"`
 }
 
 // runOptionsFrom snapshots the resolved preset toggles into a RunOptions (nil when there is no preset).
@@ -299,11 +379,18 @@ func runOptionsFrom(p *mode.Preset) *RunOptions {
 		ColorCalibration: p.ColorCalibration,
 		Denoise:          p.DenoiseChroma > 0 || p.DenoiseLum > 0,
 		HaExcludeStars:   p.HaExcludeStars,
+		HaContinuumSub:   p.HaContinuumSub,
+		Mosaic:           p.Mosaic,
+		MosaicFill:       p.MosaicFill,
+		SeamOffsetRefit:  p.SeamOffsetRefit,
+		SeamNoiseEq:      p.SeamNoiseEq,
 		DropTransition:   p.DropFilterWheelTransition,
 		BackgroundAI:     p.BackgroundAI,
 		StarReduce:       p.StarReduce,
 		StackWeight:      p.StackWeight,
 		Palette:          p.Palette,
+		LuminanceMono:    p.EmitLuminanceMono,
+		AllChannelMono:   p.EmitAllChannelMono,
 	}
 }
 
@@ -313,9 +400,19 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 	if err := opts.Runner.Available(ctx); err != nil {
 		return nil, fmt.Errorf("siril unavailable: %w", err)
 	}
+	applyMosaicConstraints(opts.Preset) // a mosaic run must keep the union: coverage crop/trim off
+	// Per-step wall-time accounting: observe every progress event's step (installed before anything
+	// reports, so the whole run is covered) — lands in run.json + one final "timing:" summary.
+	timer := newStepTimer(nil)
+	if inner := opts.OnProgress; inner != nil {
+		opts.OnProgress = func(p Progress) { timer.observe(p.Step); inner(p) }
+	} else {
+		opts.OnProgress = func(p Progress) { timer.observe(p.Step) }
+	}
 	defer opts.freePulledMasters(ctx) // discard any masters pulled from the S3 library mirror this run
 	scanOpts := inspect.DefaultScanOptions()
 	scanOpts.FilterMapping = opts.FilterMapping
+	scanOpts.ExcludeSets = opts.ExcludeSets
 	inv, err := opts.scanInputs(ctx, scanOpts) // remote (no downloads) when a low-disk Stager is set, else local
 	if err != nil {
 		return nil, err
@@ -358,19 +455,6 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 
-	// Resolve target coordinates for plate-solving from the object/folder name when the header
-	// carried none, so SPCC can run on otherwise-unlocatable captures (e.g. ASI lights of M101). A
-	// compound folder name ("M81_M82_2020") won't resolve as a whole, so also try each of its tokens —
-	// the first catalogued one ("M81") gives the solver a position seed instead of a fragile blind solve.
-	if opts.Solve.Coords == "" {
-		for _, name := range objectCandidates(object) {
-			if c, ok := skycat.Resolve(name, opts.CatalogDir); ok {
-				opts.Solve.Coords = c
-				break
-			}
-		}
-	}
-
 	res := &Result{
 		InputDir: opts.InputDir, OutputDir: outDir, Object: object, RunID: runID,
 		Inventory: inv, Detection: inv.ChannelDetection,
@@ -378,9 +462,22 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 	}
 	opts.PriorObject = object // key for the supervisor's cross-run memory (warm start)
 	res.Warnings = append(res.Warnings, inv.Warnings...)
-	// Surface preset-enabled AI steps whose binary is unreachable up front, so a silent fallback
-	// (which leaves the gradient/noise/color uncorrected) is visible rather than looking like a no-op.
-	res.Warnings = append(res.Warnings, aiToolWarnings(ctx, opts)...)
+	// Resolve the plate-solve position seed (explicit target > object-name tokens > input-folder path
+	// segments) so SPCC can run on otherwise-unlocatable captures — without a seed Siril's internal
+	// solver hard-fails (blind solving needs local astrometry.net) and the colour ladder degrades to
+	// the star-field fallback (task #316's green stars).
+	if coords, source := resolveSolveCoords(&opts, object); coords != "" {
+		opts.Solve.Coords = coords
+		opts.report(Progress{Line: fmt.Sprintf("target position %s (from %s)", coords, source)})
+	} else if opts.TargetHint != "" {
+		warnLive(opts, res, fmt.Sprintf("target %q not found in the catalogues — plate-solve/SPCC run without a position seed", opts.TargetHint))
+	}
+	// Surface preset-enabled AI steps whose binary is unreachable up front — live, so the fallback
+	// (which leaves the gradient/noise/color uncorrected) is visible at launch rather than looking
+	// like a no-op discovered in the final report.
+	for _, w := range aiToolWarnings(ctx, opts) {
+		warnLive(opts, res, w)
+	}
 
 	// Record this run in the catalog so its frames become reusable by future runs. Best-effort:
 	// a catalog failure must not abort processing. (currentSession is excluded from light reuse.)
@@ -393,17 +490,14 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
-	lights := inv.SetsOfType(inspect.Light)
-	total := len(lights) + 2 // masters + per-channel + final combine
-	step := 0
-	progress := func(stepName string) func(siril.Progress) {
-		step++
-		idx := step
-		opts.report(Progress{Step: stepName, Index: idx, Total: total})
-		return func(p siril.Progress) {
-			opts.report(Progress{Step: stepName, Index: idx, Total: total, Line: p.Line, Sample: p.Sample})
-		}
-	}
+	// One named step per stage: masters, each channel, then the preset-derived finish plan — the
+	// whole finish tail used to hide inside a single 92%-pinned step (see progress_steps.go). The
+	// channel slots count light sets with the capture night normalized OUT: a multi-night split
+	// stacks its per-night groups inside ONE channel step, so counting split sets would leave the
+	// bar permanently undershooting; a single-night run keeps the historical count exactly.
+	opts.steps = newStepper(opts.report, lightStepSlots(inv)+1+len(finishStepPlan(opts)))
+	defer opts.finishSteps()
+	progress := opts.beginStep
 
 	// Low-disk staged calibration: download this run's calib frames, build the masters (kept in the small
 	// local library), then verified-free the calib raws before the light waves. Prior-session calib stays
@@ -432,7 +526,14 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 
 	// Fold in prior light frames of the same target (cross-session integration). With no provider or
 	// no recorded session this yields only the current session's groups (single-session behavior).
-	plan, perr := buildReusePlan(ctx, opts.Reuse, inv, currentSession, targetQueryFor(inv, dominantObject(inv), opts.CatalogDir))
+	tq := targetQueryFor(inv, dominantObject(inv), opts.CatalogDir)
+	if tq.HasCoords && opts.Solve.Coords == "" {
+		// Stacked channel masters lose the capture headers' OBJCTRA/DEC, so downstream probes
+		// (master parity, SPCC's solve) get the resolved target as an explicit hint — without it
+		// task #312 logged "channel parity check skipped (no master could be plate-solved)".
+		opts.Solve.Coords = fmt.Sprintf("%.5f,%.5f", tq.RADeg, tq.DecDeg)
+	}
+	plan, perr := buildReusePlan(ctx, opts.Reuse, inv, currentSession, tq)
 	if perr != nil {
 		res.Warnings = append(res.Warnings, "reuse discovery failed (using current session only): "+perr.Error())
 	}
@@ -446,61 +547,87 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 		res.Warnings = append(res.Warnings, fmt.Sprintf(
 			"reuse: skipped %d catalogued prior frame(s) missing on disk (freed to S3?)", plan.MissingPrior))
 	}
+	if plan.Anchored && plan.AnchorNight != "" {
+		res.AnchorNight = plan.AnchorNight
+		opts.sessionLine(stepRef{}, plan.AnchorNight, fmt.Sprintf(
+			"anchor night %s — every channel stacks on its field (%d night(s) merged)",
+			plan.AnchorNight, len(plan.Nights)))
+	}
 	flats := newFlatCache(opts.Reuse.Provider)
 	// Detects + corrects a mirror/parity flip when a session was shot through a different optical train;
 	// shared across channels so each session is plate-solved only once.
 	parity := newParityCache(opts.Runner, opts.Solve)
 
-	for chIdx, filter := range orderedPlanFilters(plan) {
-		// Resume: a channel already stacked in a prior (paused) attempt is reused from disk, skipping the
-		// expensive calibrate+register+stack.
-		if reused, ok := reuseStackedChannel(opts, object, filter, outDir); ok {
-			res.Channels = append(res.Channels, reused)
-			if reused.PreviewPath != "" {
-				opts.report(Progress{Step: "reused " + filter, Index: step, Total: total, Preview: reused.PreviewPath})
-				capturePreview(ctx, opts, outDir, ordStacked+chIdx, stageStacked, filter, reused.PreviewPath, false)
-			}
-			continue
-		}
+	// Channels stack in waves of `parallel` (default 1 = the proven serial loop, byte-identical;
+	// ASTRO_CHANNEL_PARALLEL opts into concurrent waves — see parallel.go).
+	filters := orderedPlanFilters(plan)
+	parallel := opts.channelParallelism(len(filters))
+	for waveStart := 0; waveStart < len(filters); waveStart += parallel {
+		wave := filters[waveStart:min(waveStart+parallel, len(filters))]
+		results := make([]ChannelResult, len(wave))
+		reusedFromDisk := make([]bool, len(wave))
+		var pending []int
 
-		// Low-disk staged light wave: download only this channel's current-session frames (all gain groups)
-		// just before stacking it. reuseStackedChannel above already skipped finished channels, so a resume
-		// never re-downloads them. The wave is freed after the stack + preview, before the pause boundary.
-		if opts.Stager != nil {
-			if paths := currentGroupPaths(plan, filter); len(paths) > 0 {
-				if serr := opts.Stager.Ensure(ctx, filter+" lights", paths); serr != nil {
-					return nil, &StagePullError{RunID: runID, OutDir: outDir, Err: serr}
+		for i, filter := range wave {
+			// Resume: a channel already stacked in a prior (paused) attempt is reused from disk,
+			// skipping the expensive calibrate+register+stack.
+			if reused, ok := reuseStackedChannel(opts, object, filter, outDir); ok {
+				results[i], reusedFromDisk[i] = reused, true
+				if reused.PreviewPath != "" {
+					idx, tot := opts.stepPos()
+					opts.report(Progress{Step: "reused " + filter, Index: idx, Total: tot, Preview: reused.PreviewPath})
+					capturePreview(ctx, opts, outDir, ordStacked+waveStart+i, stageStacked, filter, reused.PreviewPath, false)
+				}
+				continue
+			}
+			// Low-disk staged light wave: download only this channel's current-session frames (all gain
+			// groups) just before stacking it (staged mode forces parallel == 1, so this stays a
+			// one-channel-at-a-time download). Freed after the stack + preview, before the pause boundary.
+			if opts.Stager != nil {
+				if paths := currentGroupPaths(plan, filter); len(paths) > 0 {
+					if serr := opts.Stager.Ensure(ctx, filter+" lights", paths); serr != nil {
+						return nil, &StagePullError{RunID: runID, OutDir: outDir, Err: serr}
+					}
 				}
 			}
+			pending = append(pending, i)
 		}
 
-		groups := plan.byFilter[filter]
-		var ch ChannelResult
-		if len(groups) == 1 && groups[0].Current { // no prior data → proven single-session path
-			set := inspect.Set{Key: groups[0].Key, Frames: groups[0].Frames, Count: len(groups[0].Frames)}
-			ch = processChannel(ctx, opts, set, masters, workRun, outDir, gradeOpts,
-				progress(fmt.Sprintf("grading + stacking %s %s", object, filter)))
-		} else {
-			ch = processChannelGroups(ctx, opts, object, filter, groups, masters, flats, parity, workRun, outDir, gradeOpts,
-				progress(fmt.Sprintf("grading + stacking %s %s (%d groups)", object, filter, len(groups))))
-		}
-		res.Channels = append(res.Channels, ch)
-		if ch.Err != "" {
-			res.Warnings = append(res.Warnings, fmt.Sprintf("channel %s: %s", filter, ch.Err))
-		}
-		if ch.PreviewPath != "" { // surface per-channel imagery live
-			opts.report(Progress{Step: "preview " + filter, Index: step, Total: total, Preview: ch.PreviewPath})
-			// Milestone timeline: the stacked+extracted master for this channel (copy the ready PNG).
-			capturePreview(ctx, opts, outDir, ordStacked+chIdx, stageStacked, filter, ch.PreviewPath, false)
-		}
-		// The channel master is on disk now, so this channel's raws are dead weight — verified-free them
-		// (the master + aligned_* survive to combine/finish/resume; only the freed raws leave local disk).
-		if opts.Stager != nil {
-			opts.Stager.Free(ctx, filter+" lights", currentGroupPaths(plan, filter))
+		if parallel == 1 {
+			for _, i := range pending {
+				label := channelStepLabel(plan, object, wave[i])
+				prog := progress(label)
+				idx, tot := opts.stepPos() // beginStep just advanced the cursor to this channel's slot
+				results[i] = stackOneChannel(ctx, opts, plan, object, wave[i], masters, flats, parity,
+					workRun, outDir, gradeOpts, prog, stepRef{Name: label, Index: idx, Total: tot})
+			}
+		} else if len(pending) > 0 {
+			runParallelWave(ctx, opts, plan, object, wave, pending, waveStart, results, masters, flats, parity,
+				workRun, outDir, gradeOpts)
 		}
 
-		// Cooperative pause boundary: the user asked to pause — stop here with the channels done so far
-		// persisted on disk. Continue re-enters, reuses them, and finishes the rest.
+		for i, filter := range wave {
+			ch := results[i]
+			if reusedFromDisk[i] { // already surfaced above; reused channels carry no fresh warnings
+				res.Channels = append(res.Channels, ch)
+				continue
+			}
+			recordChannelOutcome(opts, res, filter, ch)
+			if ch.PreviewPath != "" { // surface per-channel imagery live
+				idx, tot := opts.stepPos()
+				opts.report(Progress{Step: "preview " + filter, Index: idx, Total: tot, Preview: ch.PreviewPath})
+				// Milestone timeline: the stacked+extracted master for this channel (copy the ready PNG).
+				capturePreview(ctx, opts, outDir, ordStacked+waveStart+i, stageStacked, filter, ch.PreviewPath, false)
+			}
+			// The channel master is on disk now, so this channel's raws are dead weight — verified-free
+			// them (the master + aligned_* survive to combine/finish/resume; only freed raws leave disk).
+			if opts.Stager != nil {
+				opts.Stager.Free(ctx, filter+" lights", currentGroupPaths(plan, filter))
+			}
+		}
+
+		// Cooperative pause boundary between waves: stop with the channels done so far persisted on
+		// disk. Continue re-enters, reuses them (reuseStackedChannel is idempotent), finishes the rest.
 		if opts.pauseRequested() {
 			return nil, &PausedError{RunID: runID, OutDir: outDir}
 		}
@@ -517,11 +644,13 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	appendDitherAdvice(res)
-	combine(ctx, opts, res, workRun, outDir, progress("aligning channels + combining"))
+	combine(ctx, opts, res, workRun, outDir)
+	progress("export")
 	if res.Final != nil {
 		for _, o := range res.Final.Outputs {
 			if strings.HasSuffix(o, ".png") {
-				opts.report(Progress{Step: "final", Index: total, Total: total, Preview: o})
+				idx, tot := opts.stepPos()
+				opts.report(Progress{Step: "final", Index: idx, Total: tot, Preview: o})
 				capturePreview(ctx, opts, outDir, ordFinal, stageFinal, "", o, false) // milestone: the final image
 				break
 			}
@@ -536,17 +665,73 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 	if merr := writeStageManifest(outDir, opts.Preset, runID); merr != nil {
 		res.Warnings = append(res.Warnings, "stage checkpoint not written: "+merr.Error())
 	}
+	opts.finishSteps() // close the export step's ✓ line before the timing summary
+	res.Timings = timer.finish()
+	if line := timingSummary(res.Timings); line != "" {
+		opts.report(Progress{Line: line})
+	}
 	writeRunJSON(outDir, res) // durable record so any run can be reopened from disk
+	if err := combineFailure(ctx, res); err != nil {
+		return res, err
+	}
 	return res, nil
 }
 
+// combineFailure turns a no-final multi-channel run into a job failure. Task #312 combined
+// nothing (mixed-dimension masters killed rgbcomp) yet finished "Réussi" — every artifact and the
+// stage checkpoint are still persisted above (a per-stage rerun can re-enter the combine), only
+// the status becomes honest. A single stacked channel keeps its semantics (the master IS the
+// deliverable), and a cancelled run stays a cancellation, not a failure.
+func combineFailure(ctx context.Context, res *Result) error {
+	if ctx.Err() != nil || res.Final != nil {
+		return nil
+	}
+	stacked := 0
+	for _, ch := range res.Channels {
+		if ch.Err == "" && ch.OutputPath != "" {
+			stacked++
+		}
+	}
+	// Zero stacked masters is a failure regardless of channel count: a disk-full run once zeroed
+	// every channel and still finished "succeeded" — name the first per-channel error when one
+	// was recorded.
+	if stacked == 0 && len(res.Channels) > 0 {
+		for _, ch := range res.Channels {
+			if ch.Err != "" {
+				return fmt.Errorf("no channel produced a stacked master (%s: %s)", ch.Filter, ch.Err)
+			}
+		}
+		return fmt.Errorf("no channel produced a stacked master — see the run warnings")
+	}
+	if stacked < 2 {
+		return nil
+	}
+	cause := "no final image was produced"
+	for _, w := range res.Warnings {
+		if strings.HasPrefix(w, "channel combination failed: ") {
+			cause = w
+		}
+	}
+	return fmt.Errorf("combining %d stacked channels produced no final image: %s", stacked, cause)
+}
+
 // writeRunJSON persists the full result (channels, metrics, masters, detection, notes) next to the
-// images so a run is self-contained and reopenable independent of the database. Best-effort.
+// images so a run is self-contained and reopenable independent of the database. Best-effort — but
+// never silently: a marshal failure means a non-finite float somewhere in res (encoding/json
+// refuses NaN/±Inf), which is zeroed with a warning naming the fields. Task #353 succeeded with no
+// run.json AND an empty stored job result because both persist paths swallowed that same error.
+// Sanitizing here also repairs the manager's later resultBlob marshal (same res pointer).
 func writeRunJSON(outDir string, res *Result) {
 	res.Engine = buildinfo.String()
 	b, err := json.MarshalIndent(res, "", "  ")
 	if err != nil {
-		return
+		if paths := SanitizeNonFinite(res); len(paths) > 0 {
+			res.Warnings = append(res.Warnings, nonFiniteNote(paths))
+			b, err = json.MarshalIndent(res, "", "  ")
+		}
+		if err != nil { // not a float problem — leave a reopenable stub naming the failure
+			b = []byte(fmt.Sprintf("{\n  \"warnings\": [%q]\n}\n", "run record not serializable: "+err.Error()))
+		}
 	}
 	_ = os.WriteFile(filepath.Join(outDir, "run.json"), b, 0o644)
 }
@@ -579,7 +764,7 @@ func buildRunMasters(ctx context.Context, opts Options, inv *inspect.Inventory, 
 }
 
 // filterOrder is the canonical channel order (L first so it is the alignment reference).
-var filterOrder = []string{"L", "R", "G", "B", "Ha", "OIII", "SII"}
+var filterOrder = filters.Canonical
 
 // channelMastersMap builds the filter→master-path map from a run's successful channels (the
 // master_<tag>.fits written next to the run), applying the OIII-as-blue substitution when there is no B
@@ -608,14 +793,22 @@ func channelMastersMap(res *Result, outDir string, substOIII bool) map[string]st
 }
 
 // combine co-registers the successful per-channel masters, then assembles the final image.
-func combine(ctx context.Context, opts Options, res *Result, workRun, outDir string, onProgress func(siril.Progress)) {
+func combine(ctx context.Context, opts Options, res *Result, workRun, outDir string) {
 	masters := channelMastersMap(res, outDir, paletteWantsOIIIAsBlue(opts.Preset))
 	if len(masters) == 0 {
-		res.Warnings = append(res.Warnings, "no channels available to combine")
+		warnLive(opts, res, "no channels available to combine")
 		return
 	}
-	channels := alignChannels(ctx, opts, masters, filepath.Join(workRun, "04_aligned"), outDir, res)
-	finishAligned(ctx, opts, channels, res, workRun, outDir, onProgress)
+	// Mosaic: land every channel on the cross-channel common union canvas (pad in anchor
+	// coordinates), then crop to the all-channel interior or keep the sky-filled union.
+	masters = mosaicHarmonize(opts, res, masters, outDir)
+	channels := alignChannels(ctx, opts, masters, filepath.Join(workRun, "04_aligned"), outDir, res,
+		opts.beginStep("aligning channels"))
+	// Coverage-aware crop of the combine inputs (grouped multi-night runs): every channel is cut to
+	// the field they ALL cover, so the colour combine never mixes regions where one channel has no
+	// data (regional casts) or none has (black wedges). Masters/aligned files stay untouched.
+	channels = applyCoverageCrop(opts, res, channels, outDir)
+	finishAligned(ctx, opts, channels, res, workRun, outDir)
 }
 
 // reStack re-grades and re-stacks every planned channel from the raw frames with a model-tuned preset
@@ -628,6 +821,7 @@ func reStack(ctx context.Context, opts Options, preset *mode.Preset, inv *inspec
 	masters []calib.Master, flats *flatCache, parity *parityCache, workRun, outDir, object string) (map[string]string, error) {
 	ro := opts
 	ro.Preset = preset
+	ro.steps = nil // a nested re-stack must never advance the main run's step bar
 	g := preset.Grade
 	ro.Grade = &g
 	prog := func(p siril.Progress) { opts.report(Progress{Step: "re-stack", Line: p.Line, Sample: p.Sample}) }
@@ -646,11 +840,13 @@ func reStack(ctx context.Context, opts Options, preset *mode.Preset, inv *inspec
 		}
 		groups := plan.byFilter[filter]
 		var ch ChannelResult
-		if len(groups) == 1 && groups[0].Current {
+		if useFastPath(plan, groups) {
 			set := inspect.Set{Key: groups[0].Key, Frames: groups[0].Frames, Count: len(groups[0].Frames)}
 			ch = processChannel(ctx, ro, set, masters, workRun, outDir, g, prog)
 		} else {
-			ch = processChannelGroups(ctx, ro, object, filter, groups, masters, flats, parity, workRun, outDir, g, prog)
+			// Zero-position stepRef: a nested re-stack must never advance the main run's bar; its
+			// per-session lines ride at the last position exactly like its other index-less lines.
+			ch = processChannelGroups(ctx, ro, object, filter, groups, masters, flats, parity, workRun, outDir, g, prog, stepRef{Name: "re-stack"}, plan.AnchorNight)
 		}
 		rres.Channels = append(rres.Channels, ch)
 		if ro.Stager != nil {
@@ -661,7 +857,7 @@ func reStack(ctx context.Context, opts Options, preset *mode.Preset, inv *inspec
 	if len(channels) == 0 {
 		return nil, fmt.Errorf("re-stack produced no channel masters")
 	}
-	aligned := alignChannels(ctx, ro, channels, filepath.Join(workRun, "04_aligned"), outDir, rres)
+	aligned := alignChannels(ctx, ro, channels, filepath.Join(workRun, "04_aligned"), outDir, rres, prog)
 	if len(aligned) == 0 {
 		return nil, fmt.Errorf("re-stack alignment produced no channels")
 	}
@@ -671,7 +867,8 @@ func reStack(ctx context.Context, opts Options, preset *mode.Preset, inv *inspec
 // finishAligned assembles the final image from co-registered channel masters: the optional local-AI-
 // agent supervised finish (opt-in), else the layered GIMP composite, else the Siril rgbcomp fallback.
 // It sets res.Final. Shared by combine() (a fresh run) and RefineExistingRun (re-tune an existing run).
-func finishAligned(ctx context.Context, opts Options, channels map[string]string, res *Result, workRun, outDir string, onProgress func(siril.Progress)) {
+// Progress: each stage begins its own named step (opts.beginStep; index-less lines without a stepper).
+func finishAligned(ctx context.Context, opts Options, channels map[string]string, res *Result, workRun, outDir string) {
 	// Every finish path (supervised early-return, GIMP, Siril fallback) gets the objective quality
 	// snapshot + threshold warnings stamped on its way out.
 	defer stampFinishQuality(res)
@@ -691,10 +888,19 @@ func finishAligned(ctx context.Context, opts Options, channels map[string]string
 			}
 		}()
 	}
+	// Also save the optional monochrome side outputs (processed L, combined all-channel) once the finish
+	// below has set res.Final — one defer covers every finish path (supervised / GIMP / Siril fallback),
+	// and it captures the (possibly cluster-adjusted) opts.Preset above. Soft-fail; never blocks the run.
+	defer emitMonoOutputs(ctx, opts, channels, res, workRun, outDir)
+
 	// Optional: local-AI-agent supervised finish (opt-in; GIMP composite path only). Soft-fall to the
-	// standard finish on any error so a run never fails because of the agent.
+	// standard finish on any error so a run never fails because of the agent. The loop owns one step
+	// on the main bar; its inner re-renders run with a nil stepper so they never advance it.
 	if superviseEnabled(ctx, opts) {
-		if final, err := superviseFinishDeepsky(ctx, opts, channels, workRun, outDir); err != nil {
+		opts.beginStep("supervised finish")
+		so := opts
+		so.steps = nil
+		if final, err := superviseFinishDeepsky(ctx, so, channels, workRun, outDir); err != nil {
 			res.Warnings = append(res.Warnings, "supervised finish failed, using standard finish: "+err.Error())
 		} else {
 			res.Final = final
@@ -706,7 +912,7 @@ func finishAligned(ctx context.Context, opts Options, channels map[string]string
 	if opts.Gimp != nil && opts.Preset != nil {
 		if err := opts.Gimp.Available(); err != nil {
 			res.Warnings = append(res.Warnings, "GIMP unavailable, using Siril finish: "+err.Error())
-		} else if final, err := finishWithGimp(ctx, opts, channels, workRun, outDir); err != nil {
+		} else if final, method, err := finishWithGimp(ctx, opts, channels, workRun, outDir); err != nil {
 			if ctx.Err() != nil {
 				// The run was cancelled mid-finish: don't dress the interruption up as a tool
 				// failure, and don't burn time on the Siril fallback the same cancel would kill.
@@ -716,6 +922,14 @@ func finishAligned(ctx context.Context, opts Options, channels map[string]string
 			res.Warnings = append(res.Warnings, "GIMP finishing failed, falling back to Siril: "+err.Error())
 		} else {
 			res.Final = final
+			// Surface a degraded colour ladder as a WARNING, not just a buried final note: the user
+			// asked for colour calibration and neither photometric rung (SPCC/PCC) ran
+			// (unsolvable/offline), so the balance came from a star-derived or neutral fallback.
+			// Preset-gated so runs with color_calibration=false (incl. the byte-pinned goldens) are
+			// untouched; the narrowband palette skips calibration by design.
+			if opts.Preset.ColorCalibration && !method.Photometric() && method != postprocess.CalPalette {
+				warnLive(opts, res, "photometric colour calibration (SPCC/PCC) did not run — colours come from a fallback (see the final notes; a resolvable target name or coords would enable it)")
+			}
 			// Gated deterministic star repair: no-op unless the finish has fixable burnt/discoloured stars
 			// (soft-fail; the deferred stampFinishQuality re-measures whichever final it promotes).
 			autoFixStars(ctx, opts, channels, workRun, outDir, res)
@@ -735,7 +949,8 @@ func finishAligned(ctx context.Context, opts Options, channels map[string]string
 		ppOpts.LinkedStretch = opts.Preset.LinkedStretch
 	}
 	ppOpts.Solve, ppOpts.Spcc = opts.Solve, opts.Spcc
-	final, err := postprocess.Combine(ctx, opts.Runner, outDir, channels, "final", ppOpts, onProgress)
+	final, err := postprocess.Combine(ctx, opts.Runner, outDir, channels, "final", ppOpts,
+		opts.beginStep("combining channels (Siril)"))
 	if err != nil {
 		if ctx.Err() != nil {
 			res.Warnings = append(res.Warnings, "run cancelled — channel combination skipped")
@@ -748,22 +963,24 @@ func finishAligned(ctx context.Context, opts Options, channels map[string]string
 }
 
 // finishWithGimp produces stretched per-component TIFFs with Siril, then composites them into a
-// layered image (with curves) in GIMP.
-func finishWithGimp(ctx context.Context, opts Options, channels map[string]string, workRun, outDir string) (*postprocess.Result, error) {
+// layered image (with curves) in GIMP. It also reports which colour-calibration rung the prep
+// landed on, so the caller can surface a degraded ladder (SPCC unavailable) as a run warning.
+func finishWithGimp(ctx context.Context, opts Options, channels map[string]string, workRun, outDir string) (*postprocess.Result, postprocess.CalMethod, error) {
 	stretchDir := filepath.Join(workRun, "05_stretched")
 	if err := fsutil.EnsureDir(stretchDir); err != nil {
-		return nil, err
+		return nil, postprocess.CalNone, err
 	}
 	deg := backgroundDegree(ctx, opts) // 0 when GraXpert already extracted the background
 	cc := postprocess.ColorCalOptions{
 		Enabled: opts.Preset.ColorCalibration, RemoveGreen: true, StarField: true,
 		Solve: opts.Solve, Spcc: opts.Spcc,
 	}
-	in, notes, err := prepGimpInputs(ctx, opts, opts.Runner, channels, outDir, stretchDir, deg, cc, opts.Preset.BackgroundLevel, opts.Preset.LinkedStretch)
+	in, notes, method, err := prepGimpInputs(ctx, opts, opts.Runner, channels, outDir, stretchDir, deg, cc, opts.Preset.BackgroundLevel, opts.Preset.LinkedStretch)
 	if err != nil {
-		return nil, err
+		return nil, method, err
 	}
-	return finishComposite(ctx, opts, in, notes, channels, outDir)
+	final, err := finishComposite(ctx, opts, in, notes, channels, outDir)
+	return final, method, err
 }
 
 // finishComposite applies the Tier-A composite knobs from the working preset onto a linear prep —
@@ -772,11 +989,11 @@ func finishWithGimp(ctx context.Context, opts Options, channels map[string]strin
 // the star-reduced milestone). Sharing this tail keeps a rerun byte-for-byte consistent with a normal
 // finish: a Tier-A rerun feeds a persisted prep here and skips the (slow) linear rebuild.
 func finishComposite(ctx context.Context, opts Options, in gimp.Inputs, notes []string, channels map[string]string, outDir string) (*postprocess.Result, error) {
-	in.HaBlack = opts.Preset.HaBlackPoint                // clip the Ha background to black so its red screen lifts only HII knots
-	in.ChromaBlur = opts.Preset.ChromaBlur               // colour-only denoise (kills the thin RGB's pink noise; L keeps detail)
-	in.LumCurve = opts.Preset.LumCurve                   // brighten the galaxy from the L luminance (not the combined value)
-	in.LumOpacity = opts.Preset.LumOpacity               // blend the L layer below 100% for a softer, more RGB-driven LRGB
-	in.CoreHighlightKnee = opts.Preset.CoreHighlightKnee // roll off the blown nebula core in the L luminance (pre-Ha-screen)
+	in.HaBlack = opts.Preset.HaBlackPoint                                   // clip the Ha background to black so its red screen lifts only HII knots
+	in.ChromaBlur = opts.Preset.ChromaBlur                                  // colour-only denoise (kills the thin RGB's pink noise; L keeps detail)
+	in.LumCurve = boostLumCurve(opts.Preset.LumCurve, opts.Preset.LumBoost) // brighten the galaxy from the L luminance (not the combined value)
+	in.LumOpacity = opts.Preset.LumOpacity                                  // blend the L layer below 100% for a softer, more RGB-driven LRGB
+	in.CoreHighlightKnee = opts.Preset.CoreHighlightKnee                    // roll off the blown nebula core in the L luminance (pre-Ha-screen)
 	in.CoreHighlightCeil = opts.Preset.CoreHighlightCeil
 	in.HighlightKnee = opts.Preset.HighlightKnee // star-safe highlight cap on the final composite (cores never burn / over-orange)
 	in.HighlightCeil = opts.Preset.HighlightCeil
@@ -787,7 +1004,8 @@ func finishComposite(ctx context.Context, opts Options, in gimp.Inputs, notes []
 	// chroma blur, star-core desaturation) is already baked into opts.Preset by finishAligned/rerun for
 	// a cluster target — so every knob above + the saturation below flow through unchanged here.
 	saturation := opts.Preset.Saturation
-	g, err := gimp.BuildImage(opts.Gimp, in, opts.Preset.Curve, opts.Preset.HaScreen, saturation, filepath.Join(outDir, "final"))
+	opts.beginStep("composite (GIMP)") // GIMP itself is silent; the ▶/✓ boundary lines carry its duration
+	g, err := gimp.BuildImage(opts.Gimp, in, opts.Preset.Curve, in.HaOpacity(opts.Preset.HaScreen), saturation, filepath.Join(outDir, "final"))
 	if err != nil {
 		return nil, err
 	}
@@ -800,7 +1018,7 @@ func finishComposite(ctx context.Context, opts Options, in gimp.Inputs, notes []
 
 	// Optional: StarNet++ star reduction on the flattened composite (works for any compose mode).
 	if aiStars(ctx, opts) {
-		extra, note := reduceStarsAI(ctx, opts, g.Tif, outDir, nil)
+		extra, note := reduceStarsAI(ctx, opts, g.Tif, outDir, opts.beginStep("star reduction (StarNet++)"))
 		out.Outputs = append(out.Outputs, extra...)
 		if note != "" {
 			out.Notes = append(out.Notes, note)
@@ -907,7 +1125,10 @@ func stretchScript(loadName, saveTif string, rmgreen, linked bool, bgLevel float
 	if rmgreen {
 		b.WriteString("rmgreen 0\n")
 	}
-	fmt.Fprintf(&b, "%s\nsavetif %s\n", siril.AutostretchCmd(linked, bgLevel), saveTif)
+	fmt.Fprintf(&b, "%s\n", siril.AutostretchCmd(linked, bgLevel))
+	if saveTif != "" { // "" → the caller appends its own save (the sky-chroma-flatten FITS detour)
+		fmt.Fprintf(&b, "savetif %s\n", saveTif)
+	}
 	return b.String()
 }
 
@@ -916,7 +1137,8 @@ func stretchScript(loadName, saveTif string, rmgreen, linked bool, bgLevel float
 // stretched; L and Ha are stretched as luminance/structure layers (no color calibration). Returns
 // the GIMP inputs and any color-calibration notes.
 func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, channels map[string]string,
-	outDir, stretchDir string, deg int, cc postprocess.ColorCalOptions, bgLevel float64, linked bool) (gimp.Inputs, []string, error) {
+	outDir, stretchDir string, deg int, cc postprocess.ColorCalOptions, bgLevel float64, linked bool) (gimp.Inputs, []string, postprocess.CalMethod, error) {
+	var calMethod postprocess.CalMethod
 	has := func(f string) bool { _, ok := channels[f]; return ok }
 	// channels[f] is a Siril-relative basename (e.g. "aligned_L"): correct for the Siril commands below
 	// (they run with outDir as the working dir and append .fits via `setext fits`), but the Go helpers
@@ -943,12 +1165,13 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 		headroom = opts.Preset.StretchHeadroom // for a cluster, finishAligned already lowered this to clusterStretchHeadroom
 	}
 
-	// Ha is screened into the composite, so it gets a darker target background than the base/lum: its
-	// pedestal must stay near black or the red screen washes the whole sky (a brown cast). The GIMP
-	// black-point clip (preset.HaBlackPoint) is the belt; this is the suspenders.
-	haBg := bgLevel * 0.6
-	if haBg < 0.03 {
-		haBg = 0.03
+	// An emission layer is SCREENED into the composite, so it gets a darker target background than the
+	// base/lum: its pedestal must stay near black or the tinted screen washes the whole sky (a brown
+	// cast). The GIMP black-point clip (preset.Ha/OIII/SIIBlackPoint) is the belt; this is the
+	// suspenders. Shared by all three emission screens.
+	emissionBg := bgLevel * 0.6
+	if emissionBg < 0.03 {
+		emissionBg = 0.03
 	}
 
 	if pal.Color {
@@ -972,32 +1195,36 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 		}
 		// Combine the palette's channels into the linear RGB base (dark stretch below). The dark target
 		// background keeps the sky near-black instead of Siril's washed-out 0.25 default.
+		combProg := opts.beginStep("combining channels + background")
 		s1 := hdr + pmPre + fmt.Sprintf("rgbcomp %s %s %s -out=rgb_base\nload rgb_base\n%ssave rgb_base\n",
 			rSrc, gSrc, bSrc, siril.SubskyCmd(deg))
-		if _, err := runner.Run(ctx, outDir, s1, nil); err != nil {
-			return gimp.Inputs{}, nil, err
+		if _, err := runner.Run(ctx, outDir, s1, combProg); err != nil {
+			return gimp.Inputs{}, nil, calMethod, err
 		}
 		// Milestone: the combined RGB (channels aligned + merged), before gradient/colour calibration.
 		capturePreview(ctx, opts, outDir, ordCombined, stageCombined, "", filepath.Join(outDir, "rgb_base.fits"), true)
 		// Remove the residual large-scale colour gradient (amp-glow + light pollution) that survives the
 		// per-channel extraction and the combine — a 2nd GraXpert pass on the linear combined RGB, before
 		// SPCC, so the whole sky is homogeneous. RBF subsky is the deterministic fallback (no GraXpert).
-		if n := extractCombinedBackground(ctx, opts, runner, outDir, "rgb_base", hdr); n != "" {
+		if n := extractCombinedBackgroundCached(ctx, opts, runner, outDir, "rgb_base", hdr, combProg); n != "" {
 			notes = append(notes, n)
 		}
 		// AI colour denoise on the combined linear RGB (edge-preserving) — the SINGLE joint colour denoise
 		// (the per-channel R/G/B denoise is deferred to here) that cuts the thin colour's heavy chrominance
 		// noise *before* SPCC/stretch amplify it, without smearing star halos (a blur would).
 		if jointColorDenoise(ctx, opts) {
-			if n := denoiseAICached(ctx, opts, filepath.Join(outDir, "rgb_base.fits"), outDir, nil); n != "" {
+			dnProg := opts.beginStep("AI colour denoise (GraXpert)")
+			dnProg(siril.Progress{Line: "AI colour denoise typically takes 5–90 min depending on hardware (the container runs CPU-only) — GraXpert progress streams below"})
+			if n := denoiseAICached(ctx, opts, filepath.Join(outDir, "rgb_base.fits"), outDir, dnProg); n != "" {
 				notes = append(notes, "colour "+n)
 			}
 		}
-		// Mean-preserving chroma smooth on the combined RGB — flattens the coherent colour patches the
-		// joint denoise leaves (and that a stretch + saturation would amplify into blotches) WITHOUT
-		// touching luminance (the mean is byte-for-byte unchanged; the L layer supplies detail in LRGB).
+		// Mean-preserving chroma smooth on the combined RGB — gaussian + star-protected (no square
+		// patches around bright stars), with a coarse background-only pass for the large chroma mottle.
+		// Luminance is byte-for-byte unchanged (the L layer supplies detail in LRGB); see chromasmooth.go.
 		if opts.Preset != nil {
-			if n, err := chromaSmoothRGB(filepath.Join(outDir, "rgb_base.fits"), opts.Preset.ChromaSmoothPx); err != nil {
+			smoothOpts := chromaSmoothOpts{FinePx: opts.Preset.ChromaSmoothPx, BgPx: opts.Preset.ChromaBgSmoothPx}
+			if n, err := chromaSmoothRGB(filepath.Join(outDir, "rgb_base.fits"), smoothOpts); err != nil {
 				notes = append(notes, "chroma smooth skipped: "+err.Error())
 			} else if n != "" {
 				notes = append(notes, n)
@@ -1009,30 +1236,53 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 		// mapped narrowband palette IS its colour (the channel→RGB assignment), so it skips calibration +
 		// SCNR entirely, stretches UNLINKED to equalize the synthetic channels, and is marked "calibrated"
 		// so the GIMP green trim is suppressed.
+		ccProg := opts.beginStep("colour calibration + stretch")
 		rmgreen := false
 		if pal.Narrowband {
 			in.CalibratedColor = true
 			linked = false
+			calMethod = postprocess.CalPalette
 			notes = append(notes, fmt.Sprintf("palette %s: narrowband channel mapping (SPCC + SCNR skipped)", pal.Name))
 		} else {
-			note, method, err := postprocess.ColorCalibrate(ctx, runner, outDir, "rgb_base", cc)
+			note, method, err := colorCalibrateCached(ctx, opts, runner, outDir, "rgb_base", cc)
 			if err != nil {
-				return gimp.Inputs{}, nil, err
+				return gimp.Inputs{}, nil, calMethod, err
 			}
 			if note != "" {
 				notes = append(notes, note)
 			}
+			calMethod = method
 			calibrated := method.Calibrated()
 			linked = linked && calibrated
 			in.CalibratedColor = calibrated
-			// SCNR (rmgreen) belongs ONLY after SPCC, whose photometric balance leaves a known residual
-			// green cast. After the star-field gain fallback the median star is neutral BY CONSTRUCTION, so
-			// subtracting green tips stars/sky magenta (the pink small stars); the neutralization fallback
-			// already strips green inside NeutralizeScript.
-			rmgreen = method == postprocess.CalSPCC
+			// SCNR (rmgreen) follows BOTH trustworthy rungs. SPCC's photometric balance leaves a known
+			// residual green cast; the star-field fallback now anchors the median star WARM (see
+			// starcal.go — the old white anchor made the median star "neutral by construction", which is
+			// why SCNR was once SPCC-only: on a white-forced field it tipped stars/sky magenta), so its
+			// residual green is real cast, not construction — task #316 shipped green stars because this
+			// gate left the star-field rung with no green removal at all. The neutralization fallback
+			// already strips green inside NeutralizeScript; the narrowband palette skips SCNR by design.
+			rmgreen = method.Calibrated()
 		}
 		// Milestone: the colour-calibrated (gradient-removed) linear RGB, before the stretch.
 		capturePreview(ctx, opts, outDir, ordColorCal, stageColorCal, "", filepath.Join(outDir, "rgb_base.fits"), true)
+		// Orientation guard: Siril's compose can emit rgb_base with REVERSED file rows relative to
+		// the aligned masters while stamping the same ROWORDER card (seen with 1.4.3 rgbcomp on the
+		// nebula path) — the base then reaches GIMP upside-down vs the L/Ha layers, which load
+		// straight from the masters. Content-checked and corrected in place BEFORE the headroom and
+		// stretch consume it; soft-fail — a skipped check never blocks the prep.
+		orientRef := "L"
+		if !has("L") {
+			orientRef = firstFilter(channels)
+		}
+		if orientRef != "" {
+			if n, err := ensureRowOrientation(filepath.Join(outDir, "rgb_base.fits"), cpath(orientRef)); err != nil {
+				notes = append(notes, "base orientation check skipped: "+err.Error())
+			} else if n != "" {
+				notes = append(notes, n)
+				opts.report(Progress{Line: "⚠ " + n})
+			}
+		}
 		// Cap the linear highlights (star cores, galaxy nucleus) just below 1.0 with their channel ratios
 		// intact, so the autostretch can't clip them to colourless white. In place on the calibrated RGB.
 		if n, err := applyStretchHeadroom(filepath.Join(outDir, "rgb_base.fits"), filepath.Join(outDir, "rgb_base.fits"), headroom); err != nil {
@@ -1040,19 +1290,79 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 		} else if n != "" {
 			notes = append(notes, "base "+n)
 		}
-		s2 := hdr + stretchScript("rgb_base", base, rmgreen, linked, bgLevel)
-		if _, err := runner.Run(ctx, outDir, s2, nil); err != nil {
-			return gimp.Inputs{}, nil, err
+		// Post-stretch sky-chroma flatten (preset.SkyChromaFlattenPx): the stretch amplifies sub-percent
+		// linear background chroma residuals (RBF ringing, denoise mottle) into visible bands/discs, so
+		// neutralize the sky IN DISPLAY SPACE — stretch to a FITS, flatten in Go, then save the TIFF.
+		// Skipped for narrowband palettes (their false-colour sky is intentional). Knob off → the single
+		// legacy stretch script, byte-identical to before. Soft-fail: a flatten error still saves the TIFF.
+		chromaPx, lumPx := 0, 0
+		if opts.Preset != nil && !pal.Narrowband {
+			chromaPx = opts.Preset.SkyChromaFlattenPx
+			lumPx = opts.Preset.SkyLumFlattenPx
+		}
+		if chromaPx > 0 || lumPx > 0 {
+			s2 := hdr + stretchScript("rgb_base", "", rmgreen, linked, bgLevel) + "save rgb_base_stretch\n"
+			if _, err := runner.Run(ctx, outDir, s2, ccProg); err != nil {
+				return gimp.Inputs{}, nil, calMethod, err
+			}
+			stretchFits := filepath.Join(outDir, "rgb_base_stretch.fits")
+			if chromaPx > 0 {
+				if n, err := flattenSkyChroma(stretchFits, chromaPx); err != nil {
+					notes = append(notes, "sky chroma flatten skipped: "+err.Error())
+				} else if n != "" {
+					notes = append(notes, n)
+				}
+			}
+			if lumPx > 0 {
+				if n, err := flattenSkyLuminance(stretchFits, lumPx); err != nil {
+					notes = append(notes, "sky luminance flatten skipped: "+err.Error())
+				} else if n != "" {
+					notes = append(notes, n)
+				}
+			}
+			s2b := hdr + fmt.Sprintf("load rgb_base_stretch\nsavetif %s\n", base)
+			if _, err := runner.Run(ctx, outDir, s2b, ccProg); err != nil {
+				return gimp.Inputs{}, nil, calMethod, err
+			}
+		} else {
+			s2 := hdr + stretchScript("rgb_base", base, rmgreen, linked, bgLevel)
+			if _, err := runner.Run(ctx, outDir, s2, ccProg); err != nil {
+				return gimp.Inputs{}, nil, calMethod, err
+			}
 		}
 	} else {
 		monoFilter := pal.R // the palette's chosen single source (mono palette prefers L→Ha→first)
 		if monoFilter == "" {
 			monoFilter = firstFilter(channels)
 		}
+		monoProg := opts.beginStep("combining channels + background")
 		mono := headroomSource(cpath(monoFilter), "base", stretchDir, headroom, &notes)
-		s := hdr + fmt.Sprintf("load %s\n%s%s\nsavetif %s\n", mono, siril.SubskyCmd(deg), siril.AutostretchCmd(false, bgLevel), base)
-		if _, err := runner.Run(ctx, outDir, s, nil); err != nil {
-			return gimp.Inputs{}, nil, err
+		lumPx := 0
+		if opts.Preset != nil {
+			lumPx = opts.Preset.SkyLumFlattenPx
+		}
+		// Mono-mode base IS the final's luminance — same post-stretch sky-level flatten detour as
+		// the colour base (knob 0 → the single legacy script, byte-identical).
+		if lumPx > 0 {
+			monoStretch := filepath.Join(stretchDir, "base_stretch")
+			s := hdr + fmt.Sprintf("load %s\n%s%s\nsave %s\n", mono, siril.SubskyCmd(deg), siril.AutostretchCmd(false, bgLevel), monoStretch)
+			if _, err := runner.Run(ctx, outDir, s, monoProg); err != nil {
+				return gimp.Inputs{}, nil, calMethod, err
+			}
+			if n, err := flattenSkyLuminance(monoStretch+".fits", lumPx); err != nil {
+				notes = append(notes, "sky luminance flatten skipped: "+err.Error())
+			} else if n != "" {
+				notes = append(notes, n)
+			}
+			s2 := hdr + fmt.Sprintf("load %s\nsavetif %s\n", monoStretch, base)
+			if _, err := runner.Run(ctx, outDir, s2, monoProg); err != nil {
+				return gimp.Inputs{}, nil, calMethod, err
+			}
+		} else {
+			s := hdr + fmt.Sprintf("load %s\n%s%s\nsavetif %s\n", mono, siril.SubskyCmd(deg), siril.AutostretchCmd(false, bgLevel), base)
+			if _, err := runner.Run(ctx, outDir, s, monoProg); err != nil {
+				return gimp.Inputs{}, nil, calMethod, err
+			}
 		}
 	}
 
@@ -1063,27 +1373,112 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 	if pal.UseLum && has("L") { // narrowband palettes consume their channels as base, no separate L luminance
 		lum := filepath.Join(stretchDir, "lum")
 		lumSrc := headroomSource(cpath("L"), "lum", stretchDir, headroom, &notes)
-		fmt.Fprintf(&b, "load %s\n%s%s\nsavetif %s\n", lumSrc, siril.SubskyCmd(deg), siril.AutostretchCmd(false, bgLevel), lum)
+		lumPx := 0
+		if opts.Preset != nil {
+			lumPx = opts.Preset.SkyLumFlattenPx
+		}
+		// The final's luminance comes from THIS layer (GIMP LAYER-MODE-LUMINANCE), so the sky-level
+		// flatten must run here too — its own detour (the Ha/OIII layers stay in the batched script;
+		// their RBF subsky + black-point clip handle their gradients). Knob 0 → the legacy batched
+		// line, byte-identical.
+		if lumPx > 0 {
+			lumStretch := filepath.Join(stretchDir, "lum_stretch")
+			s := hdr + fmt.Sprintf("load %s\n%s%s\nsave %s\n", lumSrc, siril.SubskyCmd(deg), siril.AutostretchCmd(false, bgLevel), lumStretch)
+			if _, err := runner.Run(ctx, outDir, s, opts.sirilLines("stretching L/Ha layers")); err != nil {
+				return gimp.Inputs{}, nil, calMethod, err
+			}
+			if n, err := flattenSkyLuminance(lumStretch+".fits", lumPx); err != nil {
+				notes = append(notes, "lum sky luminance flatten skipped: "+err.Error())
+			} else if n != "" {
+				notes = append(notes, "lum "+n)
+			}
+			fmt.Fprintf(&b, "load %s\nsavetif %s\n", lumStretch, lum)
+		} else {
+			fmt.Fprintf(&b, "load %s\n%s%s\nsavetif %s\n", lumSrc, siril.SubskyCmd(deg), siril.AutostretchCmd(false, bgLevel), lum)
+		}
 		in.Lum = lum + ".tif"
 		wrote = true
 	}
-	if pal.HaScreen && has("Ha") { // Ha screened only for the natural family; HOO/SHO use Ha as a base channel
-		ha := filepath.Join(stretchDir, "ha")
-		// The Ha layer is screened as PURE RED over the whole frame, so any residual large-scale
-		// gradient in it becomes a red wash/blotch across the sky — a degree-1 polynomial cannot
-		// model an asymmetric amp-glow gradient, so Ha gets the RBF subsky (preset.HaRBF, default on)
-		// instead of the gentle plane the other layers use.
-		haSub := siril.SubskyCmd(deg)
-		if opts.Preset == nil || opts.Preset.HaRBF {
-			haSub = siril.SubskyRBFCmd()
+	// The three emission screens (Hα red, [OIII] teal, [SII] deep-red/gold) are mechanically identical:
+	// continuum-subtract → RBF-flatten → autostretch to a dark background → save a TIFF for GIMP plus a
+	// FITS twin for the wash gate. They were three copies of this block; the table keeps them honest.
+	//
+	// Screens run for the natural family only — a narrowband palette consumes these filters as its BASE
+	// channels, and screening one on top of itself would double-count the line.
+	for _, es := range emissionScreens(pal, opts.Preset, &in) {
+		if !es.enabled || !has(es.filter) {
+			continue
 		}
-		fmt.Fprintf(&b, "load %s\n%s%s\nsavetif %s\n", channels["Ha"], haSub, siril.AutostretchCmd(false, haBg), ha)
-		in.Ha = ha + ".tif"
+		src := channels[es.filter]
+		screen := true
+		// Continuum subtraction: screen only true EMISSION. The raw master is continuum+emission — the
+		// black-point clip and low opacity that keep its continuum from washing the frame also erase the
+		// faint emission sitting just above it. excess = line − k·broadband is black except where the
+		// line actually emits, so the stretch can lift faint filaments and the screen shows them.
+		if opts.Preset == nil || opts.Preset.HaContinuumSub { // one knob governs all three screens
+			if ec, why := es.continuumSub(outDir, channels, stretchDir); ec != nil {
+				if ec.Faint {
+					screen = false
+					n := fmt.Sprintf("%s continuum-subtracted (×%.2f vs %s): no emission above noise (P99.5 %.1fσ) — %s screen dropped",
+						es.filter, ec.K, ec.Ref, ec.P995Sigma, es.filter)
+					notes = append(notes, n)
+					opts.report(Progress{Line: "⚠ " + n})
+				} else {
+					src = ec.ExcessPath
+					n := fmt.Sprintf("%s continuum-subtracted (×%.2f vs %s) — emission-only %s screen", es.filter, ec.K, ec.Ref, es.tint)
+					notes = append(notes, n)
+					opts.report(Progress{Line: n})
+				}
+			} else if why != "" {
+				notes = append(notes, fmt.Sprintf("%s continuum subtraction unavailable — full %s layer screened: %s", es.filter, es.filter, why))
+			}
+		}
+		if !screen {
+			continue
+		}
+		out := filepath.Join(stretchDir, es.base)
+		// The layer is screened as a saturated tint over the whole frame, so any residual large-scale
+		// gradient in it becomes a coloured wash/blotch across the sky — a degree-1 polynomial cannot
+		// model an asymmetric amp-glow gradient, so it gets the RBF subsky (preset.HaRBF, default on)
+		// instead of the gentle plane the other layers use.
+		sub := siril.SubskyCmd(deg)
+		if opts.Preset == nil || opts.Preset.HaRBF {
+			sub = siril.SubskyRBFCmd()
+		}
+		// `save <line>_stat` keeps a FITS twin of the stretched layer so the wash gate below can measure
+		// what the screen would actually paint (deleted after measurement).
+		fmt.Fprintf(&b, "load %s\n%s%s\nsavetif %s\nsave %s\n", src, sub, siril.AutostretchCmd(false, emissionBg), out, es.statBase)
+		*es.dest = out + ".tif"
 		wrote = true
 	}
 	if wrote {
-		if _, err := runner.Run(ctx, outDir, b.String(), nil); err != nil {
-			return gimp.Inputs{}, nil, err
+		if _, err := runner.Run(ctx, outDir, b.String(), opts.sirilLines("stretching L/emission layers")); err != nil {
+			return gimp.Inputs{}, nil, calMethod, err
+		}
+	}
+	// The wash gate: measure what each screen would ACTUALLY paint and attenuate (or drop) a layer
+	// whose stretched background came out bright. Runs after the Siril pass, since it reads the
+	// measurement FITS that pass wrote.
+	for _, es := range emissionScreens(pal, opts.Preset, &in) {
+		if *es.dest == "" {
+			continue
+		}
+		factor, gateNote := gateScreenStat(outDir, es.statBase, es.filter)
+		if gateNote != "" {
+			notes = append(notes, gateNote)
+			opts.report(Progress{Line: "⚠ " + gateNote})
+		}
+		if factor == 0 {
+			*es.dest = ""
+			continue
+		}
+		// The gate factor persists with the prep (Tier-A retunes re-apply it via <Line>Opacity); the
+		// final opacity + black point travel inside Inputs.
+		//
+		// Ha is the exception: its opacity is still a positional BuildImage argument, so only the
+		// factor is stored here and the caller multiplies.
+		if es.applyGate != nil {
+			es.applyGate(factor)
 		}
 	}
 	// Persist the linear prep (base/lum/ha) next to the run so a later composite-only tweak (e.g.
@@ -1092,7 +1487,7 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 	if perr := persistLinearPrep(outDir, in, notes); perr != nil {
 		notes = append(notes, "linear prep not persisted (Tier-A rerun will rebuild it): "+perr.Error())
 	}
-	return in, notes, nil
+	return in, notes, calMethod, nil
 }
 
 func compMode(channels map[string]string, p *mode.Preset) string {
@@ -1103,18 +1498,23 @@ func compMode(channels map[string]string, p *mode.Preset) string {
 	}
 	has := func(f string) bool { _, ok := channels[f]; return ok }
 	rgb := has("R") && has("G") && has("B")
-	switch {
-	case rgb && has("L") && has("Ha"):
-		return "HaLRGB"
-	case rgb && has("Ha"):
-		return "HaRGB"
-	case rgb && has("L"):
-		return "LRGB"
-	case rgb:
-		return "RGB"
-	default:
+	if !rgb {
 		return "mono"
 	}
+	// Prefix with whichever emission lines rode along, in canonical order — an LRGB+SII run used to
+	// report a bare "LRGB", hiding the narrowband entirely from run.json and the UI. Ha alone keeps
+	// its historical "HaLRGB"/"HaRGB" spelling.
+	base := "RGB"
+	if has("L") {
+		base = "LRGB"
+	}
+	prefix := ""
+	for _, f := range filters.Narrowband {
+		if has(f) {
+			prefix += f
+		}
+	}
+	return prefix + base
 }
 
 func firstFilter(channels map[string]string) string {
@@ -1183,7 +1583,7 @@ func (o Options) stackWeight() string {
 
 func processChannel(ctx context.Context, opts Options, set inspect.Set, masters []calib.Master,
 	workRun, outDir string, gradeOpts grade.Options, onProgress func(siril.Progress)) ChannelResult {
-	sel := calib.MatchForLightExcluding(set.Key, masters, opts.CalibExclude)
+	sel := calib.MatchForLightExcluding(set.Key, masters, opts.CalibExclude, opts.ForceCalibration)
 	ch := ChannelResult{
 		Object:      set.Key.Object,
 		Filter:      set.Key.Filter,
@@ -1204,6 +1604,21 @@ func processChannel(ctx context.Context, opts Options, set inspect.Set, masters 
 	cm := siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias, DarkOptimize: sel.DarkOptimize,
 		BadPixelMap: calib.DefectsListFor(dark)}
 
+	// A single-frame set cannot form a Siril sequence (no .seq is written for one image), so the
+	// sequence calibrate/register would abort: calibrate the frame alone and promote it to the
+	// channel master directly — no registration, grading or stacking to run on one frame.
+	if set.Count == 1 {
+		if _, err := opts.Runner.Run(ctx, seqDir, siril.CalibrateSingleScript("light", cm), onProgress); err != nil {
+			ch.Err = err.Error()
+			return ch
+		}
+		warnChannel(opts, &ch, set.Key.Filter+": only 1 frame captured — using it as the channel master (no registration/stacking)")
+		promoteLoneCalibrated(ctx, opts, &ch,
+			calibratedFramePaths(seqDir, siril.CalibratedSeq("light", cm), 1)[0], set.Key.Filter, outDir, onProgress)
+		_ = os.RemoveAll(seqDir)
+		return ch
+	}
+
 	// Calibrate + register (writes per-frame metrics to the calibrated sequence's .seq), then grade
 	// and stack the survivors.
 	if _, err := opts.Runner.Run(ctx, seqDir, siril.CalibrateRegisterScript("light", cm), onProgress); err != nil {
@@ -1211,7 +1626,8 @@ func processChannel(ctx context.Context, opts Options, set inspect.Set, masters 
 		return ch
 	}
 	finishStackedChannel(ctx, opts, seqDir, siril.CalibratedSeq("light", cm), siril.RegisteredSeq("light", cm),
-		set.Key.Filter, set.Frames, outDir, gradeOpts, opts.stackWeight(), onProgress, &ch)
+		set.Key.Filter, set.Frames, outDir, gradeOpts, opts.stackWeight(), onProgress, &ch, nil, nil,
+		(*regGeometry)(nil))
 	return ch
 }
 
@@ -1220,19 +1636,37 @@ func processChannel(ctx context.Context, opts Options, set inspect.Set, masters 
 // shared by the single-session path (processChannel) and the cross-session path (processChannelGroups).
 func finishStackedChannel(ctx context.Context, opts Options, seqDir, baseSeq, regSeq, filter string,
 	frames []*inspect.Frame, outDir string, gradeOpts grade.Options, stackWeight string,
-	onProgress func(siril.Progress), ch *ChannelResult) {
+	onProgress func(siril.Progress), ch *ChannelResult, preReject map[int]string, spans []grade.Span,
+	geom *regGeometry) {
 	dropTransition := opts.Preset != nil && opts.Preset.DropFilterWheelTransition
-	metrics, rejectedReg, regCount, err := gradeChannel(seqDir, baseSeq, frames, gradeOpts, dropTransition)
+	metrics, rejectedReg, regCount, err := gradeChannel(seqDir, baseSeq, frames, gradeOpts, dropTransition, preReject, spans)
 	if err != nil {
 		ch.Err = fmt.Sprintf("grading: %v", err)
 		return
 	}
 	ch.Metrics = metrics
 	ch.StackedFrames = regCount - len(rejectedReg)
+	// Rasterize the stacked-frame coverage now (grouped runs only): the seam noise equalization in
+	// finishLinearMaster needs it, and recordChannelCoverage reuses it for the crop/PNG record.
+	// Under mosaic the padded frames' homographies are composed onto the real CONTENT rectangle so
+	// the zero padding never counts as coverage.
+	if geom != nil && geom.FrameH != nil {
+		rejected := func(i int) bool {
+			return i >= len(metrics) || metrics[i].Rejected || metrics[i].FWHM <= 0
+		}
+		if geom.Canvas.W > 0 {
+			contentH := composeContentH(geom.FrameH, geom.Canvas.OffX, geom.Canvas.OffY)
+			cv := canvasSpec{W: geom.Canvas.W, H: geom.Canvas.H} // offsets baked into the homographies
+			ch.coverage = rasterizeCoverageOn(contentH, rejected, geom.ContentW, geom.ContentH, cv, coverageDownscale)
+		} else if w, h := frameDims(mergedFramePath(seqDir, baseSeq, 0)); w > 0 && h > 0 {
+			ch.coverage = rasterizeCoverage(geom.FrameH, rejected, w, h)
+		}
+	}
 	if regCount == 0 {
 		ch.Err = "no frames could be registered"
 		return
 	}
+	gradeWarnings(opts, ch, filter, metrics, regCount, regCount-len(rejectedReg))
 
 	// Diagnose the capture-time pointing pattern (dithered / linear drift / static) from the
 	// registration offsets: it decides whether fixed-pattern residuals decorrelate (and are
@@ -1241,27 +1675,29 @@ func finishStackedChannel(ctx context.Context, opts Options, seqDir, baseSeq, re
 		ch.Selection.Notes = append(ch.Selection.Notes, "capture offsets: "+ch.Dither.Note)
 	}
 
-	// Cross-frame transient mask: clean satellite/plane trail segments + cosmic rays from the registered
-	// subs before stacking (a slow satellite lands in many subs at marching positions, which the per-frame
-	// trail detector can't drop without losing the channel and a normal stack sigma-clip is too loose to
-	// remove). Soft-fail: on error, note it and stack the frames as-is.
-	if opts.Preset != nil && opts.Preset.TrailMaskK > 0 {
-		summary, note, err := maskChannelTrails(seqDir, regSeq, opts.Preset.TrailMaskK)
-		if err != nil {
-			ch.Selection.Notes = append(ch.Selection.Notes, "trail mask skipped: "+err.Error())
-		} else if summary != nil {
-			ch.TrailMask = summary
-			ch.Selection.Notes = append(ch.Selection.Notes, note)
-		}
-	}
+	applyTrailMask(opts, seqDir, regSeq, ch, satCeilings(opts, ch, spans, metrics))
 
 	masterName := "master_" + filterTag(filter) // basename in outDir (Siril CWD)
 	outBase := filepath.Join(outDir, masterName)
-	if _, err := opts.Runner.Run(ctx, seqDir, siril.StackSelectedScript(regSeq, regCount, rejectedReg, outBase, stackWeight), onProgress); err != nil {
+	_, stackNote, err := stackSelectedOrCopy(ctx, opts.Runner, seqDir, regSeq, regCount, rejectedReg, outBase, stackWeight, onProgress)
+	if err != nil {
 		ch.Err = err.Error()
 		return
 	}
-	ch.OutputPath = outBase + ".fits"
+	if stackNote != "" {
+		warnChannel(opts, ch, filter+": "+stackNote)
+	}
+	finishLinearMaster(ctx, opts, ch, masterName, outDir, filter, onProgress)
+	_ = os.RemoveAll(seqDir) // reclaim the bulky calibrated/registered frame copies
+}
+
+// finishLinearMaster runs the shared post-stack finishing on outDir/<masterName>.fits: spurious
+// BAYERPAT strip, AI background extraction, linear denoise and the UI preview. Split from
+// finishStackedChannel so a promoted lone calibrated frame (promoteLoneCalibrated) gets the same
+// finishing — and the same ChannelResult fields — as a stacked master.
+func finishLinearMaster(ctx context.Context, opts Options, ch *ChannelResult, masterName, outDir, filter string,
+	onProgress func(siril.Progress)) {
+	ch.OutputPath = filepath.Join(outDir, masterName) + ".fits"
 
 	// Drop any spurious BAYERPAT the stack inherited from older ASICAP mono captures: left in place it
 	// makes Siril treat this monochrome master as an undebayered CFA image (a checkerboard) — which
@@ -1271,12 +1707,26 @@ func finishStackedChannel(ctx context.Context, opts Options, seqDir, baseSeq, re
 		ch.Selection.Notes = append(ch.Selection.Notes, "BAYERPAT strip skipped: "+err.Error())
 	}
 
+	// Never-dark-calibrated masters carry lone hot/cold pixels ("black pepper"); repair them before
+	// any background model or denoise smears them. No-op for dark-calibrated channels.
+	masterCosmetic(ch, ch.OutputPath)
+
+	// Mosaic: the union master's never-covered margins are sky-filled BEFORE any background model
+	// or stretch sees the zeros (crop mode discards them again at combine).
+	if ch.Canvas != nil {
+		fillMosaicMargins(opts, ch, outDir, filter)
+	}
 	// AI background extraction (GraXpert) on the linear master, replacing Siril's polynomial subsky at
 	// finish. Soft-fail: a missing/erroring GraXpert leaves the master untouched.
 	if aiBackground(ctx, opts) {
 		if note := extractBackgroundAI(ctx, opts, ch.OutputPath, onProgress); note != "" {
 			ch.Selection.Notes = append(ch.Selection.Notes, note)
 		}
+	}
+	// Fade the noise-DEPTH step at coverage boundaries before the uniform denoise, so the standard
+	// pass below sees an already-uniform noise field. Multi-night (coverage-carrying) masters only.
+	if opts.Preset != nil && opts.Preset.SeamNoiseEq && ch.coverage != nil {
+		equalizeSeamNoise(ctx, opts, ch, masterName, outDir, filter, onProgress)
 	}
 	// Measure the linear master's noise and denoise it in place — the Go starlet denoiser (adaptive,
 	// star-safe) when enabled, else Siril's denoise — recording before/after sigma. Soft-fail inside.
@@ -1287,7 +1737,100 @@ func finishStackedChannel(ctx context.Context, opts Options, seqDir, baseSeq, re
 			ch.PreviewPath = filepath.Join(outDir, masterName+"_preview.png")
 		}
 	}
-	_ = os.RemoveAll(seqDir) // reclaim the bulky calibrated/registered frame copies
+}
+
+// promoteLoneCalibrated copies a channel's single calibrated frame to the master path and runs the
+// shared linear finishing: Siril has no one-image sequences, so a one-frame channel can be neither
+// registered nor stacked — one usable frame beats a dead channel (the same trade
+// stackSelectedOrCopy makes when only one frame REGISTERED). Callers journal the degraded path.
+func promoteLoneCalibrated(ctx context.Context, opts Options, ch *ChannelResult, calibrated, filter, outDir string,
+	onProgress func(siril.Progress)) {
+	masterName := "master_" + filterTag(filter)
+	if err := fsutil.CopyFile(calibrated, filepath.Join(outDir, masterName)+".fits"); err != nil {
+		ch.Err = fmt.Sprintf("promote lone calibrated frame: %v", err)
+		return
+	}
+	ch.StackedFrames = 1
+	finishLinearMaster(ctx, opts, ch, masterName, outDir, filter, onProgress)
+}
+
+// satCeilings maps every REGISTERED frame (the contiguous r_ numbering Siril produces — frames it
+// could not register are absent) to its group's post-normalization saturation ceiling: the level a
+// sensor-clipped pixel lands at after that group's photometric transform. The pre-stack repair
+// replaces at-ceiling pixels from the nights that still see the true value. nil when the preset
+// disables the repair or the channel is single-group (no unsaturated night can exist to draw on).
+func satCeilings(opts Options, ch *ChannelResult, spans []grade.Span, metrics []grade.Metric) []float32 {
+	if opts.Preset == nil || !opts.Preset.CoreSatMask || len(spans) < 2 {
+		return nil
+	}
+	merged := make([]float32, len(metrics))
+	for gi, sp := range spans {
+		ceil := float32(photom.SatDetectLevel) // no photom record → untransformed frames
+		if gi < len(ch.Groups) && ch.Groups[gi].Photom != nil && ch.Groups[gi].Photom.SatCeiling > 0 {
+			ceil = float32(ch.Groups[gi].Photom.SatCeiling)
+		}
+		for i := sp.Start; i < sp.End && i < len(merged); i++ {
+			merged[i] = ceil
+		}
+	}
+	reg := make([]float32, 0, len(metrics))
+	for i, m := range metrics {
+		if m.FWHM > 0 { // present in the registered sequence, same walk as gradeChannel
+			reg = append(reg, merged[i])
+		}
+	}
+	return reg
+}
+
+// applyTrailMask runs the cross-frame transient mask over the registered subs when the preset asks
+// for it: it cleans satellite/plane trail segments + cosmic rays before stacking (a slow satellite
+// lands in many subs at marching positions, which the per-frame trail detector can't drop without
+// losing the channel, and a normal stack sigma-clip is too loose to remove). Soft-fail: on error,
+// note it and stack the frames as-is. The mask is the run's biggest Go-side allocation (frame and
+// residual planes); the deferred FreeOSMemory hands that RAM back before the Siril stack spawns —
+// inside the containerized stack's shared VM, lazily-returned pages plus Siril's own budget were
+// enough to exhaust it.
+func applyTrailMask(opts Options, seqDir, regSeq string, ch *ChannelResult, satCeil []float32) {
+	if opts.Preset == nil || (opts.Preset.TrailMaskK <= 0 && len(satCeil) == 0) {
+		return
+	}
+	defer debug.FreeOSMemory()
+	// Pure-Go pass with no tool output: bracket it with journal lines so the minutes it can take on
+	// a large sequence read as work, not a hang.
+	opts.report(Progress{Line: "▶ transient trail mask (cross-frame) …"})
+	started := time.Now()
+	summary, note, err := maskChannelTrails(seqDir, regSeq, opts.Preset.TrailMaskK, satCeil)
+	if err != nil {
+		ch.Selection.Notes = append(ch.Selection.Notes, "trail mask skipped: "+err.Error())
+		return
+	}
+	opts.report(Progress{Line: "✓ transient trail mask done in " + time.Since(started).Round(time.Second).String()})
+	if summary != nil {
+		ch.TrailMask = summary
+		ch.Selection.Notes = append(ch.Selection.Notes, note)
+	}
+}
+
+// stackSelectedOrCopy stacks the surviving registered frames into outBase+".fits" — or, when only
+// one frame registered at all, promotes that lone frame to the channel master directly: Siril's
+// `stack -filter-incl` refuses fewer than two images, and one usable frame beats a dead channel.
+// The note return tells the caller a degraded path was taken. Fewer than two survivors with two or
+// more frames registered is a grading-contract violation (grade.Grade restores frames to the stack
+// minimum) reported as a clear error instead of an opaque Siril script failure.
+func stackSelectedOrCopy(ctx context.Context, runner *siril.Runner, seqDir, regSeq string,
+	regCount int, rejected []int, outBase, weight string, onProgress func(siril.Progress)) (*siril.Result, string, error) {
+	if regCount == 1 {
+		src := filepath.Join(seqDir, regSeq+"_00001.fits") // registered space is contiguous
+		if err := fsutil.CopyFile(src, outBase+".fits"); err != nil {
+			return nil, "", fmt.Errorf("promote lone registered frame: %w", err)
+		}
+		return nil, "only 1 frame registered — using it as the channel master (no stacking)", nil
+	}
+	if survivors := regCount - len(rejected); survivors < 2 {
+		return nil, "", fmt.Errorf("%d of %d registered frames survived grading — below Siril's two-frame stack minimum", survivors, regCount)
+	}
+	res, err := runner.Run(ctx, seqDir, siril.StackSelectedScript(regSeq, regCount, rejected, outBase, weight), onProgress)
+	return res, "", err
 }
 
 // denoiseFor returns the denoise options for a channel: luminance keeps detail (often skipped),
@@ -1307,8 +1850,13 @@ func denoiseFor(filter string, p *mode.Preset) siril.DenoiseOptions {
 // frames) and the calibrated pixels (trail detection), applies the rejection rules, and maps the
 // rejected frames to 1-based indices in the registered sequence used for stacking. Frames Siril
 // could not register (zero metrics) are rejected up front and excluded from the registered space.
-func gradeChannel(seqDir, baseSeq string, frames []*inspect.Frame, opts grade.Options, dropTransition bool) (
-	metrics []grade.Metric, rejectedReg []int, regCount int, err error) {
+// preReject (0-based input index → reason) carries upstream rejections — the cross-night
+// transform-review gate — into the same selection, with their reason as run.json provenance.
+// spans scope the RELATIVE grading rules per capture night in a multi-night merge (nil = one
+// population): each night is judged against its own medians, so the sharpest night cannot evict
+// every other night wholesale (task #354).
+func gradeChannel(seqDir, baseSeq string, frames []*inspect.Frame, opts grade.Options, dropTransition bool,
+	preReject map[int]string, spans []grade.Span) (metrics []grade.Metric, rejectedReg []int, regCount int, err error) {
 	seq, err := grade.ParseSeq(filepath.Join(seqDir, baseSeq+"_.seq"))
 	if err != nil {
 		return nil, nil, 0, err
@@ -1328,7 +1876,10 @@ func gradeChannel(seqDir, baseSeq string, frames []*inspect.Frame, opts grade.Op
 			m.Rejected = true
 			m.RejectReason = "could not register (too few/elongated stars)"
 		default:
-			if dropTransition && i < len(frames) && frames[i].WheelTransition {
+			if reason, ok := preReject[i]; ok {
+				m.Rejected = true
+				m.RejectReason = reason
+			} else if dropTransition && i < len(frames) && frames[i].WheelTransition {
 				m.Rejected = true
 				m.RejectReason = "filter-wheel transition (off-brightness first frame)"
 			}
@@ -1340,7 +1891,7 @@ func gradeChannel(seqDir, baseSeq string, frames []*inspect.Frame, opts grade.Op
 		}
 		metrics[i] = m
 	}
-	grade.Grade(metrics, opts)
+	grade.GradeGrouped(metrics, spans, opts)
 
 	for i := range metrics {
 		if metrics[i].FWHM > 0 { // present in the registered sequence
@@ -1357,6 +1908,86 @@ func (o Options) report(p Progress) {
 	if o.OnProgress != nil {
 		o.OnProgress(p)
 	}
+}
+
+// warnLive records a run warning AND surfaces it in the live journal the moment it happens
+// (⚠-prefixed, no step context — the job layer publishes it at the current progress), so a
+// soft-failure is visible while the run is still going instead of only in the final report.
+// boostLumCurve lifts the luminance curve's midtones by boost (the peak lift, at mid-grey) with
+// the endpoints fixed — the gentle "brighter galaxy" knob, folded into the existing GIMP spline's
+// control points so the compose stays one curve op. Two anchors (smoothsteps over the point's
+// OUTPUT level) confine the lift to the galaxy's faint periphery and arms: a shadow anchor pins
+// the sky-level points (the flattened sky keeps its exact brightness) and a highlight anchor pins
+// the core/star points (bright detail keeps its full local contrast — raising the boost can never
+// trade core detail for arm brightness). 0 → the curve unchanged, byte-identical.
+func boostLumCurve(curve []float64, boost float64) []float64 {
+	if boost <= 0 {
+		return curve
+	}
+	if len(curve) < 4 { // no curve to build on → a plain midtone-lift spline
+		curve = []float64{0, 0, 0.5, 0.5, 1, 1}
+	}
+	out := append([]float64(nil), curve...)
+	for i := 1; i < len(out); i += 2 {
+		y := out[i]
+		w := smoothstep(0.05, 0.18, y) * (1 - smoothstep(0.60, 0.90, y))
+		out[i] = math.Min(1, y+boost*4*y*(1-y)*w)
+	}
+	return out
+}
+
+func warnLive(opts Options, res *Result, msg string) {
+	res.Warnings = append(res.Warnings, msg)
+	opts.report(Progress{Line: "⚠ " + msg})
+}
+
+// warnChannel records a channel-scoped warning and surfaces it live; recordChannelOutcome
+// promotes it to the run's warning list once the channel lands in the result.
+func warnChannel(opts Options, ch *ChannelResult, msg string) {
+	ch.Warnings = append(ch.Warnings, msg)
+	opts.report(Progress{Line: "⚠ " + msg})
+}
+
+// recordChannelOutcome folds one stacked channel into the run result: its live-emitted warnings
+// are promoted to run level, and a failed channel is announced in the journal immediately —
+// previously the run went quiet and the miss surfaced only in the final warning list.
+func recordChannelOutcome(opts Options, res *Result, filter string, ch ChannelResult) {
+	res.Channels = append(res.Channels, ch)
+	res.Warnings = append(res.Warnings, ch.Warnings...)
+	if ch.Err != "" {
+		warnLive(opts, res, fmt.Sprintf("channel %s failed — continuing without it: %s", filter, ch.Err))
+	}
+}
+
+// gradeWarnings turns a channel's grading outcome into loud, immediate journal warnings: frames
+// Siril silently failed to register, and rejected frames grading restored to honor the stack
+// minimum. Quiet on a healthy channel.
+func gradeWarnings(opts Options, ch *ChannelResult, filter string, metrics []grade.Metric, regCount, survivors int) {
+	if regCount < len(metrics) {
+		warnChannel(opts, ch, fmt.Sprintf("%s: only %d/%d frames registered — %d dropped (no stars matched)",
+			filter, regCount, len(metrics), len(metrics)-regCount))
+	}
+	if note := restoredNote(metrics); note != "" {
+		warnChannel(opts, ch, fmt.Sprintf("%s: stacking %d survivor(s) — %s", filter, survivors, note))
+	}
+}
+
+// restoredNote summarizes grading restorations ("kept (stack minimum)") for the live warning;
+// empty when no frame was restored.
+func restoredNote(metrics []grade.Metric) string {
+	var kept []string
+	for _, m := range metrics {
+		if m.Rejected {
+			continue
+		}
+		if was, ok := strings.CutPrefix(m.RejectReason, grade.KeptStackMinimumPrefix); ok {
+			kept = append(kept, was)
+		}
+	}
+	if len(kept) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d kept despite: %s", len(kept), strings.Join(kept, "; "))
 }
 
 // ditherReport converts a channel's metrics into the pointing-pattern diagnosis. Frames Siril
@@ -1428,4 +2059,14 @@ func sanitize(s string) string {
 		return "session"
 	}
 	return string(out)
+}
+
+// nightToken renders a capture-night key as a path/name suffix ("_n2023-02-27"); "" stays "" so
+// single-night names are byte-identical to the pre-sessionization ones. Night keys are date-only,
+// so they survive sanitize unchanged.
+func nightToken(night string) string {
+	if night == "" {
+		return ""
+	}
+	return "_n" + sanitize(night)
 }

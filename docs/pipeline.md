@@ -35,8 +35,18 @@ by `internal/siril/scripts.go` and pinned to **32-bit float** processing (`set32
 
 5. **Cross-frame transient mask** (`internal/transient`) — before stacking, pixels that spike in
    one frame against the per-pixel median across the registered subs (slow satellite trails,
-   cosmic rays) are replaced by the median, with a line-aware pass for a trail's faint wings —
-   validated so it never repaints fixed-pattern noise.
+   cosmic rays) are replaced by the median, with a line-aware pass for a trail's faint wings.
+   Each line candidate is validated **window by window along its corridor** against the other
+   frames: fixed-pattern walking noise lights the same windows in the same large fraction of
+   frames (rejected), while a marching satellite or a **reused sky track** (geostationary belt,
+   satellite trains) lights each window in only a few frames (accepted — the whole-corridor test
+   this replaced rejected every candidate on a belt-reused track). A **recurring-corridor pass**
+   additionally detects belt tracks on the coverage-aware *mean* residual — where per-frame-faint
+   segments sum coherently exactly as they would in the stack — and repairs each frame's lit
+   windows (from the median, or local background where most frames share the window). Under a
+   memory budget (`ASTRO_TRAIL_MASK_MEM_GB`, else derived from the machine's available memory) a
+   large full-canvas sequence is masked **streamed** — a bounded evenly-spaced frame basis stays
+   resident and each sub is processed one at a time — instead of holding every frame in RAM.
 
 6. **Stack the survivors** — `select`/`unselect` from the grading, then
    `stack … <adaptive rejection> -norm=addscale -output_norm -weight=wfwhm -filter-incl`. The
@@ -63,7 +73,8 @@ by `internal/siril/scripts.go` and pinned to **32-bit float** processing (`set32
     colour, then a dark-target autostretch (linked only when the colour is truly calibrated).
 
 11. **Finish in GIMP** (`internal/gimp`) — a layered composite (RGB base + L in luminance mode +
-    Ha screened in red) saved as `.xcf`, then a flattened export with curves, saturation,
+    the emission screens: Ha in red, [OIII] in teal, [SII] deep-red or gold) saved as `.xcf`,
+    then a flattened export with curves, saturation,
     star-core desaturation and star-safe highlight shoulders. Star clusters get a gentler
     dedicated profile; a gated **star-quality auto-fix** repairs burnt/discoloured stars by
     re-entering the cheapest stage. If GIMP is unavailable, the Siril `rgbcomp` finish
@@ -114,8 +125,69 @@ the user can deselect (`POST /api/reuse/preview`):
   contributing session is calibrated with **its own** flats, then all calibrated frames are
   co-registered and stacked together (`processChannelGroups`). Reused frames pass the same grading
   gate as fresh ones and are de-duplicated by path.
+- **Capture nights are first-class.** Every dated frame carries its observing-night key
+  ("YYYY-MM-DD", local-noon bucketed — `inspect.NightKey`). A multi-night scan splits the light
+  **and flat** sets per night (dust moves between nights; per-night flats never merge or persist to
+  the library), groups are labeled by night everywhere (import breakdown, live per-night sub-steps,
+  run.json `channels[].groups`), and `POST /api/calib/plan` previews the joined per-night
+  calibration mapping before the run. A single-night scan is byte-identical to the
+  pre-sessionization behavior (proven by the `TestProcess_SingleNightGolden` live golden).
+- **All channels stack on one anchor canvas.** A grouped run resolves an **anchor night** (most
+  channels covered → most frames → latest; current capture outranks priors) and routes **every**
+  channel — even single-group ones — through the grouped path: the merged registration is computed
+  in two passes, reviewed in Go (the anchor group's middle frame is pinned with `setref`, each
+  frame's homography is checked against the anchor field and physically absurd transforms — false
+  star matches — are excluded from the stack), then applied with `-framing=current` so every
+  channel master lands on the anchor night's full field. Each night's measured field rotation and
+  overlap stream into the journal and land in run.json (`rotation_deg`/`overlap_frac`). The old
+  `-framing=min` intersection is gone — one drifted night or a single bad transform used to
+  collapse a channel master to a sliver, leaving mixed master dimensions that killed the colour
+  combine while the job still reported success; a multi-channel run that produces no final image
+  now **fails honestly** (artifacts and the stage checkpoint are kept for a rerun). Proven live by
+  `TestProcess_TwoNightAnchoredGeometry` (a ~35°-rotated second night contributing only L/R).
+- **A single-frame night cannot kill a channel.** Siril has no one-image sequences (`link` writes
+  no `.seq` for a lone file, so every sequence command aborts): a group holding one frame is
+  calibrated with `calibrate_single` instead, and a channel whose *total* integration is one
+  calibrated frame skips registration/stacking and promotes that frame to the channel master with
+  the shared linear finishing — one usable frame beats a dead channel, and the degraded path is
+  warned in the journal (same rules in the single-session and livestack paths).
+- **Photometric normalization before the merge.** Groups shot at different exposure/gain/
+  temperature are measured (`internal/photom`) and mapped onto the reference group's linear scale
+  before co-registration — ON by default for deep-sky modes. The scale ladder: a measurable curve
+  is fitted (Theil–Sen); a flat (sky-dominated) curve is seeded from the header exposure/gain
+  prediction — the ZWO `10^(Δgain/200)` factor applies when both sides confirm the convention via
+  INSTRUME **or** the ASICAP `SWCREATE` (old ASICAP writes no INSTRUME card), equal known gains
+  cancel under any convention, and differing gains with no confirmed convention yield **no
+  prediction** rather than a silently-wrong exposure-only ratio; the measured **sky-background
+  ratio** then stands in (and also cross-checks a seed — a >3× disagreement means the backgrounds
+  win). A pre-apply **no-clip gate** degrades any transform that would push a healthy sky below
+  zero at 3σ (bg-matched, then offset-only, with a warning) — mis-scaled nights can no longer
+  stack as black frames. **One reference night for all channels**: the photometric reference is
+  picked by the registration anchor's own ranking, so every channel shares one scale regime.
+  Per-group records (scale/offset/residual/method + before/after previews) stream live and land in
+  run.json.
+- **Per-night relative grading.** In a merged stack the RELATIVE rejection rules (roundness/FWHM/
+  background/star-count vs the population median) are scoped per capture night
+  (`grade.GradeGrouped`): each night is judged against its own medians, so the sharpest night's
+  statistics can no longer evict every other night wholesale. Absolute floors (trail detection,
+  the roundness floor) stay global, as does the Siril stack-minimum restore. Per-night
+  stacked/rejected counts land in run.json (`groups[].stacked_frames`) and a night contributing
+  nothing warns live.
+- **Per-frame background flatten before the merged registration** (`FlattenBg`, deep-sky default):
+  each calibrated frame's own degree-1 sky gradient is subtracted (Siril `seqsubsky`, mean level
+  preserved) before the 2-pass register — the nights' gradients lie at their own field rotations,
+  so unflattened they step at footprint boundaries in the master (background seams). Soft-fails
+  to the unflattened sequence.
+- **Coverage-aware colour combine** (`CoverageCrop`, deep-sky default): each channel's stacked
+  coverage of the anchor canvas is rasterized from the reviewed registration homographies
+  (persisted as `covered_frac` + a `coverage_<tag>.png` mask); the combine inputs are cropped to
+  the largest rectangle **every** channel covers at ≥30% of its stacked depth (masters and
+  aligned files stay untouched — cropped copies `combine_<tag>.fits`). A collapsed intersection
+  (<35% of the canvas) falls back to the full field with a warning. Kills the regional
+  green/magenta casts and black wedges of mixed-coverage merges.
 - **Deeper calibration = less noise.** `BuildDeepMasters` pools **every** matching raw bias/dark
-  across sessions into one deep master — see [calibration.md](calibration.md).
+  across sessions into one deep master — see [calibration.md](calibration.md). Darks/bias stay
+  night-agnostic on purpose (closed-shutter thermal signatures).
 
 Disable per run with the import toggle, or globally with `ASTRO_REUSE_ENABLED=false` (the catalog
 is still recorded). The single-session path is unchanged when no prior data matches.
