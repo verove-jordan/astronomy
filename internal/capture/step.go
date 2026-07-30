@@ -48,7 +48,18 @@ func (r *Runner) captureOne(ctx context.Context, state *runState, step Step, ind
 	if err := r.client.StartExposure(ctx, isCalibration(step.Type)); err != nil {
 		return fmt.Errorf("start exposure: %w", err)
 	}
-	if err := r.waitForExposure(ctx, step); err != nil {
+
+	// Cancel the predicted drift while the shutter is open. This has to happen DURING the exposure, not
+	// between exposures: how far the mount moves during an integration is what trails the stars, and no
+	// correction applied before it opened can change that.
+	stopCompensation := func() {}
+	if isLight(step.Type) {
+		stopCompensation = r.currentGuider().Compensate(ctx,
+			time.Duration(step.ExposureUs)*time.Microsecond)
+	}
+	err := r.waitForExposure(ctx, step)
+	stopCompensation()
+	if err != nil {
 		return err
 	}
 
@@ -303,6 +314,25 @@ func (r *Runner) recordFrame(ctx context.Context, state *runState, step Step, sa
 	})
 	_ = r.recorder.UpdateSession(ctx, id, snapshot.Status, snapshot)
 	r.observeTracking(ctx, state, step, saved, startedAt, id)
+	r.observeGuide(ctx, step, saved, startedAt)
+}
+
+// observeGuide hands light frames to the self-guider, which measures the star and corrects the mount
+// before the next exposure opens.
+//
+// Synchronous, unlike observeTracking. Measurement is a bonus that can afford to run late; a correction
+// cannot — one that lands two frames after the error it was computed from is worse than none at all. It
+// costs a FITS read and a centroid, which is a second or so against a sub of minutes.
+func (r *Runner) observeGuide(ctx context.Context, step Step, saved SavedFrame, startedAt time.Time) {
+	g := r.currentGuider()
+	if g == nil || !isLight(step.Type) {
+		return
+	}
+	// Mid-exposure for the same reason the tracking monitor uses it: the centroid of a trailed star is
+	// where it was half way through, and timestamping it at the start would bias every drift fit by half
+	// an exposure.
+	mid := startedAt.Add(time.Duration(saved.ExposureUs/2) * time.Microsecond)
+	g.Observe(ctx, saved.Path, mid)
 }
 
 // observeTracking hands light frames to the tracking monitor. Only lights: a dark or a flat has no

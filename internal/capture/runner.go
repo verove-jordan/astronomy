@@ -84,6 +84,33 @@ type Runner struct {
 	// tracker measures how the mount actually tracked, from the frames this run writes. Optional:
 	// nil when no plate solver is configured, and the session runs exactly as before.
 	tracker *TrackMonitor
+
+	// guider corrects the mount from those same frames. Also optional, and for a stronger reason than
+	// the tracker: it MOVES HARDWARE. A session with no guider attached behaves exactly as it always
+	// did, and every failure inside the guider is swallowed rather than losing the night's frames.
+	guider *Guider
+}
+
+// SetGuider attaches self-guiding to this runner. Safe to call with nil.
+func (r *Runner) SetGuider(g *Guider) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.guider = g
+}
+
+// GuideStats reports self-guiding progress, or false when nothing is guiding.
+func (r *Runner) GuideStats() (GuideStats, bool) {
+	r.mu.RLock()
+	g := r.guider
+	r.mu.RUnlock()
+	return g.Stats()
+}
+
+// currentGuider reads the attached guider under the lock.
+func (r *Runner) currentGuider() *Guider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.guider
 }
 
 // TrackStats reports the tracking monitor's progress, or false when measurement is not running.
