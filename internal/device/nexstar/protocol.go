@@ -169,6 +169,35 @@ const (
 	pecCountSelector = 0x3F
 )
 
+// The motor controller's own autoguide-rate setting, from the same undocumented AUX set as the PEC
+// commands above. Reading it is what lets a guide loop size its pulses to the rate the mount is
+// configured for, instead of assuming the dither constant is also the right guiding speed.
+const (
+	mcSetAutoguideRate = 0x46 // payload: one byte, rate = 256 × fraction of sidereal
+	mcGetAutoguideRate = 0x47 // → one byte, the same scaling
+)
+
+// autoguideRateScale is what one unit of the autoguide-rate byte is worth. The rate travels as a
+// fraction of sidereal in 1/256ths, so the whole byte spans zero to just under one times sidereal.
+const autoguideRateScale = 256.0
+
+// guideRateCommands build the read and write frames for the autoguide rate.
+func setGuideRateCommand(axis int, fraction float64) []byte {
+	units := int(math.Round(fraction * autoguideRateScale))
+	if units < 0 {
+		units = 0
+	}
+	// A full 256 does not fit in the byte, and 255 is indistinguishable from it in practice.
+	if units > 0xFF {
+		units = 0xFF
+	}
+	return passthrough(byte(axis), mcSetAutoguideRate, []byte{byte(units)}, 0)
+}
+
+func getGuideRateCommand(axis int) []byte {
+	return passthrough(byte(axis), mcGetAutoguideRate, nil, 1)
+}
+
 // siderealArcsecPerSec is the rate the sky turns, and the unit the mount's PEC rates are scaled
 // against. Shared with the simulator so the two cannot drift apart.
 const siderealArcsecPerSec = device.SiderealArcsecPerSec

@@ -145,10 +145,17 @@ type fakeHC struct {
 	// pecCorrupt forces one bin to read back as something other than what was written, to exercise
 	// the write verification.
 	pecCorrupt map[int]int8
+
+	// guideRate is the motor controller's autoguide-rate byte, in 1/256ths of sidereal.
+	guideRate byte
 }
 
 func newFakeHC() *fakeHC {
-	return &fakeHC{aligned: true, raNow: 10, decNow: 41, pecTable: make([]int8, 88), pecIndexed: true}
+	return &fakeHC{
+		aligned: true, raNow: 10, decNow: 41,
+		pecTable: make([]int8, 88), pecIndexed: true,
+		guideRate: 128, // half sidereal, as mounts tend to ship
+	}
 }
 
 func (f *fakeHC) Write(p []byte) (int, error) {
@@ -194,6 +201,9 @@ func (f *fakeHC) replyTo(p []byte) []byte {
 		return []byte("#")
 	case p[0] == 'P' && len(p) >= 8:
 		if reply, ok := f.replyPEC(p); ok {
+			return reply
+		}
+		if reply, ok := f.replyGuide(p); ok {
 			return reply
 		}
 		// Jog and Nudge also send pass-through frames; they get the bare acknowledgement they

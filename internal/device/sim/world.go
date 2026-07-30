@@ -99,6 +99,17 @@ type Config struct {
 	// test that needs a guaranteed bright star in the field (focus metrics, centroiding) plants one
 	// here instead of hoping the sky cooperates at the chosen pointing.
 	SyntheticStars []SyntheticStar
+
+	// DecBacklashArcsec is how far the declination axis turns, on REVERSING, before the load follows.
+	// <0 → none, 0 → 4.
+	//
+	// It is directional on purpose, and that is the difference between a useful model and a decorative
+	// one. Nudge applies a flat penalty to every small declination move, which is enough to give dither
+	// feedback something to correct; a guider's problem is different and specifically about direction.
+	// A servo that reverses on one noisy sample spends the whole take-up, gets nothing for it, and then
+	// reverses back — so an autoguider is judged on how it handles the FIRST move after a reversal, and
+	// a model that also penalised the ninth would let a guider that reverses constantly look fine.
+	DecBacklashArcsec float64
 }
 
 // SyntheticStar is a test-injected point source.
@@ -154,6 +165,12 @@ func (c Config) withDefaults() Config {
 		out.PEAmplitude = 0
 	case out.PEAmplitude == 0:
 		out.PEAmplitude = 12
+	}
+	switch {
+	case out.DecBacklashArcsec < 0:
+		out.DecBacklashArcsec = 0
+	case out.DecBacklashArcsec == 0:
+		out.DecBacklashArcsec = 4
 	}
 	switch {
 	case out.PEJitterArcsec < 0:
@@ -214,6 +231,16 @@ type World struct {
 	trackingRate  string
 	aligned       bool
 
+	// Declination backlash state. decGuideDir is the direction the axis was last driven in, and
+	// decTakeUp is how much of the gear slack is still to be wound out before the load will follow.
+	// Both are meaningless until a guide pulse has been issued, which is why zero is the right start.
+	decGuideDir int
+	decTakeUp   float64
+	// guideRate is the configured autoguide rate as a fraction of sidereal. Seeded in NewWorld rather
+	// than left to the zero value, because zero is a rate a caller can legitimately ask for: treating
+	// it as "never set" made SetGuideRate(0) read back as the default.
+	guideRate float64
+
 	filterSlot  int
 	filterNames []string
 	wheelUntil  time.Time
@@ -259,6 +286,7 @@ func NewWorld(cfg Config) *World {
 		filterSlot:   1,
 		// Fitted at construction so the names can never describe more slots than the wheel has.
 		filterNames: device.FitFilterNames(filters.List(), c.WheelSlots),
+		guideRate:   simGuideRate,
 		tempMilliC:  20000,
 		targetTempC: -15,
 		pecTable:    make([]int8, simPECBins),

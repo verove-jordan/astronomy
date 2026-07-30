@@ -216,6 +216,48 @@ func (c *Client) NudgeMeasured(ctx context.Context, raArcsec, decArcsec, exposur
 	return out, err
 }
 
+// GuideCaps is what the mount can do about guiding.
+type GuideCaps struct {
+	Supported bool `json:"supported"`
+	// RateFraction is the mount's own configured autoguide rate, as a fraction of sidereal.
+	RateFraction     float64 `json:"rate_fraction"`
+	RateArcsecPerSec float64 `json:"rate_arcsec_per_sec"`
+}
+
+// GuideCaps asks whether the connected mount can be guided, and how fast. A guide session calls this
+// once and then passes the rate back with every pulse: the link is 9600 baud, and re-reading one byte
+// hundreds of times a night competes with the corrections themselves.
+func (c *Client) GuideCaps(ctx context.Context) (GuideCaps, error) {
+	var out GuideCaps
+	err := c.do(ctx, http.MethodGet, "/mount/guide", nil, &out)
+	return out, err
+}
+
+// GuidePulse applies one correction to each axis, in AXIS arcseconds.
+//
+// Not Nudge: Nudge is the dither primitive, runs at a fixed speed chosen for dithering, and takes
+// tangent-plane offsets. Guide corrections are axis rotations, so the cos(dec) factor stays in exactly
+// one place — the guider's calibration — and never gets applied twice or not at all.
+func (c *Client) GuidePulse(ctx context.Context, raArcsec, decArcsec, rateArcsecPerSec float64) error {
+	if raArcsec == 0 && decArcsec == 0 {
+		return nil
+	}
+	return c.do(ctx, http.MethodPost, "/mount/guide", map[string]any{
+		"ra_arcsec": raArcsec, "dec_arcsec": decArcsec,
+		"rate_arcsec_per_sec": rateArcsecPerSec,
+	}, nil)
+}
+
+// SetGuideRate configures the mount's own autoguide rate and reports what it actually accepted, which
+// the driver clamps and quantises to what the wire can carry.
+func (c *Client) SetGuideRate(ctx context.Context, fraction float64) (GuideCaps, error) {
+	var out GuideCaps
+	err := c.do(ctx, http.MethodPost, "/mount/guide-rate",
+		map[string]any{"fraction": fraction}, &out)
+	out.Supported = err == nil
+	return out, err
+}
+
 // ExposureStatus polls the current still-exposure state.
 func (c *Client) ExposureStatus(ctx context.Context) (device.ExposureState, error) {
 	st, err := c.Camera(ctx)

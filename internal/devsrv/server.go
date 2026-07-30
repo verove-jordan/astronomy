@@ -83,6 +83,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /mount/abort", s.mountAbort)
 	mux.HandleFunc("POST /mount/jog", s.mountJog)
 	mux.HandleFunc("POST /mount/nudge", s.mountNudge)
+	mux.HandleFunc("GET /mount/guide", s.guideStatus)
+	mux.HandleFunc("POST /mount/guide", s.guidePulse)
+	mux.HandleFunc("POST /mount/guide-rate", s.guideSetRate)
 	mux.HandleFunc("POST /mount/tracking", s.mountTracking)
 
 	mux.HandleFunc("GET /pec", s.pecStatus)
