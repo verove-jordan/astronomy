@@ -51,6 +51,8 @@ func persistLinearPrep(outDir string, in gimp.Inputs, notes []string) error {
 		{in.Base, &durable.Base, "base.tif"},
 		{in.Lum, &durable.Lum, "lum.tif"},
 		{in.Ha, &durable.Ha, "ha.tif"},
+		{in.OIII, &durable.OIII, "oiii.tif"},
+		{in.SII, &durable.SII, "sii.tif"},
 	}
 	for _, c := range components {
 		if c.src == "" {

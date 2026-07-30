@@ -60,8 +60,36 @@ type paletteResolved struct {
 	Color      bool   // false → the mono base branch
 	UseLum     bool   // blend the L luminance layer
 	HaScreen   bool   // screen Hα as a red layer (broadband only)
+	OIIIScreen bool   // screen [OIII] as a teal layer (broadband only, and only when OIII survived as its own channel — no-B runs fold it into blue instead)
+	SIIScreen  bool   // screen [SII] as a deep-red/gold layer (broadband only)
 	Narrowband bool   // mapped narrowband: skip SPCC, unlinked stretch, no SCNR, treat as pre-calibrated
 	Mono       bool
+}
+
+// screenOnly reports whether a filter contributes ONLY as an additive emission screen in this
+// palette, never as a base R/G/B/L channel. Such a layer fades where its nights did not reach
+// instead of leaving a hole, so it must not constrain anything that reasons about coverage.
+//
+// It compares against the resolved slots rather than testing "is it narrowband": under a narrowband
+// palette Ha/OIII/SII ARE the base channels, and a no-B run folds OIII into the blue slot.
+func (p paletteResolved) screenOnly(filter string) bool {
+	switch filter {
+	case "Ha":
+		if !p.HaScreen {
+			return false
+		}
+	case "OIII":
+		if !p.OIIIScreen {
+			return false
+		}
+	case "SII":
+		if !p.SIIScreen {
+			return false
+		}
+	default:
+		return false
+	}
+	return filter != p.R && filter != p.G && filter != p.B
 }
 
 // resolvePalette maps a preset's chosen palette onto the channels present, walking the fallback chain
@@ -99,9 +127,14 @@ func resolvePalette(p *mode.Preset, channels map[string]string) (paletteResolved
 		res.GExpr = substituteFilters(spec.GExpr, channels)
 		res.G = "" // built by pixel math, not a direct channel
 	}
-	if !spec.Narrowband { // broadband LRGB: L luminance + optional Hα screen
+	if !spec.Narrowband { // broadband LRGB: L luminance + optional Hα/[OIII]/[SII] emission screens
 		res.UseLum = has("L")
 		res.HaScreen = has("Ha")
+		// OIII reaches here as its own channel only when a real B exists (otherwise channelMastersMap
+		// already folded it into the blue base — screening it too would double-count the line).
+		res.OIIIScreen = has("OIII")
+		// SII is never folded into a base slot, so it is available whenever it was captured.
+		res.SIIScreen = has("SII")
 	}
 	return res, note
 }

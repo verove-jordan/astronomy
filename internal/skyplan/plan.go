@@ -64,6 +64,12 @@ func (p *Planner) Plan(ctx context.Context, prm Params) (*Result, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		// The magnitude gate runs before scoring: with the top-N cap in place it is what lets a
+		// user reach fainter objects (galaxies) at all. Records without a magnitude (Sh2/LDN)
+		// cannot be judged by it and always pass.
+		if prm.MaxMag > 0 && rec.HasMag && rec.MagV > prm.MaxMag {
+			continue
+		}
 		t := scoreOne(rec, prm, window, moon, weights)
 		if prm.TypeFilter != "" && t.Type != prm.TypeFilter {
 			continue
@@ -88,6 +94,7 @@ func (p *Planner) Plan(ctx context.Context, prm Params) (*Result, error) {
 			targets[i].AltSeries = altSeries(targets[i].RADeg, targets[i].DecDeg, prm, night.start, night.end)
 		}
 	}
+	applyLiveScores(targets, prm, night)
 	res.Targets = targets
 	res.Count = len(targets)
 	return res, nil
@@ -115,7 +122,7 @@ func scoreOne(rec skycat.Record, prm Params, window astro.DarkWindow, moon astro
 		Name:    rec.Name,
 		Aliases: rec.Aliases,
 		Catalog: rec.Source,
-		Type:    deriveType(rec),
+		Type:    DeriveType(rec),
 		RADeg:   rec.RADeg,
 		DecDeg:  rec.DecDeg,
 	}
@@ -129,6 +136,10 @@ func scoreOne(rec skycat.Record, prm Params, window astro.DarkWindow, moon astro
 	}
 	if rec.HasMinorAxis {
 		t.SizeMinorArcmin = rec.MinorAxisArcmin
+	}
+	if rec.HasPositionAngle {
+		pa := rec.PositionAngleDeg
+		t.PositionAngleDeg = &pa
 	}
 	if rec.HasMag {
 		t.MagV = rec.MagV

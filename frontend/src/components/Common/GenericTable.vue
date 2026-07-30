@@ -81,8 +81,13 @@ const processed = computed<T[]>(() => {
         const av = a[s.key];
         const bv = b[s.key];
         let cmp = 0;
-        if (typeof av === "number" && typeof bv === "number") cmp = av - bv;
-        else cmp = String(av ?? "").localeCompare(String(bv ?? ""));
+        if (typeof av === "number" || typeof bv === "number") {
+          // A missing value in a numeric column sorts as smallest (so it lands last on the usual
+          // descending sort) instead of falling into string comparison against "".
+          const an = typeof av === "number" ? av : -Infinity;
+          const bn = typeof bv === "number" ? bv : -Infinity;
+          cmp = an === bn ? 0 : an < bn ? -1 : 1;
+        } else cmp = String(av ?? "").localeCompare(String(bv ?? ""));
         if (cmp !== 0) return cmp * s.dir;
       }
       return 0;

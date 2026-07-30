@@ -70,7 +70,12 @@ const option = computed(() => ({
     startAngle: 90, // 0° (North) at the top
     clockwise: true, // azimuth increases toward the East
     interval: 45,
-    axisLabel: { color: CHART_AXIS, formatter: (v: number) => compass16(v) },
+    // Localized 16-point codes (French uses O for west); `option` is computed, so a locale
+    // switch re-renders the axis.
+    axisLabel: {
+      color: CHART_AXIS,
+      formatter: (v: number) => t(`goto.compass.${compass16(v)}`),
+    },
     axisLine: { lineStyle: { color: CHART_GRID } },
     splitLine: { lineStyle: { color: CHART_GRID } },
   },

@@ -20,6 +20,33 @@ R0 7.28553 7.28553 0.971923 0 0.0131605 25 H 1 0 0 0 1 0 0 0 1
 R0 0 0 0 0 0 0
 `
 
+func TestParseSeq_NonFiniteMetricsMapToZero(t *testing.T) {
+	// Siril writes "nan"/"inf" for metrics it could not measure. Parsed verbatim they poison
+	// run.json / the stored job result (encoding/json refuses non-finite floats — task #353) and
+	// NaN slips past `<= 0` drop gates, so the parser maps them to the all-zero dropped-frame form.
+	fixture := "S 'light_' 1 2 2 2 4 6 0 0 0\n" +
+		"I 1 1\nI 2 1\n" +
+		"R0 nan nan nan -1 inf 0 H nan nan nan nan nan nan nan nan nan\n" +
+		"R0 7.28553 7.28553 0.971923 0 0.0131605 25 H 1 0 0 0 1 0 0 0 1\n"
+	path := filepath.Join(t.TempDir(), "light_.seq")
+	require.NoError(t, os.WriteFile(path, []byte(fixture), 0o644))
+
+	seq, err := ParseSeq(path)
+	require.NoError(t, err)
+	require.Len(t, seq.Metrics, 2)
+
+	bad := seq.Metrics[0]
+	assert.Zero(t, bad.FWHM, "nan FWHM must land on the dropped-frame sentinel")
+	assert.Zero(t, bad.WFWHM)
+	assert.Zero(t, bad.Background, "inf background must be zeroed")
+	assert.Equal(t, [9]float64{}, bad.H)
+	assert.Zero(t, bad.ShiftX)
+	assert.Zero(t, bad.ShiftY)
+
+	// The healthy frame is untouched.
+	assert.InDelta(t, 7.28553, seq.Metrics[1].FWHM, 1e-9)
+}
+
 func TestParseSeq_ShiftsFromHomography(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "light_.seq")
 	require.NoError(t, os.WriteFile(path, []byte(seqFixture), 0o644))
@@ -42,4 +69,25 @@ func TestParseSeq_ShiftsFromHomography(t *testing.T) {
 	// Unregistered frame (all-zero R line, no H matrix): parses with zero shift, no error.
 	assert.Zero(t, seq.Metrics[2].FWHM)
 	assert.Zero(t, seq.Metrics[2].ShiftX)
+}
+
+func TestParseSeq_FullHomographyAndReference(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "light_.seq")
+	require.NoError(t, os.WriteFile(path, []byte(seqFixture), 0o644))
+
+	seq, err := ParseSeq(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, 4, seq.Reference, "S-line reference_image field (0-based)")
+
+	require.True(t, seq.Metrics[0].HasH)
+	assert.InDelta(t, 1.00001, seq.Metrics[0].H[0], 1e-9)
+	assert.InDelta(t, 7.99992, seq.Metrics[0].H[2], 1e-9)
+	assert.InDelta(t, -4.00171, seq.Metrics[0].H[5], 1e-9)
+	assert.InDelta(t, 1, seq.Metrics[0].H[8], 1e-9)
+
+	require.True(t, seq.Metrics[1].HasH)
+	assert.Equal(t, [9]float64{1, 0, 0, 0, 1, 0, 0, 0, 1}, seq.Metrics[1].H)
+
+	assert.False(t, seq.Metrics[2].HasH, "an unregistered frame carries no homography")
 }

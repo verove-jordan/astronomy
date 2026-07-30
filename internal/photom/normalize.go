@@ -12,6 +12,9 @@ const (
 	// scaleEps / offsetNoiseK define the "homogeneous" band within which a group is left untouched.
 	scaleEps     = 0.02
 	offsetNoiseK = 0.2
+	// satNoteFrac is the saturated-pixel fraction above which a group gets an explanatory note
+	// (~150 px of a 16 MP frame — a bright star core alone stays quiet, a clipped galaxy core does not).
+	satNoteFrac = 1e-5
 )
 
 // Group is a set of frames sharing one photometric context (session/gain/optical train).
@@ -20,19 +23,41 @@ type Group struct {
 	Label string
 	Meta  Meta
 	Ref   bool // true for the reference group (transform ~identity, still measured)
+	// SessionID / Session identify the group's origin for the record: the catalog session id
+	// (0 = the current run's capture) and the capture-night key ("YYYY-MM-DD", "" = undated).
+	SessionID int64
+	Session   string
 }
 
 // GroupRecord is the per-group outcome of NormalizeGroups.
 type GroupRecord struct {
-	SessionID    int64   `json:"session_id,omitempty"`
-	Label        string  `json:"label"`
-	Scale        float64 `json:"scale"`
-	Offset       float64 `json:"offset"`
-	Resid        float64 `json:"resid"`
-	Frames       int     `json:"frames"`
-	Clamped      bool    `json:"clamped,omitempty"`
-	MetaDisagree bool    `json:"meta_disagree,omitempty"`
-	Applied      bool    `json:"applied"`
+	SessionID int64  `json:"session_id,omitempty"`
+	Session   string `json:"session,omitempty"` // capture-night key — the UI's join key
+	Label     string `json:"label"`
+	Scale     float64 `json:"scale"`
+	Offset    float64 `json:"offset"`
+	Resid     float64 `json:"resid"`
+	Frames    int     `json:"frames"`
+	Clamped   bool    `json:"clamped,omitempty"`
+	// MetaDisagree: measured scale far from the exposure/gain prediction (measurement kept).
+	// MetaSeeded: curves too flat to measure — the scale IS the exposure/gain prediction.
+	// Ref: this group is the photometric reference the others were mapped onto.
+	MetaDisagree bool `json:"meta_disagree,omitempty"`
+	MetaSeeded   bool `json:"meta_seeded,omitempty"`
+	Ref          bool `json:"ref,omitempty"`
+	Applied      bool `json:"applied"`
+	// Method names the ladder rung that set Scale (measured|seeded|bg-matched|offset-only|identity).
+	Method string `json:"method,omitempty"`
+	// Reverted: the fitted transform would have clipped the group's sky below zero and was degraded
+	// (see the no-clip gate in normalizeGroup) — the recorded Scale/Offset are the degraded ones.
+	Reverted bool `json:"reverted,omitempty"`
+	// SatFrac is the group's sensor-saturated pixel fraction (median across the probed frames, at
+	// SatDetectLevel) — capture truth the transform must NOT be skewed by; the pre-stack repair
+	// replaces those pixels from unsaturated nights instead. SatCeiling is where that saturation
+	// plateau lands AFTER this group's transform (Scale·SatDetectLevel + Offset) — the per-frame
+	// detection ceiling of the repair.
+	SatFrac    float64 `json:"sat_frac,omitempty"`
+	SatCeiling float64 `json:"sat_ceiling,omitempty"`
 }
 
 // NormalizeGroups measures each group, fits it to the reference group's median curve, and (unless the
@@ -105,12 +130,29 @@ func referenceCurve(ref Group) (FrameCurve, bool, []string) {
 }
 
 // normalizeGroup measures the group, fits it to ref, and applies the transform unless the group is the
-// reference or the transform is ~identity. It returns the record plus any warning/skip notes.
+// reference or the transform is ~identity. A transform that would clip the group's sky below zero is
+// first degraded (bg-matched, then offset-only) — a floored sky poisons the stack far worse than an
+// imperfect scale (task #354's black frames). It returns the record plus any warning/skip notes.
 func normalizeGroup(ctx context.Context, g Group, ref FrameCurve, refMeta Meta, isRef bool) (GroupRecord, []string) {
 	rec := skipRecord(g)
-	t, notes := measureGroupTransform(g, ref, refMeta)
+	rec.Ref = isRef
+	t, groupCurve, notes := measureGroupTransform(g, ref, refMeta)
+	if !isRef {
+		if degraded, note := degradeClippingTransform(g.Label, t, groupCurve, ref); note != "" {
+			t = degraded
+			rec.Reverted = true
+			notes = append(notes, note)
+		}
+	}
 	rec.Scale, rec.Offset, rec.Resid = t.Scale, t.Offset, t.Resid
-	rec.Clamped, rec.MetaDisagree = t.Clamped, t.MetaDisagree
+	rec.Method = t.Method
+	rec.Clamped, rec.MetaDisagree, rec.MetaSeeded = t.Clamped, t.MetaDisagree, t.MetaSeeded
+	rec.SatFrac = groupCurve.SatFrac
+	rec.SatCeiling = t.Scale*SatDetectLevel + t.Offset
+	if rec.SatFrac > satNoteFrac {
+		notes = append(notes, fmt.Sprintf("group %q: %.2f%% of pixels near sensor saturation — the clipped core carries no photometric information (the pre-stack repair draws on unsaturated nights)",
+			g.Label, rec.SatFrac*100))
+	}
 	notes = append(notes, transformWarnings(g.Label, t)...)
 
 	if isRef || isIdentity(t.Scale, t.Offset, ref.Noise) {
@@ -126,12 +168,52 @@ func normalizeGroup(ctx context.Context, g Group, ref FrameCurve, refMeta Meta, 
 	return rec, notes
 }
 
-// measureGroupTransform fits up to maxProbeFrames evenly-spaced frames of g against ref and returns the
-// component-median transform; the Clamped/MetaDisagree flags are OR-ed across the probed frames.
-func measureGroupTransform(g Group, ref FrameCurve, refMeta Meta) (Transform, []string) {
+// degradeClippingTransform is the pre-apply no-clip gate: when the fitted transform would push a
+// HEALTHY sky below zero at 3σ (`s·bg + o − 3·s·noise < 0` — mapped pixels would be floored), it
+// returns a degraded transform — the measured background ratio when available, else a pure
+// background offset — plus the warning note. A group whose sky already straddles zero on its own
+// (a dark-subtracted near-zero background) is not the transform's fault and is left alone — no
+// degrade could improve it. There is deliberately NO upper noise-blowup bound: a shallow night
+// correctly mapped onto a deep reference legitimately amplifies its noise. A clean transform
+// returns with an empty note.
+func degradeClippingTransform(label string, t Transform, group, ref FrameCurve) (Transform, string) {
+	if !clipsSky(t, group) || clipsOwnSky(group) {
+		return t, ""
+	}
+	orig := t
+	if bg, ok := bgScale(group, ref); ok {
+		// Provably clip-free here: a bg-matched map clips iff 3·noise > bg — the group's own sky
+		// clipping — which the gate above already excluded.
+		t = Transform{Scale: bg, Offset: ref.Bg - bg*group.Bg, Method: MethodBgMatched}
+	} else {
+		// Last resort: match the sky pedestal only — scale 1 cannot amplify anything into the floor.
+		t = Transform{Scale: 1, Offset: ref.Bg - group.Bg, Method: MethodOffsetOnly}
+	}
+	note := fmt.Sprintf("group %q: transform ×%.3g %+.4g would clip its sky below zero — degraded to %s (×%.3g %+.4g)",
+		label, orig.Scale, orig.Offset, t.Method, t.Scale, t.Offset)
+	return t, note
+}
+
+// clipsSky reports whether the transform pushes the group's sky below zero at 3σ.
+func clipsSky(t Transform, c FrameCurve) bool {
+	return t.Scale*c.Bg+t.Offset-3*t.Scale*c.Noise < 0
+}
+
+// clipsOwnSky reports whether the group's UNTRANSFORMED sky already straddles zero at 3σ.
+func clipsOwnSky(c FrameCurve) bool {
+	return c.Bg-3*c.Noise < 0
+}
+
+// measureGroupTransform fits up to maxProbeFrames evenly-spaced frames of g against ref and returns
+// the component-median transform plus the group's own median curve (the no-clip gate needs its
+// background/noise); the Clamped/MetaDisagree flags are OR-ed across the probed frames and the
+// Method is the most frequent across them.
+func measureGroupTransform(g Group, ref FrameCurve, refMeta Meta) (Transform, FrameCurve, []string) {
 	var notes []string
 	var scales, offsets, resids []float64
-	clamped, disagree := false, false
+	var curves []FrameCurve
+	methods := map[string]int{}
+	clamped, disagree, seeded, bgDisagree := false, false, false, false
 	for _, p := range evenSpaced(g.Paths, maxProbeFrames) {
 		fc, err := MeasureFile(p)
 		if err != nil {
@@ -139,25 +221,45 @@ func measureGroupTransform(g Group, ref FrameCurve, refMeta Meta) (Transform, []
 			continue
 		}
 		t := FitCurves(fc, ref, g.Meta, refMeta)
+		curves = append(curves, fc)
 		scales = append(scales, t.Scale)
 		offsets = append(offsets, t.Offset)
 		resids = append(resids, t.Resid)
+		methods[t.Method]++
 		clamped = clamped || t.Clamped
 		disagree = disagree || t.MetaDisagree
+		seeded = seeded || t.MetaSeeded
+		bgDisagree = bgDisagree || t.BgDisagree
 	}
 	if len(scales) == 0 {
-		return Transform{Scale: 1}, notes
+		return Transform{Scale: 1, Method: MethodIdentity}, FrameCurve{}, notes
 	}
 	return Transform{
 		Scale:        medianFloat(scales),
 		Offset:       medianFloat(offsets),
 		Resid:        medianFloat(resids),
+		Method:       dominantMethod(methods),
 		Clamped:      clamped,
 		MetaDisagree: disagree,
-	}, notes
+		MetaSeeded:   seeded,
+		BgDisagree:   bgDisagree,
+	}, medianCurve(curves), notes
 }
 
-// transformWarnings renders human-readable notes for a clamped scale or a metadata disagreement.
+// dominantMethod returns the most frequent method across a group's probed frames (deterministic
+// tie-break by the Method constants' ladder order, most-authoritative first).
+func dominantMethod(counts map[string]int) string {
+	best, bestN := MethodIdentity, 0
+	for _, m := range []string{MethodMeasured, MethodSeeded, MethodBgMatched, MethodOffsetOnly, MethodIdentity} {
+		if counts[m] > bestN {
+			best, bestN = m, counts[m]
+		}
+	}
+	return best
+}
+
+// transformWarnings renders human-readable notes for a clamped scale, a metadata disagreement, or a
+// metadata-seeded (unmeasurable) scale.
 func transformWarnings(label string, t Transform) []string {
 	var notes []string
 	if t.Clamped {
@@ -165,6 +267,15 @@ func transformWarnings(label string, t Transform) []string {
 	}
 	if t.MetaDisagree {
 		notes = append(notes, fmt.Sprintf("group %q: measured scale %.3g disagrees with header exposure/gain — check GAIN header", label, t.Scale))
+	}
+	if t.MetaSeeded {
+		notes = append(notes, fmt.Sprintf("group %q: percentile curve too flat to measure (narrowband/sky pedestal) — scale %.3g seeded from header exposure/gain", label, t.Scale))
+	}
+	if t.Method == MethodBgMatched {
+		notes = append(notes, fmt.Sprintf("group %q: scale %.3g matched from the measured sky backgrounds (no trustworthy header prediction)", label, t.Scale))
+	}
+	if t.BgDisagree {
+		notes = append(notes, fmt.Sprintf("group %q: the measured sky-background ratio grossly disagrees with the confirmed header seed ×%.3g — residual pedestal (missing darks) or a strong sky-brightness difference; the seed (object flux) was kept", label, t.Scale))
 	}
 	return notes
 }
@@ -210,5 +321,5 @@ func evenSpaced(paths []string, n int) []string {
 
 // skipRecord builds the default (measured-but-not-applied) record for a group.
 func skipRecord(g Group) GroupRecord {
-	return GroupRecord{Label: g.Label, Frames: len(g.Paths), Scale: 1}
+	return GroupRecord{SessionID: g.SessionID, Session: g.Session, Label: g.Label, Frames: len(g.Paths), Scale: 1}
 }

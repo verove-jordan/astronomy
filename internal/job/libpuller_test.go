@@ -14,14 +14,25 @@ import (
 )
 
 // fakeLibS3 serves a fixed set of mirror keys (key → bytes): Stat reports presence, Download writes them.
+// meta overrides the Stat result for a key (e.g. an archived class) to exercise the thaw path.
 type fakeLibS3 struct {
 	objects   map[string][]byte
+	meta      map[string]s3store.Object
 	downloads int
+	restores  []string
 }
 
 func (f *fakeLibS3) Stat(_ context.Context, _, key string) (s3store.Object, bool, error) {
+	if o, ok := f.meta[key]; ok {
+		return o, true, nil
+	}
 	_, ok := f.objects[key]
 	return s3store.Object{}, ok, nil
+}
+
+func (f *fakeLibS3) Restore(_ context.Context, _, key string, _ int, _ s3store.RestoreTier) error {
+	f.restores = append(f.restores, key)
+	return nil
 }
 
 func (f *fakeLibS3) Download(_ context.Context, _, key, localPath string, _ func(int64)) error {
@@ -65,4 +76,23 @@ func TestS3LibPuller_PullsMissingThenFrees(t *testing.T) {
 	notes := p.Notes()
 	require.NotEmpty(t, notes)
 	assert.Contains(t, notes[0], "pulled 1")
+}
+
+// An archived (Glacier) master is not downloaded — the puller kicks off its restore for a later run and
+// falls back to the local rebuild this run (a run never blocks on a cold master).
+func TestS3LibPuller_ArchivedMasterRestoresAndFallsBack(t *testing.T) {
+	libDir := t.TempDir()
+	coldMaster := filepath.Join(libDir, "master_DARK_180000ms_g200o0_b1_-25C.fits")
+	key := "backups/library/master_DARK_180000ms_g200o0_b1_-25C.fits"
+	fake := &fakeLibS3{
+		objects: map[string][]byte{key: []byte("darkbytes")},
+		meta:    map[string]s3store.Object{key: {Key: key, StorageClass: "GLACIER"}}, // archived, no restore
+	}
+	p := &s3LibPuller{client: fake, bucket: "bkt", prefix: "backups", libDir: libDir}
+
+	require.NoError(t, p.Ensure(context.Background(), []string{coldMaster}))
+	assert.Equal(t, 0, fake.downloads, "an archived master is not downloaded")
+	assert.Equal(t, []string{key}, fake.restores, "its thaw is kicked off for a later run")
+	assert.NoFileExists(t, coldMaster, "nothing landed locally — the caller falls back to rebuild")
+	assert.NotEmpty(t, p.Notes(), "a warning explains the fallback")
 }

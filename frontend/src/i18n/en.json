@@ -19,7 +19,9 @@
     "processing": "Processing",
     "astroAgent": "AstroAgent",
     "collapse": "Collapse",
-    "expand": "Expand"
+    "expand": "Expand",
+    "mosaic": "Mosaic",
+    "capture": "Capture"
   },
   "astroAgent": {
     "title": "AstroAgent",
@@ -143,6 +145,12 @@
       "empty": "All stars centered — no next target.",
       "face": "Face {dir}, look about {alt}° up",
       "hint": "drag to pan · scroll to zoom",
+      "expand": "Expand the map",
+      "close": "Close the map",
+      "milkyWay": "Milky Way",
+      "offset": "Time offset",
+      "now": "Back to the page time",
+      "scrubHint": "Moon & planets are drawn at the page time (faded) — the alignment plan stays pinned to it",
       "controls": {
         "zoomIn": "Zoom in",
         "zoomOut": "Zoom out",
@@ -156,6 +164,300 @@
         "mars": "Mars",
         "jupiter": "Jupiter",
         "saturn": "Saturn"
+      }
+    },
+    "compass": {
+      "N": "N",
+      "NNE": "NNE",
+      "NE": "NE",
+      "ENE": "ENE",
+      "E": "E",
+      "ESE": "ESE",
+      "SE": "SE",
+      "SSE": "SSE",
+      "S": "S",
+      "SSW": "SSW",
+      "SW": "SW",
+      "WSW": "WSW",
+      "W": "W",
+      "WNW": "WNW",
+      "NW": "NW",
+      "NNW": "NNW"
+    },
+    "reasons": {
+      "very_bright": "very bright (mag {mag}) — easy to find",
+      "bright": "bright (mag {mag})",
+      "naked_eye": "naked-eye (mag {mag})",
+      "low": "fairly low (alt {alt}°)",
+      "high_overhead": "high overhead (alt {alt}°)",
+      "well_placed": "well placed (alt {alt}°)",
+      "spread": "{deg}° from the nearest chosen star — keeps the spread wide"
+    },
+    "warnings": {
+      "few_stars": "Only {available} of {requested} requested stars are available between {min_alt}° and {max_alt}° altitude{sideClause} right now. Lower the star count, wait for more stars to rise, or try a different mount profile.",
+      "calib_same_side": "The {side} side of the meridian has too few catalogue stars right now; {count} calibration star(s) are placed on the same side as the alignment stars.",
+      "side": " on the {side} side of the meridian"
+    },
+    "tuning": {
+      "title": "Known mount issues & compensations",
+      "intro": "Every mount has known mechanical quirks. Pick your model to see what typically limits it and the compensations — most of them free — that work around each one.",
+      "mountLabel": "Mount model",
+      "summaryTitle": "What's wrong with this mount",
+      "issuesTitle": "Known issues",
+      "fixesTitle": "Compensations",
+      "severity": {
+        "high": "major",
+        "medium": "moderate"
+      },
+      "effort": {
+        "free": "free",
+        "paid": "paid"
+      },
+      "minutes": "~{m} min",
+      "models": {
+        "avx": {
+          "name": "Celestron Advanced VX (AVX)",
+          "summary": "Community-reported AVX behaviour: significant backlash — worst on the declination axis — plus sizeable periodic error in right ascension. Roughly 70% of the achievable improvement comes from free tuning, before buying anything.",
+          "issues": {
+            "dec_backlash": {
+              "label": "Declination backlash",
+              "symptom": "Guiding corrections in DEC take seconds to bite, overshoot, or ping-pong between north and south.",
+              "why": "The worm/gear coupling has play: every time a correction reverses direction, the motor must first cross the dead zone before the axis actually moves."
+            },
+            "periodic_error": {
+              "label": "Periodic error (RA)",
+              "symptom": "Stars trail east–west on unguided exposures; guiding shows a slow wave plus a fast ripple in RA.",
+              "why": "The RA worm's machining error repeats every turn: a slow ~620 s component of about 15″ peak-to-peak (easy to correct) plus a fast ~11 s oscillation that guiding struggles to follow."
+            }
+          },
+          "fixes": {
+            "east_heavy": {
+              "title": "Balance deliberately east-heavy in RA",
+              "steps": [
+                "Balance the mount normally, then offset the counterweight slightly so the east side is a touch heavier — the axis always pulls against the worm.",
+                "After a meridian flip, re-offset the load so it stays east-heavy.",
+                "Goal: keep the worm pressed against one flank of the gear, so RA backlash disappears from guiding.",
+                "Recommended by Celestron; users report 1.5–2.25″ RMS dropping to 0.85–1.25″ when combined with PEC and PHD2 backlash compensation."
+              ]
+            },
+            "dec_unidirectional": {
+              "title": "Guide declination in one direction only",
+              "steps": [
+                "Bias the polar alignment very slightly (a few arc-minutes) so declination always drifts the same way.",
+                "In PHD2, set DEC guiding to “North only” or “South only”, matching the drift direction.",
+                "Corrections never reverse, so DEC backlash never engages — the classic AVX workaround."
+              ]
+            },
+            "guiding_assistant": {
+              "title": "Run PHD2's Guiding Assistant",
+              "steps": [
+                "Run the Guiding Assistant (Tools menu) for a few minutes on a star near the meridian and the celestial equator.",
+                "It measures DEC backlash and seeing, then proposes backlash compensation and min-move settings.",
+                "Accept the suggestions, then verify over a few minutes of guiding. Free and essential (~15 min)."
+              ]
+            },
+            "pec": {
+              "title": "Train PEC + Predictive PEC in RA",
+              "steps": [
+                "Record PEC in the mount over at least one full worm cycle (~10 min): the slow ~620 s / ~15″ peak-to-peak component corrects well.",
+                "Enable PHD2's Predictive PEC (PPEC) algorithm in RA so the residual error is learned and anticipated.",
+                "The fast ~11 s oscillation is hard to guide out — smooth it with short guide exposures (0.5–1 s)."
+              ]
+            }
+          }
+        },
+        "celestron-eq-generic": {
+          "name": "Celestron EQ (CGEM, CGX…)",
+          "summary": "Celestron German equatorials share the AVX family traits in milder form: some worm backlash and moderate periodic error. Careful balance, measurement and guiding setup remove most of it for free.",
+          "issues": {
+            "backlash": {
+              "label": "Axis backlash",
+              "symptom": "Corrections take a moment to engage after changing direction; the star wanders around centre.",
+              "why": "All worm drives have some play; it grows with a loose worm mesh and shows most in declination, where corrections keep reversing."
+            },
+            "periodic_error": {
+              "label": "Periodic error (RA)",
+              "symptom": "Stars trail slowly east–west on unguided exposures, repeating over a few minutes.",
+              "why": "The worm gear's machining tolerances repeat every worm turn; the error is periodic, so it can be measured and corrected."
+            }
+          },
+          "fixes": {
+            "balance": {
+              "title": "Balance both axes properly",
+              "steps": [
+                "Balance DEC first (scope + all gear mounted), then RA with the counterweights.",
+                "Leave a slight east-heavy bias in RA so the worm stays loaded on one flank.",
+                "Re-check balance after every gear change or meridian flip."
+              ]
+            },
+            "cables": {
+              "title": "Route the cables",
+              "steps": [
+                "Attach cables to the mount so nothing snags or pulls as it tracks.",
+                "Leave a service loop at the axes; a taut cable reads as sudden guide spikes.",
+                "Re-check with the scope pointed where you will actually image."
+              ]
+            },
+            "polar_quality": {
+              "title": "Nail the polar alignment",
+              "steps": [
+                "Use the polar-scope tools above (or a plate-solving routine) and take your time.",
+                "Poor polar alignment becomes DEC drift the guider must constantly fight.",
+                "Re-check after any bump or tripod move."
+              ]
+            },
+            "backlash_measure": {
+              "title": "Measure the backlash",
+              "steps": [
+                "Run PHD2's Guiding Assistant for a few minutes near the meridian and the celestial equator.",
+                "Apply the backlash compensation and min-move values it suggests.",
+                "Re-measure after any mechanical adjustment (worm mesh, balance)."
+              ]
+            }
+          }
+        },
+        "synscan-eq-generic": {
+          "name": "SkyWatcher SynScan EQ (EQ5/HEQ5/EQ6-R…)",
+          "summary": "SynScan EQ mounts mostly suffer from worm backlash and moderate periodic error — both measurable and largely correctable with free tuning (balance, worm mesh, PEC, guiding settings).",
+          "issues": {
+            "backlash": {
+              "label": "Axis backlash",
+              "symptom": "Corrections take a moment to engage after changing direction; the star wanders around centre.",
+              "why": "All worm drives have some play; it grows with a loose worm mesh and shows most in declination, where corrections keep reversing."
+            },
+            "periodic_error": {
+              "label": "Periodic error (RA)",
+              "symptom": "Stars trail slowly east–west on unguided exposures, repeating over a few minutes.",
+              "why": "The worm gear's machining tolerances repeat every worm turn; the error is periodic, so it can be measured and corrected."
+            }
+          },
+          "fixes": {
+            "balance": {
+              "title": "Balance both axes properly",
+              "steps": [
+                "Balance DEC first (scope + all gear mounted), then RA with the counterweights.",
+                "Leave a slight east-heavy bias in RA so the worm stays loaded on one flank.",
+                "Re-check balance after every gear change or meridian flip."
+              ]
+            },
+            "cables": {
+              "title": "Route the cables",
+              "steps": [
+                "Attach cables to the mount so nothing snags or pulls as it tracks.",
+                "Leave a service loop at the axes; a taut cable reads as sudden guide spikes.",
+                "Re-check with the scope pointed where you will actually image."
+              ]
+            },
+            "polar_quality": {
+              "title": "Nail the polar alignment",
+              "steps": [
+                "Use the polar-scope tools above (or a plate-solving routine) and take your time.",
+                "Poor polar alignment becomes DEC drift the guider must constantly fight.",
+                "Re-check after any bump or tripod move."
+              ]
+            },
+            "backlash_measure": {
+              "title": "Measure the backlash",
+              "steps": [
+                "Run PHD2's Guiding Assistant for a few minutes near the meridian and the celestial equator.",
+                "Apply the backlash compensation and min-move values it suggests.",
+                "Re-measure after any mechanical adjustment (worm mesh, balance)."
+              ]
+            }
+          }
+        },
+        "altaz-generic": {
+          "name": "Alt-azimuth GoTo (any brand)",
+          "summary": "An alt-az GoTo tracks well but the field rotates: long exposures smear at the edges. Keep subs short and make the star alignment impeccable; backlash matters less since tracking rarely reverses.",
+          "issues": {
+            "field_rotation": {
+              "label": "Field rotation",
+              "symptom": "Stars at the frame edges trace arcs around the centre on longer exposures.",
+              "why": "An alt-az mount tracks in two axes without rotating the camera: the field slowly turns around the target — fastest near the zenith."
+            },
+            "backlash": {
+              "label": "Axis backlash",
+              "symptom": "Corrections take a moment to engage after changing direction; the star wanders around centre.",
+              "why": "All worm drives have some play; it grows with a loose worm mesh — visible when tracking reverses or on GoTo approach."
+            }
+          },
+          "fixes": {
+            "short_exposures": {
+              "title": "Keep exposures short",
+              "steps": [
+                "Keep subs short (15–30 s) and stack many of them.",
+                "Avoid targets near the zenith, where rotation is fastest.",
+                "For longer subs, consider an equatorial wedge (turns the mount into an EQ)."
+              ]
+            },
+            "careful_align": {
+              "title": "Careful 2–3 star alignment",
+              "steps": [
+                "Center each alignment star precisely — use a reticle eyepiece, or defocus slightly to judge centring.",
+                "Pick well-spread stars (the sequence above already does).",
+                "Redo the alignment after any bump or power cycle."
+              ]
+            },
+            "balance": {
+              "title": "Balance the tube",
+              "steps": [
+                "Balance the tube fore/aft with all gear mounted so the drives are not fighting gravity.",
+                "Keep the load within the mount's rating — alt-az drives stall gracelessly.",
+                "Re-check after adding a camera or heavier eyepiece."
+              ]
+            }
+          }
+        },
+        "generic": {
+          "name": "Other / generic mount",
+          "summary": "Whatever the brand, the same free fundamentals dominate: balance, cable routing, polar-alignment quality and measured backlash compensation. Do these before spending on hardware.",
+          "issues": {
+            "backlash": {
+              "label": "Axis backlash",
+              "symptom": "Corrections take a moment to engage after changing direction; the star wanders around centre.",
+              "why": "All worm drives have some play; it grows with a loose worm mesh and shows most in declination, where corrections keep reversing."
+            },
+            "periodic_error": {
+              "label": "Periodic error (RA)",
+              "symptom": "Stars trail slowly east–west on unguided exposures, repeating over a few minutes.",
+              "why": "The worm gear's machining tolerances repeat every worm turn; the error is periodic, so it can be measured and corrected."
+            }
+          },
+          "fixes": {
+            "balance": {
+              "title": "Balance both axes properly",
+              "steps": [
+                "Balance DEC first (scope + all gear mounted), then RA with the counterweights.",
+                "On an EQ mount, leave a slight east-heavy bias in RA so the worm stays loaded on one flank.",
+                "Re-check balance after every gear change or meridian flip."
+              ]
+            },
+            "cables": {
+              "title": "Route the cables",
+              "steps": [
+                "Attach cables to the mount so nothing snags or pulls as it tracks.",
+                "Leave a service loop at the axes; a taut cable reads as sudden guide spikes.",
+                "Re-check with the scope pointed where you will actually image."
+              ]
+            },
+            "polar_quality": {
+              "title": "Nail the polar alignment",
+              "steps": [
+                "Use the polar-scope tools above (or a plate-solving routine) and take your time.",
+                "Poor polar alignment becomes DEC drift the guider must constantly fight.",
+                "Re-check after any bump or tripod move."
+              ]
+            },
+            "backlash_measure": {
+              "title": "Measure the backlash",
+              "steps": [
+                "Run PHD2's Guiding Assistant for a few minutes near the meridian and the celestial equator.",
+                "Apply the backlash compensation and min-move values it suggests.",
+                "Re-measure after any mechanical adjustment (worm mesh, balance)."
+              ]
+            }
+          }
+        }
       }
     },
     "why": {
@@ -286,9 +588,16 @@
     "smartHint": "Copied under your prefix, in a folder named after the source. Re-running uploads only what changed.",
     "noBuckets": "This connection isn't reachable or has no buckets — check it in Storage.",
     "drivesHeading": "Mounted drives",
+    "sourcesHeading": "App folders",
+    "sources": {
+      "input": "Input (data)",
+      "output": "Output",
+      "work": "Work"
+    },
     "up": "Up",
     "refresh": "Refresh",
     "copyThisFolder": "Copy this folder to S3",
+    "copySelected": "Copy {n} folder(s) to S3",
     "copyFolderHint": "Smart copy to S3 — only missing or corrupted files are uploaded",
     "pickBucketFirst": "Choose an S3 bucket first",
     "copy": "Copy to S3",
@@ -349,10 +658,39 @@
       "hint": "Drag a row onto a folder to move it, or check rows and use “Move selected…”.",
       "title": "Move {n} into…",
       "moveHere": "Move here",
-      "noSubfolders": "No sub-folders"
+      "noSubfolders": "No sub-folders",
+      "moving": "Moving {n} item(s)…",
+      "started": "Started",
+      "elapsed": "Elapsed",
+      "remaining": "Remaining",
+      "throughput": "Throughput",
+      "transferred": "Transferred",
+      "done": "Move complete",
+      "failed": "Move failed: {error}"
     },
     "confirmDeleteObject": "Delete \"{name}\"?",
-    "confirmDeleteFolder": "Delete the folder \"{name}\" and everything in it?"
+    "confirmDeleteFolder": "Delete the folder \"{name}\" and everything in it?",
+    "defaultClass": "Default storage class",
+    "defaultClassNone": "Provider default (Standard)",
+    "defaultClassHint": "New uploads on this connection use this class. It must stay instantly readable — archive later with “Change storage class”.",
+    "tier": {
+      "changeSelected": "Change storage class…",
+      "title": "Change storage class of {n} item(s)",
+      "subtitle": "Archive to a cheaper cold tier, or restore cold data back to instant access.",
+      "targetLabel": "Target class",
+      "restoreOnly": "Restore only (thaw temporarily, keep the archived class)",
+      "restoreOnlyNote": "The selected objects will be thawed to a temporary readable copy without changing their storage class.",
+      "retrieval": "Retrieval speed",
+      "thawNote": "Archived data must be thawed first — this can take from minutes to ~48h. The job stays visitable in Tasks and finishes automatically once ready.",
+      "apply": "Apply",
+      "archivedBadge": "Archived in Glacier ({class}) — restore before download",
+      "restoreTitle": "Restore from Glacier",
+      "progress": {
+        "archive": "Archiving {n} item(s)…",
+        "restore": "Restoring {n} item(s) from Glacier…",
+        "retier": "Changing storage class of {n} item(s)…"
+      }
+    }
   },
   "preset": {
     "label": "Preset",
@@ -363,6 +701,15 @@
     "saveName": "Preset name",
     "rename": "Rename",
     "delete": "Delete",
+    "duplicate": "Duplicate",
+    "copySuffix": "copy",
+    "nameTaken": "A preset with that name already exists",
+    "favorite": "Mark as favorite",
+    "unfavorite": "Remove from favorites",
+    "saveFromRun": "Save as preset",
+    "saveFromRunHint": "Keep this run's parameters as a named preset for future stacks.",
+    "saveFavorite": "favorite",
+    "savedFromRun": "Preset saved",
     "cancel": "Cancel",
     "category": {
       "deepsky": "Deep-sky",
@@ -445,8 +792,22 @@
     "colorCalibration": "Color-calibrate (SPCC)",
     "denoise": "Reduce noise",
     "haExcludeStars": "Hα on nebulosity only (exclude stars)",
+    "outputLuminance": "Also output Luminance-only mono",
+    "outputLuminanceHint": "Save a processed monochrome image of just the Luminance channel (calibrated, denoised, background-extracted and stretched — the same treatment L gets in the colour image), next to the final result.",
+    "outputMonoStack": "Also output combined mono (all channels)",
+    "outputMonoStackHint": "Save one monochrome image that stacks every channel (L/R/G/B/Hα…) together, weighted by sub-count, for maximum signal. Off by default.",
     "dropTransition": "Drop filter-wheel transition frames",
     "supervise": "Run with local AI agent (experimental)",
+    "earthshine": "Reveal earthshine (unlit side of the Moon)",
+    "earthshineHint": "Fits the full lunar disc and gently lifts the unlit side from the real stacked signal, blended naturally at the terminator and limb — for crescent/partial phases. Automatically skipped (with a note) on a full moon or when the signal is below the noise floor.",
+    "alignPointsMinSize": "Min. detail size (px)",
+    "alignPointsAuto": "auto",
+    "alignPointsEstimate": "Estimate points",
+    "alignPointsEstimating": "Estimating…",
+    "alignPointsHint": "Fits the lit lunar disc on the first luminance frame of the selection, counts how many alignment points of that size the image supports, and fills align_points in the parameters below.",
+    "alignPointsResult": "≈{usable} usable points ({n}×{n} grid, {cell}px cells) — align_points set to {suggested}",
+    "forceCalibration": "Force calibration frames",
+    "forceCalibrationHint": "Apply your darks, flats and bias/offsets even when their gain, exposure or temperature don't match the lights. Use only when you know the frames are compatible — a mismatched dark can over- or under-subtract.",
     "chips": {
       "s3": "Full S3",
       "s3LowDisk": "Low disk",
@@ -454,12 +815,14 @@
       "spcc": "SPCC",
       "denoise": "Denoise",
       "ha": "Hα nebulosity",
+      "earthshine": "Earthshine",
       "dropTransition": "Drop transitions",
       "ai": "AI agent",
       "sequential": "Queued",
       "goal": "Goal: {goal}",
       "tier": "Tier {tier}",
-      "iters": "≤{n} iters"
+      "iters": "≤{n} iters",
+      "mosaic": "union canvas"
     },
     "superviseHint": "Opt-in: a local vision model auto-tunes the finish over a few iterations, keeping the best — for every stacking mode (deep-sky/nebula composite, comet, milkyway grade, planetary sharpen). Needs a host model server (ASTRO_LLM_URL).",
     "modes": {
@@ -469,7 +832,8 @@
       "planetary": "Planetary",
       "comet": "Comet",
       "transfer": "Transfer",
-      "backup": "Backup"
+      "backup": "Backup",
+      "mosaic": "Mosaic (tiled panels)"
     },
     "formats": {
       "image": "Image",
@@ -507,18 +871,24 @@
     "bias": "Bias / offset",
     "addToQueue": "Add to queue",
     "addToQueueHint": "Queue this processing to run after the others, one at a time.",
+    "buildMasters": "Build masters → library",
+    "buildMastersHint": "Stacks the selected darks/flats/bias into master files and adds them to your calibration library — no image is produced.",
     "advancedParams": "Advanced parameters",
     "aiSection": "AI guidance",
     "aiSectionHint": "Only used when \"Supervise finish\" is on — a plain-language objective for the AI finish agent.",
     "pipelineSection": "Pipeline parameters",
     "pipelineSectionHint": "Fine tuning applied to every run, with or without AI. Prefilled with the selected mode's effective values.",
+    "target": "Target (plate-solve)",
+    "targetHint": "Catalogue name or \"RA,Dec\" when the folder/headers can't identify the field — enables SPCC colours",
     "goal": "Goal",
     "goalHint": "e.g. bring out the faint outer nebulosity",
     "paramsJson": "Fine parameters (JSON)",
     "paramsInvalid": "Invalid JSON — expected an object like {'{'}\"denoise_lum\": 0.6{'}'}",
     "paramsPlaceholder": "Effective parameters for the selected mode…",
     "paramsReset": "Reset to defaults",
-    "paramsCheckboxNote": "SPCC, noise reduction & Hα-on-nebulosity are controlled by the checkboxes above."
+    "paramsCheckboxNote": "SPCC, noise reduction & Hα-on-nebulosity are controlled by the checkboxes above.",
+    "mosaic": "Union canvas (multi-night, keep every night's full field)",
+    "mosaicHint": "Multi-night runs land on the UNION of all sessions' footprints instead of cropping to the anchor night's frame — a bigger image, no pixel lost. The final is trimmed to the area where every channel has real data (params: mosaic_fill)."
   },
   "reuse": {
     "title": "Reuse prior data",
@@ -528,18 +898,75 @@
     "frames": "{n} frames"
   },
   "calib": {
-    "title": "Calibration · matched from your library",
-    "subtitle": "These library masters match your lights and will be applied. Uncheck any to skip it.",
+    "title": "Calibration · matched masters",
+    "subtitle": "Built from this capture's darks/flats/bias or reused from your library — these will be applied. Uncheck any to skip it.",
     "includedTitle": "Calibration included",
     "includedSubtitle": "Darks, flats and bias/offsets applied to this capture, with their parameters.",
     "selectAll": "Select all",
     "deselectAll": "Deselect all",
     "frames": "{n} frames",
+    "source": {
+      "capture": "from this capture",
+      "library": "from your library",
+      "sessionFlat": "rebuilt from that night's flats"
+    },
     "role": {
       "dark": "Dark",
       "flat": "Flat",
       "bias": "Bias"
     }
+  },
+  "setqa": {
+    "button": "Check frame sets",
+    "checking": "Checking sets…",
+    "hint": "Analyze each set of light frames for stray-light halos and background gradients before stacking, and choose which sets to exclude.",
+    "reopen": "Review result",
+    "summary": "{n} suspicious set(s) found — review and choose what to exclude.",
+    "none": "No artifact detected — every set looks clean.",
+    "title": "Frame-set quality check",
+    "subtitle": "{n} set(s) show a stray-light or gradient artifact. Checked sets are excluded from the stack.",
+    "close": "Close",
+    "selectAll": "Exclude all",
+    "deselectAll": "Exclude none",
+    "frames": "{n} frames · {time}",
+    "score": "severity {n}",
+    "unmeasured": "not measured",
+    "impact": "If excluded: −{pct}% of {filter} integration, predicted SNR ×{snr}",
+    "emptiesFilter": "This would leave NO frames for {filter}!",
+    "excludedSummary": "{filter}: −{pct}% integration, SNR ×{snr}",
+    "noExclusion": "No set excluded — the stack uses everything.",
+    "apply": "Apply exclusions",
+    "keepAll": "Keep all",
+    "excludedOnRun": "{n} set(s) excluded from the next run:",
+    "reinclude": "Re-include this set",
+    "clear": "Clear",
+    "border": {
+      "left": "left",
+      "right": "right",
+      "top": "top",
+      "bottom": "bottom"
+    },
+    "reason": {
+      "border_glow": "Glow on the {border} border: +{sigma}σ ({pct}% of the sky level)",
+      "strong_gradient": "Strong background gradient: {sigma}σ ({pct}% of the sky level)",
+      "stack_visible": "Subtle but consistent {border} glow ({pct}% of the sky per frame) — accumulates to ~{sigma}σ in the stacked result",
+      "outlier_vs_siblings": "Background artifact {sigma}σ above its sibling sets",
+      "channel_imbalance": "{channel} channel glows +{sigma}σ above the other channels"
+    }
+  },
+  "sessions": {
+    "title": "Capture nights",
+    "subtitle": "{n} nights in this selection — each night is calibrated with its own frames, then everything is merged into one stack.",
+    "nightTitle": "Night of {date}",
+    "undated": "Undated frames",
+    "window": "Time window",
+    "flipped": "Mirrored",
+    "flippedHint": "This night is mirror-flipped relative to the others (e.g. shot through a star diagonal) — it is flipped back automatically before merging.",
+    "anchor": "Anchor night",
+    "anchorHint": "Every channel is registered onto this night's field — its framing defines the final canvas.",
+    "missingChannels": "No {filters} this night — those channels come from the other night(s).",
+    "calibTitle": "Calibration for this night",
+    "noCalib": "No matched calibration for this night."
   },
   "s3": {
     "title": "S3 storage",
@@ -590,7 +1017,9 @@
     "confirmRestore": "Restore this backup? The database / library / atlas will be overwritten with the snapshot.",
     "restoreQueued": "Restore started.",
     "reload": "Reload now",
-    "reloadHint": "App settings & chats were restored —"
+    "reloadHint": "App settings & chats were restored —",
+    "storageClass": "Archive backup to",
+    "storageClassStandard": "Standard (hot, instant restore)"
   },
   "common": {
     "inspect": "Inspect",
@@ -656,7 +1085,15 @@
       "deleted": "Folder no longer exists",
       "onS3": "On S3 — downloaded automatically when re-run",
       "needS3": "These files were freed to S3. Select their S3 bucket first, then try again.",
-      "untitled": "Untitled"
+      "untitled": "Untitled",
+      "name": "Name this selection",
+      "namePlaceholder": "Selection name",
+      "rename": "Rename",
+      "forget": "Remove name & star",
+      "favorite": "Mark as favorite",
+      "unfavorite": "Remove from favorites",
+      "nameTaken": "A saved selection with that name already exists",
+      "saved": "Saved selection"
     }
   },
   "livestack": {
@@ -683,7 +1120,280 @@
     "lights": "Light frames",
     "integration": "Total integration",
     "filters": "Filters",
-    "frameTypes": "Frame types"
+    "frameTypes": "Frame types",
+    "title": "Capture",
+    "subtitle": "Camera, filter wheel and mount — live view, focus and the auto-run.",
+    "device": {
+      "title": "Devices",
+      "camera": "Camera",
+      "wheel": "Filter wheel",
+      "mount": "Mount",
+      "connect": "Connect",
+      "disconnect": "Disconnect",
+      "notRunning": "The device server is not running. Start it with",
+      "drivers": "Drivers: {list}",
+      "wheelDetail": "{slots} slots · on slot {position}"
+    },
+    "live": {
+      "title": "Live view",
+      "start": "Start live",
+      "stop": "Stop live",
+      "waiting": "Waiting for the first frame…",
+      "stopped": "Live view stopped",
+      "autoStretch": "Auto stretch",
+      "reticle": "Viewfinder",
+      "grid": "Grid",
+      "box": "Centre box px",
+      "zoom": "Zoom",
+      "black": "Black",
+      "white": "White",
+      "gamma": "Gamma",
+      "fit": "Fit",
+      "zoomIn": "Zoom in",
+      "zoomOut": "Zoom out",
+      "gestureHint": "Pinch to zoom · two fingers to pan · double-click to fit",
+      "realPixels": "real sensor pixels",
+      "fullscreen": "Fullscreen",
+      "exitFullscreen": "Exit fullscreen (Esc)",
+      "fewLevels": "Only {levels} distinct pixel values here — this sensor is 12-bit, so a capped or empty field really does contain just a few. Expose longer, raise the gain, or point at a star."
+    },
+    "hist": {
+      "title": "Histogram",
+      "waiting": "No frame yet",
+      "min": "min",
+      "median": "median",
+      "max": "max",
+      "saturated": "clipped"
+    },
+    "controls": {
+      "title": "Camera",
+      "noCamera": "Connect a camera to change its settings.",
+      "exposure": "Exposure",
+      "expRange": "This sensor allows {min} µs to {max} s.",
+      "expTooShort": "Below the sensor minimum of {min} µs",
+      "expTooLong": "Longer than the sensor allows",
+      "gain": "Gain (ISO equivalent)",
+      "offset": "Offset",
+      "cooling": "Cooling",
+      "target": "Target °C",
+      "coolerOn": "Cooler on",
+      "coolerOff": "Cooler off",
+      "filter": "Filter",
+      "wheelMoving": "moving…"
+    },
+    "focus": {
+      "title": "Focus",
+      "needsLive": "Start the live view to measure focus.",
+      "waiting": "Measuring…",
+      "hfd": "HFD",
+      "stars": "{n} stars",
+      "saturated": "Stars are clipping — shorten the exposure or lower the gain.",
+      "tooFewStars": "Too few stars to measure — point at a richer field or expose longer.",
+      "advice_first": "Turn the focuser a little, either way — I'll tell you if it helped.",
+      "advice_better": "Better. Keep turning the same way.",
+      "advice_worse": "Worse. Turn back the other way.",
+      "advice_steady": "No real change — turn a bit more.",
+      "advice_at_focus": "In focus.",
+      "advice_unreliable": "Reading not reliable yet.",
+      "turns": "About {turns} turns out ({um} µm)",
+      "microns": "About {um} µm out of focus",
+      "umPerTurn": "µm / turn",
+      "reset": "Reset",
+      "tilt": "Corner sharpness varies by {pct}% — that is sensor tilt, not focus.",
+      "hint": "Direction cannot be read from one frame: inside and outside focus look identical. Turn, then look here."
+    },
+    "run": {
+      "title": "Auto-run",
+      "tile": "shooting tile {panel}",
+      "filter": "Filter",
+      "count": "Frames",
+      "exposure": "Exp. s",
+      "gain": "Gain",
+      "dither": "Dither /",
+      "remove": "Remove",
+      "addStep": "Add filter",
+      "interleave": "Interleave filters",
+      "interleaveHint": "Interleaving spreads every channel across the night, so clouds cost each one equally.",
+      "total": "{frames} frames · {hours} h",
+      "object": "Object",
+      "path": "Save to",
+      "pathPlaceholder": "input/M31/2026-07-27",
+      "start": "Start auto-run",
+      "pause": "Pause",
+      "resume": "Resume",
+      "abort": "Abort",
+      "frames": "frames",
+      "eta": "{eta} left",
+      "save": "Save plan",
+      "savePlaceholder": "Plan name",
+      "loadSaved": "Load a saved plan…",
+      "selectAll": "Select all",
+      "selectRow": "Select this filter",
+      "editSelected": "Edit {n} selected…",
+      "editAll": "Edit all filters…",
+      "subRemaining": "Time left on the current exposure"
+    },
+    "status": {
+      "idle": "Idle",
+      "running": "Running",
+      "paused": "Paused",
+      "completed": "Completed",
+      "aborted": "Aborted",
+      "failed": "Failed",
+      "interrupted": "interrupted"
+    },
+    "bulk": {
+      "title": "Change {n} filter(s) at once",
+      "subtitle": "Only the ticked values are changed; the rest are left alone.",
+      "frames": "Frames",
+      "exposure": "Exposure (s)",
+      "gain": "Gain",
+      "apply": "Apply",
+      "cancel": "Cancel"
+    },
+    "dest": {
+      "browse": "Browse…",
+      "placeholder": "Pick a folder, or type a full path",
+      "use": "Use this folder",
+      "newFolder": "New subfolder (optional)",
+      "newFolderPlaceholder": "M31/2026-07-27",
+      "empty": "No subfolders here",
+      "noRoots": "No drives found — connect one, or use the app's own folders.",
+      "source_input": "Input folder",
+      "source_output": "Output folder",
+      "source_work": "Work folder",
+      "hint": "External drives are listed as soon as they are mounted. The folder is created when the run starts."
+    },
+    "dither": {
+      "what": "What is Dither?",
+      "hide": "Hide",
+      "headline": "Dithering moves the TELESCOPE a few pixels between frames. It never touches your images.",
+      "notProcessing": "Nothing is processed, altered or resampled on the way to disk — every frame is saved exactly as the camera produced it. The only thing that happens is a small nudge of the mount between exposures.",
+      "why": "Why it helps: hot pixels, dark-current residue and flat-field imperfections sit at FIXED positions on the sensor. Without dithering they land on the same part of the sky in every frame, so stacking averages them in as permanent speckles — and slow tracking drift smears them into ‘walking noise’ streaks. Nudged a few pixels between frames, they fall somewhere new each time and stack rejection removes them entirely.",
+      "value": "The number is how many frames to take between nudges:",
+      "value0": "0 — never dither (use this for darks, bias and flats, and when no mount is connected).",
+      "value1": "1 — nudge after every frame: the best noise rejection, the most settle time.",
+      "value5": "3 to 5 — the usual choice for long deep-sky subs: nearly all the benefit, a few seconds lost per dither.",
+      "valueBig": "10 or more — for short subs where settle time would dominate.",
+      "cost": "What it costs: about two seconds of settling per nudge, and a slightly smaller area shared by every frame (the offsets are a few pixels, so the loss is negligible).",
+      "how": "How the offsets are chosen: not randomly. Each nudge is placed as far as possible from every previous one — in whole pixels and in sub-pixel position — and the achieved shift is measured from the next frame, so mount backlash is corrected instead of assumed.",
+      "safety": "If the mount refuses to move, the dither is skipped with a message and the sequence carries on. A dither can never lose you a frame.",
+      "needsMount": "Dithering needs a connected mount — it will be skipped until one is connected.",
+      "needsScale": "Dithering needs the image scale (focal length and pixel size) to convert pixels into a mount movement — it will be skipped."
+    },
+    "tile": {
+      "title": "Tile {panel}",
+      "ready": "Ready to slew.",
+      "slewing": "Slewing…",
+      "arrived": "Slew commanded — check the live view before starting the run.",
+      "noMount": "No mount connected — connect one to slew, or point manually with the hand controller.",
+      "slew": "Slew here",
+      "slewAgain": "Slew again",
+      "stop": "STOP",
+      "now": "Now at",
+      "center": "Centre with plate solve",
+      "centering": "Centring…",
+      "centered": "Centred to {arcsec}″ in {n} pass(es).",
+      "centerFailed": "Stopped at {arcsec}″ from the target."
+    },
+    "mount": {
+      "title": "Mount",
+      "port": "Serial port",
+      "noPorts": "No serial ports found — connect the hand controller's USB cable, then rescan.",
+      "connect": "Connect mount",
+      "rescan": "Rescan",
+      "up": "up",
+      "notAligned": "not aligned — GoTo is refused until you align the mount",
+      "slewing": "slewing…",
+      "pier_east": "pier east",
+      "pier_west": "pier west",
+      "rate": "Rate",
+      "stop": "STOP",
+      "trackingOn": "Tracking on",
+      "trackingOff": "Tracking off"
+    },
+    "tracking": {
+      "title": "Mount tracking",
+      "blurb": "Measured from this session's own frames — how much periodic error your mount really has, and how long a sub it can hold.",
+      "none": "No measurements yet. Turn on “measure tracking” when starting a run.",
+      "unavailable": "Tracking report unavailable.",
+      "measure": "Measure mount tracking",
+      "measureHint": "Plate-solves your light frames as they are taken to characterise periodic error and drift. Costs CPU; never delays an exposure.",
+      "pe": "Periodic error",
+      "period": "Worm period",
+      "drift": "Drift RA / Dec",
+      "residual": "Unpredictable scatter",
+      "samples": "Measurements",
+      "notDetected": "not detected",
+      "maxSub": "Longest unguided sub before stars trail: about {seconds} s.",
+      "gradeGood": "low",
+      "gradeTypical": "typical",
+      "gradeHigh": "high",
+      "solveFailing": "No frame has solved yet ({attempts} tried) — tracking cannot be measured without plate solving."
+    },
+    "calib": {
+      "blurb": "Calibration frames only cancel what they match. These settings are taken from your lights, so the darks, flats and bias frames come out matched.",
+      "kind_bias": "Bias",
+      "kind_dark": "Darks",
+      "kind_flat": "Flats",
+      "kind_darkflat": "Dark flats",
+      "lightExposure": "Light exposure (s)",
+      "gain": "Gain",
+      "offset": "Offset",
+      "filters": "Filters",
+      "measureFlat": "Measure flat exposure",
+      "measuring": "Measuring…",
+      "flatMeasured": "Measured: {seconds} s gives a median of {adu} ADU — about half full well.",
+      "flatNeeded": "Measure the flat exposure first — it depends on your light panel and cannot be guessed.",
+      "build": "Build the plan",
+      "run": "Shoot it",
+      "summary": "{frames} frames, about {time}.",
+      "title": "Calibration wizard"
+    },
+    "adv": {
+      "more": "{count} more camera controls",
+      "range": "range {min}–{max}",
+      "usb_bandwidth": "USB bandwidth",
+      "usb_bandwidth_hint": "How hard the camera drives the USB bus. Lower it if frames are dropped or the camera disconnects — a slower transfer that arrives beats a fast one that does not.",
+      "high_speed": "High-speed readout",
+      "high_speed_hint": "Faster download at the cost of slightly more read noise. Worth it for planetary, not for deep sky.",
+      "fan_on": "Fan",
+      "fan_on_hint": "Cooling fan. Turning it off is quieter but the cooler will not reach its set-point.",
+      "anti_dew": "Anti-dew heater",
+      "anti_dew_hint": "Warms the sensor window so it does not fog on a damp night.",
+      "mono_bin": "Mono binning",
+      "mono_bin_hint": "Colour cameras only: bins without the colour grid pattern.",
+      "hardware_bin": "Hardware binning",
+      "hardware_bin_hint": "Bins on the sensor rather than in software — less read noise, but the pixels are combined before you see them.",
+      "gamma": "Gamma",
+      "flip": "Flip",
+      "flip_hint": "Mirrors the image in the camera. Leave it off: the pipeline handles orientation, and a flip here would fight it.",
+      "overclock": "Overclock",
+      "auto_max_gain": "Auto-exposure gain ceiling",
+      "auto_max_exp": "Auto-exposure time ceiling",
+      "auto_target_brightness": "Auto-exposure target brightness",
+      "wb_red": "White balance red",
+      "wb_blue": "White balance blue"
+    },
+    "slots": {
+      "title": "Filter wheel slots",
+      "blurb": "What is in each slot. This is what writes the FILTER header — and the filter into the file and folder names — which the pipeline uses for per-filter flats and channel detection, so it is worth getting right once.",
+      "noWheel": "Connect a filter wheel to set up its slots.",
+      "empty": "empty",
+      "custom": "Other…",
+      "customName": "filter name",
+      "slotLabel": "Slot {n} filter",
+      "goTo": "Move the wheel to this slot",
+      "save": "Save",
+      "saved": "Saved",
+      "moving": "moving…"
+    },
+    "sessions": {
+      "title": "Auto-run sessions",
+      "blurb": "Every auto-run this rig has shot, live and finished. Kept server-side, so it survives a reload.",
+      "none": "No auto-run has been started yet.",
+      "untitled": "(no object)"
+    }
   },
   "mapping": {
     "title": "Channel mapping",
@@ -725,16 +1435,52 @@
     "options": "Options",
     "started": "Started",
     "duration": "Duration",
-    "pointing": "Pointing"
+    "pointing": "Pointing",
+    "session": "Night",
+    "scale": "Scale",
+    "residual": "Residual",
+    "rotation": "Rotation",
+    "coverage": "Coverage",
+    "applied": "Applied"
   },
   "job": {
     "title": "Job",
+    "sessionsTitle": "Per-night progress",
+    "sessionsHint": "Each capture night is calibrated with its own frames and photometrically normalized onto the reference night; all nights are then registered and stacked together.",
+    "stageCalibrate": "Calibrate",
+    "noDataNight": "No frames of this channel were captured that night.",
+    "stageNormalize": "Normalize",
+    "stageRegister": "Register",
+    "stageStack": "Stack",
+    "photomTitle": "Photometric normalization",
+    "photomHint": "How each night's signal was mapped onto the reference night before stacking: measured scale ×, offset, and fit residual.",
+    "photomApplied": "Applied",
+    "photomReference": "Reference",
+    "photomSkipped": "Not applied",
+    "photomStacked": "Stacked",
+    "photomReverted": "degraded (would clip)",
+    "photomMethod": {
+      "measured": "measured",
+      "seeded": "from headers",
+      "bg-matched": "from sky backgrounds",
+      "offset-only": "offset only",
+      "identity": "unscaled"
+    },
+    "combineCropApplied": "Colour combine cropped to the field covered by every channel: {w}×{h} px ({pct}% of the canvas).",
+    "combineCropSkipped": "Common coverage was only {pct}% of the canvas — the full field was kept (expect edge artifacts).",
+    "photomClamped": "Scale clamped",
+    "photomMetaSeeded": "Scale from headers",
+    "photomMetaDisagree": "Differs from header prediction",
     "duration": "Duration",
     "progress": "Progress",
     "processing": "Processing",
     "result": "Result",
     "finalImage": "Final image",
     "finalView": "Final",
+    "mono": {
+      "luminance": "Luminance (mono)",
+      "all_channels": "Mono (all channels)"
+    },
     "framesStacked": "{kept} of {total} frames stacked",
     "livePreview": "Live preview",
     "channelsTitle": "Channels",
@@ -747,8 +1493,12 @@
     "download": "Download",
     "logs": "Live log",
     "cpu": "CPU",
+    "cores": "{used} / {total} cores",
+    "cpuHint": "Whole engine tree: the engine plus every processing tool (Siril, GraXpert, StarNet, GIMP, ffmpeg)",
     "memory": "RAM",
+    "memoryHint": "Live resident memory of the engine and every processing tool",
     "peak": "Peak",
+    "peakHint": "Highest engine-wide memory seen during this job",
     "transferred": "Transferred",
     "throughput": "Throughput",
     "remaining": "Remaining",
@@ -799,7 +1549,7 @@
   },
   "stagePreviews": {
     "title": "Processing steps",
-    "hint": "A preview saved after each major step — click any frame to enlarge.",
+    "hint": "A preview saved after each major step — click any frame to enlarge. Previews are auto-stretched: the brightest pixel always renders white, so a bright core can look burned here while the final tone (headroom + core roll-off) keeps it.",
     "enlarge": "Click to enlarge",
     "close": "Close",
     "stages": {
@@ -807,9 +1557,12 @@
       "aligned": "Aligned",
       "combined": "Combined",
       "colorcal": "Color calibration",
+      "prenorm": "Before normalization",
+      "normalized": "Normalized",
       "deconv": "Deconvolved",
       "starless": "Star reduction",
-      "final": "Final"
+      "final": "Final",
+      "coverage": "Coverage"
     }
   },
   "rerun": {
@@ -845,6 +1598,7 @@
       "chroma_blur": "Chroma blur (px)",
       "crop_frac": "Edge crop",
       "ha_exclude_stars": "Hα on nebulosity only",
+      "ha_continuum_sub": "Hα continuum subtraction",
       "color_calibration": "Colour calibration (SPCC)",
       "linked_stretch": "Linked stretch",
       "background_level": "Sky background level",
@@ -852,6 +1606,8 @@
       "background_degree": "Background degree",
       "combined_background_ai": "AI background (combined)",
       "color_denoise_ai": "AI colour denoise",
+      "chroma_smooth_px": "Chroma smoothing (fine)",
+      "chroma_bg_smooth_px": "Chroma smoothing (sky)",
       "star_reduce": "Star reduction",
       "fwhm_sigma": "FWHM reject σ",
       "roundness_floor": "Roundness floor",
@@ -860,13 +1616,44 @@
       "trail_mask_k": "Trail mask k",
       "denoise_lum": "Luminance denoise",
       "denoise_chroma": "Chroma denoise",
-      "background_ai": "AI background (per channel)"
+      "background_ai": "AI background (per channel)",
+      "seam_offset_refit": "Seam background refit",
+      "seam_noise_eq": "Seam noise equalization",
+      "mosaic": "Mosaic canvas",
+      "mosaic_fill": "Mosaic empty-corner policy",
+      "mosaic_fillOptions": {
+        "crop": "Crop to covered field",
+        "fill": "Fill with extrapolated sky"
+      },
+      "oiii_screen": "[OIII] layer opacity",
+      "oiii_black_point": "[OIII] black point",
+      "sii_screen": "[SII] layer opacity",
+      "sii_black_point": "[SII] black point",
+      "sii_tint": "[SII] colour",
+      "sii_tintOptions": {
+        "deep_red": "Deep red (natural)",
+        "gold": "Gold (Hubble accent)"
+      },
+      "sky_chroma_flatten_px": "Sky colour flatten (post-stretch)",
+      "sky_lum_flatten_px": "Sky brightness flatten (post-stretch)",
+      "lum_boost": "Galaxy brightness lift",
+      "emit_luminance_mono": "Luminance-only mono output",
+      "emit_all_channel_mono": "All-channel mono output",
+      "union_canvas": "Union canvas (multi-night)",
+      "union_canvas_fill": "Union-canvas empty-corner policy"
     }
   },
   "paramDocs": {
     "title": "What each parameter does",
-    "activeLegend": "Every knob for the selected mode. The ones set in the JSON above are highlighted with their current value; add any of the others to tune it.",
+    "activeLegend": "Every knob for the selected mode. The ones set in the JSON above are highlighted with their current value. Click a parameter to add it with its default, click again to set its opposite value (booleans flip, numbers jump to the other end of their range), and a third time to remove it. On a selected number, press ↑/↓ to adjust it within min/max. Each row lists its default, min and max.",
     "set": "set",
+    "add": "Add with its default value",
+    "flip": "Set to the opposite value",
+    "arrows": "↑/↓ to adjust",
+    "remove": "Remove from the JSON",
+    "default": "default",
+    "min": "min",
+    "max": "max",
     "groups": {
       "composite": "Composite",
       "compositeHint": "Tier A · re-renders the final image in seconds",
@@ -883,7 +1670,9 @@
       "cometStack": "Frame selection & stacking",
       "cometStackHint": "re-stacks from the calibrated frames (slower)",
       "milkywayGrade": "Grade",
-      "milkywayGradeHint": "re-renders the nightscape in seconds"
+      "milkywayGradeHint": "re-renders the nightscape in seconds",
+      "mosaicAssembly": "Panel assembly",
+      "mosaicAssemblyHint": "How the stacked panels are placed, photometrically matched and blended onto the one canvas. Changing these re-assembles the mosaic."
     },
     "saturation": "Overall colour saturation of the final image. Higher is more vivid; too high turns stars garish.",
     "star_desat": "Pushes the brightest star cores toward white. Fixes solid colour discs on dense clusters and magenta SHO stars. 0 = off.",
@@ -891,6 +1680,7 @@
     "ha_screen": "Opacity of the red Hα layer screened over the image (only when an Hα channel is present). Higher = stronger red nebulosity.",
     "ha_black_point": "Clips the Hα layer's background to black so its red lifts only bright HII knots, not the whole sky.",
     "ha_exclude_stars": "Screens Hα onto nebulosity only (stars removed first) so the red doesn't tint stars orange/pink.",
+    "ha_continuum_sub": "Subtracts the scaled broadband continuum (k·R) from the linear Hα master before stretching, so the red screen shows only true Hα emission: stars and the galaxy disc cancel out and faint filaments survive the black point.",
     "chroma_blur": "Blurs colour noise in the LRGB composite (pixels); the L layer keeps all detail. Higher smooths colour and flattens mottle.",
     "core_highlight_knee": "Where the nebula-CORE highlight roll-off begins on the luminance. Below it nothing changes — for blown nebula cores, not clusters.",
     "core_highlight_ceil": "How far below white a blown nebula core is capped (with core_highlight_knee). Lower = a deeper, more structured core.",
@@ -905,6 +1695,8 @@
     "background_degree": "Degree of the Siril polynomial used to model and subtract the sky background/gradient.",
     "combined_background_ai": "A second gradient-extraction pass on the combined RGB — removes the large-scale gradient / brown sky the per-channel pass leaves.",
     "color_denoise_ai": "AI colour denoise on the linear RGB — cuts chroma noise without blurring detail (unlike a blur).",
+    "chroma_smooth_px": "Star-protected colour-only smoothing of the linear RGB (px). Flattens residual colour patches; luminance and star colours are untouched. 0 disables.",
+    "chroma_bg_smooth_px": "Extra colour smoothing restricted to the sky background (px). Removes large-scale colour mottle; galaxies, nebulae and stars keep their colour. 0 disables.",
     "star_reduce": "StarNet++ star-reduction opacity in the finish: 1 = full stars, 0.5 = halved, 0 = keep all.",
     "fwhm_sigma": "Frame rejection: drop subs whose star sharpness (FWHM) is worse than this many σ from the session. Lower rejects harder.",
     "roundness_floor": "Frame rejection: minimum star roundness to keep a sub — drops trailed / wind-shaken frames. Higher keeps only rounder stars.",
@@ -916,25 +1708,66 @@
     "background_ai": "GraXpert AI background/gradient extraction on each linear master (instead of Siril's polynomial subsky).",
     "stretch": "Overall brightness/contrast stretch of the planet/Moon. Higher lifts the mid-tones.",
     "highlight": "Highlight-protection point — higher keeps bright craters and the limb from clipping to white.",
+    "shadow_lift": "Opens up the shadows (crater floors, the terminator side) by sliding the stretch's focus point toward black (0–1). 0 = off (the historical curve); higher reveals more dark detail without touching the protected highlights.",
     "sharpen": "Wavelet detail boost. 1.0 is default; raise for more crater/band detail, lower if it rings or looks crunchy.",
     "clahe": "Local contrast / surface relief. Higher is punchier; too high looks harsh.",
     "headroom": "Scales the bright disk down before the stretch so highlights don't burn. 0 or 1 = no scaling; in-between reserves more room.",
+    "limb_balance": "Compresses the smooth illumination of the bright limb band while keeping local crater contrast intact (0–1) — the burnt-white limb regains its detail without dimming the terminator. 0 = off.",
+    "earthshine_gain": "Brightness of the revealed earthshine (the Moon's unlit side): 0 = off, 1 = natural (~10% grey), up to 2. Lifts real stacked signal only — skipped with a note when the dark side is below the noise floor or the disc is fully lit.",
+    "earthshine_feather": "Terminator protection margin of the earthshine blend, as a fraction of the disc radius (0.002–0.02, default 0.006): larger keeps the lift farther from the lit edge — the lit surface itself is never touched at any value.",
+    "true_lum": "Colour runs re-impose the sharp, deconvolved L as the exact output luminance after the RGB compose (fixes Siril's rgbcomp luminance leak that softens the final image). Default on; disable only if colour artefacts appear.",
     "best_percent": "Lucky-imaging frame selection: keep only this % of the sharpest frames before stacking. Lower = stricter.",
     "ap_align": "Multi-point (planetary) alignment — corrects local seeing distortion across the disk, not just a global shift.",
+    "double_stack": "Second alignment pass onto the first stacked master (a low-noise, distortion-averaged reference) with a much denser alignment-point grid — AutoStakkert's double-stack reference. Sharper, ~1.7× slower.",
+    "calibrate": "Applies master dark/flat calibration to the frames (masters built from the capture's own dark/flat/offset folders, or reused from the library). Removes dust shadows, vignetting and colour blotches; skipped automatically when nothing matches.",
     "deconv_fwhm": "Deconvolution PSF width (pixels) — set near the blur size to recover detail. 0 = off.",
     "deconv_iters": "Deconvolution iterations. More sharpens harder but can ring around bright edges.",
     "deconv_alpha": "Deconvolution regularisation — higher suppresses noise/ringing, lower is more aggressive.",
+    "drizzle_scale": "Super-resolution output grid (1, 1.5 or 2): the stack accumulates hundreds of sub-pixel-dithered frames onto a finer raster, genuinely adding resolution. Default 1.5; costs ×scale² memory/time (re-stack).",
+    "align_points": "Total number of stacking reference points used to correct atmospheric-wave distortion (AutoStakkert-style). Snapped to an N×N grid, N = √value clamped to 10–48 per axis (100–2304 total). 0 = automatic (~120 px cells, up to 32×32). More points track finer seeing waves but cost CPU (re-stack); the estimator button in the run form suggests a value from your image.",
     "per_frame_starnet": "Runs StarNet++ on every frame before the comet stack (denser fields). Slower, but cleaner star removal.",
     "look": "Render style: natural (faithful, soft), iphone (warmer, punchier, deeper sky) or deepsky (bold, dramatic, high saturation).",
     "brightness": "Target sky-background level. Lower = a darker sky; higher lifts the Milky-Way core.",
     "saturation_scale": "Scales the chosen look's own saturation. 1 = as designed; below 1 tames neon colour; up to 2 for more.",
-    "highlight_ceiling": "The Milky-Way core's brightness ceiling. Lower = a dimmer, better-protected core; 0 keeps the look's own."
+    "highlight_ceiling": "The Milky-Way core's brightness ceiling. Lower = a dimmer, better-protected core; 0 keeps the look's own.",
+    "seam_offset_refit": "Re-measures each night's sky pedestal inside its overlap with the anchor night and corrects it before stacking — removes the straight background steps at the rotated footprint boundaries of multi-night masters.",
+    "seam_noise_eq": "Fades the grain change where fewer nights cover the sky: a coverage-weighted denoise that is exactly zero in the full-depth core and ramps up in single-night zones — the noise part of the seam cut-lines.",
+    "mosaic": "Keeps the union of every night's field (bigger canvas, no pixel lost) instead of cropping to the anchor night's frame. Consent knob: reruns never re-enable it on their own.",
+    "mosaic_fill": "What happens to mosaic regions no session ever covered: crop trims the final to the field where every channel has data (default); fill keeps the whole union with extrapolated sky + matched grain.",
+    "oiii_screen": "Opacity of the teal [OIII] layer screened over the image (only when OIII was captured beside a real B filter). 0 = off; raise it to make shock fronts glow blue-green beside the red Hα.",
+    "oiii_black_point": "Clips the [OIII] layer's background to black before it is screened, so the teal lifts only real emission and never the sky noise.",
+    "sii_screen": "Opacity of the [SII] layer screened over the image (only when SII was captured). 0 = off; raise it to bring sulphur structure out beside the red Hα and the teal [OIII].",
+    "sii_black_point": "Clips the [SII] layer's background to black before it is screened, so its tint lifts only real emission and never the sky noise.",
+    "sii_tint": "Colour of the [SII] screen. [SII] at 672 nm is DEEPER red than Hα, which a screen cannot show — so pick how to tell them apart. Deep red is a crimson that reads as natural; gold is the amber accent the Hubble palette established, and is far easier to see against the Hα layer.",
+    "sky_chroma_flatten_px": "Neutralizes the sky's large-scale colour AFTER the stretch (grid px). The stretch amplifies sub-percent background colour residuals into visible left-right bands or coloured discs; this measures the sky colour per tile and subtracts it — sky turns neutral, objects keep their colour. 0 disables.",
+    "sky_lum_flatten_px": "Equalizes the sky's large-scale brightness AFTER the stretch (px of grid). Fits a smooth surface to the sky level and brings the whole sky to one uniform level (the glow-free dark sky) — residual glow comes down, a beyond-glow corner comes up; objects keep their contrast. 0 disables (default for nebula, protecting faint emission wings).",
+    "lum_boost": "Gently lifts the luminance midtones (value = peak lift at mid-grey; sky level, black point, bright cores and colours pinned) — a brighter galaxy periphery and arms without touching the sky, stars or core detail. 0 disables.",
+    "emit_luminance_mono": "Also saves a processed monochrome image of just the L channel (final_luminance) next to the colour final — the same calibrated, background-extracted, stretched treatment L gets inside the composite.",
+    "emit_all_channel_mono": "Also saves one monochrome image integrating every channel (L/R/G/B/Hα…) into a synthetic luminance weighted by sub-count (final_monostack) — the maximum-signal mono view.",
+    "union_canvas": "Multi-night union canvas (same pointing): keeps the union of every night's field (bigger canvas, no pixel lost) instead of cropping to the anchor night's frame. Consent knob: reruns never re-enable it on their own. Unrelated to the tiled-panel mosaic mode.",
+    "union_canvas_fill": "What happens to union-canvas regions no session ever covered: crop trims the final to the field where every channel has data (default); fill keeps the whole union with extrapolated sky + matched grain.",
+    "overlap_expected": "The capture overlap fraction between neighboring panels the plan promised. Scales the blend feather and the panel-detection sanity checks.",
+    "feather_frac": "Width of the center-weighted blend ramp, as a fraction of the overlap. Wider = smoother seams; each star stays dominated by the panel that sees it nearest its optical axis.",
+    "photom_match": "How panel photometry is matched on the canvas: gain_offset corrects sky pedestal AND transparency per panel (default), offset corrects pedestal only, off disables matching.",
+    "canvas_crop": "Edges of the assembled canvas: common crops to the largest rectangle every channel covers (default), union keeps everything, plan crops to the plan's grid bounding box.",
+    "min_panel_frames": "Panels whose channels stacked fewer total frames are dropped — a stray mis-filed pointing must not become a hole-riddled pseudo-panel.",
+    "panel_source": "How frames are split into panels: auto tries p01/-style folders then pointing-header clustering, folders and coords force one method."
   },
   "denoiseFinal": {
     "title": "Denoise the final (GraXpert)",
     "hint": "Run GraXpert AI denoise on the final image on demand — on the native host GraXpert service when configured (faster, non-blocking). Opens a new job with the denoised result.",
     "run": "Denoise final",
     "starting": "Starting…"
+  },
+  "stars": {
+    "count": "Count stars",
+    "counting": "Counting…",
+    "solveHint": "First count can take up to a minute while the field is plate-solved.",
+    "detected": "{n} stars detected",
+    "noSolve": "No astrometric solution — name labels unavailable",
+    "overlayShow": "Show star names",
+    "overlayHide": "Hide star names",
+    "failed": "Star count failed."
   },
   "refine": {
     "title": "Improve this run with AI",
@@ -1119,11 +1952,14 @@
       "cloudHigh": "High clouds",
       "humidity": "Humidity",
       "precip": "Rain chance",
+      "fog": "Fog / dew risk",
       "radar": "Rain radar",
+      "satellite": "Satellite (IR clouds)",
       "live": "live",
       "radarLight": "light",
       "radarHeavy": "heavy",
-      "liveNoData": "Live radar: no data for this time"
+      "liveNoData": "Live radar: no data for this time",
+      "weatherDegraded": "Weather feed limited — showing cached data, retrying"
     },
     "lp": {
       "uncovered": "Detailed light-pollution data isn't downloaded for this area.",
@@ -1155,7 +1991,8 @@
         "play": "Play / pause the cloud animation",
         "scrub": "Scrub through time",
         "now": "Now",
-        "darkWindow": "Dark window"
+        "darkWindow": "Dark window",
+        "empty": "No forecast timeline yet — weather data unavailable, retrying."
       },
       "metrics": {
         "clouds": "Cloud cover",
@@ -1179,7 +2016,9 @@
         "unlikely": "unlikely",
         "possible": "possible",
         "likely": "likely"
-      }
+      },
+      "noForecastNight": "No forecast for this night yet (beyond the forecast horizon).",
+      "nightOf": "Night of {date}"
     },
     "site": {
       "label": "Bortle {bortle} · {sqm} mag/arcsec²",
@@ -1244,6 +2083,8 @@
       "minAlt": "Min altitude (°)",
       "twilight": "Darkness",
       "minScore": "Min score",
+      "magLimit": "Limiting magnitude",
+      "magAll": "all",
       "type": "Type",
       "allTypes": "All types",
       "fitsFrame": "Fits my frame",
@@ -1294,7 +2135,8 @@
       "palette": "Palette",
       "bestEp": "Best eyepiece",
       "power": "Magnification",
-      "trueField": "True field"
+      "trueField": "True field",
+      "scoreLive": "Live score"
     },
     "types": {
       "galaxy": "Galaxy",
@@ -1324,7 +2166,9 @@
       "commonName": "Common name",
       "morphology": "Morphology",
       "surfaceBrightness": "Surface brightness",
-      "size": "Size"
+      "size": "Size",
+      "planMosaic": "Plan mosaic",
+      "mosaicHint": "Larger than your field of view — mosaic it."
     },
     "sub": {
       "max_alt": "Altitude",
@@ -1376,7 +2220,13 @@
     "map": {
       "title": "Sky map",
       "hint": "Each dot is a target placed by altitude (centre = zenith) and azimuth; colour = score.",
-      "belowHorizon": "Below the horizon now"
+      "belowHorizon": "Below the horizon now",
+      "playbar": {
+        "live": "Live",
+        "play": "Play the night",
+        "pause": "Pause",
+        "scrub": "Hour of night"
+      }
     }
   },
   "calendar": {
@@ -1542,6 +2392,237 @@
       "penumbral_begin": "Penumbral begins",
       "penumbral_end": "Penumbral ends",
       "maximum": "Maximum"
+    }
+  },
+  "storageClass": {
+    "needsThaw": "needs restore",
+    "minDuration": "Min. storage {days} days (early-delete fee applies)",
+    "family": {
+      "instant": "Instant",
+      "archived": "Archived"
+    },
+    "tiers": {
+      "Standard": "Standard (~3–5h Flexible / ~12h Deep Archive)",
+      "Bulk": "Bulk (cheapest, up to 48h)",
+      "Expedited": "Expedited (1–5 min, Flexible only)"
+    },
+    "classes": {
+      "STANDARD": {
+        "label": "Standard",
+        "blurb": "The classic hot tier — instant access, no retrieval fee. The destination when restoring cold data."
+      },
+      "GLACIER_IR": {
+        "label": "Glacier Instant Retrieval",
+        "blurb": "Cheap archival storage but still instant reads (no thaw). Good for masters/results you re-read occasionally."
+      },
+      "GLACIER": {
+        "label": "Glacier Flexible Retrieval",
+        "blurb": "Low-cost archive; objects must be restored (minutes–hours) before download. The main “archive it” target."
+      },
+      "DEEP_ARCHIVE": {
+        "label": "Deep Archive",
+        "blurb": "Cheapest, coldest tier; restore can take up to ~48h. For long-term backups you rarely touch."
+      }
+    }
+  },
+  "mosaic": {
+    "title": "Mosaic",
+    "subtitle": "Plan overlapping camera tiles over a large object, capture them panel by panel, stack them into one seamless image.",
+    "tabs": {
+      "plan": "Plan",
+      "capture": "Capture"
+    },
+    "preview": {
+      "title": "Tile footprints on the sky",
+      "computing": "computing…"
+    },
+    "warnings": {
+      "grid_clamped": "Grid clamped to 8×8 — check the size and margin inputs",
+      "size_unknown": "No catalogued size — single-tile plan",
+      "tile_count_high": "Over 25 tiles: this is several nights of capture"
+    },
+    "table": {
+      "title": "Tiles ({count})",
+      "order": "#",
+      "tile": "Tile",
+      "ra": "RA (J2000)",
+      "dec": "Dec (J2000)",
+      "alt": "Alt now",
+      "transit": "Transit",
+      "status": "Status",
+      "east": "east",
+      "west": "west",
+      "capture": "Capture →",
+      "captureHint": "Open this tile in Capture (new tab) and slew the mount to it",
+      "savePlanFirst": "Save the plan first — capturing needs a saved tile to record progress against."
+    },
+    "status": {
+      "pending": "pending",
+      "captured": "captured",
+      "skipped": "skipped"
+    },
+    "controls": {
+      "object": "Object",
+      "customTarget": "Custom center",
+      "changeObject": "Change object (Tonight)",
+      "customToggle": "custom center…",
+      "customRa": "RA (°)",
+      "customDec": "Dec (°)",
+      "customSize": "Size (′)",
+      "customPa": "Object PA (°)",
+      "objectPa": "PA {pa}°",
+      "equipment": "Equipment",
+      "currentSetup": "Current Tonight setup",
+      "overlap": "Overlap",
+      "cameraPa": "Camera angle (° E of N)",
+      "northUp": "N-up",
+      "alignToObject": "Align to object",
+      "noPa": "This object has no catalogued position angle",
+      "cols": "Columns",
+      "rows": "Rows",
+      "margin": "Margin (′)",
+      "auto": "auto",
+      "autoHint": "0 = automatic from the object size; the grid is capped at 8×8.",
+      "tiles": "Tiles",
+      "footprint": "Mosaic footprint",
+      "tileFov": "Tile field",
+      "scale": "Image scale",
+      "namePlaceholder": "Plan name (defaults to the object)",
+      "nameRequired": "Give the plan a name",
+      "nameExists": "A plan with that name already exists",
+      "save": "Save plan",
+      "update": "Update “{name}”",
+      "saved": "Plan saved.",
+      "updated": "Plan updated — capture progress kept.",
+      "statusesReset": "Geometry changed — capture progress was reset.",
+      "customSizeMinor": "Minor axis ′"
+    },
+    "plans": {
+      "title": "Saved plans",
+      "empty": "No saved plans yet — tune the grid and save it.",
+      "load": "Load into the planner",
+      "capture": "Capture",
+      "duplicate": "Duplicate",
+      "duplicateName": "Name for the copy",
+      "rename": "Rename",
+      "renamePrompt": "New name",
+      "delete": "Delete",
+      "confirmDelete": "Really delete?"
+    },
+    "orientation": {
+      "title": "Set the camera angle (once, at home position)",
+      "paReadout": "{pa}° E of N",
+      "step1": "Put the mount in its home/index position, tube pointing at the celestial pole.",
+      "step2": "Take a short exposure (2–5 s).",
+      "step3": "Rotate the camera in the focuser until your image matches this chart.",
+      "step4": "Lock the camera and do not rotate it again for the whole mosaic.",
+      "mirror": "Mirror the chart (diagonal / flipped optical train)",
+      "confirm": "Camera angle set",
+      "done": "Camera angle set",
+      "redo": "Redo"
+    },
+    "tile": {
+      "title": "Panel {folder}",
+      "copy": "Copy for the hand controller",
+      "flipWarn": "meridian flip in ~{min} min",
+      "justFlipped": "just crossed the meridian",
+      "look": "Look {dir} · {alt}° up",
+      "folder": "Save this panel's frames in",
+      "captured": "Captured",
+      "skip": "Skip",
+      "undo": "Undo",
+      "expectedField": "Show expected field",
+      "hideField": "Hide expected field"
+    },
+    "capture": {
+      "selectPlan": "Mosaic plan",
+      "selectPlaceholder": "Pick a plan…",
+      "noPlans": "No plans yet — create one in the Plan tab.",
+      "progress": "{captured}/{total} panels captured",
+      "window": "min/panel",
+      "reset": "Reset progress",
+      "confirmReset": "Really reset all panels?",
+      "offlineHint": "Could not save — check the engine connection and retry. ({error})",
+      "resume": "Resume →"
+    },
+    "goto": {
+      "continueCard": "Continue mosaic capture — {name} · {done}/{total} panels",
+      "continueDetail": "{done}/{total} tiles · {pct}% of frames"
+    },
+    "import": {
+      "planLabel": "Mosaic plan",
+      "noPlan": "No plan (auto-detect panels)",
+      "folderHint": "Select the parent folder that contains the p01/…pNN/ panel subfolders (or let the engine cluster frames by their pointing headers)."
+    },
+    "job": {
+      "panels": "Mosaic panels",
+      "panelsHint": "Each panel stacks like a deep-sky run, is plate-solved, then assembled onto the canvas.",
+      "stage_stacked": "stack",
+      "stage_solved": "solve",
+      "stage_assembled": "assemble"
+    },
+    "search": {
+      "placeholder": "Search any object (M31, NGC 7000, Andromeda…)",
+      "searching": "Searching…",
+      "noResults": "No object matches"
+    },
+    "setup": {
+      "edit": "Edit rig",
+      "unknownRig": "Rig not set",
+      "focal": "Focal mm",
+      "aperture": "Aperture mm",
+      "reducer": "Reducer/Barlow ×",
+      "pixel": "Pixel µm",
+      "sensorW": "Sensor W px",
+      "sensorH": "Sensor H px",
+      "hint": "Tile size comes from these numbers — a reducer or a different camera changes the whole grid.",
+      "namePlaceholder": "Save this rig as…",
+      "saveAs": "Save rig",
+      "revert": "Use selected",
+      "nameRequired": "Name the rig first",
+      "nameExists": "A rig with that name already exists"
+    },
+    "map": {
+      "dragHint": "Drag the grid to re-frame · Shift+drag to rotate · drag outside it to pan the sky"
+    },
+    "framing": {
+      "title": "Framing",
+      "east": "Move the grid east",
+      "west": "Move the grid west",
+      "north": "Move the grid north",
+      "south": "Move the grid south",
+      "offset": "Offset {east}′ E · {north}′ N from the object",
+      "recentre": "Re-centre on object",
+      "centred": "Centred on the object",
+      "movedWarning": "Moving the grid re-points every tile: {n} already-captured tile(s) will be reset to pending."
+    },
+    "targets": {
+      "title": "Capture plan",
+      "edit": "Edit goals",
+      "close": "Done",
+      "overall": "Total captured",
+      "noTargets": "No per-filter goal set yet — add one so tiles can complete themselves.",
+      "filter": "Filter",
+      "frames": "Frames",
+      "exposure": "Exp. s",
+      "gain": "Gain",
+      "remove": "Remove",
+      "add": "Add filter",
+      "save": "Save goals",
+      "saving": "Saving…",
+      "perTile": "{n} frames per tile",
+      "rootLabel": "Capture folder",
+      "rootPlaceholder": "input/M31/2026-07-20",
+      "rootHint": "Counts the frames in each pNN/ folder — works for panels shot before this plan existed.",
+      "scan": "Scan folder",
+      "scanning": "Scanning…",
+      "scanned": "Scanned · {n} tile(s) newly complete",
+      "pathRequired": "Enter the capture folder first",
+      "lastScan": "last scan {at}"
+    },
+    "progress": {
+      "bar": "{got} of {want} frames",
+      "fromDisk": "counted from the frames on disk"
     }
   }
 }

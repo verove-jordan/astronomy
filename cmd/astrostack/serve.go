@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -37,6 +38,15 @@ func runServe(_ []string) error {
 	defer st.Close()
 	if _, err := st.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrate: %w", err)
+	}
+
+	// Nothing can be mid-exposure across a restart: the capture runner lives in this process. Rows
+	// still marked running were orphaned by a stop, a hot reload or a crash, and would otherwise show
+	// as phantom active runs in the sessions list for good.
+	if n, err := st.InterruptOrphanedCaptureSessions(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not reconcile capture sessions: %v\n", err)
+	} else if n > 0 {
+		log.Printf("marked %d interrupted capture session(s) left over from a previous run", n)
 	}
 
 	runner := siril.New(cfg.SirilBin, sirilLimits(cfg))

@@ -105,6 +105,15 @@ optional **true-linear develop** (`LINEAR_RAW_BIN`, physically-exact subtraction
 it needs a raw-develop binary validated against real ProRAW; today all DNGs develop via `sips` (lights and
 cal share the transform, so subtraction still cancels fixed-pattern/thermal signal).
 
+**Mosaic mode (tiled panels).** Mode `mosaic` stacks N overlapping pointings ("panels", folders
+`p01/`… or header-clustered) individually with the deepsky machinery, plate-solves each panel once,
+then `internal/mosaic` reprojects them onto ONE north-up TAN canvas (photometric match over the
+overlap graph + center-weighted feathered blend) and the standard finish runs on the canvas
+(`internal/pipeline/mosaicmode.go`). Planned in the web UI (Mosaic page → `internal/mosaicplan` +
+`mosaic_plans` table; jobs reference `mosaic_plan_id`). NOTE the naming split: the OLD multi-night
+same-pointing union-canvas knob was renamed on the wire to **`union_canvas`** (legacy key `mosaic`
+still accepted); the Go field is still `Preset.Mosaic`. See `docs/modes/mosaic.md`.
+
 **`info.txt` sidecars + heterogeneous combine.** Older captures have bare filenames (no
 filter/gain/type); a hand-written `info.txt`/`info.txt.txt` next to them lists the capture order — one
 filter token per chronological capture sub-run — plus gain/exposure/temp (e.g. `LLL RR GG BB Ha Ha` /
@@ -137,6 +146,17 @@ freed previews/results serve local-first with an S3 fallback (frontend must tag 
 → pushes → frees. Backup gathers **browser-only** state (favorites/setups + AI-chat IndexedDB) UI-side
 (`utils/appstate.ts`); `.env` secrets are excluded. See `docs/architecture.md` → "S3 storage".
 
+**Filters have ONE canonical list.** `internal/filters` (Go) and `frontend/src/constants/filters.ts`
+(mirrored, pinned by `filters.spec.ts`) own the canonical set `L,R,G,B,Ha,OIII,SII`, its aliases
+(`s2`/`sulfur`→SII, `O3`→OIII, Johnson `V`→G), the display order and `IsNarrowband`. **Never re-declare
+a filter list** — that drift is exactly why SII was half-supported (two copies stopped at `Ha`, so a
+6th/7th wheel slot could only be named `"S6"`). Capture writes the filter into the **folder, the file
+name and the FITS header**; the slot→filter map is user-assigned (Capture → Filter slots,
+`app_settings["capture.filter_slots"]`) because a 5-slot wheel gets swapped between sessions. The three
+emission screens (Hα/OIII/SII) are one table in `internal/pipeline/emissionscreen.go` — add a line
+there, not a fourth copy of the block. `oiii_screen`/`sii_screen` default to 0 so existing runs stay
+byte-identical. See `docs/architecture.md` → "Filters" and "The emission screens".
+
 **Code graph (gitnexus).** This repo is indexed by **gitnexus** (a code knowledge-graph; binary
 `gitnexus`, MCP server `gitnexus mcp`). Use it as the FIRST move for any "where / what / what-breaks"
 question about Go (`cmd/`, `internal/`) or Vue/TS (`frontend/src`) — it is faster and more accurate
@@ -163,3 +183,22 @@ graph. The `mcp__gitnexus__*` tools come from the **host-global** `gitnexus mcp`
 `~/.claude.json`, shared across all your repos) — `gitnexus mcp` serves every indexed repo, so always
 pass `repo:"astronomy"` to disambiguate from the other indexed repos. The binary lives in the active
 nvm Node's `bin`; if Node is upgraded, re-point that global server (`claude mcp` / `gitnexus setup`).
+
+**Test/debug image processing → always run it as a monitorable job, never inline.** When you run
+the stacking/finishing pipeline on captures to test your code or debug behaviour, submit it as a
+**job** so it appears in the web UI (Processing → Tasks) and the user can watch it live. Do **not**
+run it inline — `astrostack process` / `just process …` / `go run ./cmd/astrostack process …` (and
+`refine`, `video`, and the `siril-mcp` tools) execute one-shot in the CLI: blocking, stdout-only,
+**invisible to the frontend**, with no progress bar, previews, heartbeat, SSE, or pause/cancel.
+Instead `POST /api/jobs` to the running engine (`astrostack serve`, started by **`just dev`**, host
+`:8080`) with a `job.RunRequest` JSON body — minimum `{"path","mode","format"}`; `path` must resolve
+**inside `ASTRO_DATA_DIR`** (the capture root, e.g. `input/M31/…`) or the API returns 400; `mode` ∈
+`deepsky|nebula|milkyway|planetary|comet|livestack|mosaic`, `format` ∈ `image|video|both`, fine-knob
+overrides in `params`. Example: `curl -sS -XPOST localhost:8080/api/jobs -H 'content-type:
+application/json' -d '{"path":"input/M31/2024-01-01","mode":"deepsky","format":"image"}'` → `202
+{"id":N}`; then follow the run with `GET /api/jobs/{id}` (or stream `GET /api/jobs/{id}/events`) to
+read progress/result — the same run the user monitors at `http://localhost:5173` (`just web`). If the
+engine isn't running, start `just dev` (or ask the user) rather than falling back inline. Enforced by
+the `require-job-for-processing` PreToolUse hook; a genuinely-required inline run must be prefixed
+with `ASTRO_INLINE_OK=1` after getting the user's OK. (`go test …` is unaffected — this is about
+executing the pipeline on real frames.)

@@ -34,24 +34,25 @@ const (
 	madToSigma = 1.4826
 )
 
+// SatDetectLevel is the calibrated-units level above which a pixel is treated as sensor-saturated:
+// a 16-bit ADC ceiling lands near 1.0 after Siril's scaling, but flat-field division wobbles the
+// plateau, so detection sits a margin below. Shared with the pre-stack saturated-core repair.
+const SatDetectLevel = 0.97
+
 // FrameCurve summarises one frame: 14 probe percentiles plus a background level and a noise estimate.
 type FrameCurve struct {
 	Q     [14]float64 `json:"q"`
 	Bg    float64     `json:"bg"`    // Q at P40 (index 3)
 	Noise float64     `json:"noise"` // MAD-derived sigma of the subsample
+	// SatFrac is the sampled fraction of pixels at/above SatDetectLevel — how much of the frame
+	// (galaxy core, bright star cores) is sensor-saturated and carries NO photometric information.
+	SatFrac float64 `json:"sat_frac,omitempty"`
 }
 
 // MeasureImage summarises an image as a FrameCurve. Mono images use plane 0; RGB images (C>=3) use the
 // per-pixel mean across channels so a single curve describes the frame.
 func MeasureImage(im *fits.Image) FrameCurve {
-	sample := imgops.Subsample(sampleSlice(im), sampleLimit)
-	var fc FrameCurve
-	for i, p := range CurveQ {
-		fc.Q[i] = imgops.Percentile(sample, p)
-	}
-	fc.Bg = fc.Q[bgIdx]
-	fc.Noise = madToSigma * mad(sample)
-	return fc
+	return curveOf(imgops.Subsample(sampleSlice(im), sampleLimit))
 }
 
 // MeasureFile reads a FITS file and summarises it as a FrameCurve.

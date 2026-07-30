@@ -3,6 +3,8 @@ package channeldetect
 import (
 	"math"
 	"sort"
+
+	"github.com/verove-jordan/astronomy/internal/filters"
 )
 
 // FlagTransitions segments already-same-filter samples by acquisition gaps and returns one
@@ -102,14 +104,7 @@ func emissionFor(filter string, levelScore, richScore float64) float64 {
 	}
 }
 
-func isNarrowband(filter string) bool {
-	switch filter {
-	case "Ha", "OIII", "SII":
-		return true
-	default:
-		return false
-	}
-}
+func isNarrowband(filter string) bool { return filters.IsNarrowband(filter) }
 
 // viterbi runs the forward cyclic DP over the emission matrix and returns the min-cost filter path,
 // a per-run confidence (how cleanly each run matched its filter), and the path's average emission

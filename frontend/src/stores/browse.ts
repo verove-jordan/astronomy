@@ -1,9 +1,17 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import { apiGet, apiPost, previewUrl, withS3 } from "@/services/api";
+import {
+  apiDelete,
+  apiGet,
+  apiPost,
+  apiPut,
+  previewUrl,
+  withS3,
+} from "@/services/api";
 import { PROCESSED_GROUP_COLORS } from "@/constants/colors";
 import { baseName } from "@/utils/format";
 import { useS3Store } from "@/stores/s3";
+import { fetchPreviewBuffer } from "@/utils/previewbuf";
 import type {
   BrowseEntry,
   Inventory,
@@ -11,6 +19,7 @@ import type {
   ProcessedFolder,
   ProcessedGroup,
   ProcessingHistoryEntry,
+  SavedSelectionInfo,
 } from "@/types";
 
 // All API calls for directory browsing and inspection live here; components dispatch actions.
@@ -40,15 +49,72 @@ export const useBrowseStore = defineStore("browse", () => {
   // Past processings: which folders have been part of a job, and how to group folders processed
   // together. Loaded once and exposed as a path→info map for the browser annotations.
   const processedGroups = ref<ProcessedGroup[]>([]);
+  // Saved selections (named/starred folder-sets) riding along the same report; joined onto the
+  // history rows by backend-computed signature.
+  const savedSelections = ref<SavedSelectionInfo[]>([]);
 
   async function loadProcessed() {
     try {
-      const data = await apiGet<{ groups: ProcessedGroup[] }>(
-        withS3("/api/processed"),
-      );
+      const data = await apiGet<{
+        groups: ProcessedGroup[];
+        selections?: SavedSelectionInfo[];
+      }>(withS3("/api/processed"));
       processedGroups.value = data.groups ?? [];
+      savedSelections.value = data.selections ?? [];
     } catch {
       processedGroups.value = [];
+      savedSelections.value = [];
+    }
+  }
+
+  // saveSelection names a history entry's folder-set (upsert by signature server-side); favorite,
+  // when set, stars it in the same call (starring an unnamed row routes through naming).
+  async function saveSelection(
+    name: string,
+    entry: ProcessingHistoryEntry,
+    favorite?: boolean,
+  ): Promise<void> {
+    await apiPost("/api/selections", {
+      name,
+      paths: entry.paths.map((p) => p.path),
+      mode: entry.mode,
+      format: entry.format,
+      favorite,
+    });
+    await loadProcessed();
+  }
+
+  async function renameSelection(id: number, name: string): Promise<void> {
+    await apiPut(`/api/selections/${id}`, { name });
+    await loadProcessed();
+  }
+
+  async function setSelectionFavorite(
+    id: number,
+    favorite: boolean,
+  ): Promise<void> {
+    await apiPut(`/api/selections/${id}`, { favorite });
+    await loadProcessed();
+  }
+
+  async function deleteSelection(id: number): Promise<void> {
+    await apiDelete(`/api/selections/${id}`);
+    await loadProcessed();
+  }
+
+  // loadProcessedFor fetches just ONE job's processed group (GET /api/processed?job_id=…) and merges it into
+  // processedGroups (replace-or-append by job_id). The task-detail page needs only its own group (to gate the
+  // "Remove local files" action), so it must not pull the whole recent window like loadProcessed does.
+  async function loadProcessedFor(jobId: number) {
+    try {
+      const data = await apiGet<{ groups: ProcessedGroup[] }>(
+        withS3(`/api/processed?job_id=${jobId}`),
+      );
+      const g = (data.groups ?? []).find((x) => x.job_id === jobId);
+      const rest = processedGroups.value.filter((x) => x.job_id !== jobId);
+      processedGroups.value = g ? [...rest, g] : rest;
+    } catch {
+      // leave any previously-loaded groups intact; the action just won't light up
     }
   }
 
@@ -86,25 +152,38 @@ export const useBrowseStore = defineStore("browse", () => {
     return map;
   });
 
+  // localSignature is the fallback folder-set key for an old backend that doesn't send `signature`.
+  // The backend key (store.SelectionSignature) is authoritative — same recipe, but computed once
+  // server-side so Go and JS normalization can never drift.
+  function localSignature(paths: { path: string }[]): string {
+    return paths
+      .map((p) => p.path.toLowerCase())
+      .sort()
+      .join("|");
+  }
+
   // processingHistory de-duplicates past jobs by their folder-set so the Import view can offer each
-  // unique selection for re-running. Most-recent first; runs counts how many jobs used that exact set.
+  // unique selection for re-running. Most-recent first, favorites pinned on top; runs counts how many
+  // jobs used that exact set. Saved selections join by signature; a saved selection whose jobs aged
+  // out of the window is appended as an orphan row (jobId 0) so a named set never disappears.
   const processingHistory = computed<ProcessingHistoryEntry[]>(() => {
     const recent = [...processedGroups.value].sort(
       (a, b) => (b.created_at_ms || 0) - (a.created_at_ms || 0),
+    );
+    const selBySig = new Map(
+      savedSelections.value.map((s) => [s.signature, s]),
     );
     const bySig = new Map<string, ProcessingHistoryEntry>();
     for (const g of recent) {
       const paths = g.paths ?? [];
       if (!paths.length) continue;
-      const sig = paths
-        .map((p) => p.path.toLowerCase())
-        .sort()
-        .join("|");
+      const sig = g.signature ?? localSignature(paths);
       const existing = bySig.get(sig);
       if (existing) {
         existing.runs++;
         continue;
       }
+      const sel = selBySig.get(sig);
       bySig.set(sig, {
         jobId: g.job_id,
         object: g.object,
@@ -113,10 +192,31 @@ export const useBrowseStore = defineStore("browse", () => {
         status: g.status,
         createdAtMs: g.created_at_ms,
         runs: 1,
+        signature: sig,
+        selection: sel
+          ? { id: sel.id, name: sel.name, favorite: sel.favorite }
+          : undefined,
         paths,
       });
     }
-    return [...bySig.values()];
+    for (const sel of savedSelections.value) {
+      if (bySig.has(sel.signature)) continue;
+      bySig.set(sel.signature, {
+        jobId: 0,
+        mode: sel.mode || undefined,
+        format: sel.format || undefined,
+        status: "",
+        createdAtMs: sel.updated_at_ms,
+        runs: 0,
+        signature: sel.signature,
+        selection: { id: sel.id, name: sel.name, favorite: sel.favorite },
+        paths: sel.paths,
+      });
+    }
+    // Stable pin: favorites first, preserving the newest-first order within each band.
+    const rows = [...bySig.values()];
+    const fav = rows.filter((r) => r.selection?.favorite);
+    return [...fav, ...rows.filter((r) => !r.selection?.favorite)];
   });
 
   // selectPaths replaces the cross-location selection with the given folder paths (used by the Import
@@ -219,29 +319,10 @@ export const useBrowseStore = defineStore("browse", () => {
     }
   }
 
-  // loadPreview fetches the binary /api/preview buffer for one file and parses its header into a
-  // PreviewImage (little-endian, as all browser-host platforms are). The viewer stretches it locally.
+  // loadPreview fetches the binary /api/preview buffer for one file. The decode is shared with the
+  // live camera view (utils/previewbuf), so both read one format through one implementation.
   async function loadPreview(p: string, max?: number): Promise<PreviewImage> {
-    const res = await fetch(previewUrl(p, max));
-    if (!res.ok) {
-      let message = res.statusText;
-      try {
-        const data = (await res.json()) as { error?: string };
-        if (data.error) message = data.error;
-      } catch {
-        // keep statusText
-      }
-      throw new Error(message);
-    }
-    const buf = await res.arrayBuffer();
-    const head = new DataView(buf);
-    const w = head.getUint32(0, true);
-    const h = head.getUint32(4, true);
-    const c = head.getUint32(8, true);
-    const autoLo = head.getUint16(12, true);
-    const autoHi = head.getUint16(14, true);
-    const data = new Uint16Array(buf, 16, w * h * c);
-    return { w, h, c, autoLo, autoHi, data };
+    return fetchPreviewBuffer(previewUrl(p, max));
   }
 
   return {
@@ -262,7 +343,13 @@ export const useBrowseStore = defineStore("browse", () => {
     processedByPath,
     processedGroups,
     processingHistory,
+    savedSelections,
+    saveSelection,
+    renameSelection,
+    setSelectionFavorite,
+    deleteSelection,
     loadProcessed,
+    loadProcessedFor,
     selectPaths,
   };
 });

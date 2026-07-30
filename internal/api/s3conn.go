@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/verove-jordan/astronomy/internal/job"
 	"github.com/verove-jordan/astronomy/internal/s3store"
 	"github.com/verove-jordan/astronomy/internal/store"
 )
@@ -23,13 +24,14 @@ import (
 
 // connBody is the create/update payload. SecretKey is write-only; blank on update keeps the stored secret.
 type connBody struct {
-	Name        string `json:"name"`
-	Endpoint    string `json:"endpoint"`
-	Region      string `json:"region"`
-	AccessKeyID string `json:"access_key_id"`
-	SecretKey   string `json:"secret_access_key"`
-	UseSSL      bool   `json:"use_ssl"`
-	MakeDefault bool   `json:"make_default"`
+	Name                string `json:"name"`
+	Endpoint            string `json:"endpoint"`
+	Region              string `json:"region"`
+	AccessKeyID         string `json:"access_key_id"`
+	SecretKey           string `json:"secret_access_key"`
+	UseSSL              bool   `json:"use_ssl"`
+	MakeDefault         bool   `json:"make_default"`
+	DefaultStorageClass string `json:"default_storage_class"` // instant class only (uploads must stay readable)
 }
 
 // s3ConnReady guards every connection endpoint on encryption being available (else the whole feature is off).
@@ -80,9 +82,9 @@ func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := s.s3conn.Create(r.Context(), b.Name, b.Endpoint, regionOrDefault(b.Region),
-		b.AccessKeyID, b.SecretKey, b.UseSSL, b.MakeDefault)
+		b.AccessKeyID, b.SecretKey, b.UseSSL, b.MakeDefault, b.DefaultStorageClass)
 	if err != nil {
-		serverError(w, err)
+		badRequest(w, err.Error()) // e.g. an archived default class is rejected
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
@@ -108,8 +110,8 @@ func (s *Server) updateConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.s3conn.Update(r.Context(), id, b.Name, b.Endpoint, regionOrDefault(b.Region),
-		b.AccessKeyID, b.SecretKey, b.UseSSL); err != nil {
-		serverError(w, err)
+		b.AccessKeyID, b.SecretKey, b.UseSSL, b.DefaultStorageClass); err != nil {
+		badRequest(w, err.Error()) // e.g. an archived default class is rejected
 		return
 	}
 	if b.MakeDefault {
@@ -292,13 +294,16 @@ func (s *Server) manageDeleteBucket(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// s3Object is one entry in an object listing (a sub-folder or a file).
+// s3Object is one entry in an object listing (a sub-folder or a file). StorageClass ("" == STANDARD) lets
+// the explorer badge archived objects; Archived is the derived "needs a thaw before download" flag.
 type s3Object struct {
-	Key       string `json:"key"`
-	Name      string `json:"name"`
-	Size      int64  `json:"size,omitempty"`
-	ModTimeMs int64  `json:"mod_time_ms,omitempty"`
-	IsDir     bool   `json:"is_dir"`
+	Key          string `json:"key"`
+	Name         string `json:"name"`
+	Size         int64  `json:"size,omitempty"`
+	ModTimeMs    int64  `json:"mod_time_ms,omitempty"`
+	IsDir        bool   `json:"is_dir"`
+	StorageClass string `json:"storage_class,omitempty"`
+	Archived     bool   `json:"archived,omitempty"`
 }
 
 // manageObjects lists one folder (immediate sub-folders + files). GET /api/s3/manage/objects?conn=&bucket=&prefix=
@@ -326,7 +331,8 @@ func (s *Server) manageObjects(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(o.Key, "/") {
 			continue // folder marker — represented by the folders list
 		}
-		out = append(out, s3Object{Key: o.Key, Name: path.Base(o.Key), Size: o.Size, ModTimeMs: o.ModTime})
+		out = append(out, s3Object{Key: o.Key, Name: path.Base(o.Key), Size: o.Size, ModTimeMs: o.ModTime,
+			StorageClass: o.StorageClass, Archived: s3store.IsArchivedClass(o.StorageClass)})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"objects": out})
 }
@@ -383,77 +389,101 @@ func (s *Server) manageDeleteObject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// manageMove relocates an object or a whole folder (key ending "/") to a destination folder, then rewrites
-// the s3_objects ledger so a moved file is still resolvable by the inspector/serving fallback. Physical
-// copy → ledger rekey → delete source (so a mid-way failure never strands the ledger pointing at a deleted
-// key). POST /api/s3/manage/move?conn=  body {bucket, src, dst}
+// manageMove enqueues an S3→S3 move of the selected objects/folders into a destination folder as a
+// transfer-lane JOB (per object: server-side copy → s3_objects ledger rekey → delete source, so a moved file
+// stays resolvable by the inspector/serving fallback and a mid-way failure never strands the ledger). Running
+// it as a job — rather than synchronously in this handler — streams live progress (bytes/speed/ETA) in the
+// explorer + Tasks and never blocks the request until a big folder finishes. POST /api/s3/manage/move?conn=
+// body {bucket, srcs, dst}. Returns 202 {id}.
 func (s *Server) manageMove(w http.ResponseWriter, r *http.Request) {
-	client, ok := s.manageClient(w, r)
-	if !ok {
+	if !s.s3ConnReady(w) {
+		return
+	}
+	conn, err := strconv.ParseInt(r.URL.Query().Get("conn"), 10, 64)
+	if err != nil {
+		badRequest(w, "conn (connection id) is required")
 		return
 	}
 	var body struct {
-		Bucket string `json:"bucket"`
-		Src    string `json:"src"`
-		Dst    string `json:"dst"`
+		Bucket string   `json:"bucket"`
+		Srcs   []string `json:"srcs"`
+		Dst    string   `json:"dst"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		badRequest(w, "invalid body")
 		return
 	}
-	if body.Bucket == "" || body.Src == "" {
-		badRequest(w, "bucket and src are required")
+	if body.Bucket == "" || len(body.Srcs) == 0 {
+		badRequest(w, "bucket and at least one src are required")
 		return
 	}
-	isDir := strings.HasSuffix(body.Src, "/")
-	base := path.Base(strings.TrimSuffix(body.Src, "/"))
-	dstFolder := body.Dst
-	if dstFolder != "" && !strings.HasSuffix(dstFolder, "/") {
-		dstFolder += "/"
+	// Cheap early guard (the job re-derives per source): reject an obvious folder-into-itself so the user
+	// gets an immediate 400 rather than a job that fails.
+	for _, src := range body.Srcs {
+		if src == "" {
+			continue
+		}
+		if newKey, isDir := s3store.MoveDest(src, body.Dst); isDir && newKey != src && strings.HasPrefix(newKey, src) {
+			badRequest(w, "cannot move a folder into itself")
+			return
+		}
 	}
-	newKey := dstFolder + base
-	if isDir {
-		newKey += "/"
-	}
-	if newKey == body.Src {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true}) // no-op move into the same place
-		return
-	}
-	if isDir && strings.HasPrefix(dstFolder, body.Src) {
-		badRequest(w, "cannot move a folder into itself")
-		return
-	}
-
-	// 1) Physical copy (server-side; bytes never transit the engine).
-	var err error
-	if isDir {
-		err = client.CopyPrefix(r.Context(), body.Bucket, body.Src, newKey)
-	} else {
-		err = client.Copy(r.Context(), body.Bucket, body.Src, newKey)
-	}
+	id, err := s.mgr.Enqueue(r.Context(), job.RunRequest{
+		Mode: "move",
+		Move: &job.MoveRequest{Conn: conn, Bucket: body.Bucket, Srcs: body.Srcs, Dst: body.Dst},
+	})
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	// 2) Rekey the ledger (s3_key src → newKey, local_rel preserved) BEFORE deleting the source, so a failed
-	// delete leaves the ledger already pointing at the surviving copy rather than at a deleted key.
-	if s.store != nil {
-		if _, rerr := s.store.RekeyS3Objects(r.Context(), body.Bucket,
-			strings.TrimSuffix(body.Src, "/"), strings.TrimSuffix(newKey, "/")); rerr != nil {
-			serverError(w, rerr)
-			return
-		}
+	writeJSON(w, http.StatusAccepted, map[string]any{"id": id})
+}
+
+// manageTier enqueues a storage-class change (archive / restore / restore-only) of the selected
+// objects/folders as a thaw-lane JOB (per object: transition an instant source, or thaw an archived source
+// then transition). Archived sources are restored first: the job parks on a thaw cadence and resumes to
+// finish once readable — a durable, visitable task. Runs on the explorer's connection (Conn), NOT the
+// pipeline default. POST /api/s3/manage/tier?conn=  body {bucket, srcs, target_class, restore_only, tier, days}.
+// Returns 202 {id}.
+func (s *Server) manageTier(w http.ResponseWriter, r *http.Request) {
+	if !s.s3ConnReady(w) {
+		return
 	}
-	// 3) Delete the source now that the copy + ledger point at the new location.
-	if isDir {
-		err = client.RemovePrefix(r.Context(), body.Bucket, body.Src)
-	} else {
-		err = client.Delete(r.Context(), body.Bucket, body.Src)
-	}
+	conn, err := strconv.ParseInt(r.URL.Query().Get("conn"), 10, 64)
 	if err != nil {
-		log.Printf("s3 manage move: source %s/%s copied+rekeyed to %s but not deleted: %v", body.Bucket, body.Src, newKey, err)
+		badRequest(w, "conn (connection id) is required")
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "key": newKey})
+	var body struct {
+		Bucket      string   `json:"bucket"`
+		Srcs        []string `json:"srcs"`
+		TargetClass string   `json:"target_class"`
+		RestoreOnly bool     `json:"restore_only"`
+		Tier        string   `json:"tier"`
+		Days        int      `json:"days"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		badRequest(w, "invalid body")
+		return
+	}
+	if body.Bucket == "" || len(body.Srcs) == 0 {
+		badRequest(w, "bucket and at least one src are required")
+		return
+	}
+	if !body.RestoreOnly && !s3store.ValidTargetClass(body.TargetClass) {
+		badRequest(w, "target_class must be a valid storage class (e.g. STANDARD, GLACIER, DEEP_ARCHIVE, GLACIER_IR)")
+		return
+	}
+	id, err := s.mgr.Enqueue(r.Context(), job.RunRequest{
+		Mode: "tier",
+		TierChange: &job.TierRequest{Conn: conn, Bucket: body.Bucket, Srcs: body.Srcs,
+			TargetClass: body.TargetClass, RestoreOnly: body.RestoreOnly, Tier: body.Tier, Days: body.Days},
+	})
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"id": id})
 }
 
 // manageDownload streams an object to the browser. GET /api/s3/manage/download?conn=&bucket=&key=
@@ -466,6 +496,15 @@ func (s *Server) manageDownload(w http.ResponseWriter, r *http.Request) {
 	bucket, key := q.Get("bucket"), q.Get("key")
 	if bucket == "" || key == "" {
 		badRequest(w, "bucket and key are required")
+		return
+	}
+	// An archived (Glacier) object can't be streamed until it is restored. Reply 409 with a machine-readable
+	// archived signal so the explorer offers "Restore" instead of downloading a doomed stream. GLACIER_IR and
+	// restored objects read normally.
+	if rd, rerr := client.Readiness(r.Context(), bucket, key); rerr == nil && rd != s3store.Readable {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":    "object is archived in Glacier — restore it first",
+			"archived": true, "pending": rd == s3store.Pending, "key": key})
 		return
 	}
 	rc, size, err := client.Open(r.Context(), bucket, key)

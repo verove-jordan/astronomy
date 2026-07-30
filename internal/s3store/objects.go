@@ -53,6 +53,7 @@ func (c *Client) Upload(ctx context.Context, bucket, key, localPath string, onBy
 	opts := minio.PutObjectOptions{
 		ContentType:  contentType(localPath),
 		UserMetadata: map[string]string{userMD5Key: sum},
+		StorageClass: c.defaultClass, // "" → provider default; an instant class only (guaranteed by New)
 	}
 	// A large file is split into parts uploaded in parallel. ConcurrentStreamParts works on a plain stream
 	// (no ReaderAt), so the countReader still ticks progress; minio reads ahead into NumThreads buffers.
@@ -135,7 +136,7 @@ func (c *Client) GetBytes(ctx context.Context, bucket, key string) ([]byte, erro
 func (c *Client) PutBytes(ctx context.Context, bucket, key string, data []byte) error {
 	err := withRetry(ctx, "put", func() error {
 		_, perr := c.mc.PutObject(ctx, bucket, key, bytes.NewReader(data), int64(len(data)),
-			minio.PutObjectOptions{ContentType: contentType(key)})
+			minio.PutObjectOptions{ContentType: contentType(key), StorageClass: c.defaultClass})
 		return perr
 	})
 	if err != nil {

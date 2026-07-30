@@ -1,15 +1,24 @@
-// JS mirror of the domain color *values* defined in tailwind.config.js (the config is authoritative).
-// Used by consumers that need raw hex — ECharts and the zoom navigator canvas — never in templates.
+// Raw hex for consumers that cannot use classes — ECharts and the zoom-navigator canvas. Never used
+// in templates (those use the class maps in constants/styles.ts).
+//
+// FILTER_HEX is the authoritative per-filter hex: tailwind.config.js deliberately carries no `filter`
+// colour scale (see the note there), so there is nothing to mirror or drift from.
 
-export const FILTER_HEX: Record<string, string> = {
+import type { Filter } from "@/constants/filters";
+
+// `satisfies Record<Filter, string>` makes this EXHAUSTIVE: adding a filter to constants/filters.ts
+// without a hex here is a type error, not a silently brand-coloured series.
+const FILTER_HEX_CANONICAL = {
   L: "#cbd5e1",
   R: "#ef4444",
   G: "#22c55e",
   B: "#3b82f6",
-  Ha: "#f43f5e",
-  OIII: "#06b6d4",
-  SII: "#f59e0b",
-};
+  Ha: "#f43f5e", // rose — Hα 656 nm
+  OIII: "#06b6d4", // cyan — [OIII] 501 nm
+  SII: "#f59e0b", // amber — [SII] 672 nm
+} satisfies Record<Filter, string>;
+
+export const FILTER_HEX: Record<string, string> = FILTER_HEX_CANONICAL;
 
 const BRAND = "#6366f1";
 
@@ -120,6 +129,7 @@ export const SKY_MAP = {
   moon: "#e2e8f0",
   moonDark: "#334155", // unlit side of the moon disc
   planet: "#fbbf24", // amber planet dot + label
+  milkyWay: "#b9c7e4", // faint galactic band fill (alpha scaled by strip depth × brightness at draw time)
 } as const;
 
 // Score-tier hexes for the polar sky-map markers (mirror scoreTierBar in constants/styles.ts).

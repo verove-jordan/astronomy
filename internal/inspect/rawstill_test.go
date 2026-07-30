@@ -42,12 +42,12 @@ func TestClassifyRawStills_Tokens(t *testing.T) {
 
 // TestSetKeyFor_ISO: ISO splits phone light sets, but a FITS frame (ISO 0) keeps its historical key.
 func TestSetKeyFor_ISO(t *testing.T) {
-	a := setKeyFor(&Frame{Type: Light, Filter: "RGB", ISO: 800})
-	b := setKeyFor(&Frame{Type: Light, Filter: "RGB", ISO: 3200})
+	a := setKeyFor(&Frame{Type: Light, Filter: "RGB", ISO: 800}, false)
+	b := setKeyFor(&Frame{Type: Light, Filter: "RGB", ISO: 3200}, false)
 	if a == b {
 		t.Fatal("lights differing only by ISO should have different keys")
 	}
-	fitsKey := setKeyFor(&Frame{Type: Dark, ExposureMs: 300000, Gain: 200, Offset: 50, BinX: 1})
+	fitsKey := setKeyFor(&Frame{Type: Dark, ExposureMs: 300000, Gain: 200, Offset: 50, BinX: 1}, false)
 	if fitsKey.ISO != 0 {
 		t.Fatalf("FITS dark key ISO = %d, want 0", fitsKey.ISO)
 	}

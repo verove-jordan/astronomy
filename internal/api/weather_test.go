@@ -2,13 +2,16 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"image/png"
 	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,31 +20,56 @@ import (
 	"github.com/verove-jordan/astronomy/internal/weather"
 )
 
-const omTestBody = `"time":["2026-06-30T20:00","2026-06-30T21:00","2026-06-30T22:00"],` +
-	`"cloud_cover":[10,80,5],"temperature_2m":[15,14,13],"dew_point_2m":[8,12,7]`
+// omTestBody builds a 3-hour Open-Meteo hourly block whose steps start at the CURRENT hour — inside the
+// frames endpoint's [now−1h, now+24h] scrub window, so the axis assertions don't rot with the calendar.
+func omTestBody() string {
+	t0 := time.Now().UTC().Truncate(time.Hour)
+	const f = "2006-01-02T15:04"
+	return fmt.Sprintf(`"time":[%q,%q,%q],`+
+		`"cloud_cover":[10,80,5],"cloud_cover_low":[5,40,2],"cloud_cover_mid":[3,25,1],`+
+		`"cloud_cover_high":[8,60,4],"relative_humidity_2m":[60,85,55],`+
+		`"precipitation_probability":[20,50,10],"temperature_2m":[15,14,13],"dew_point_2m":[8,12,7]`,
+		t0.Format(f), t0.Add(time.Hour).Format(f), t0.Add(2*time.Hour).Format(f))
+}
+
+// fakeOpenMeteoHandler answers like Open-Meteo for both the point (object) and grid (array) shapes,
+// counting every request when calls is non-nil.
+func fakeOpenMeteoHandler(calls *atomic.Int32) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if calls != nil {
+			calls.Add(1)
+		}
+		lat := r.URL.Query().Get("latitude")
+		if strings.Contains(lat, ",") {
+			n := strings.Count(lat, ",") + 1
+			objs := make([]string, n)
+			for i := range objs {
+				objs[i] = `{"hourly":{` + omTestBody() + `}}`
+			}
+			_, _ = io.WriteString(w, "["+strings.Join(objs, ",")+"]")
+			return
+		}
+		_, _ = io.WriteString(w, `{"hourly":{`+omTestBody()+`}}`)
+	}
+}
 
 // weatherTestServer builds an API Server whose weather provider talks to a fake Open-Meteo (the other
 // feeds are left unconfigured, so they soft-fail and only the backbone contributes).
 func weatherTestServer(t *testing.T, withProvider bool) *Server {
+	s, _ := weatherTestServerCounting(t, withProvider)
+	return s
+}
+
+// weatherTestServerCounting also exposes the fake upstream's request counter.
+func weatherTestServerCounting(t *testing.T, withProvider bool) (*Server, *atomic.Int32) {
 	t.Helper()
 	cfg := &config.Config{
 		WorkDir: t.TempDir(), LatDeg: 48.86, LonDeg: 2.35, Timezone: "UTC",
 		WeatherGridSize: 4, WeatherGridRadiusDeg: 2, WeatherCacheTTLMin: 30,
 	}
+	calls := &atomic.Int32{}
 	if withProvider {
-		om := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			lat := r.URL.Query().Get("latitude")
-			if strings.Contains(lat, ",") {
-				n := strings.Count(lat, ",") + 1
-				objs := make([]string, n)
-				for i := range objs {
-					objs[i] = `{"hourly":{` + omTestBody + `}}`
-				}
-				_, _ = io.WriteString(w, "["+strings.Join(objs, ",")+"]")
-				return
-			}
-			_, _ = io.WriteString(w, `{"hourly":{`+omTestBody+`}}`)
-		}))
+		om := httptest.NewServer(fakeOpenMeteoHandler(calls))
 		t.Cleanup(om.Close)
 		cfg.WeatherOpenMeteoURL = om.URL
 	}
@@ -49,7 +77,7 @@ func weatherTestServer(t *testing.T, withProvider bool) *Server {
 	if withProvider {
 		s.weather = weather.New(cfg)
 	}
-	return s
+	return s, calls
 }
 
 func TestSkyWeather_ReturnsForecast(t *testing.T) {
@@ -127,7 +155,7 @@ func TestSkyWeatherGrid_StableUnderPan(t *testing.T) {
 
 func TestSkyWeatherGridFrames_AxisAndETag(t *testing.T) {
 	h := weatherTestServer(t, true).Handler()
-	req := httptest.NewRequest(http.MethodGet, "/api/sky/weather/grid/frames?lat=48.86&lon=2.35&layers=clouds", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/sky/weather/grid/frames?lat=48.86&lon=2.35&z=7", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -138,17 +166,89 @@ func TestSkyWeatherGridFrames_AxisAndETag(t *testing.T) {
 
 	var resp weatherFramesResponse
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
-	assert.Len(t, resp.Timesteps, 3, "the time axis has one entry per timestep")
+	assert.Len(t, resp.Timesteps, 3, "the fixture's steps start at the current hour, all inside the scrub window")
 	assert.NotZero(t, resp.IssuedMs)
 	// The frames payload carries only the axis + coverage — the heavy floats live in the tiles.
 	assert.NotEqual(t, [4]float64{}, resp.BBox)
 
 	// A conditional refetch of the unchanged forecast is a 304.
-	req2 := httptest.NewRequest(http.MethodGet, "/api/sky/weather/grid/frames?lat=48.86&lon=2.35&layers=clouds", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/sky/weather/grid/frames?lat=48.86&lon=2.35&z=7", nil)
 	req2.Header.Set("If-None-Match", etag)
 	rec2 := httptest.NewRecorder()
 	h.ServeHTTP(rec2, req2)
 	assert.Equal(t, http.StatusNotModified, rec2.Code)
+}
+
+// TestScrubWindow: the frames axis is bounded to tonight-through-tomorrow-dawn ([now−1h, now+24h]);
+// older/farther steps stay in the cube (the tiles can render them) but leave the scrubber.
+func TestScrubWindow(t *testing.T) {
+	now := time.Date(2026, 7, 17, 22, 30, 0, 0, time.UTC)
+	h := func(d time.Duration) int64 { return now.Add(d).UnixMilli() }
+	in := []int64{h(-30 * time.Hour), h(-2 * time.Hour), h(-time.Hour), h(0), h(12 * time.Hour), h(24 * time.Hour), h(25 * time.Hour)}
+	assert.Equal(t, []int64{h(-time.Hour), h(0), h(12 * time.Hour), h(24 * time.Hour)}, scrubWindow(in, now))
+	assert.Empty(t, scrubWindow(nil, now))
+}
+
+// TestFramesThenTiles_ShareOneCubeFetch is the quota fix's end-to-end contract: the frames request and
+// every metric's tiles in the same block must resolve ONE shared cube — a single upstream fetch — where
+// the per-metric cubes of the old design burned three-plus.
+func TestFramesThenTiles_ShareOneCubeFetch(t *testing.T) {
+	s, calls := weatherTestServerCounting(t, true)
+	h := s.Handler()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sky/weather/grid/frames?lat=48.86&lon=2.35&z=7", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var fr weatherFramesResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&fr))
+	require.NotEmpty(t, fr.Timesteps)
+
+	// (7,64,44) is the Paris tile at z7 — the same block LatLonToTile resolves for the frames request.
+	painted := false
+	for _, metric := range []string{"clouds", "humidity", "precip", "clouds_low", "dewspread"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+			fmt.Sprintf("/api/sky/weather/tiles/%s/%d/7/64/44", metric, fr.Timesteps[0]), nil))
+		require.Equal(t, http.StatusOK, rec.Code, metric)
+		img, err := png.Decode(rec.Body)
+		require.NoError(t, err, metric)
+		if metric != "clouds" {
+			continue
+		}
+		b := img.Bounds()
+		for y := b.Min.Y; y < b.Max.Y && !painted; y += 8 {
+			for x := b.Min.X; x < b.Max.X; x += 8 {
+				if _, _, _, a := img.At(x, y).RGBA(); a > 0 {
+					painted = true
+					break
+				}
+			}
+		}
+	}
+	assert.True(t, painted, "the clouds tile paints from the shared cube")
+	assert.Equal(t, int32(1), calls.Load(), "frames + every metric's tiles = ONE upstream fetch")
+}
+
+// A degraded cube keeps serving transparent tiles but now carries the warning header, so the outage is
+// visible in the browser's Network tab instead of indistinguishable from clear skies.
+func TestSkyWeatherTile_DegradedSetsWarningHeader(t *testing.T) {
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(down.Close)
+	cfg := &config.Config{
+		WorkDir: t.TempDir(), LatDeg: 48.86, LonDeg: 2.35, Timezone: "UTC",
+		WeatherGridSize: 4, WeatherGridRadiusDeg: 2, WeatherCacheTTLMin: 30,
+		WeatherOpenMeteoURL: down.URL,
+	}
+	s := &Server{cfg: cfg, weather: weather.New(cfg)}
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sky/weather/tiles/clouds/0/6/32/21", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.NotEmpty(t, rec.Header().Get("X-Weather-Warning"), "degraded tiles carry the warning header")
+	img, err := png.Decode(rec.Body)
+	require.NoError(t, err)
+	_, _, _, a := img.At(img.Bounds().Min.X, img.Bounds().Min.Y).RGBA()
+	assert.Zero(t, a, "still transparent — the header is the only difference")
 }
 
 func TestSkyWeatherTile_RendersPNG(t *testing.T) {

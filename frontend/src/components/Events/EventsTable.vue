@@ -59,8 +59,18 @@ const columns: Column<Row>[] = [
     sortable: true,
     format: (v) => fmtDateTime(Number(v), props.tz),
   },
-  { key: "title", label: t("calendar.cols.event"), sortable: true, searchable: true },
-  { key: "kindLabel", label: t("calendar.cols.kind"), sortable: true, searchable: true },
+  {
+    key: "title",
+    label: t("calendar.cols.event"),
+    sortable: true,
+    searchable: true,
+  },
+  {
+    key: "kindLabel",
+    label: t("calendar.cols.kind"),
+    sortable: true,
+    searchable: true,
+  },
   { key: "naked", label: t("calendar.cols.vis"), sortable: true },
   {
     key: "mag",
@@ -107,7 +117,9 @@ function rowClass(row: Row): string {
       <div class="flex items-center gap-2 text-[10px] text-slate-400">
         <span class="flex items-center gap-1" title="naked eye">
           👁
-          <span class="h-1.5 w-8 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+          <span
+            class="h-1.5 w-8 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700"
+          >
             <span
               class="block h-full rounded-full"
               :class="scoreTierBar[scoreTier(Number(row.naked))]"
@@ -117,7 +129,9 @@ function rowClass(row: Row): string {
         </span>
         <span class="flex items-center gap-1" title="your scope">
           🔭
-          <span class="h-1.5 w-8 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+          <span
+            class="h-1.5 w-8 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700"
+          >
             <span
               class="block h-full rounded-full"
               :class="scoreTierBar[scoreTier(Number(row.scope))]"

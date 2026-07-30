@@ -30,6 +30,80 @@ func TestComposeScript_HaLRGB(t *testing.T) {
 	assert.Contains(t, s, `"/o/final.png"`)
 }
 
+// TestComposeScript_OIIITealScreen pins the OIII emission twin: teal tint (only RED killed), Screen
+// mode at the FINAL opacity carried in Inputs, black-point clip, star exclusion shared with Ha — and
+// a strict no-op when the opacity is zero (byte-identical script for every pre-knob run).
+func TestComposeScript_OIIITealScreen(t *testing.T) {
+	in := Inputs{
+		Base: "/s/base.tif", Ha: "/s/ha.tif", OIII: "/s/oiii.tif", Color: true,
+		OIIIScreen: 0.45, OIIIBlack: 0.06, HaExcludeStars: true,
+	}
+	s := composeScript(in, nil, 0.30, 0.15, &Result{Xcf: "/o/f.xcf", Tif: "/o/f.tif", Png: "/o/f.png"})
+
+	assert.Contains(t, s, `(gimp-file-load-layer RUN-NONINTERACTIVE image "/s/oiii.tif"`)
+	assert.Contains(t, s, "(gimp-drawable-levels oiii HISTOGRAM-RED 0 1 TRUE 1 0 0 TRUE)")
+	assert.NotContains(t, s, "(gimp-drawable-levels oiii HISTOGRAM-GREEN")
+	assert.Contains(t, s, "(gimp-drawable-levels oiii HISTOGRAM-VALUE 0.0600 1 TRUE 1 0 1 TRUE)")
+	assert.Contains(t, s, "(gimp-layer-set-mode oiii LAYER-MODE-SCREEN)")
+	assert.Contains(t, s, "(gimp-layer-set-opacity oiii 45)")
+	assert.Contains(t, s, "(plug-in-median-blur RUN-NONINTERACTIVE image oiii 8 50)")
+
+	off := composeScript(Inputs{Base: "/s/base.tif", OIII: "/s/oiii.tif", Color: true}, nil, 0, 0.15,
+		&Result{Xcf: "/o/f.xcf", Tif: "/o/f.tif", Png: "/o/f.png"})
+	assert.NotContains(t, off, "oiii", "zero opacity must leave the script OIII-free")
+}
+
+func TestComposeScript_SIIScreen(t *testing.T) {
+	res := &Result{Xcf: "/o/f.xcf", Tif: "/o/f.tif", Png: "/o/f.png"}
+
+	// Deep red (the default): green killed, a TRACE of blue kept. That trace is the whole point —
+	// screening pure red over the pure-red Ha layer would just brighten it and read as nothing.
+	deep := composeScript(Inputs{
+		Base: "/s/base.tif", Ha: "/s/ha.tif", SII: "/s/sii.tif", Color: true,
+		SIIScreen: 0.4, SIIBlack: 0.05, HaExcludeStars: true,
+	}, nil, 0.30, 0.15, res)
+	assert.Contains(t, deep, `(gimp-file-load-layer RUN-NONINTERACTIVE image "/s/sii.tif"`)
+	assert.Contains(t, deep, "(gimp-drawable-levels sii HISTOGRAM-GREEN 0 1 TRUE 1 0 0 TRUE)")
+	assert.Contains(t, deep, "(gimp-drawable-levels sii HISTOGRAM-BLUE 0 1 TRUE 1 0 0.18 TRUE)")
+	assert.Contains(t, deep, "(gimp-drawable-levels sii HISTOGRAM-VALUE 0.0500 1 TRUE 1 0 1 TRUE)")
+	assert.Contains(t, deep, "(gimp-layer-set-mode sii LAYER-MODE-SCREEN)")
+	assert.Contains(t, deep, "(gimp-layer-set-opacity sii 40)")
+	assert.Contains(t, deep, "(plug-in-median-blur RUN-NONINTERACTIVE image sii 8 50)",
+		"ha_exclude_stars governs all three emission screens")
+
+	// Gold: the mirror image — blue killed, green held back to the amber ratio.
+	gold := composeScript(Inputs{
+		Base: "/s/base.tif", SII: "/s/sii.tif", Color: true, SIIScreen: 0.4, SIITint: "gold",
+	}, nil, 0, 0.15, res)
+	assert.Contains(t, gold, "(gimp-drawable-levels sii HISTOGRAM-BLUE 0 1 TRUE 1 0 0 TRUE)")
+	assert.Contains(t, gold, "(gimp-drawable-levels sii HISTOGRAM-GREEN 0 1 TRUE 1 0 0.62 TRUE)")
+
+	// An unknown tint must fall back to deep red rather than emitting nothing.
+	odd := composeScript(Inputs{
+		Base: "/s/base.tif", SII: "/s/sii.tif", Color: true, SIIScreen: 0.4, SIITint: "chartreuse",
+	}, nil, 0, 0.15, res)
+	assert.Contains(t, odd, "(gimp-drawable-levels sii HISTOGRAM-BLUE 0 1 TRUE 1 0 0.18 TRUE)")
+
+	off := composeScript(Inputs{Base: "/s/base.tif", SII: "/s/sii.tif", Color: true}, nil, 0, 0.15, res)
+	assert.NotContains(t, off, "sii", "zero opacity must leave the script SII-free")
+}
+
+// The regression that matters most: sii_screen defaults to 0, so every run that does not ask for the
+// new layer must emit EXACTLY the script it did before the knob existed.
+func TestComposeScript_SIIAbsentIsByteIdentical(t *testing.T) {
+	res := &Result{Xcf: "/o/f.xcf", Tif: "/o/f.tif", Png: "/o/f.png"}
+	base := Inputs{
+		Base: "/s/base.tif", Lum: "/s/lum.tif", Ha: "/s/ha.tif", OIII: "/s/oiii.tif",
+		Color: true, HaBlack: 0.12, OIIIScreen: 0.45, OIIIBlack: 0.06,
+	}
+	want := composeScript(base, []float64{0, 0, 1, 1}, 0.42, 0.15, res)
+
+	// A run that stacked SII but left the knob at its default renders the same bytes.
+	withSII := base
+	withSII.SII = "/s/sii.tif"
+	assert.Equal(t, want, composeScript(withSII, []float64{0, 0, 1, 1}, 0.42, 0.15, res))
+}
+
 func TestComposeScript_CoreHighlightShoulder(t *testing.T) {
 	res := &Result{Xcf: "/o/final.xcf", Tif: "/o/final.tif", Png: "/o/final.png"}
 
@@ -181,4 +255,11 @@ func TestComposeScript_GreenTrimOnlyWhenUncalibrated(t *testing.T) {
 	cal := composeScript(Inputs{Base: "b.tif", Color: true, CalibratedColor: true}, nil, 0, 0.1, res)
 	assert.NotContains(t, cal, "HUE-RANGE-GREEN", "a photometrically calibrated balance must not be green-trimmed (magenta tip)")
 	assert.Contains(t, cal, "HUE-RANGE-ALL", "global saturation still applies to calibrated colour")
+}
+
+// This package stays dependency-free, so it cannot import mode.SIITintGold and instead carries its
+// own copy of the wire value. Pin it here; pipeline.TestSIITintGoldWireValue pins the other half.
+func TestSIITintGoldWireValue(t *testing.T) {
+	assert.Equal(t, "gold", siiTintGold,
+		"must match mode.SIITintGold — see internal/mode/preset.go")
 }

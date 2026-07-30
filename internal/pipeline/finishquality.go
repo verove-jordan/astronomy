@@ -85,7 +85,7 @@ func finishQualityWarnings(m finishMetrics) []string {
 	}
 	for c, wc := range m.WhiteClip {
 		if wc > whiteClipMax {
-			w = append(w, fmt.Sprintf("finish quality: blown highlights (%.2f%% of channel %s at white) — stars/core burning", wc*100, [3]string{"R", "G", "B"}[c]))
+			w = append(w, fmt.Sprintf("finish quality: blown highlights (%.2f%% of channel %s at white) — star cores or a galaxy nucleus burning; more StretchHeadroom / a lower CoreHighlightCeil can recover them", wc*100, [3]string{"R", "G", "B"}[c]))
 			break
 		}
 	}

@@ -21,5 +21,14 @@ export XDG_DATA_HOME="${XDG_DATA_HOME:-$WORK/.local/share}"
 export GIMP2_DIRECTORY="${GIMP2_DIRECTORY:-$WORK/.gimp-2.10}"
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$GIMP2_DIRECTORY"
 
+# Siril's SPCC sensor/filter database: baked into the image (a headless Siril never downloads it —
+# without it `spcc` aborts even on a plate-solved image and colour falls back to star-field gains).
+# Symlinked, not copied, into Siril's user data dir ($XDG_DATA_HOME/siril) so it survives work-volume
+# resets and always matches the image's pinned revision.
+if [ -d /opt/siril-spcc-database ]; then
+  mkdir -p "$XDG_DATA_HOME/siril"
+  ln -sfn /opt/siril-spcc-database "$XDG_DATA_HOME/siril/siril-spcc-database"
+fi
+
 # serve reads all config from the environment and self-migrates the DB on startup.
 exec astrostack serve

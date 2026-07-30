@@ -233,10 +233,12 @@ func validTransferOp(op string) bool {
 // is the sub-path relative to the configured prefix, so the frontend navigates by rel and can derive the
 // local landing dir (<DataDir>/<rel>) for a download.
 type s3BrowseEntry struct {
-	Name   string `json:"name"`
-	Path   string `json:"path"`
-	IsDir  bool   `json:"is_dir"`
-	Remote bool   `json:"remote"`
+	Name         string `json:"name"`
+	Path         string `json:"path"`
+	IsDir        bool   `json:"is_dir"`
+	Remote       bool   `json:"remote"`
+	StorageClass string `json:"storage_class,omitempty"` // "" == STANDARD; set so the Import tab can flag archived folders
+	Archived     bool   `json:"archived,omitempty"`      // this file needs a thaw before it can be imported/read
 }
 
 // s3Browse lists one level of the real bucket at <prefix>/<rel> using the request's S3 connection
@@ -275,7 +277,8 @@ func (s *Server) s3Browse(w http.ResponseWriter, r *http.Request) {
 			continue // folder marker — already in folders
 		}
 		name := path.Base(o.Key)
-		entries = append(entries, s3BrowseEntry{Name: name, Path: path.Join(rel, name), IsDir: false, Remote: true})
+		entries = append(entries, s3BrowseEntry{Name: name, Path: path.Join(rel, name), IsDir: false, Remote: true,
+			StorageClass: o.StorageClass, Archived: s3store.IsArchivedClass(o.StorageClass)})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"rel": rel, "entries": entries})
 }
@@ -329,46 +332,74 @@ func cleanRel(rel string) (string, bool) {
 
 // --- S3-fallback serving (previews & results after the local copy was freed) ---
 
-// ensureServable resolves a local path to serve. If abs (already confined to root) exists on disk it is
+// serveOutcome is how resolveServable resolved a requested file.
+type serveOutcome int
+
+const (
+	serveLocal    serveOutcome = iota // served from disk, or fetched from S3 into the regenerable cache
+	serveMissing                      // neither local nor on S3 (→ 404)
+	serveArchived                     // on S3 but archived in Glacier — needs a restore first (→ 409)
+)
+
+// resolveServable resolves a local path to serve. If abs (already confined to root) exists on disk it is
 // returned as-is. Otherwise, when S3 is configured and the request names a bucket, the mirror object
 // (<prefix>/<namespace>/<relToRoot>) is downloaded once into the regenerable serve cache
 // (WorkDir/cache/s3/<namespace>/<rel>) and that path is returned — so previews and results keep loading
-// after "Free local" moved them to S3. ok=false means neither local nor fetchable (caller replies 404).
-func (s *Server) ensureServable(ctx context.Context, r *http.Request, abs, root, namespace string) (string, bool) {
+// after "Free local" moved them to S3. An archived (Glacier, not-yet-restored) mirror object returns
+// serveArchived WITHOUT attempting the GET — the handler replies 409 so the UI offers "Restore" rather
+// than 404, and a stray preview never silently starts a (paid) restore.
+func (s *Server) resolveServable(ctx context.Context, r *http.Request, abs, root, namespace string) (string, serveOutcome) {
 	if _, err := os.Stat(abs); err == nil {
-		return abs, true
+		return abs, serveLocal
 	}
 	q := r.URL.Query()
 	bucket := q.Get("bucket")
 	if bucket == "" {
-		return "", false
+		return "", serveMissing
 	}
 	cfg, cfgErr := s.s3ConfigForRequest(r) // honor ?conn= so the fallback reads the bucket's own connection
 	if cfgErr != nil || !cfg.Configured() {
-		return "", false
+		return "", serveMissing
 	}
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
-		return "", false
+		return "", serveMissing
 	}
 	rel, err := filepath.Rel(rootAbs, abs)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return "", false
+		return "", serveMissing
 	}
 	relSlash := filepath.ToSlash(rel)
 	cachePath := filepath.Join(s.cfg.WorkDir, "cache", "s3", namespace, filepath.FromSlash(relSlash))
 	if _, err := os.Stat(cachePath); err == nil {
-		return cachePath, true // already fetched this file into the cache
+		return cachePath, serveLocal // already fetched this file into the cache
 	}
 	client, err := s3store.New(cfg)
 	if err != nil {
-		return "", false
+		return "", serveMissing
 	}
 	key := s.mirrorKey(ctx, bucket, q.Get("prefix"), namespace, relSlash)
-	if err := client.Download(ctx, bucket, key, cachePath, nil); err != nil {
-		return "", false
+	if rd, rerr := client.Readiness(ctx, bucket, key); rerr == nil && rd != s3store.Readable {
+		return "", serveArchived // archived + not restored → don't attempt the doomed GET
 	}
-	return cachePath, true
+	if err := client.Download(ctx, bucket, key, cachePath, nil); err != nil {
+		return "", serveMissing
+	}
+	return cachePath, serveLocal
+}
+
+// ensureServable keeps the (path, ok) contract for callers that don't distinguish an archived mirror
+// object (e.g. the star-annotation Locate callback) — archived collapses to not-ok.
+func (s *Server) ensureServable(ctx context.Context, r *http.Request, abs, root, namespace string) (string, bool) {
+	path, outcome := s.resolveServable(ctx, r, abs, root, namespace)
+	return path, outcome == serveLocal
+}
+
+// writeArchived replies 409 with a machine-readable archived signal so the frontend can render an
+// "archived — restore to view" state (and offer a one-click Restore) instead of a broken image.
+func writeArchived(w http.ResponseWriter) {
+	writeJSON(w, http.StatusConflict, map[string]any{
+		"error": "archived in Glacier — restore it to view", "archived": true})
 }
 
 // mirrorKey resolves the S3 key of a mirrored file. For the classified data namespace it prefers the

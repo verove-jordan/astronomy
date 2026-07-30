@@ -21,11 +21,12 @@ import (
 // validated through the SAME pipeline.ApplyParamPatch a real run uses, so a saved preset can never carry
 // a knob the engine would silently drop.
 
-// presetBody is the create/rename payload. Payload is the recipe (only present on save); Name is required
-// by both save and rename.
+// presetBody is the create/update payload. Payload is the recipe (only present on save); Name is
+// required on save, optional on update (an update may only toggle Favorite).
 type presetBody struct {
-	Name    string          `json:"name"`
-	Payload json.RawMessage `json:"payload"`
+	Name     string          `json:"name"`
+	Payload  json.RawMessage `json:"payload"`
+	Favorite *bool           `json:"favorite"`
 }
 
 // listPresets returns the built-in catalog followed by the user's saved presets. GET /api/presets
@@ -41,6 +42,7 @@ func (s *Server) listPresets(w http.ResponseWriter, r *http.Request) {
 			ID:        row.ID,
 			Name:      row.Name,
 			Builtin:   false,
+			Favorite:  row.Favorite,
 			Payload:   json.RawMessage(row.Payload),
 			CreatedAt: row.CreatedAt,
 			UpdatedAt: row.UpdatedAt,
@@ -73,8 +75,8 @@ func (s *Server) savePreset(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"id": id})
 }
 
-// renamePreset changes a saved preset's name. PUT /api/presets/{id}
-func (s *Server) renamePreset(w http.ResponseWriter, r *http.Request) {
+// updatePreset renames and/or stars a saved preset — send name, favorite, or both. PUT /api/presets/{id}
+func (s *Server) updatePreset(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		badRequest(w, "invalid id")
@@ -86,18 +88,26 @@ func (s *Server) renamePreset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimSpace(b.Name)
-	if name == "" {
-		badRequest(w, "name is required")
+	if name == "" && b.Favorite == nil {
+		badRequest(w, "nothing to update — send name and/or favorite")
 		return
 	}
-	if err := s.store.RenamePreset(r.Context(), id, name); err != nil {
-		if isUniqueViolation(err) {
-			writeJSON(w, http.StatusConflict,
-				map[string]string{"error": "a preset with that name already exists"})
+	if name != "" {
+		if err := s.store.RenamePreset(r.Context(), id, name); err != nil {
+			if isUniqueViolation(err) {
+				writeJSON(w, http.StatusConflict,
+					map[string]string{"error": "a preset with that name already exists"})
+				return
+			}
+			serverError(w, err)
 			return
 		}
-		serverError(w, err)
-		return
+	}
+	if b.Favorite != nil {
+		if err := s.store.SetPresetFavorite(r.Context(), id, *b.Favorite); err != nil {
+			serverError(w, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

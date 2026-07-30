@@ -52,6 +52,31 @@ func TestApplyParamPatch_PerMode(t *testing.T) {
 			check: func(t *testing.T, p mode.Preset) { assert.Empty(t, p.Palette) },
 		},
 		{
+			name: "deepsky sii_screen is tierA", mode: mode.Deepsky,
+			params: `{"sii_screen":0.35}`, tier: "A", changed: []string{"sii_screen"},
+			check: func(t *testing.T, p mode.Preset) { assert.InDelta(t, 0.35, p.SIIScreen, 1e-9) },
+		},
+		{
+			name: "deepsky clamps a wild sii_screen", mode: mode.Deepsky,
+			params: `{"sii_screen":5}`, tier: "A", changed: []string{"sii_screen"},
+			check: func(t *testing.T, p mode.Preset) { assert.InDelta(t, 0.8, p.SIIScreen, 1e-9) },
+		},
+		{
+			name: "deepsky sii_black_point is tierA", mode: mode.Deepsky,
+			params: `{"sii_black_point":0.05}`, tier: "A", changed: []string{"sii_black_point"},
+			check: func(t *testing.T, p mode.Preset) { assert.InDelta(t, 0.05, p.SIIBlackPoint, 1e-9) },
+		},
+		{
+			name: "deepsky sii_tint is a normalized string enum", mode: mode.Deepsky,
+			params: `{"sii_tint":"GOLD"}`, tier: "A", changed: []string{"sii_tint"},
+			check: func(t *testing.T, p mode.Preset) { assert.Equal(t, mode.SIITintGold, p.SIITint) },
+		},
+		{
+			name: "deepsky invalid sii_tint is dropped", mode: mode.Deepsky,
+			params: `{"sii_tint":"chartreuse"}`, tier: "A", changed: nil,
+			check: func(t *testing.T, p mode.Preset) { assert.Empty(t, p.SIITint) },
+		},
+		{
 			name: "deepsky clamps lum_opacity to the 0 floor", mode: mode.Deepsky,
 			params: `{"lum_opacity":-1}`, tier: "A", changed: []string{"lum_opacity"},
 			check: func(t *testing.T, p mode.Preset) { assert.InDelta(t, 0.0, p.LumOpacity, 1e-9) },
@@ -68,6 +93,118 @@ func TestApplyParamPatch_PerMode(t *testing.T) {
 			check: func(t *testing.T, p mode.Preset) {
 				assert.Equal(t, 5, p.Planetary.BestPercent)
 				assert.InDelta(t, 300, p.Planetary.DeconvAlpha, 1e-9)
+			},
+		},
+		{
+			name: "planetary calibrate toggle is tierC", mode: mode.Planetary,
+			params: `{"calibrate":false}`, tier: "C", changed: []string{"calibrate"},
+			check: func(t *testing.T, p mode.Preset) {
+				assert.False(t, p.Planetary.Calibrate, "preset default true → patched off")
+			},
+		},
+		{
+			name: "planetary earthshine enable is tierA", mode: mode.Planetary,
+			params: `{"earthshine_gain":1}`, tier: "A", changed: []string{"earthshine_gain"},
+			check: func(t *testing.T, p mode.Preset) {
+				assert.InDelta(t, 1.0, p.Planetary.Finish.EarthshineGain, 1e-9)
+			},
+		},
+		{
+			name: "planetary earthshine clamps when enabled", mode: mode.Planetary,
+			params: `{"earthshine_gain":9}`, tier: "A", changed: []string{"earthshine_gain"},
+			check: func(t *testing.T, p mode.Preset) {
+				assert.InDelta(t, 2.0, p.Planetary.Finish.EarthshineGain, 1e-9, "clamped to max")
+			},
+		},
+		{
+			name: "planetary earthshine negative stays off", mode: mode.Planetary,
+			params: `{"earthshine_gain":-1}`, tier: "A", changed: nil,
+			check: func(t *testing.T, p mode.Preset) {
+				assert.Zero(t, p.Planetary.Finish.EarthshineGain, "≤0 is a clean off, never clamped on")
+			},
+		},
+		{
+			name: "planetary double_stack toggle is tierC", mode: mode.Planetary,
+			params: `{"double_stack":false}`, tier: "C", changed: []string{"double_stack"},
+			check: func(t *testing.T, p mode.Preset) {
+				assert.False(t, p.Planetary.DoubleStack, "preset default true → patched off")
+			},
+		},
+		{
+			name: "planetary earthshine feather is tierA and clamps", mode: mode.Planetary,
+			params: `{"earthshine_feather":0.5}`, tier: "A", changed: []string{"earthshine_feather"},
+			check: func(t *testing.T, p mode.Preset) {
+				assert.InDelta(t, 0.02, p.Planetary.Finish.EarthshineFeather, 1e-9, "clamped to max")
+			},
+		},
+		{
+			name: "planetary earthshine feather clamps up", mode: mode.Planetary,
+			params: `{"earthshine_feather":0.0001}`, tier: "A", changed: []string{"earthshine_feather"},
+			check: func(t *testing.T, p mode.Preset) {
+				assert.InDelta(t, 0.002, p.Planetary.Finish.EarthshineFeather, 1e-9, "clamped to min")
+			},
+		},
+		{
+			name: "planetary drizzle change is tierC and snaps", mode: mode.Planetary,
+			params: `{"drizzle_scale":1.9}`, tier: "C", changed: []string{"drizzle_scale"},
+			check: func(t *testing.T, p mode.Preset) {
+				assert.InDelta(t, 2.0, p.Planetary.DrizzleScale, 1e-9, "snapped to the nearest supported grid")
+			},
+		},
+		{
+			name: "planetary drizzle back to native is tierC", mode: mode.Planetary,
+			params: `{"drizzle_scale":1}`, tier: "C", changed: []string{"drizzle_scale"},
+			check: func(t *testing.T, p mode.Preset) {
+				assert.InDelta(t, 1.0, p.Planetary.DrizzleScale, 1e-9, "preset default 1.5 → native")
+			},
+		},
+		{
+			name: "planetary align_points is tierC and snaps", mode: mode.Planetary,
+			params: `{"align_points":500}`, tier: "C", changed: []string{"align_points"},
+			check: func(t *testing.T, p mode.Preset) {
+				assert.Equal(t, 484, p.Planetary.AlignPoints, "snapped to 22×22")
+			},
+		},
+		{
+			name: "planetary align_points clamps up", mode: mode.Planetary,
+			params: `{"align_points":10}`, tier: "C", changed: []string{"align_points"},
+			check: func(t *testing.T, p mode.Preset) {
+				assert.Equal(t, 100, p.Planetary.AlignPoints, "snapped to the 10×10 floor")
+			},
+		},
+		{
+			name: "planetary align_points zero stays auto", mode: mode.Planetary,
+			params: `{"align_points":0}`, tier: "A", changed: nil,
+			check: func(t *testing.T, p mode.Preset) {
+				assert.Equal(t, 0, p.Planetary.AlignPoints, "0 = auto, unchanged from default")
+			},
+		},
+		{
+			name: "planetary true_lum toggle is tierA", mode: mode.Planetary,
+			params: `{"true_lum":false}`, tier: "A", changed: []string{"true_lum"},
+			check: func(t *testing.T, p mode.Preset) {
+				assert.False(t, p.Planetary.Finish.TrueLum, "preset default true → patched off")
+			},
+		},
+		{
+			name: "planetary shadow_lift is tierA and sets", mode: mode.Planetary,
+			params: `{"shadow_lift":0.35}`, tier: "A", changed: []string{"shadow_lift"},
+			check: func(t *testing.T, p mode.Preset) {
+				assert.InDelta(t, 0.35, p.Planetary.Finish.ShadowLift, 1e-9)
+			},
+		},
+		{
+			name: "planetary shadow_lift clamps high", mode: mode.Planetary,
+			params: `{"shadow_lift":3}`, tier: "A", changed: []string{"shadow_lift"},
+			check: func(t *testing.T, p mode.Preset) {
+				assert.InDelta(t, 1.0, p.Planetary.Finish.ShadowLift, 1e-9, "clamped to max")
+			},
+		},
+		{
+			name: "planetary shadow_lift negative stays off", mode: mode.Planetary,
+			params: `{"shadow_lift":-0.5}`, tier: "A", changed: nil,
+			check: func(t *testing.T, p mode.Preset) {
+				assert.InDelta(t, 0.0, p.Planetary.Finish.ShadowLift, 1e-9, "clamped to off, unchanged from default")
 			},
 		},
 		{
@@ -150,4 +287,19 @@ func TestHistoryBlock_DiffsAndCaps(t *testing.T) {
 	assert.LessOrEqual(t, len(block), historyMaxChars)
 
 	assert.Empty(t, historyBlock(nil, -1))
+}
+
+func TestTunableJSON_ExcludesConsentKeys(t *testing.T) {
+	// The cross-run warm start must never resurrect a user opt-in: a prior run with earthshine on
+	// would otherwise silently enable it on a run where the user left it off.
+	p := mode.For(mode.Planetary)
+	p.Planetary.Finish.EarthshineGain = 1.4
+	seed := tunableJSON(p)
+	assert.NotContains(t, seed, "earthshine_gain", "consent knobs stay out of the warm-start seed")
+	assert.Contains(t, seed, "stretch", "ordinary finish knobs still seed")
+	assert.Contains(t, seed, "shadow_lift", "an ordinary finish knob — it seeds")
+	assert.Contains(t, seed, "earthshine_feather", "the feather is NOT a consent knob (no-op while gain is off) — it seeds")
+	assert.Contains(t, seed, "drizzle_scale", "drizzle is default-on, not consent-gated — it seeds")
+
+	assert.Contains(t, tunableJSON(mode.For(mode.Deepsky)), "saturation", "non-consent modes unaffected")
 }

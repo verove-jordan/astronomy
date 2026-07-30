@@ -33,6 +33,7 @@ func newReentry(opts Options, channels map[string]string, workRun, outDir string
 	if err := fsutil.EnsureDir(stretchDir); err != nil {
 		return nil, err
 	}
+	opts.steps = nil // nested re-renders (supervised loop, star fix) must never advance the main bar
 	return &reentry{opts: opts, channels: channels, outDir: outDir, stretchDir: stretchDir}, nil
 }
 
@@ -78,7 +79,7 @@ func (r *reentry) restack(ctx context.Context, o Options, p mode.Preset) error {
 func (r *reentry) buildBase(ctx context.Context, o Options, p mode.Preset) error {
 	deg := backgroundDegree(ctx, o)
 	cc := postprocess.ColorCalOptions{Enabled: p.ColorCalibration, RemoveGreen: true, StarField: true, Solve: o.Solve, Spcc: o.Spcc}
-	base, notes, err := prepGimpInputs(ctx, o, o.Runner, r.channels, r.outDir, r.stretchDir, deg, cc, p.BackgroundLevel, p.LinkedStretch)
+	base, notes, _, err := prepGimpInputs(ctx, o, o.Runner, r.channels, r.outDir, r.stretchDir, deg, cc, p.BackgroundLevel, p.LinkedStretch)
 	if err != nil {
 		return err
 	}
@@ -102,5 +103,10 @@ func buildComposite(c *gimp.Client, base gimp.Inputs, p composeParams, outBase s
 	in.HighlightCeil = p.HighlightCeil
 	in.StarDesat = p.StarDesat // star-core desaturation (kills colour discs on dense star fields)
 	in.HaExcludeStars = p.HaExcludeStars
-	return gimp.BuildImage(c, in, p.Curve, p.HaScreen, p.Saturation, outBase)
+	in.OIIIScreen = in.OIIIOpacity(p.OIIIScreen) // teal emission screen: retuned opacity × the persisted wash-gate factor
+	in.OIIIBlack = p.OIIIBlackPoint
+	in.SIIScreen = in.SIIOpacity(p.SIIScreen) // [SII] emission screen, same rule
+	in.SIIBlack = p.SIIBlackPoint
+	in.SIITint = p.SIITint
+	return gimp.BuildImage(c, in, p.Curve, in.HaOpacity(p.HaScreen), p.Saturation, outBase)
 }

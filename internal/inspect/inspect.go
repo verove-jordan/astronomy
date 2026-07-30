@@ -39,6 +39,10 @@ type ScanOptions struct {
 	DetectChannels bool
 	Channel        channeldetect.Options
 	FilterMapping  map[string]string
+	// ExcludeSets lists canonical SetKey.ID tokens (from a default-options scan) whose whole sets
+	// the user chose to drop — the Import stray-light check. Applied in finalize BEFORE
+	// FilterMapping so the tokens always match, and as a slice-filter only (ScanCache-safe).
+	ExcludeSets []string
 }
 
 // DefaultScanOptions enables signal-based detection with robust default thresholds.
@@ -164,8 +168,20 @@ func ScanWithOptions(ctx context.Context, root string, opts ScanOptions) (*Inven
 func finalizeInventory(inv *Inventory, opts ScanOptions) {
 	clearSpuriousBayer(inv)
 	inv.Sets = buildSets(inv.Frames)
+	if len(opts.ExcludeSets) > 0 {
+		if frames, sets := inv.ExcludeSets(opts.ExcludeSets); frames > 0 {
+			inv.Warnings = append(inv.Warnings, fmt.Sprintf(
+				"%d frame(s) in %d set(s) excluded by user (stray-light artifact)", frames, sets))
+		}
+	}
 	if len(opts.FilterMapping) > 0 {
 		ApplyFilterMapping(inv, opts.FilterMapping) // re-groups sets with the override applied
+	}
+	// Summarize the capture nights (nil for an all-undated scan — payload unchanged), and warn when
+	// a multi-night split leaves undated frames in their own bucket.
+	inv.Sessions = sessionSummary(inv.Frames)
+	if multiNight(inv.Frames) {
+		warnUndatedSplit(inv)
 	}
 	addWarnings(inv)
 }
@@ -292,13 +308,19 @@ func readFITSFrame(path string) (*Frame, error) {
 // IMAGETYP/FILTER) from the SharpCap sidecar and the filename/folder, and records the EFW wheel slot —
 // from the sidecar first, then the filename. It only ever fills blanks, so header values always win.
 func backfillMeta(fr *Frame, path string) {
-	if side, ok := readSharpcapSidecar(path); ok {
+	side, hasSide := readSharpcapSidecar(path)
+	if hasSide {
 		fr.WheelSlot = side.Slot
 		if fr.ExposureMs == 0 && side.ExposureMs > 0 {
 			fr.ExposureMs = side.ExposureMs
 		}
 		if fr.Gain == 0 && side.HasGain {
 			fr.Gain = side.Gain
+			fr.HasGain = true
+		}
+		if fr.Offset == 0 && side.HasOffset {
+			fr.Offset = side.Offset // ZWO "Brightness" — without it, TIF cal frames default to offset 0 and
+			// never match their (FITS, offset>0) lights on gain+offset, so bias/dark calibration is skipped.
 		}
 		if !fr.HasTemp && side.HasTemp {
 			fr.TempMilliC, fr.HasTemp = side.TempMilliC, true
@@ -313,6 +335,9 @@ func backfillMeta(fr *Frame, path string) {
 	}
 	if fr.Gain == 0 {
 		fr.Gain = meta.Gain
+		if meta.Gain > 0 { // filename/folder tokens cannot express a real gain of 0
+			fr.HasGain = true
+		}
 	}
 	if !fr.HasTemp && meta.HasTemp {
 		fr.TempMilliC, fr.HasTemp = meta.TempMilliC, true
@@ -326,6 +351,15 @@ func backfillMeta(fr *Frame, path string) {
 	}
 	if fr.WheelSlot == 0 {
 		fr.WheelSlot = meta.WheelSlot
+	}
+	// A FLAT's filter comes from the EFW alias once the folder/filename settled its type: flats group
+	// per-filter (SetKey.Filter) but nameByWheelSlot refuses calibration frames and flat filenames rarely
+	// carry a filter token — without this, per-filter flat sets collapse into one "" set. Darks/bias are
+	// excluded (their SetKey ignores Filter); lights keep their naming in nameRemainingWheelSlots, which
+	// also promotes slot-bearing unknowns to Light.
+	if hasSide && fr.Type == Flat && fr.Filter == "" && side.SlotAlias != "" {
+		fr.Filter = side.SlotAlias
+		fr.FilterConfidence = 1
 	}
 }
 
@@ -356,6 +390,18 @@ func classifyUnknowns(ctx context.Context, inv *Inventory, unknown []*Frame) {
 	}
 	types := classifyByStats(stats)
 	for i, fr := range unknown {
+		// An unreadable still with NO capture metadata at all is a processed leftover living beside
+		// the raws (an exported "*_v2.tif", a live-stack save the name veto missed): no exposure to
+		// calibrate-match, no date to sessionize, no pixels to grade. Left Unknown it never enters a
+		// stackable set; kept as a LIGHT it forms a phantom zero-metadata group that can fail its
+		// whole channel (M33: 4 leftovers beside 125 healthy subs). A real headerless capture keeps
+		// at least its exposure via the SharpCap sidecar or filename/folder tokens.
+		if !stats[i].hasStats && fr.ExposureMs == 0 && !fr.HasGain && fr.DateObs == "" {
+			inv.Warnings = append(inv.Warnings, fmt.Sprintf(
+				"%s has no type, no capture metadata and unreadable pixels — skipped as a processed leftover",
+				rel(inv.Root, fr.Path)))
+			continue
+		}
 		fr.Type = types[i]
 		fr.ClassSource = SourceHeuristic
 		if fr.Bayer != "" {

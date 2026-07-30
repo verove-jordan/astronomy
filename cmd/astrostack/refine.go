@@ -21,7 +21,8 @@ import (
 // updates final.* in place and prints the supervisor's iteration trail.
 func runRefine(args []string) error {
 	fs := flag.NewFlagSet("refine", flag.ContinueOnError)
-	modeName := fs.String("mode", "deepsky", "finish preset: deepsky|nebula")
+	modeName := fs.String("mode", "deepsky", "finish preset: deepsky|nebula|planetary|milkyway|comet")
+	paramsJSON := fs.String("params", "", `JSON knob overrides applied to the preset, same keys as the API (e.g. '{"earthshine_gain":1}')`)
 	noAI := fs.Bool("no-ai", false, "skip GraXpert/StarNet (keep the supervisor + Siril/GIMP finish)")
 	noSupervise := fs.Bool("no-supervise", false, "run the deterministic finish only (no VLM agent) — re-finish a stored run with the current preset/params")
 	tierCeiling := fs.String("tier", "B", "how far the agent may reach: A=composite, B=+finish prep, C=+re-stack")
@@ -44,6 +45,15 @@ func runRefine(args []string) error {
 	preset.Supervise = !*noSupervise // refine drives the agent (soft-falls to the standard finish if the server is down); --no-supervise forces the plain deterministic finish
 	preset.SuperviseTier = *tierCeiling
 	preset.SuperviseMaxIters = *iters
+	if *paramsJSON != "" {
+		res, err := pipeline.ApplyParamPatch(&preset, []byte(*paramsJSON))
+		if err != nil {
+			return err
+		}
+		if len(res.Ignored) > 0 {
+			fmt.Printf("params: ignored unknown keys %v\n", res.Ignored)
+		}
+	}
 
 	cfg := config.Load()
 	ctx := context.Background()

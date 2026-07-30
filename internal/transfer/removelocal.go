@@ -16,7 +16,7 @@ import (
 // that could only be verified by size (legacy multipart uploads without our MD5 metadata) are still
 // deleted, but each is reported in Result.Warnings.
 func runRemoveLocal(ctx context.Context, client s3API, req Request) (Result, error) {
-	files, _, err := walkLocalFiles(req.folderDir(), req.ExcludeDirs)
+	files, _, err := walkLocalFiles(req.folderDir(), req.ExcludeDirs, req.SkipSymlinks)
 	if err != nil {
 		return Result{}, err
 	}

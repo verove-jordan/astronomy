@@ -6,8 +6,11 @@
 //
 //	Open-Meteo (forecast + air quality) + 7Timer! ASTRO (seeing/transparency) + NOAA SWPC (Kp)
 //
-// Weather is a forecast timeline, not a fixed-per-site quantity, so it is shown as overlays/panel and
-// never folded into the visibility scores. Any feed that is down is simply omitted (with a warning).
+// Weather is a forecast timeline, not a fixed-per-site quantity, so the clear-sky visibility scores
+// never depend on it; the planner instead derives a SEPARATE per-target live score from the hourly
+// verdicts (adapted into skyplan.WxSample by the API layer), so the stable ranking and the
+// tonight-only conditions stay distinguishable. Any feed that is down is simply omitted (with a
+// warning) — then targets carry no live score at all.
 package weather
 
 // SiteForecast is the per-site astronomy-weather timeline for tonight (the panel + the badge).

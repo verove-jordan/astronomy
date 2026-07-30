@@ -35,6 +35,30 @@ func PrecessFromJ2000(raDeg, decDeg float64, t time.Time) (raOut, decOut float64
 	return raOut, decOut
 }
 
+// PrecessToJ2000 is the inverse of PrecessFromJ2000: it takes coordinates of the epoch of t back to
+// J2000.0. The rotation is orthogonal, so the inverse is the same one with ζ and z swapped and all
+// three angles negated.
+//
+// This is not a nicety. A Celestron mount speaks the equinox of date, while every catalogue, plate
+// solve and mosaic tile in this app is J2000 — and in 2026 those differ by about 0.36°, some twenty
+// times the field of a single ASI1600 pixel. Sending J2000 coordinates to the mount unconverted puts
+// the target most of a field width away from where it should be.
+func PrecessToJ2000(raDeg, decDeg float64, t time.Time) (raOut, decOut float64) {
+	tc := JulianCenturies(JulianDate(t))
+	zeta := (2306.2181*tc + 0.30188*tc*tc + 0.017998*tc*tc*tc) / 3600
+	z := (2306.2181*tc + 1.09468*tc*tc + 0.018203*tc*tc*tc) / 3600
+	theta := (2004.3109*tc - 0.42665*tc*tc - 0.041833*tc*tc*tc) / 3600
+
+	// Inverse rotation: -z takes the place of +zeta, -zeta of +z, and theta reverses.
+	a := cosD(decDeg) * sinD(raDeg-z)
+	b := cosD(theta)*cosD(decDeg)*cosD(raDeg-z) + sinD(theta)*sinD(decDeg)
+	c := -sinD(theta)*cosD(decDeg)*cosD(raDeg-z) + cosD(theta)*sinD(decDeg)
+
+	raOut = norm360(math.Atan2(a, b)*rad2deg - zeta)
+	decOut = math.Atan2(c, math.Hypot(a, b)) * rad2deg
+	return raOut, decOut
+}
+
 // PoleStar returns the precessed RA/Dec (degrees, epoch of t) and display name of the relevant pole
 // star for the hemisphere: Polaris in the north, σ Octantis in the south.
 func PoleStar(north bool, t time.Time) (raDeg, decDeg float64, name string) {

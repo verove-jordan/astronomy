@@ -45,12 +45,48 @@ const OVERLAYS: MapOverlay[] = [
     opacity: 0.9,
     attribution: "Weather: Open-Meteo",
   },
+  // Per-altitude cloud bands (astro-relevant: thin high cirrus kills contrast long before a low deck
+  // rolls in). Same shared cube as "clouds" — toggling them costs zero extra upstream quota.
+  {
+    id: "clouds_low",
+    kind: "weather",
+    metric: "clouds_low",
+    labelKey: "tonight.layers.cloudLow",
+    opacity: 0.9,
+    attribution: "Weather: Open-Meteo",
+  },
+  {
+    id: "clouds_mid",
+    kind: "weather",
+    metric: "clouds_mid",
+    labelKey: "tonight.layers.cloudMid",
+    opacity: 0.9,
+    attribution: "Weather: Open-Meteo",
+  },
+  {
+    id: "clouds_high",
+    kind: "weather",
+    metric: "clouds_high",
+    labelKey: "tonight.layers.cloudHigh",
+    opacity: 0.9,
+    attribution: "Weather: Open-Meteo",
+  },
   {
     id: "humidity",
     kind: "weather",
     metric: "humidity",
     labelKey: "tonight.layers.humidity",
     opacity: 0.6,
+    attribution: "Weather: Open-Meteo",
+  },
+  {
+    // Fog / dew risk: temperature−dew-point spread, strong where the air is saturated (fog forming, dew
+    // on the optics) and transparent where it's dry. From the same shared cube.
+    id: "fog",
+    kind: "weather",
+    metric: "dewspread",
+    labelKey: "tonight.layers.fog",
+    opacity: 0.8,
     attribution: "Weather: Open-Meteo",
   },
   {
@@ -73,16 +109,32 @@ const OVERLAYS: MapOverlay[] = [
     attribution: "Radar: RainViewer",
     legend: "radar",
   },
+  {
+    // Live satellite infrared (real observed clouds RIGHT NOW, not a forecast) — RainViewer's IR frames
+    // from the same keyless index the radar uses. The astro answer to "is it actually clear over me?".
+    id: "satellite",
+    kind: "rainviewer",
+    product: "satellite",
+    labelKey: "tonight.layers.satellite",
+    live: true,
+    opacity: 0.7,
+    attribution: "Satellite: RainViewer",
+  },
 ];
 
 const ENABLED_KEY = "astrostack.map.layers";
 
+// First visit (no persisted choice at all) starts with the most useful pair on: the cloud forecast and
+// the live rain radar. An explicitly emptied set ("[]") is a user choice and stays empty.
+const DEFAULT_ENABLED = ["clouds", "radar"];
+
 function loadEnabled(): Set<string> {
   try {
     const raw = localStorage.getItem(ENABLED_KEY);
-    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+    if (raw === null) return new Set(DEFAULT_ENABLED);
+    return new Set(JSON.parse(raw) as string[]);
   } catch {
-    return new Set();
+    return new Set(DEFAULT_ENABLED);
   }
 }
 

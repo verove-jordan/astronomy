@@ -6,7 +6,8 @@
 *.exe
 *.test
 *.out
-coverage.*
+/coverage.*
+!internal/pipeline/coverage.go
 tmp/
 .air/
 

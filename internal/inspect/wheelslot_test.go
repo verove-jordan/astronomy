@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/verove-jordan/astronomy/internal/channeldetect"
+	"github.com/verove-jordan/astronomy/internal/filters"
 	"github.com/verove-jordan/astronomy/internal/fits/fitstest"
 )
 
@@ -31,9 +31,12 @@ func TestFilterForSlot(t *testing.T) {
 	assert.Equal(t, "S6", filterForSlot(legend, 6), "slot beyond the legend → stable placeholder")
 }
 
+// The legend covers every canonical filter, NOT just the ones signal detection can discriminate:
+// a 7-slot wheel's narrowband positions must resolve to OIII/SII rather than "S6"/"S7" placeholders.
 func TestDefaultSlotLegend(t *testing.T) {
-	assert.Equal(t, channeldetect.DefaultOptions().Order, defaultSlotLegend())
-	assert.NotEmpty(t, defaultSlotLegend())
+	assert.Equal(t, filters.Canonical, defaultSlotLegend())
+	assert.Equal(t, "OIII", filterForSlot(defaultSlotLegend(), 6))
+	assert.Equal(t, "SII", filterForSlot(defaultSlotLegend(), 7))
 }
 
 // writeSlotFrame writes a uniform FITS plus the SharpCap "<name>.txt" sidecar carrying its EFW slot.

@@ -13,7 +13,7 @@ import ImageViewer from "@/components/Common/ImageViewer.vue";
 import FilterChip from "@/components/Common/FilterChip.vue";
 import IconChevronRight from "@/components/Icons/IconChevronRight.vue";
 import IconSliders from "@/components/Icons/IconSliders.vue";
-import type { RunResult, StagePreview } from "@/types";
+import type { PhotomRecord, RunResult, StagePreview } from "@/types";
 
 const props = defineProps<{
   result?: RunResult | null;
@@ -21,6 +21,8 @@ const props = defineProps<{
   // editable adds a per-card "edit & re-run" affordance (completed deepsky/nebula runs); clicking it
   // emits the card's stage so the parent can open the param editor and re-run from that stage.
   editable?: boolean;
+  // photom records (live or from run.json) caption the per-session `normalized` cards (×scale/offset).
+  photom?: PhotomRecord[];
 }>();
 const emit = defineEmits<{ edit: [stage: string] }>();
 const { t } = useI18n();
@@ -34,6 +36,49 @@ const previews = computed<StagePreview[]>(() => {
       : (props.result?.stage_previews ?? []);
   return [...src].sort((a, b) => a.index - b.index);
 });
+
+// One strip row per capture night (sorted), then the run-level row (session-less milestones) last.
+// Items keep their index into the flat `previews` array so the carousel tours EVERYTHING in pipeline
+// order. A run with no session-tagged previews renders exactly the historical single row.
+const rows = computed<
+  { session: string; items: { sp: StagePreview; idx: number }[] }[]
+>(() => {
+  const bySession = new Map<string, { sp: StagePreview; idx: number }[]>();
+  previews.value.forEach((sp, idx) => {
+    const key = sp.session ?? "";
+    if (!bySession.has(key)) bySession.set(key, []);
+    bySession.get(key)!.push({ sp, idx });
+  });
+  const sessions = [...bySession.keys()].sort((a, b) => {
+    if ((a === "") !== (b === "")) return a === "" ? 1 : -1; // run-level row last
+    return a.localeCompare(b);
+  });
+  return sessions.map((session) => ({
+    session,
+    items: bySession.get(session)!,
+  }));
+});
+
+// stageKey is a card's identity (stage + filter + session) — the :key that survives re-emits and can
+// never collide across parallel sessions the way the bare ordinal could.
+const stageKey = (sp: StagePreview) =>
+  `${sp.stage}|${sp.filter ?? ""}|${sp.session ?? ""}`;
+
+// photomFor joins a normalized card to its group's record (caption + tooltip).
+function photomFor(sp: StagePreview): PhotomRecord | undefined {
+  if (sp.stage !== "normalized" && sp.stage !== "prenorm") return undefined;
+  return props.photom?.find(
+    (r) =>
+      (r.session ?? "") === (sp.session ?? "") &&
+      (!sp.filter || r.label.startsWith(sp.filter + " ")),
+  );
+}
+function photomCaption(sp: StagePreview): string {
+  const r = photomFor(sp);
+  if (!r || sp.stage !== "normalized") return "";
+  const sign = r.offset >= 0 ? "+" : "";
+  return `×${r.scale.toFixed(2)} · ${sign}${r.offset.toFixed(3)}`;
+}
 
 // stageLabel maps a stage key to its localized label, falling back to the raw key if unlocalized.
 function stageLabel(stage: string): string {
@@ -90,41 +135,59 @@ const arrowBtn =
     <p class="mb-3 text-sm text-slate-500 dark:text-slate-400">
       {{ t("stagePreviews.hint") }}
     </p>
-    <div class="flex gap-3 overflow-x-auto pb-2">
+    <div v-for="row in rows" :key="row.session" class="mb-1">
       <div
-        v-for="(sp, idx) in previews"
-        :key="sp.index"
-        class="w-40 shrink-0 overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700"
+        v-if="rows.length > 1"
+        class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400"
       >
-        <button
-          class="group block w-full text-left"
-          :title="t('stagePreviews.enlarge')"
-          data-demo="stage-preview-frame"
-          @click="open(idx)"
+        {{
+          row.session
+            ? t("sessions.nightTitle", { date: row.session })
+            : t("stagePreviews.title")
+        }}
+      </div>
+      <div class="flex gap-3 overflow-x-auto pb-2">
+        <div
+          v-for="{ sp, idx } in row.items"
+          :key="stageKey(sp)"
+          class="w-40 shrink-0 overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700"
         >
-          <div class="bg-slate-900">
-            <img
-              :src="thumbUrl(sp.png_path, 320)"
-              :alt="stageLabel(sp.stage)"
-              class="h-28 w-full object-contain transition group-hover:opacity-90"
-            />
-          </div>
-          <div class="flex items-center justify-between gap-1 p-2">
-            <span class="truncate text-xs font-medium">{{
-              stageLabel(sp.stage)
-            }}</span>
-            <FilterChip v-if="sp.filter" :filter="sp.filter" />
-          </div>
-        </button>
-        <button
-          v-if="editable"
-          class="flex w-full items-center justify-center gap-1 border-t border-slate-200 px-2 py-1.5 text-xs font-medium text-brand-600 transition hover:bg-brand-50 dark:border-slate-700 dark:text-brand-400 dark:hover:bg-brand-900/20"
-          data-demo="stage-edit"
-          @click="emit('edit', sp.stage)"
-        >
-          <IconSliders class="h-3.5 w-3.5" />
-          {{ t("rerun.editStage") }}
-        </button>
+          <button
+            class="group block w-full text-left"
+            :title="t('stagePreviews.enlarge')"
+            data-demo="stage-preview-frame"
+            @click="open(idx)"
+          >
+            <div class="bg-slate-900">
+              <img
+                :src="thumbUrl(sp.png_path, 320)"
+                :alt="stageLabel(sp.stage)"
+                class="h-28 w-full object-contain transition group-hover:opacity-90"
+              />
+            </div>
+            <div class="flex items-center justify-between gap-1 p-2">
+              <span class="truncate text-xs font-medium">
+                {{ stageLabel(sp.stage) }}
+                <span
+                  v-if="photomCaption(sp)"
+                  class="block truncate font-normal text-slate-500 dark:text-slate-400"
+                  :title="t('job.photomHint')"
+                  >{{ photomCaption(sp) }}</span
+                >
+              </span>
+              <FilterChip v-if="sp.filter" :filter="sp.filter" />
+            </div>
+          </button>
+          <button
+            v-if="editable"
+            class="flex w-full items-center justify-center gap-1 border-t border-slate-200 px-2 py-1.5 text-xs font-medium text-brand-600 transition hover:bg-brand-50 dark:border-slate-700 dark:text-brand-400 dark:hover:bg-brand-900/20"
+            data-demo="stage-edit"
+            @click="emit('edit', sp.stage)"
+          >
+            <IconSliders class="h-3.5 w-3.5" />
+            {{ t("rerun.editStage") }}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -141,7 +204,10 @@ const arrowBtn =
         <div class="mb-2 flex items-center justify-between text-white">
           <span class="text-sm font-medium">
             {{ stageLabel(active.stage)
-            }}<span v-if="active.filter"> · {{ active.filter }}</span>
+            }}<span v-if="active.filter"> · {{ active.filter }}</span
+            ><span v-if="active.session">
+              · {{ t("sessions.nightTitle", { date: active.session }) }}</span
+            >
           </span>
           <button :class="btnGhost" @click="close">
             {{ t("stagePreviews.close") }}

@@ -76,3 +76,64 @@ func TestLaplacianVariance(t *testing.T) {
 	assert.InDelta(t, 0, laplacianVariance(flat, w, h), 1e-9, "a flat field has ~zero sharpness")
 	assert.Greater(t, laplacianVariance(sharp, w, h), laplacianVariance(flat, w, h), "detailed frame is sharper")
 }
+
+// usedChannels decides which classified channels the finish actually consumes: a full R/G/B trio keeps
+// only the LRGB inputs (an Ha set beside them is skipped outright — never converted), anything less
+// keeps the historical order[0] mono pick.
+func TestUsedChannels(t *testing.T) {
+	tests := []struct {
+		name    string
+		order   []string
+		used    []string
+		skipped []string
+	}{
+		{"LRGB plus Ha skips Ha", []string{"L", "R", "G", "B", "Ha"}, []string{"L", "R", "G", "B"}, []string{"Ha"}},
+		{"plain RGB keeps all", []string{"R", "G", "B"}, []string{"R", "G", "B"}, nil},
+		{"L plus Ha is mono L", []string{"L", "Ha"}, []string{"L"}, []string{"Ha"}},
+		{"Ha plus SII is mono Ha", []string{"Ha", "SII"}, []string{"Ha"}, []string{"SII"}},
+		{"single mono group", []string{""}, []string{""}, []string{}}, // order[1:] → empty, not nil
+		{"empty", nil, nil, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			used, skipped := usedChannels(tt.order)
+			assert.Equal(t, tt.used, used)
+			assert.Equal(t, tt.skipped, skipped)
+		})
+	}
+}
+
+// cleanupChannel must free everything a stacked channel staged — aligned warps, converted frames, .seq
+// bookkeeping, the mono staging dir — while keeping the channel master and refusing to touch anything
+// outside the run scratch (an in-place channel's frames live in the user's capture folder).
+func TestCleanupChannel(t *testing.T) {
+	runRoot := t.TempDir()
+	chDir := filepath.Join(runRoot, "ch_L")
+	require.NoError(t, os.MkdirAll(filepath.Join(chDir, "aligned"), 0o755))
+	touch := func(p string) {
+		require.NoError(t, os.WriteFile(p, []byte("x"), 0o644))
+	}
+	touch(filepath.Join(chDir, "aligned", "f_00001.fits"))
+	touch(filepath.Join(chDir, "vid_00001.fits"))
+	touch(filepath.Join(chDir, "vid_.seq"))
+	touch(filepath.Join(chDir, "master_L.fits"))
+	framesDir := filepath.Join(runRoot, "mono")
+	require.NoError(t, os.MkdirAll(framesDir, 0o755))
+	touch(filepath.Join(framesDir, "frame_00001.tif"))
+
+	cleanupChannel(runRoot, chDir, framesDir)
+
+	entries, err := os.ReadDir(chDir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "only the master survives")
+	assert.Equal(t, "master_L.fits", entries[0].Name())
+	_, err = os.Stat(framesDir)
+	assert.True(t, os.IsNotExist(err), "staging dir must be removed")
+
+	// A frames dir OUTSIDE the run scratch (in-place FITS channel) must never be removed.
+	captureDir := t.TempDir()
+	touch(filepath.Join(captureDir, "orig.fits"))
+	cleanupChannel(runRoot, chDir, captureDir)
+	_, err = os.Stat(filepath.Join(captureDir, "orig.fits"))
+	assert.NoError(t, err, "capture folder must be untouched")
+}

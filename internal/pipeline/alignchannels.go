@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/siril"
@@ -18,8 +19,9 @@ import (
 // alignChannels co-registers the channel masters (filter → absolute master path) and copies each
 // registered image to outDir as aligned_<tag>.fits, returning filter → extension-less basename for
 // the combine. Failures degrade PER CHANNEL (see applyAlignPolicy); only a failed R/G/B primary
-// reverts the whole set to the unaligned masters.
-func alignChannels(ctx context.Context, opts Options, masters map[string]string, alignDir, outDir string, res *Result) map[string]string {
+// reverts the whole set to the unaligned masters. onProgress (may be nil) streams the Siril output.
+func alignChannels(ctx context.Context, opts Options, masters map[string]string, alignDir, outDir string,
+	res *Result, onProgress func(siril.Progress)) map[string]string {
 	unaligned := map[string]string{}
 	for f := range masters {
 		unaligned[f] = "master_" + filterTag(f)
@@ -28,6 +30,13 @@ func alignChannels(ctx context.Context, opts Options, masters map[string]string,
 		return unaligned // single channel: nothing to co-register
 	}
 	ordered := orderedFilters(masters)
+	// Same-canvas pre-flight: Siril only registers equal-size images, so mixed master dimensions
+	// (the task #312 failure) would fail the joint register AND the pair rescue AND rgbcomp. Name
+	// the mismatch once, honestly, instead of surfacing three cryptic Siril errors.
+	if warn := masterDimsMismatch(masters, ordered); warn != "" {
+		warnLive(opts, res, warn)
+		return unaligned
+	}
 	// Opposite-parity masters can never star-register — normalize BEFORE registering (see parity.go).
 	normalizeMasterParity(ctx, opts, masters, ordered, res)
 
@@ -35,7 +44,7 @@ func alignChannels(ctx context.Context, opts Options, masters map[string]string,
 		res.Warnings = append(res.Warnings, "alignment skipped: "+err.Error())
 		return unaligned
 	}
-	if _, err := opts.Runner.Run(ctx, alignDir, siril.AlignMastersScript("ch"), nil); err != nil {
+	if _, err := opts.Runner.Run(ctx, alignDir, siril.AlignMastersScript("ch"), onProgress); err != nil {
 		res.Warnings = append(res.Warnings, "cross-channel alignment failed, using unaligned channels: "+err.Error())
 		return unaligned
 	}
@@ -44,7 +53,30 @@ func alignChannels(ctx context.Context, opts Options, masters map[string]string,
 	if len(failed) == 0 {
 		return aligned
 	}
-	return applyAlignPolicy(aligned, unaligned, failed, res)
+	return applyAlignPolicy(opts, aligned, unaligned, failed, res)
+}
+
+// masterDimsMismatch returns a warning naming every channel master's dimensions when they are not
+// all equal ("" when consistent). After the anchor-canvas merge they always are — this is the
+// honest guard for artifacts predating it or an upstream regression.
+func masterDimsMismatch(masters map[string]string, ordered []string) string {
+	dims := make([]string, 0, len(ordered))
+	mismatch := false
+	var w0, h0 int
+	for i, f := range ordered {
+		w, h := frameDims(masters[f])
+		if i == 0 {
+			w0, h0 = w, h
+		} else if w != w0 || h != h0 {
+			mismatch = true
+		}
+		dims = append(dims, fmt.Sprintf("%s %d×%d", f, w, h))
+	}
+	if !mismatch {
+		return ""
+	}
+	return "channel masters have mixed dimensions (" + strings.Join(dims, ", ") +
+		") — co-registration and the colour combine are impossible; combining unaligned channels"
 }
 
 // symlinkOrdered links the masters into dir as 0_<F>.fits, 1_<F>.fits… so Siril's link builds the
@@ -133,19 +165,17 @@ func pairAlignOne(ctx context.Context, opts Options, refPath, masterPath, filter
 // true-colour combine impossible → the whole set reverts to the unaligned masters (the pre-existing
 // behaviour, now the last resort). A failed L is dropped (RGB-only composite). A failed accent channel
 // (Ha/OIII/SII/…) is dropped: screened at the wrong position it would paint signal where none belongs,
-// strictly worse than omitting it. Every decision is a run warning.
-func applyAlignPolicy(aligned, unaligned map[string]string, failed []string, res *Result) map[string]string {
+// strictly worse than omitting it. Every decision is a run warning, surfaced live as it is made.
+func applyAlignPolicy(opts Options, aligned, unaligned map[string]string, failed []string, res *Result) map[string]string {
 	for _, f := range failed {
 		switch f {
 		case "R", "G", "B":
-			res.Warnings = append(res.Warnings,
-				fmt.Sprintf("channel %s could not be co-registered — combining unaligned channels", f))
+			warnLive(opts, res, fmt.Sprintf("channel %s could not be co-registered — combining unaligned channels", f))
 			return unaligned
 		case "L":
-			res.Warnings = append(res.Warnings, "L could not be co-registered — combining without luminance")
+			warnLive(opts, res, "L could not be co-registered — combining without luminance")
 		default:
-			res.Warnings = append(res.Warnings,
-				fmt.Sprintf("%s could not be co-registered — omitted from the composite", f))
+			warnLive(opts, res, fmt.Sprintf("%s could not be co-registered — omitted from the composite", f))
 		}
 	}
 	return aligned

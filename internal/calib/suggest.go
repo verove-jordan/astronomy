@@ -13,15 +13,18 @@ const (
 	RoleBias = "bias"
 )
 
-// CalibSuggestion is one library master proposed for a light set, in a given calibration role. ID is a
+// CalibSuggestion is one master proposed for a light set, in a given calibration role. ID is a
 // stable per-(light-set, role) key the UI sends back to exclude this exact suggestion from a run.
 type CalibSuggestion struct {
 	ID     string `json:"id"`
 	Role   string `json:"role"`
 	Master Master `json:"master"`
+	// FromCapture marks a master the run would BUILD from the capture's own calibration frames (a
+	// synthetic candidate, Path empty) rather than reuse from the library (whose masters all carry a Path).
+	FromCapture bool `json:"from_capture,omitempty"`
 }
 
-// CalibChannel is one inspected light set and the library masters that would calibrate it. Notes carry
+// CalibChannel is one inspected light set and the masters that would calibrate it. Notes carry
 // the gaps and cross-filter fallbacks that MatchForLight already explains.
 type CalibChannel struct {
 	Filter      string `json:"filter"`
@@ -30,15 +33,59 @@ type CalibChannel struct {
 	Offset      int64  `json:"offset"`
 	TempBucketC int    `json:"temp_bucket_c"`
 	Bin         int    `json:"bin"`
+	// Session is the light set's capture night ("YYYY-MM-DD") when the scan spans several nights;
+	// "" otherwise. The Import view groups the per-night calibration mapping by it.
+	Session string `json:"session,omitempty"`
 
 	Suggestions []CalibSuggestion `json:"suggestions"`
 	Notes       []string          `json:"notes,omitempty"`
 }
 
-// CalibPreview is the calibration the library would contribute to a run, per light channel — the data
-// behind the Import "Calibration · matched from your library" panel. No Siril, nothing persisted.
+// CalibPreview is the calibration a run would apply, per light channel — the data behind the Import
+// "Calibration" panel. Candidates come from the library AND from the capture's own calibration frames
+// (see PreviewCandidates). No Siril, nothing persisted.
 type CalibPreview struct {
 	Channels []CalibChannel `json:"channels"`
+}
+
+// syntheticMaster describes the master a run WOULD build from a session calibration set — a preview-only
+// candidate, never persisted. The empty Path is the from-capture discriminator (every library master
+// carries one; see CalibSuggestion.FromCapture).
+func syntheticMaster(set inspect.Set) Master {
+	mt := masterByFrameType[set.Key.Type]
+	return Master{
+		Type:       mt,
+		Filter:     set.Key.Filter,
+		ExposureMs: set.Key.ExposureMs,
+		Gain:       set.Key.Gain,
+		Offset:     set.Key.Offset,
+		TempMilliC: int64(set.Key.TempBucket) * 1000,
+		HasTemp:    mt == MasterDark || mt == MasterDarkFlat,
+		Bin:        set.Key.Bin,
+		FrameCount: set.Count,
+		Session:    set.Key.Session,
+	}
+}
+
+// PreviewCandidates assembles the master candidate set a run would match lights against: the library
+// masters plus a synthetic master for every calibration set in the inventory that no library master
+// already field-matches — mirroring BuildOrReuseMasters' reuse-or-build without stacking anything. It
+// deliberately skips the run's on-disk existence check: an S3-freed library master still calibrates
+// (pulled back on demand), and the preview must stay free of filesystem I/O.
+func PreviewCandidates(inv *inspect.Inventory, lib []Master) []Master {
+	candidates := append([]Master(nil), lib...)
+	if inv == nil {
+		return candidates
+	}
+	for _, ft := range []inspect.FrameType{inspect.Bias, inspect.DarkFlat, inspect.Dark, inspect.Flat} {
+		for _, set := range inv.SetsOfType(ft) {
+			if findExisting(lib, set) != nil {
+				continue // the run would reuse this library master, not rebuild
+			}
+			candidates = append(candidates, syntheticMaster(set))
+		}
+	}
+	return candidates
 }
 
 // SuggestID is the stable identity of a (light-set, role) suggestion — the single key shared by the
@@ -49,19 +96,23 @@ func SuggestID(light inspect.SetKey, role string) string {
 		role, light.Filter, light.Gain, light.Offset, light.Bin, light.ExposureMs, light.TempBucket)
 }
 
-// SuggestForInventory matches every light set in inv against the library masters and reports, per light
-// channel, the dark/flat/bias that would be applied plus any gaps/fallbacks (MatchForLight's notes).
-func SuggestForInventory(inv *inspect.Inventory, masters []Master) CalibPreview {
+// SuggestForInventory matches every light set in inv against the candidate masters (typically
+// PreviewCandidates: library ∪ capture-built) and reports, per light channel, the dark/flat/bias that
+// would be applied plus any gaps/fallbacks (matchForLight's notes). When force is set, mismatched
+// (gain/temperature/exposure) masters are applied anyway, so the preview surfaces them as included
+// suggestions instead of gap notes — the force_calibration_frames override.
+func SuggestForInventory(inv *inspect.Inventory, masters []Master, force bool) CalibPreview {
 	var preview CalibPreview
 	if inv == nil {
 		return preview
 	}
 	for _, set := range inv.SetsOfType(inspect.Light) {
-		sel := MatchForLight(set.Key, masters)
+		sel := matchForLight(set.Key, masters, force)
 		ch := CalibChannel{
 			Filter: set.Key.Filter, ExposureMs: set.Key.ExposureMs, Gain: set.Key.Gain,
 			Offset: set.Key.Offset, TempBucketC: set.Key.TempBucket, Bin: set.Key.Bin,
-			Notes: sel.Notes,
+			Session: set.Key.Session,
+			Notes:   sel.Notes,
 		}
 		ch.Suggestions = appendSuggestion(ch.Suggestions, set.Key, RoleDark, sel.Dark)
 		ch.Suggestions = appendSuggestion(ch.Suggestions, set.Key, RoleFlat, sel.Flat)
@@ -75,14 +126,18 @@ func appendSuggestion(list []CalibSuggestion, light inspect.SetKey, role string,
 	if m == nil {
 		return list
 	}
-	return append(list, CalibSuggestion{ID: SuggestID(light, role), Role: role, Master: *m})
+	return append(list, CalibSuggestion{
+		ID: SuggestID(light, role), Role: role, Master: *m,
+		FromCapture: m.Path == "", // only synthetic (to-be-built) masters have no path
+	})
 }
 
-// MatchForLightExcluding picks masters as MatchForLight does, then drops any role the user excluded for
-// this exact light set (by its SuggestID). The remaining selection is what the run applies — so an
-// exclusion is honored whether the masters were rebuilt from raw frames or reused from the library.
-func MatchForLightExcluding(light inspect.SetKey, masters []Master, excluded []string) Selection {
-	sel := MatchForLight(light, masters)
+// MatchForLightExcluding picks masters as matchForLight does (force relaxes the gain/temperature/exposure
+// gates — the force_calibration_frames override), then drops any role the user excluded for this exact
+// light set (by its SuggestID). The remaining selection is what the run applies — so an exclusion is
+// honored whether the masters were rebuilt from raw frames or reused from the library.
+func MatchForLightExcluding(light inspect.SetKey, masters []Master, excluded []string, force bool) Selection {
+	sel := matchForLight(light, masters, force)
 	if len(excluded) == 0 {
 		return sel
 	}

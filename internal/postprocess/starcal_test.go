@@ -50,25 +50,37 @@ func synthField(t *testing.T, nStars int, rg, bg float64) string {
 	return path
 }
 
+// CONTRACT CHANGE (2026-07-16, task #316): the default anchor moved from a WHITE median star
+// (TargetRG/BG = 1.0) to a WARM one (1.10/0.90) — the magnitude-limited field median is a K dwarf,
+// and forcing it white over-suppressed R (gains R=0.73/B=0.87 on the Leo Triplet) leaving the
+// galaxies/sky green with both downstream green removers gated off. Gains and post-calibration
+// ratios now pin the warm anchor.
 func TestStarFieldCalibrate_NeutralizesWarmField(t *testing.T) {
-	// A red-strong rig: stars measure R/G=1.4, B/G=0.8 → gains should invert those ratios.
+	// A red-strong rig: stars measure R/G=1.4, B/G=0.8 → gains pull those toward the warm anchor.
 	path := synthField(t, 60, 1.4, 0.8)
 	res, err := StarFieldCalibrate(path, StarCalOptions{})
 	require.NoError(t, err)
 	require.True(t, res.Applied, "expected calibration to apply (found %d stars)", res.Stars)
 	assert.GreaterOrEqual(t, res.Stars, starCalMinStars)
-	assert.InDelta(t, 1/1.4, res.GainR, 0.08, "R gain should invert the warm ratio")
-	assert.InDelta(t, 1/0.8, res.GainB, 0.08, "B gain should invert the blue deficit")
+	assert.InDelta(t, starCalTargetRG/1.4, res.GainR, 0.08, "R gain should pull the measured ratio to the warm anchor")
+	assert.InDelta(t, starCalTargetBG/0.8, res.GainB, 0.08, "B gain should pull the measured ratio to the warm anchor")
 
-	// After calibration the field's own star ratios must read ~neutral.
+	// After calibration the field's own star ratios must read the warm anchor.
 	im, err := fits.ReadImage(path)
 	require.NoError(t, err)
 	bg := channelBackgrounds(im)
 	stars := detectStars(lumaPlane(im), im.W, im.H)
 	rg, bgr, usable := starFluxRatios(im, bg, stars)
 	require.GreaterOrEqual(t, usable, starCalMinStars)
-	assert.InDelta(t, 1.0, rg, 0.06, "post-calibration R/G")
-	assert.InDelta(t, 1.0, bgr, 0.06, "post-calibration B/G")
+	assert.InDelta(t, starCalTargetRG, rg, 0.06, "post-calibration R/G sits at the warm anchor")
+	assert.InDelta(t, starCalTargetBG, bgr, 0.06, "post-calibration B/G sits at the warm anchor")
+
+	// An explicit white target still means white — the anchor is only the default.
+	path2 := synthField(t, 60, 1.4, 0.8)
+	res2, err := StarFieldCalibrate(path2, StarCalOptions{TargetRG: 1, TargetBG: 1})
+	require.NoError(t, err)
+	require.True(t, res2.Applied)
+	assert.InDelta(t, 1/1.4, res2.GainR, 0.08, "explicit white target inverts the ratio exactly")
 }
 
 func TestStarFieldCalibrate_TooFewStarsFallsBack(t *testing.T) {

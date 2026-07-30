@@ -16,10 +16,14 @@ type Params struct {
 	MinAltDeg     float64
 	Twilight      string // "astro" | "nautical"
 	Limit         int
-	TypeFilter    string // optional: keep only this derived type
-	CatalogFilter string // optional: keep only this source catalog
+	MaxMag        float64 // optional: drop objects fainter than this (0 = off; no-mag records always pass)
+	TypeFilter    string  // optional: keep only this derived type
+	CatalogFilter string  // optional: keep only this source catalog
 	Weights       Weights
 	Location      *time.Location
+	// WxHours, when non-empty, are the site's hourly weather-observability samples for the night;
+	// the planner folds them into each target's ScoreLive beside the untouched clear-sky Score.
+	WxHours []WxSample
 }
 
 // Weights are the tunable composite-score weights. The base sub-scores' weights sum to 1; the Moon
@@ -55,6 +59,9 @@ type SubScores struct {
 	Detectability  float64 `json:"detectability"`
 	Moon           float64 `json:"moon"`
 	LightPollution float64 `json:"light_pollution"`
+	// Weather is the live-conditions multiplier behind ScoreLive (mean hourly observability over the
+	// target's usable dark hours); omitted when no forecast covers the night.
+	Weather float64 `json:"weather,omitempty"`
 }
 
 // Flags annotate per-target caveats for the UI.
@@ -90,12 +97,19 @@ type Target struct {
 	DarkHoursAboveMin float64     `json:"dark_hours_above_min"`
 	SizeArcmin        float64     `json:"size_arcmin"`
 	SizeMinorArcmin   float64     `json:"size_minor_arcmin,omitempty"` // minor axis (OpenNGC) → true ellipse with SizeArcmin
+	// PositionAngleDeg is the OpenNGC ellipse position angle (degrees east of north, J2000) when
+	// the catalogue has one; pointer because 0° is a real angle. Drives the mosaic planner's
+	// "align camera to object" helper.
+	PositionAngleDeg *float64 `json:"position_angle_deg,omitempty"`
 	MagV              float64     `json:"mag_v"`
 	SurfaceBrightness float64     `json:"surface_brightness"`
 	FovFillPct        float64     `json:"fov_fill_pct"`
 	MoonSepDeg        float64     `json:"moon_sep_deg"`
 	Score             int         `json:"score"`
-	SubScores         SubScores   `json:"subscores"`
+	// ScoreLive is the weather-aware score (clear-sky Score × the night's hourly observability over
+	// the target's usable hours); nil when no forecast covers the night, so the UI can show "—".
+	ScoreLive *int      `json:"score_live,omitempty"`
+	SubScores SubScores `json:"subscores"`
 	Flags             Flags       `json:"flags"`
 	Reason            string      `json:"reason"`
 	Composition       Composition `json:"composition"`

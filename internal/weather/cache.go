@@ -73,15 +73,20 @@ func (p *Provider) cachedGrid(key string) (Grid, bool) {
 	return Grid{}, false
 }
 
-func (p *Provider) anyGrid(key string) (Grid, bool) {
+// staleGrid returns an expired-but-recent cube for key: fresh misses fall back to it while upstream is
+// down, BOUNDED to ttl+staleGrace so a long-dead feed eventually reads as honestly empty instead of
+// serving day-old frames as if they were live (the old anyGrid had no age bound at all).
+func (p *Provider) staleGrid(key string) (Grid, bool) {
 	p.mu.Lock()
 	c, ok := p.memoGrid[key]
 	p.mu.Unlock()
-	if ok {
+	if ok && time.Since(c.at) < p.ttl+staleGrace {
 		return c.g, true
 	}
-	g, _, ok := readJSON[Grid](p.gridPath(key))
-	return g, ok
+	if g, at, ok := readJSON[Grid](p.gridPath(key)); ok && time.Since(at) < p.ttl+staleGrace {
+		return g, true
+	}
+	return Grid{}, false
 }
 
 func (p *Provider) storeGrid(key string, g Grid) {

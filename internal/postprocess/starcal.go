@@ -1,10 +1,13 @@
 // Star-field photometric colour calibration — the REAL fallback when SPCC cannot run (no
 // plate-solve, offline, unsolvable field). SPCC's neutralization fallback only equalizes the sky
 // PEDESTAL per channel; it never touches per-channel GAIN, so an LRGB stack from a red-strong mono
-// rig stays systematically warm. This pass estimates the channel gains from the field's own stars:
-// the median star in a random field is close to neutral (solar-ish) once averaged over hundreds of
-// stars, so normalizing the median star flux ratios R/G and B/G toward 1 lands within a few percent
-// of a true photometric calibration — enough that "never warm" holds even with no network.
+// rig stays systematically warm. This pass estimates the channel gains from the field's own stars —
+// but the anchor must be honest about what the median field star IS: a magnitude-limited field is
+// dominated by K dwarfs/giants (B−V ≈ 0.85–1.0), noticeably WARMER than the Sun. Normalizing the
+// median star to pure white (the old TargetRG/BG = 1.0) therefore over-suppresses R — task #316
+// measured gains R=0.73/B=0.87 and the whole image (whose galaxies/sky do not follow the stellar
+// ratio at all) tipped green with no downstream corrector. The default targets below anchor the
+// median star warm instead, landing the calibration within a few percent of photometric.
 package postprocess
 
 import (
@@ -25,10 +28,17 @@ const (
 	starCalGainMin     = 0.5 // gain clamps: a correction outside this range means the
 	starCalGainMax     = 2.0 // detection went wrong, not that the camera is 4x red-strong
 	starCalDetectSigma = 8.0 // detection threshold above the luma background, in MAD-sigmas
+	// Default anchor for the median field star: a K0–K2 dwarf/giant (B−V ≈ 0.85–1.0, vs the Sun's
+	// 0.65), which through a typical mono-CMOS RGB filter set reads R/G ≈ 1.10 and B/G ≈ 0.90. The
+	// white anchor (1.0/1.0) demonstrably over-corrected (#316: R×0.73 → green cast everywhere the
+	// stellar ratio doesn't hold). Values validated against the Leo Triplet rerun.
+	starCalTargetRG = 1.10
+	starCalTargetBG = 0.90
 )
 
 // StarCalOptions tune the star-field calibration targets: the median star's R/G and B/G flux
-// ratios are normalized to these values (1.0 = neutral median star, the sane default).
+// ratios are normalized to these values. ≤ 0 uses the warm defaults (starCalTargetRG/BG — the
+// median field star is a K dwarf, not white).
 type StarCalOptions struct {
 	TargetRG float64
 	TargetBG float64
@@ -46,10 +56,10 @@ type StarCalResult struct {
 // error) when too few usable stars are found, so the caller can fall back to plain neutralization.
 func StarFieldCalibrate(path string, opts StarCalOptions) (StarCalResult, error) {
 	if opts.TargetRG <= 0 {
-		opts.TargetRG = 1
+		opts.TargetRG = starCalTargetRG
 	}
 	if opts.TargetBG <= 0 {
-		opts.TargetBG = 1
+		opts.TargetBG = starCalTargetBG
 	}
 	im, err := fits.ReadImage(path)
 	if err != nil {
@@ -110,86 +120,6 @@ func lumaPlane(im *fits.Image) []float32 {
 		lum[i] = 0.25*r[i] + 0.5*g[i] + 0.25*b[i]
 	}
 	return lum
-}
-
-type starPeak struct {
-	x, y int
-	v    float32
-}
-
-// detectStars finds bright local maxima in the luma plane: above bg + starCalDetectSigma·σ(MAD),
-// 8-neighbour maxima, saturation- and width-filtered, greedily thinned to starCalMinSep and capped
-// at starCalMaxStars (brightest first).
-func detectStars(lum []float32, w, h int) []starPeak {
-	step := sampleStep(len(lum))
-	sample := make([]float64, 0, len(lum)/step+1)
-	for i := 0; i < len(lum); i += step {
-		sample = append(sample, float64(lum[i]))
-	}
-	med, mad := medianMAD(sample)
-	thr := float32(med + starCalDetectSigma*1.4826*mad)
-
-	var peaks []starPeak
-	for y := 1; y < h-1; y++ {
-		row := y * w
-		for x := 1; x < w-1; x++ {
-			v := lum[row+x]
-			if v <= thr || v >= starCalSatLevel {
-				continue
-			}
-			if v < lum[row+x-1] || v < lum[row+x+1] ||
-				v < lum[row-w+x-1] || v < lum[row-w+x] || v < lum[row-w+x+1] ||
-				v < lum[row+w+x-1] || v < lum[row+w+x] || v < lum[row+w+x+1] {
-				continue
-			}
-			if halfMaxWidth(lum, w, h, x, y, v, float32(med)) > starCalMaxHalfMax {
-				continue // extended blob (galaxy core, nebula knot), not a star
-			}
-			peaks = append(peaks, starPeak{x, y, v})
-		}
-	}
-	sort.Slice(peaks, func(i, j int) bool { return peaks[i].v > peaks[j].v })
-	kept := peaks[:0]
-	for _, p := range peaks {
-		ok := true
-		for _, k := range kept {
-			dx, dy := p.x-k.x, p.y-k.y
-			if dx*dx+dy*dy < starCalMinSep*starCalMinSep {
-				ok = false
-				break
-			}
-		}
-		if ok {
-			kept = append(kept, p)
-			if len(kept) >= starCalMaxStars {
-				break
-			}
-		}
-	}
-	return kept
-}
-
-// halfMaxWidth measures the larger of the horizontal/vertical extents where the profile stays above
-// half the peak's background-subtracted height.
-func halfMaxWidth(lum []float32, w, h, px, py int, peak, bg float32) int {
-	half := bg + (peak-bg)/2
-	width := func(dx, dy int) int {
-		n := 0
-		for s := 1; s <= starCalMaxHalfMax+1; s++ {
-			x, y := px+s*dx, py+s*dy
-			if x < 0 || x >= w || y < 0 || y >= h || lum[y*w+x] < half {
-				break
-			}
-			n++
-		}
-		return n
-	}
-	hw := width(-1, 0) + width(1, 0)
-	vw := width(0, -1) + width(0, 1)
-	if vw > hw {
-		return vw
-	}
-	return hw
 }
 
 // starFluxRatios sums each star's background-subtracted flux per channel in a small aperture and

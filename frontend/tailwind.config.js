@@ -23,19 +23,10 @@ export default {
         warning: { DEFAULT: '#d97706', 50: '#fffbeb', 100: '#fef3c7', 300: '#fcd34d', 500: '#f59e0b', 600: '#d97706', 700: '#b45309' },
         danger: { DEFAULT: '#dc2626', 50: '#fef2f2', 100: '#fee2e2', 300: '#fca5a5', 500: '#ef4444', 600: '#dc2626', 700: '#b91c1c' },
         info: { DEFAULT: '#0284c7', 50: '#f0f9ff', 100: '#e0f2fe', 300: '#7dd3fc', 500: '#0ea5e9', 600: '#0284c7', 700: '#0369a1' },
-        // Per-filter domain colors (mirrored to JS in constants/colors.ts for charts/canvas).
-        filter: {
-          l: '#cbd5e1',
-          r: '#ef4444',
-          g: '#22c55e',
-          b: '#3b82f6',
-          ha: '#f43f5e',
-          'l-soft': '#e2e8f0',
-          'r-soft': '#fca5a5',
-          'g-soft': '#86efac',
-          'b-soft': '#93c5fd',
-          'ha-soft': '#fda4af',
-        },
+        // NOTE: there is deliberately no `filter` colour scale here. Per-filter domain colours live in
+        // constants/colors.ts (hex, for charts/canvas) and constants/styles.ts (chip classes), both
+        // exhaustive against constants/filters.ts. A scale here was dead — zero `bg-filter-*` usages —
+        // and had drifted to L/R/G/B/Ha only, silently missing OIII and SII.
         // Dark-mode elevation surfaces (slightly blue-shifted slate) for a comfortable, layered UI.
         // NOTE: names must not prefix-collide (e.g. `dark` vs `dark-raised`) or Tailwind cannot
         // disambiguate `bg-surface-dark-raised` and silently drops it — keep them distinct words.

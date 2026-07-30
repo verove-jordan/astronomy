@@ -25,9 +25,11 @@ func deepskyBuiltins() []Item {
 			Mode: "deepsky", Format: "image", Palette: "natural",
 			ColorCalibration: boolPtr(true), Denoise: boolPtr(true),
 			// Bright core + faint outer arms: a touch more highlight headroom so the core keeps colour,
-			// gentle star reduction, moderate luminance denoise for the faint disk.
+			// gentle star reduction, moderate luminance denoise for the faint disk. Saturation 0.20:
+			// with SPCC actually running (task #316 fix) the balance is photometric, and galaxies need
+			// the extra chroma to show their blue-arm/orange-core contrast instead of grey.
 			Params: mustParams(map[string]any{
-				"stretch_headroom": 0.92, "star_reduce": 0.1, "denoise_lum": 0.4, "saturation": 0.14,
+				"stretch_headroom": 0.92, "star_reduce": 0.1, "denoise_lum": 0.4, "saturation": 0.20,
 			}),
 		}),
 		builtin("galaxy-faint", CategoryDeepsky, Payload{
@@ -126,10 +128,23 @@ func solarBuiltins() []Item {
 	return []Item{
 		builtin("moon", CategorySolar, Payload{
 			Mode: "planetary", Format: "image",
-			// Bright full disk: reserve highlight headroom so it does not burn, moderate sharpening +
-			// local contrast for craters, keep a healthy fraction of frames (the Moon is bright & steady).
+			// Bright full disk: reserve highlight headroom so it does not burn. True lucky-imaging
+			// selection: the 2026-07-12 run forensics showed a bigger kept fraction only dilutes the
+			// sharp minority (65%→30% already measurably sharpened the master; 15 is the package
+			// default the per-AP selection is tuned for). The old sharpen 1.2 / clahe 1.5 push
+			// compensated the pre-canonical soft master; on the two-level/canonical/drizzle stack the
+			// package finish defaults render clean detail without it (2026-07-14 real-run crops) —
+			// the extra push only added the harsh, haloed look.
+			// shadow_lift 0.35 opens the crushed dark maria/terminator tones (the user preferred the
+			// "less-dark, more detail, more natural" render); saturation 0.4 reveals the grey/brown
+			// mineral tones naturally (still far below the garish 0.8 default). Both are 2026-07 A/B
+			// starting points — validated against real 100% crops before shipping.
+			// limb_balance 0.55 compresses the smooth illumination of the bright limb band (local
+			// crater contrast untouched) — a crescent/gibbous limb no longer stretches to burnt
+			// white while the terminator keeps its opened shadows.
 			Params: mustParams(map[string]any{
-				"headroom": 0.85, "sharpen": 1.2, "clahe": 1.5, "best_percent": 30, "saturation": 0.2,
+				"headroom": 0.85, "best_percent": 15, "saturation": 0.4, "shadow_lift": 0.35,
+				"limb_balance": 0.55,
 			}),
 		}),
 		builtin("planet", CategorySolar, Payload{

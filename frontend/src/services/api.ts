@@ -45,8 +45,11 @@ async function request<T>(
 
 export const apiGet = <T>(path: string, signal?: AbortSignal) =>
   request<T>("GET", path, undefined, signal);
-export const apiPost = <T>(path: string, body?: unknown) =>
-  request<T>("POST", path, body);
+export const apiPost = <T>(
+  path: string,
+  body?: unknown,
+  signal?: AbortSignal,
+) => request<T>("POST", path, body, signal);
 export const apiPut = <T>(path: string, body?: unknown) =>
   request<T>("PUT", path, body);
 export const apiDelete = <T>(path: string) => request<T>("DELETE", path);

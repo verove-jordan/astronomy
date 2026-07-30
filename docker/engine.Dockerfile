@@ -122,6 +122,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends libraw-bin \
 RUN apt-get update && apt-get install -y --no-install-recommends gdal-bin \
  && rm -rf /var/lib/apt/lists/*
 
+# --- Siril SPCC sensor/filter database: the GUI downloads it on first use, which a headless container
+# never does — without it `spcc` aborts even on a solved image (task #316: colours fell back to the
+# star-field gains and the stars came out green). Baked at a pinned commit (override with --build-arg
+# to track upstream) and symlinked into the runtime XDG data dir by the entrypoint. Free-astro data
+# repo (GPL, same licence family as Siril itself); own layer so it never busts the tool caches above.
+ARG SPCC_DB_REF=3426f0939d53d4d3a1b4c8e620a6faf8212bda32
+RUN set -eux; \
+    wget -q -O /tmp/spccdb.tar.gz "https://gitlab.com/free-astro/siril-spcc-database/-/archive/${SPCC_DB_REF}/siril-spcc-database-${SPCC_DB_REF}.tar.gz"; \
+    mkdir -p /opt/siril-spcc-database; \
+    tar -xzf /tmp/spccdb.tar.gz -C /opt/siril-spcc-database --strip-components=1; \
+    rm /tmp/spccdb.tar.gz; \
+    test -d /opt/siril-spcc-database/mono_sensors && test -d /opt/siril-spcc-database/wb_refs
+
 # StarNet++ is deliberately NOT baked in (its licence isn't redistributable). To enable star removal,
 # bind-mount your StarNet install and set STARNET_BIN; until then the pipeline keeps full stars.
 

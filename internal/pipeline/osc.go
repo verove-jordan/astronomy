@@ -112,7 +112,7 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 		pseudo[i] = &inspect.Frame{Path: p}
 	}
 	dropTransition := opts.Preset != nil && opts.Preset.DropFilterWheelTransition
-	metrics, rejectedReg, regCount, err := gradeChannel(seqDir, "osc", pseudo, gradeOpts, dropTransition)
+	metrics, rejectedReg, regCount, err := gradeChannel(seqDir, "osc", pseudo, gradeOpts, dropTransition, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -124,6 +124,8 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 		Filter: "RGB", InputFrames: len(frames), StackedFrames: regCount - len(rejectedReg),
 		Metrics: metrics, OutputPath: masterBase + ".fits",
 	}}
+	gradeWarnings(opts, &res.Channels[0], "RGB", metrics, regCount, regCount-len(rejectedReg))
+	res.Warnings = append(res.Warnings, res.Channels[0].Warnings...)
 	// Pointing-pattern diagnosis (dithered / drift / static) from the registration offsets — the
 	// walking-noise risk evidence and its dithering advice, same as the mono channel path.
 	if d := ditherReport(metrics); d != nil {
@@ -135,7 +137,7 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 	// Line-aware satellite/aircraft-trail masking on the registered subs before stacking (no-op unless
 	// the preset enables it — milkyway leaves it off). Soft-fail: stack as-is on any error.
 	if opts.Preset != nil && opts.Preset.TrailMaskK > 0 {
-		if summary, note, err := maskChannelTrails(seqDir, "r_osc", opts.Preset.TrailMaskK); err != nil {
+		if summary, note, err := maskChannelTrails(seqDir, "r_osc", opts.Preset.TrailMaskK, nil); err != nil {
 			res.Warnings = append(res.Warnings, "trail mask skipped: "+err.Error())
 		} else if summary != nil {
 			res.Channels[0].TrailMask = summary
@@ -144,14 +146,18 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	opts.report(Progress{Step: "stacking", Index: 2, Total: 3})
-	if st, err := opts.Runner.Run(ctx, seqDir, siril.StackSelectedScript("r_osc", regCount, rejectedReg, masterBase, opts.stackWeight()), opts.sirilLines("stacking")); err != nil {
+	st, stackNote, err := stackSelectedOrCopy(ctx, opts.Runner, seqDir, "r_osc", regCount, rejectedReg, masterBase, opts.stackWeight(), opts.sirilLines("stacking"))
+	if err != nil {
 		return nil, fmt.Errorf("stacking: %w\n%s", err, sirilTail(st))
+	}
+	if stackNote != "" {
+		warnLive(opts, res, "RGB: "+stackNote)
 	}
 
 	// AI background extraction (GraXpert) on the linear OSC master — replaces Siril subsky at
 	// finish when available; soft-fail leaves the master untouched.
 	if aiBackground(ctx, opts) {
-		if note := extractBackgroundAI(ctx, opts, masterBase+".fits", nil); note != "" {
+		if note := extractBackgroundAI(ctx, opts, masterBase+".fits", opts.sirilLines("background extraction")); note != "" {
 			res.Warnings = append(res.Warnings, note)
 		}
 	}

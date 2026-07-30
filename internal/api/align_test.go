@@ -31,6 +31,10 @@ func TestSkyAlign_ReturnsOrderedPlan(t *testing.T) {
 		assert.Equal(t, i+1, s.Order)
 		assert.NotEmpty(t, s.Name)
 		assert.NotEmpty(t, s.Compass)
+		require.NotEmpty(t, s.Reasons, "reasons survive the JSON round-trip")
+		for _, r := range s.Reasons {
+			assert.NotEmpty(t, r.Code, "the wire format carries translation codes, not sentences")
+		}
 	}
 }
 

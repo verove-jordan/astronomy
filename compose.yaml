@@ -96,6 +96,9 @@ services:
       ASTRO_OUTPUT_DIR: ${PWD}/output
       ASTRO_LIBRARY_DIR: ${PWD}/library
       ASTRO_WORK_DIR: ${PWD}/work
+      # Bound concurrent jobs (0 = auto NumCPU/2). Capped after the 2026-07-18 OOM: six
+      # concurrent stacks exceeded the container's memory.
+      ASTRO_MAX_WORKERS: ${ASTRO_MAX_WORKERS:-0}
       # Confine the "Drives" browser to the mounted external-drive root (the /Volumes bind above). macOS
       # host → /Volumes; Linux server → set ASTRO_DRIVES_DIR to your mount root (e.g. /media). The engine
       # is Linux so its built-in roots are /media,/mnt,/run/media — this adds the macOS mount point.
@@ -110,6 +113,12 @@ services:
       # Empty (default) → use the in-container CPU GraXpert (no regression). Set it (e.g. to the host
       # service below) to run GraXpert natively, e.g. for the on-demand "Denoise final" action.
       ASTRO_GRAXPERT_URL: ${ASTRO_GRAXPERT_URL:-}
+      # Camera / filter wheel / mount live on the HOST — they are USB devices, and a container cannot
+      # see them. So the containerized engine must dial the host's device server, NOT its own
+      # loopback: inside a container 127.0.0.1 is the container itself, which is why the default
+      # silently reported "device server is not running" even with `just device` running on the host.
+      # Same pattern as ASTRO_LLM_URL and API_UPSTREAM above (host-gateway is in extra_hosts below).
+      ASTRO_DEVICE_ADDR: ${ASTRO_DEVICE_ADDR:-host.docker.internal:8084}
     ports:
       - "${ENGINE_PORT:-8080}:8080"
     volumes:

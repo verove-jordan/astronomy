@@ -81,10 +81,65 @@ independently; a manifest written last marks completeness):
 **Restore is destructive** for the database (`pg_restore --clean --if-exists`) — it replaces the
 current catalog/jobs with the snapshot. `.env` secrets are never included in backups.
 
+## Glacier (cold storage classes)
+
+Any S3 object can live on a **cold storage class** to cut cost. Two families
+(`internal/s3store/glacier.go`):
+
+| Family | Classes | Read now? | Notes |
+|---|---|---|---|
+| **Instant** | `STANDARD` (`""`), `STANDARD_IA`, `ONEZONE_IA`, `INTELLIGENT_TIERING`, **`GLACIER_IR`** | yes | `GLACIER_IR` is cheap archival with *instant* reads — no thaw |
+| **Archived** | **`GLACIER`** (Flexible), **`DEEP_ARCHIVE`** | no — must **restore** first | thaw takes minutes → ~48 h |
+
+Rules the code encodes: `""` means `STANDARD`; a `HEAD`/`Stat` works on an archived object (only
+`GET`/`CopyObject` fail with `InvalidObjectState`); a **class change is a `CopyObject` onto the same
+key** with `ReplaceMetadata` that carries the `Astro-Md5` + content-type forward (so remove-local's
+strong verification and served MIME types keep working; the `s3_objects` ledger is untouched — the key
+and size don't change); objects > 5 GiB transition via `ComposeObject`. Everything **soft-fails** on an
+endpoint that has no restore API (`ErrRestoreUnsupported` on 501/405 — e.g. MinIO): the class controls
+simply do nothing and a run is never blocked.
+
+### The thaw is a durable, visitable Task
+
+A restore is asynchronous and long, so a job waiting on one is **not** a held worker. It parks as a
+`causeThaw` pause (`internal/job/pause.go`) — zero workers, survives an engine restart — and the
+existing 60 s auto-resume sweep re-checks it on a **2 → 15 min** backoff, bounded by a **48 h**
+deadline, then finishes automatically. You can open the task any time to see "Thawing from Glacier —
+retrieval window ~Nh left". Retrieval tier is **Standard** by default (selectable per thaw: Bulk =
+cheapest/slowest, Expedited = 1–5 min, Glacier-Flexible only).
+
+### Where it shows up
+
+- **Explorer → "Change storage class"** (`POST /api/s3/manage/tier`) — archive classic→cold, restore
+  cold→classic (thaw then transition), or **restore-only** (thaw to a temporary readable copy without a
+  permanent transition). A per-object `tier` job (`internal/job/tier.go`) on its own low-cost lane, with
+  a live progress strip. Archived rows are badged `❄ GLACIER` and their download becomes a Restore
+  action. Class choices carry an inline explanation of each tier.
+- **Process / download from Glacier** — a full-S3 run, or the Import-from-S3 download, whose inputs are
+  archived initiates the thaw and parks (`internal/job/storage.go`; the whole-folder pull and the
+  low-disk stager both thaw-gate); on resume it re-pulls and stacks once readable. This is
+  "download and start processing from Glacier data" — as one visitable task.
+- **Backups** — pick a storage class in the Backup panel to archive the heavy components (db dump,
+  library tar, atlas); the **manifest and app-state stay instant** so the backup picker and browser
+  restore keep working without a thaw. A restore thaws first.
+- **Library mirror** — a matched master that is archived kicks off its restore and the run falls back to
+  a local rebuild (never blocks); a later run finds it warm.
+- **Serving** — a freed-then-archived preview/result replies **409 `{archived, pending}`** rather than a
+  broken image, so the UI can offer a restore.
+- **Connection default class** — optional per-connection write class (instant only; an archived default
+  is rejected — the pipeline's own `run.json`/manifests must stay readable).
+
+**Cost note:** `GLACIER`/`GLACIER_IR` bill a 90-day, `DEEP_ARCHIVE` a 180-day minimum-storage
+duration; retiering sooner incurs an early-delete charge — so the UI avoids programmatic churn and
+never auto-thaws on an interactive preview (only in an explicit, resumable job).
+
 ## Safety properties worth knowing
 
 - Credentials: UI secrets encrypted at rest, never echoed; env credentials never logged.
 - Deletes: only after per-file S3 verification; aborted folder-wide otherwise.
-- Serving: output URLs transparently fall back to the mirror when the local file was freed.
+- Serving: output URLs transparently fall back to the mirror when the local file was freed (or reply
+  409 when the mirror object is archived).
 - Pool hygiene: a catalogued frame whose file was freed is skipped from master pools with a
   counted warning (never a dangling-symlink stack failure).
+- Glacier: class changes preserve the object key + content MD5; archived inputs/results never fail a
+  run — they thaw as a durable task or fall back; unsupported endpoints soft-fail cleanly.

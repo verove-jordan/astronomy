@@ -43,7 +43,7 @@ public data services by default.
 | `internal/grade` | Per-frame quality metrics + rejection rules; trail handling. |
 | `internal/calib` | Build master calibration frames (+ the dark **defect map** / bad-pixel scan); match the right masters to each light set; calibration library + deep cross-session pools. |
 | `internal/transient` | Cross-frame satellite/plane-trail + cosmic-ray masking on the registered subs, validated against fixed-pattern noise. |
-| `internal/photom` | Photometric normalization across mixed-session groups (percentile-curve fit; currently off by default). |
+| `internal/photom` | Photometric normalization across mixed-session groups (percentile-curve fit; ON by default for deep-sky — a flat narrowband curve seeds from the header exposure/gain instead of mis-fitting, and the clamp admits genuine cross-gain ratios). |
 | `internal/dither` | Pointing-pattern diagnosis from registration offsets (dithered / drift / static) — the walking-noise advisory. |
 | `internal/noise` · `internal/imgops` · `internal/optics` | Noise measurement/starlet denoiser, shared image ops, flat-defect QC. |
 | `internal/pipeline` | Orchestrate inspect → masters → calibrate → grade → register → stack → combine; soft-fail AI steps in `enhance.go`; palettes, supervisor, per-stage rerun. |
@@ -52,7 +52,7 @@ public data services by default.
 | `internal/graxpert` | Optional host CLI: GraXpert AI background-gradient extraction / denoise (`GRAXPERT_BIN`). |
 | `internal/starnet` | Optional host CLI: StarNet++ v2 star removal for star-reduced finishing (`STARNET_BIN`). |
 | `internal/llm` | Optional, opt-in: drives a host-run OpenAI-compatible vision model to auto-tune the finish for **every stacking mode** — deep-sky/nebula composite, comet colour composite, milkyway grade, planetary sharpen — via per-mode `candidateRenderer` adapters (`internal/pipeline/supervise_*.go`); the shared render→judge→re-tune loop soft-fails when the server is down. |
-| `internal/planetary` | SER/AVI/MP4/MOV/stills lucky-imaging path: native-res disk-masked sharpness ranking, multi-point ZNCC alignment, AP-weighted sigma-clipped stack, RL deconvolution. |
+| `internal/planetary` | SER/AVI/MP4/MOV/stills lucky-imaging path: native-res disk-masked sharpness ranking, multi-point ZNCC alignment, per-AP top-K selection stack (each region built from its locally-sharpest frames), RL deconvolution, true-luminance colour compose (`true_lum`). Opt-in earthshine reveal (`earthshine_gain`): deterministic limb circle fit + SNR-gated lift of the unlit disc, composited after the Siril finish. |
 | `internal/comet` | Pure comet primitives: multi-scale coma detection, robust linear/quadratic track fit, starless ZNCC alignment, sub-pixel translate (driven by `pipeline.ProcessComet`). |
 | `internal/mode` | Capture modes (deepsky/nebula/milkyway/planetary/livestack/comet) → the `Preset` that retunes the whole pipeline. |
 | `internal/livestack` + `internal/source` | Incremental live-stacking session + its watched source abstraction (local dir or S3 via `minio-go`). |
@@ -90,6 +90,30 @@ The deep-sky GIMP finish resolves a user-selectable **colour palette** — the c
 | `hos` (CFHT) | Hα | OIII | SII | narrowband |
 | `foraxx` (Webb-style) | Hα | √(Hα·OIII) | OIII | dynamic green via Siril pixel-math |
 | `mono` | L → Hα → first | — | — | single-channel |
+
+### The emission screens (natural family)
+
+Narrowband shot *alongside* LRGB is composited as additive **screen layers** over the broadband base
+rather than replacing it, so the data lights the image up instead of sitting unused. All three run the
+same machine — continuum-subtract (`excess = line − k·broadband`, so only true emission survives) →
+RBF-flatten → autostretch to a dark background → wash-gate → Screen in GIMP — and are declared once as
+a table (`internal/pipeline/emissionscreen.go`) rather than as three copies that drift:
+
+| Layer | Continuum ref | Colour | Knob | Default |
+|---|---|---|---|---|
+| Hα 656 nm | R → L | pure red | `ha_screen` | 0.42 (on) |
+| [OIII] 501 nm | G → B → L | teal (red killed) | `oiii_screen` | 0 (opt-in) |
+| [SII] 672 nm | R → L | `sii_tint`: deep red *or* gold | `sii_screen` | 0 (opt-in) |
+
+[SII] is the awkward one: at 672 nm it is *deeper* red than Hα, which sRGB cannot express — pure red is
+already the end of the ramp — so screening it "more red" would merely brighten the Hα layer. `sii_tint`
+picks how to tell them apart instead: `deep_red` (default) keeps a trace of blue for a crimson that
+reads as natural, `gold` is the amber accent the Hubble palette established and is far easier to see.
+
+The [OIII] and [SII] screens default to **0**, so a run that does not ask for them emits byte-identical
+GIMP script to before the knobs existed. A screen-only layer never constrains anything that reasons
+about coverage (`paletteResolved.screenOnly`) — it fades where its nights didn't reach, so letting it
+bound a multi-night mosaic crop would collapse the canvas to its own footprint.
 
 The narrowband palettes assign emission lines straight to R/G/B, so they **disable the Hα screen and
 SPCC** and stretch unlinked; natural/hargb keep the SPCC ladder. A palette missing its required filters
@@ -146,12 +170,97 @@ Jobs are persisted in Postgres and executed by a Go in-process worker pool. Siri
 stdout, which the runner parses and republishes to the browser over Server-Sent Events. A single host
 binary keeps the moving parts minimal.
 
+## Observability & resource metrics
+
+A deep-sky run walks a **named step plan** (`internal/pipeline/progress_steps.go`): masters, each
+channel, then the preset-derived finish steps (align → combine+background → optional AI colour
+denoise → colour calibration+stretch → GIMP composite → optional StarNet/star-fix → export). Every
+step boundary emits `▶ <step>` / `✓ <step> done in <dur> — peak tool RSS <n>` journal lines, warnings
+are `⚠`-prefixed and surface live the moment they happen (`warnLive`), a failed job publishes a final
+`✗` line, and only these markers (plus one `[i/N] <step>` skeleton per step) are mirrored to the
+engine's stdout so `docker logs` stays readable. When the stream goes quiet (the CPU-only AI denoise
+can be silent for an hour) a per-job **heartbeat** (`internal/job/heartbeat.go`) publishes
+`still running: <step> — 14m into this step, no output for 90s · cpu 10.8/12 cores · rss 6.7 GiB`
+after 45 s of silence, then every 30 s (SSE + stdout only, never persisted). Resource numbers come
+from a single refcounted **engine-wide sampler** (`internal/job/enginemon.go`): it samples this
+process's whole subtree (Siril, GraXpert, StarNet, GIMP, ffmpeg are all children) at 1 Hz and
+publishes each running job's live CPU/RSS + job-wide peak + host core count — the job header shows
+`x.x / N cores` and stays live through pure-Go/GIMP phases. Known limit: a host-offloaded GraXpert
+(`ASTRO_GRAXPERT_URL`) runs outside the subtree and is not counted. Per-step wall times land in
+`run.json` (`timings`) plus one final `timing: … · total …` line.
+
 ## Deliberate deviation
 
 Running the engine and Go tests on the host is an intentional exception to the house "everything in a
 container" rule, forced by the host-Siril/host-GIMP dependency (and the optional GraXpert/StarNet++
 CLIs, which run the same way). It is the fastest path for daily macOS dev and is documented in
 `CLAUDE.md`.
+
+## Filters: one canonical set, recorded three times
+
+`internal/filters` is the single source of truth for filter names — the canonical set
+(`L, R, G, B, Ha, OIII, SII`), the aliases capture programs spell them with (`s2`, `sulfur`, `O3`,
+`h-alpha`, Johnson `V`→`G`), the display order and which of them are narrowband. `constants/filters.ts`
+mirrors it on the frontend, pinned by a spec. Everything that enumerates or orders filters — ingest,
+the stacker, the wash gates, the capture sequencer, chip colours — reads one of those two.
+
+That consolidation is not cosmetic. The lists used to be copy-pasted into a dozen places and drifted:
+two of them stopped at `Ha`, so a wheel slot holding `SII` could only ever be named `"S6"`.
+
+**A wheel reports slot numbers, never names.** The slot→filter mapping is entered once in
+Capture → Filter slots and stored server-side (`app_settings["capture.filter_slots"]`), because a
+5-slot wheel gets its filters swapped between sessions and nothing else records what was fitted. The
+sequencer resolves a step's filter *name* against those labels (alias-aware, so a step asking for
+`SII` finds a slot labelled `S2`), and every captured frame then records the filter **three
+independent times**:
+
+```
+<root>/[panel/]<Filter>/Light_300sec_Bin1_filter-SII_-15.0C_gain200_2026-07-29_221403_frame0001.fit
+                ^ folder                  ^ file name              plus FILTER = 'SII' in the header
+```
+
+Calibration follows the layout ingest already parses: `flats/<Filter>/` (flats are per-filter), and
+`darks/` `bias/` `darkflats/` with no filter segment (those group filter-agnostically). Redundancy is
+the point — a header stripped by a converter, or a file renamed by hand, still leaves the folder
+saying which filter these frames were shot through.
+
+## Real ZWO hardware on Apple Silicon: the x86_64 device sidecar
+
+Device I/O runs in its own process (`astrostack device`) for four reasons — `air` restarts the engine
+on every save, a vendor SDK crash must not take the engine with it, live view must keep its cadence
+while stacking saturates the CPU, and the process can be built for a different architecture than the
+engine. That last one is not hypothetical:
+
+**ZWO publish no arm64 macOS library.** The ASI and EFW SDKs, and ZWO's own ASIStudio, are
+`i386 + x86_64` only (`lipo -archs` on the bundled `libASICamera2.dylib` confirms it). A native arm64
+engine therefore cannot `dlopen` them, and no newer SDK download fixes that.
+
+The fix is to build **only the sidecar** as x86_64 and let Rosetta 2 run it:
+
+```sh
+just device-x86     # cross-builds bin/astrostack-x86 and runs it
+```
+
+The engine, the frontend and every bit of stacking stay **native arm64**; they talk to the sidecar
+over HTTP on `127.0.0.1:8084` exactly as before. Verified working on an M2 Max: the driver report
+goes from *"has no arm64 build"* to `asi: SDK loaded`. ZWO's own software runs the same way here, so
+USB access under translation is a well-trodden path. `just device` (native) remains the simulator
+path for development.
+
+The libraries are found automatically in `/Applications/ASIStudio.app/Contents/Frameworks`, or point
+`ASI_SDK_LIB` / `EFW_SDK_LIB` at an unpacked copy of ZWO's "ASI Camera SDK [Linux & macOS]" download.
+As with Siril and GraXpert, the SDK is **invoked, never vendored**.
+
+Rosetta costs perhaps 20–40 % on pure compute, which does not matter here: the sidecar does USB I/O,
+a memcpy, a small preview encode and focus metering on a ROI. Everything expensive — stacking, Siril,
+GraXpert — stays native in the engine. If a high-frame-rate planetary run drops frames, lower the
+camera's **USB bandwidth** control before suspecting translation.
+
+**Control ids are read from the camera, never hardcoded.** `ASIGetControlCaps` reports each control's
+name *and* its numeric id; the driver builds the mapping from that at connect time
+(`internal/device/asi/controls.go`). Hardcoding `ASI_CONTROL_TYPE` values is a trap — the enum has
+grown between SDK versions, the header does not ship with the binary library, and an id that is off
+by one silently drives the wrong control (asking for the cooler and getting image flip).
 
 ## Fully containerized mode (`stack`)
 
@@ -183,7 +292,16 @@ binary** (`internal/skycat/catalogue/*.csv` via `go:embed`; `skycat.Load` prefer
 catalogue and drops to the embed only when none is readable). Suggested targets therefore work on every
 arch regardless of the installed Siril, while the on-disk catalogue is still used wherever it *is* readable
 (the macOS host + the amd64 AppImage, whose CSVs live in the `catalogue/` subdir `ASTRO_SIRIL_CATALOG_DIR`
-points at). **StarNet++** is not baked in (licence not redistributable) — mount it +
+points at). The **Siril SPCC sensor/filter database** is baked into the image at a pinned commit
+(`SPCC_DB_REF` build arg → `/opt/siril-spcc-database`) and symlinked by the entrypoint into Siril's
+user data dir (`$XDG_DATA_HOME/siril/siril-spcc-database`) — the GUI normally downloads it on first
+use, which a headless container never does, and without it `spcc` aborts even on a plate-solved image
+(the colour ladder then degrades to the star-field fallback). With the local Gaia catalogues under
+`library/catalogues` (`just download-catalogues`) plate-solve + colour calibration run fully offline
+in the container. Known issue: the **arm64 distro Siril 1.4.4 segfaults inside SPCC's aperture
+photometry** (local and online catalogues alike); the engine's colour ladder falls to **PCC** on the
+same solve (`internal/postprocess/colorcal.go`), which completes fine — so arm64 containers get a
+photometric balance from Gaia photometry rather than per-star spectra until upstream fixes SPCC. **StarNet++** is not baked in (licence not redistributable) — mount it +
 set `STARNET_BIN`; it soft-fails to full stars otherwise. The one thing that cannot run in a container on
 macOS is the **VLM** (no GPU/Metal) — keep it native there.
 
@@ -242,3 +360,39 @@ with a transparent S3 fallback; a *full-S3* run pulls inputs, processes locally,
 
 Full detail — layout, connections, transfer semantics, staging, backup/restore:
 **[docs/storage-s3.md](storage-s3.md)**.
+
+### Glacier / cold storage classes
+
+Objects can live on **cold S3 storage classes** (Glacier Instant Retrieval, Glacier Flexible
+Retrieval, Deep Archive) to cut cost, and the whole S3 feature is class-aware. The model
+(`internal/s3store/glacier.go`) splits classes into two families: **instant** (`STANDARD`, `*_IA`,
+`INTELLIGENT_TIERING`, and — despite its name — `GLACIER_IR`), which read immediately, and
+**archived** (`GLACIER`, `DEEP_ARCHIVE`), which must be **restored** (thawed, minutes → ~48 h) before a
+GET or a server-side copy. Key facts the code encodes: `""` == `STANDARD`; `HEAD`/`Stat` works on an
+archived object (only `GET`/`CopyObject` fail with `InvalidObjectState`); a class change is a
+`CopyObject` onto the same key (ledger untouched) that **carries the `Astro-Md5` + content-type
+forward**; and everything **soft-fails** on an endpoint without Glacier (MinIO) so a run is never
+blocked by a missing feature.
+
+The long thaw is modeled as a **durable, visitable Task**, not a held worker: a job waiting on a
+restore parks as a `causeThaw` pause (zero workers, survives restart) and the existing 60 s
+auto-resume sweep re-checks it on a 2→15 min cadence, bounded by a 48 h deadline, then finishes
+automatically. This covers every S3 surface:
+
+- **Explorer → "Change storage class"** — archive classic→Glacier, or restore Glacier→classic (thaw
+  then transition), or restore-only; a per-object `tier` job on its own low-cost lane
+  (`internal/job/tier.go`). Archived objects are badged and their download becomes a "Restore" action.
+- **Process / download from Glacier** — a full-S3 run (or the Import-from-S3 download) whose inputs
+  are archived initiates the thaw and parks; on resume it re-pulls and stacks once readable
+  (`internal/job/storage.go`, the pull + low-disk stager both thaw-gate).
+- **Backups** — the natural archival target: a backup can write its heavy data to a cold class (the
+  manifest stays instant so the picker keeps working); a restore thaws first.
+- **Library mirror** — a matched master that is archived kicks off its restore and falls back to a
+  local rebuild for that run (never blocks), so a later run finds it warm.
+- **Serving fallback** — a freed-then-archived preview/result replies **409 `{archived}`** instead of
+  a broken image, so the UI can offer a restore.
+- **Connections** — an optional per-connection **default storage class** (instant only — the pipeline's
+  own control writes must stay readable; an archived default is rejected).
+
+Retrieval tier (Standard default / Bulk / Expedited) is selectable per thaw. See
+**[docs/storage-s3.md](storage-s3.md)** → "Glacier".

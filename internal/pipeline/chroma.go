@@ -6,7 +6,6 @@ import (
 	"math"
 	"path/filepath"
 
-	"github.com/verove-jordan/astronomy/internal/comet"
 	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/noise"
 )
@@ -72,43 +71,5 @@ func equalizeBackgrounds(rPath, gPath, bPath string) (string, error) {
 		chans[0].bg, chans[1].bg, chans[2].bg, minBg), nil
 }
 
-// chromaSmoothRGB smooths ONLY the colour of a combined RGB linear FITS in place, preserving the
-// per-pixel mean EXACTLY: m=(R+G+B)/3, then c'=m+blur(c−m). By linearity blur(ΣΔ)=Σblur(Δ)=0, so
-// (R'+G'+B')/3 is byte-for-byte m — every bit of luminance/detail survives (and in LRGB the L layer
-// supplies detail anyway); only the mutual channel disagreements (the coherent colour patches that
-// survive the joint denoise, which a stretch + saturation would amplify into red/blue blotches) are
-// flattened. This is the same technique the planetary finish uses (internal/planetary smoothChroma).
-// radius ≤ 0 or a non-colour image → no-op. Soft-fail: returns a note and any error.
-func chromaSmoothRGB(path string, radius int) (string, error) {
-	if radius <= 0 {
-		return "", nil
-	}
-	im, err := fits.ReadImage(path)
-	if err != nil {
-		return "", fmt.Errorf("chroma smooth: read: %w", err)
-	}
-	if im.C < 3 {
-		return "", nil // colour smoothing only makes sense on an RGB image
-	}
-	r, g, b := im.Pix[0], im.Pix[1], im.Pix[2]
-	mean := make([]float32, len(r))
-	for i := range mean {
-		mean[i] = (r[i] + g[i] + b[i]) / 3
-	}
-	// Reuse ONE diff buffer across the three channels (a 16MP master is ~64 MB/plane, and a deepsky combine
-	// already holds several large masters; a fresh diff per channel needlessly triples the transient churn).
-	diff := make([]float32, len(r))
-	for _, pix := range [][]float32{r, g, b} {
-		for i := range diff {
-			diff[i] = pix[i] - mean[i]
-		}
-		sm := comet.BoxBlur(diff, im.W, im.H, radius)
-		for i := range pix {
-			pix[i] = mean[i] + sm[i]
-		}
-	}
-	if err := im.OverwriteData(path); err != nil {
-		return "", fmt.Errorf("chroma smooth: write: %w", err)
-	}
-	return fmt.Sprintf("chroma smoothed (mean-preserving, %dpx): residual colour patches flattened", radius), nil
-}
+// chromaSmoothRGB (the mean-preserving colour smoothing pass) lives in chromasmooth.go: gaussian,
+// star-protected, with an optional coarse background-only pass — see that file's package comment.

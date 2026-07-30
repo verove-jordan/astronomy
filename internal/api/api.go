@@ -14,10 +14,12 @@ import (
 	"strings"
 
 	"github.com/klauspost/compress/gzhttp"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/verove-jordan/astronomy/internal/agent"
 	"github.com/verove-jordan/astronomy/internal/buildinfo"
 	"github.com/verove-jordan/astronomy/internal/canopy"
+	"github.com/verove-jordan/astronomy/internal/capture"
 	"github.com/verove-jordan/astronomy/internal/config"
 	"github.com/verove-jordan/astronomy/internal/darksky"
 	"github.com/verove-jordan/astronomy/internal/elevation"
@@ -31,6 +33,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/s3conn"
 	"github.com/verove-jordan/astronomy/internal/s3store"
 	"github.com/verove-jordan/astronomy/internal/secret"
+	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/skyevents"
 	"github.com/verove-jordan/astronomy/internal/skyplan"
 	"github.com/verove-jordan/astronomy/internal/store"
@@ -58,6 +61,10 @@ type Server struct {
 	agentTurns     *turns.Sessions     // live turns (agent chat + supervised-job conversations), streamed over SSE
 	toolHealth     *toolhealth.Checker // environment health (tool deep probes + catalogue presence)
 	s3cache        *s3Cache            // reuses minio clients + memoizes listings so browsing stays fast
+	sirilRunner    *siril.Runner       // one-off synchronous Siril work (star-annotation re-solve); nil-safe for tests
+	devices        *deviceProxy        // reverse proxy onto the separate device-server process
+	capture        *capture.Runner     // the auto-run sequencer (drives the device server)
+	starsFlight    singleflight.Group  // dedupes concurrent star-annotation computes per run dir
 }
 
 // New builds the API server. hub is the shared turn transport (also handed to the job manager) so a
@@ -90,7 +97,12 @@ func New(mgr *job.Manager, st *store.Store, cfg *config.Config, hub *turns.Sessi
 		agentTurns:     hub,
 		toolHealth:     toolhealth.New(cfg),
 		s3cache:        newS3Cache(),
+		sirilRunner:    siril.New(cfg.SirilBin, siril.Limits{MaxCPUs: cfg.MaxCPUs, MemRatio: cfg.SirilMemRatio, Nice: cfg.SirilNice}),
+		devices:        newDeviceProxy(cfg.DeviceAddr),
 	}
+	// The sequencer lives here rather than in the device server: a session is a statement about a
+	// target and a night, so its state belongs with the database.
+	s.capture = capture.NewRunner(capture.NewClient(cfg.DeviceAddr), captureRecorder{store: st})
 	s.buildAgent()
 	return s
 }
@@ -116,13 +128,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/mode-params", s.modeParams)
 	mux.HandleFunc("GET /api/presets", s.listPresets)
 	mux.HandleFunc("POST /api/presets", s.savePreset)
-	mux.HandleFunc("PUT /api/presets/{id}", s.renamePreset)
+	mux.HandleFunc("PUT /api/presets/{id}", s.updatePreset)
 	mux.HandleFunc("DELETE /api/presets/{id}", s.deletePreset)
+	mux.HandleFunc("POST /api/selections", s.saveSelection)
+	mux.HandleFunc("PUT /api/selections/{id}", s.updateSelection)
+	mux.HandleFunc("DELETE /api/selections/{id}", s.deleteSelection)
 	mux.HandleFunc("GET /api/masters", s.masters)
 	mux.HandleFunc("GET /api/phone-masters", s.phoneMasters)
 	mux.HandleFunc("POST /api/library/s3-sync", s.libraryS3Sync)
 	mux.HandleFunc("POST /api/reuse/preview", s.reusePreview)
 	mux.HandleFunc("POST /api/calib/preview", s.calibPreview)
+	mux.HandleFunc("POST /api/calib/plan", s.calibPlan)
+	mux.HandleFunc("POST /api/planetary/align-points", s.planetaryAlignPoints)
+	mux.HandleFunc("POST /api/quality/sets", s.setQuality)
 	mux.HandleFunc("POST /api/jobs", s.createJob)
 	mux.HandleFunc("GET /api/jobs", s.listJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.getJob)
@@ -133,6 +151,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/refine", s.refineJob)
 	mux.HandleFunc("POST /api/jobs/{id}/rerun", s.rerunJob)
 	mux.HandleFunc("POST /api/jobs/{id}/denoise-final", s.denoiseFinalJob)
+	mux.HandleFunc("POST /api/jobs/{id}/stars", s.computeStars)
+	mux.HandleFunc("GET /api/jobs/{id}/stars", s.getStars)
 	mux.HandleFunc("POST /api/jobs/{id}/free-local", s.freeLocalJob)
 	mux.HandleFunc("GET /api/jobs/{id}/iterations", s.jobIterations)
 	mux.HandleFunc("GET /api/jobs/{id}/events", s.jobEvents)
@@ -153,11 +173,45 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sky/align", s.skyAlign)
 	mux.HandleFunc("GET /api/sky/align/profiles", s.skyAlignProfiles)
 	mux.HandleFunc("GET /api/sky/geocode", s.geocode)
+	mux.HandleFunc("POST /api/capture/start", s.startCapture)
+	mux.HandleFunc("POST /api/capture/center", s.centerCapture)
+	mux.HandleFunc("POST /api/capture/pause", s.pauseCapture)
+	mux.HandleFunc("POST /api/capture/resume", s.resumeCapture)
+	mux.HandleFunc("POST /api/capture/abort", s.abortCapture)
+	mux.HandleFunc("GET /api/capture/status", s.captureStatus)
+	mux.HandleFunc("GET /api/capture/events", s.captureEvents)
+	mux.HandleFunc("GET /api/capture/sessions", s.listCaptureSessions)
+	mux.HandleFunc("GET /api/capture/sessions/{id}", s.getCaptureSession)
+	mux.HandleFunc("GET /api/capture/sequences", s.listCaptureSequences)
+	mux.HandleFunc("POST /api/capture/sequences", s.saveCaptureSequence)
+	mux.HandleFunc("DELETE /api/capture/sequences/{id}", s.deleteCaptureSequence)
+	mux.HandleFunc("GET /api/tracking/report/{id}", s.trackingReport)
+	mux.HandleFunc("GET /api/tracking/sessions", s.trackingSessions)
+	mux.HandleFunc("POST /api/capture/calibration/plan", s.calibrationPlan)
+	mux.HandleFunc("GET /api/capture/filters", s.filterSlots)
+	mux.HandleFunc("POST /api/capture/filters", s.saveFilterSlots)
+	mux.HandleFunc("GET /api/device/status", s.deviceStatus)
+	mux.HandleFunc("/api/device/", s.deviceRequest)
+	mux.HandleFunc("GET /api/equipment", s.listEquipment)
+	mux.HandleFunc("POST /api/equipment", s.saveEquipment)
+	mux.HandleFunc("PUT /api/equipment/{id}", s.updateEquipment)
+	mux.HandleFunc("DELETE /api/equipment/{id}", s.deleteEquipment)
+	mux.HandleFunc("GET /api/sky/search", s.skySearch)
+	mux.HandleFunc("GET /api/sky/starfield", s.skyStarfield)
+	mux.HandleFunc("POST /api/mosaic/preview", s.mosaicPreview)
+	mux.HandleFunc("GET /api/mosaic/plans", s.listMosaicPlans)
+	mux.HandleFunc("POST /api/mosaic/plans", s.createMosaicPlan)
+	mux.HandleFunc("GET /api/mosaic/plans/{id}", s.getMosaicPlan)
+	mux.HandleFunc("PUT /api/mosaic/plans/{id}", s.updateMosaicPlan)
+	mux.HandleFunc("DELETE /api/mosaic/plans/{id}", s.deleteMosaicPlan)
+	mux.HandleFunc("PUT /api/mosaic/plans/{id}/tiles/{index}", s.setMosaicTileStatus)
+	mux.HandleFunc("POST /api/mosaic/plans/{id}/reconcile", s.reconcileMosaicPlan)
 	mux.HandleFunc("GET /api/s3/status", s.s3Status)
 	mux.HandleFunc("POST /api/s3/transfer", s.s3Transfer)
 	mux.HandleFunc("GET /api/s3/browse", s.s3Browse)
 	mux.HandleFunc("POST /api/s3/import", s.s3Import)
 	mux.HandleFunc("GET /api/local/drives", s.localDrives)
+	mux.HandleFunc("GET /api/local/sources", s.localSources)
 	mux.HandleFunc("GET /api/local/browse", s.localBrowse)
 	mux.HandleFunc("POST /api/local/upload", s.localUpload)
 	mux.HandleFunc("GET /api/s3/connections", s.listConnections)
@@ -174,6 +228,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/s3/manage/folder", s.manageCreateFolder)
 	mux.HandleFunc("DELETE /api/s3/manage/object", s.manageDeleteObject)
 	mux.HandleFunc("POST /api/s3/manage/move", s.manageMove)
+	mux.HandleFunc("POST /api/s3/manage/tier", s.manageTier)
 	mux.HandleFunc("GET /api/s3/manage/download", s.manageDownload)
 	mux.HandleFunc("POST /api/s3/manage/upload", s.manageUpload)
 	mux.HandleFunc("POST /api/backup", s.createBackup)
@@ -311,6 +366,7 @@ func (s *Server) modeParams(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mode":     string(mo),
 		"defaults": pipeline.ParamsFor(preset),
+		"ranges":   pipeline.KnobRangesFor(mo),
 		"menu":     pipeline.KnobMenuFor(mo),
 	})
 }
@@ -369,6 +425,7 @@ func (s *Server) calibPreview(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Path  string   `json:"path"`
 		Paths []string `json:"paths"`
+		Force bool     `json:"force"` // apply mismatched masters anyway (force_calibration_frames preview)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		badRequest(w, "invalid body")
@@ -379,7 +436,47 @@ func (s *Server) calibPreview(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "path must be inside the data directory")
 		return
 	}
-	pv, err := pipeline.PreviewCalibration(r.Context(), s.scanCache, s.store, roots)
+	pv, err := pipeline.PreviewCalibration(r.Context(), s.scanCache, s.store, roots, body.Force)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pv)
+}
+
+// calibPlan reports the JOINED per-session run plan: every (session, night, config) group the run
+// would form — current capture nights AND folded prior sessions — with the dark/flat/bias each would
+// get (library / capture-built / per-night session rebuild). POST /api/calib/plan
+func (s *Server) calibPlan(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Path          string   `json:"path"`
+		Paths         []string `json:"paths"`
+		Force         bool     `json:"force"`
+		ReuseDisabled bool     `json:"reuse_disabled"`
+		Sessions      []int64  `json:"reuse_sessions"` // restrict folded prior sessions (empty = all)
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		badRequest(w, "invalid body")
+		return
+	}
+	roots, ok := s.resolveRoots(body.Path, body.Paths)
+	if !ok {
+		badRequest(w, "path must be inside the data directory")
+		return
+	}
+	var provider pipeline.ReuseProvider
+	if s.cfg.ReuseEnabled && !body.ReuseDisabled {
+		provider = s.store
+	}
+	var sessions map[int64]bool
+	if len(body.Sessions) > 0 {
+		sessions = make(map[int64]bool, len(body.Sessions))
+		for _, id := range body.Sessions {
+			sessions[id] = true
+		}
+	}
+	pv, err := pipeline.PreviewRunPlan(r.Context(), provider, s.scanCache, s.store, roots,
+		s.cfg.SirilCatalogDir, s.cfg.ReuseConeDeg, body.Force, sessions)
 	if err != nil {
 		serverError(w, err)
 		return
@@ -413,19 +510,25 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 			req.Paths = nil // single folder → unchanged single-session run
 		}
 	}
-	if req.Mode == "" {
-		req.Mode = string(mode.Deepsky)
-	}
-	if req.Format == "" {
-		req.Format = string(mode.FormatImage)
-	}
-	if _, err := mode.ParseMode(req.Mode); err != nil {
-		badRequest(w, err.Error())
-		return
-	}
-	if _, err := mode.ParseFormat(req.Format); err != nil {
-		badRequest(w, err.Error())
-		return
+	if req.BuildMasters {
+		// A masters-only calibration build is not a pipeline mode — the job kind reads "masters" in
+		// history and execute() intercepts it before mode parsing (like Transfer/Backup).
+		req.Mode = "masters"
+	} else {
+		if req.Mode == "" {
+			req.Mode = string(mode.Deepsky)
+		}
+		if req.Format == "" {
+			req.Format = string(mode.FormatImage)
+		}
+		if _, err := mode.ParseMode(req.Mode); err != nil {
+			badRequest(w, err.Error())
+			return
+		}
+		if _, err := mode.ParseFormat(req.Format); err != nil {
+			badRequest(w, err.Error())
+			return
+		}
 	}
 	id, err := s.mgr.Enqueue(r.Context(), req)
 	if err != nil {
@@ -681,8 +784,12 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Local-first; if the local copy was freed to S3, pull it from the output mirror on demand.
-	served, ok := s.ensureServable(r.Context(), r, abs, s.cfg.OutputDir, "output")
-	if !ok {
+	served, outcome := s.resolveServable(r.Context(), r, abs, s.cfg.OutputDir, "output")
+	switch outcome {
+	case serveArchived:
+		writeArchived(w)
+		return
+	case serveMissing:
 		http.NotFound(w, r)
 		return
 	}
@@ -707,8 +814,12 @@ func (s *Server) previewFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Local-first; if the capture was freed to S3 (or lives only on S3), pull it from the data mirror.
-	served, ok := s.ensureServable(r.Context(), r, abs, s.cfg.DataDir, "data")
-	if !ok {
+	served, outcome := s.resolveServable(r.Context(), r, abs, s.cfg.DataDir, "data")
+	switch outcome {
+	case serveArchived:
+		writeArchived(w)
+		return
+	case serveMissing:
 		http.NotFound(w, r)
 		return
 	}
@@ -737,8 +848,12 @@ func (s *Server) serveThumb(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Local-first; if the result PNG was freed to S3, pull it from the output mirror before thumbnailing.
-	served, ok := s.ensureServable(r.Context(), r, abs, s.cfg.OutputDir, "output")
-	if !ok {
+	served, outcome := s.resolveServable(r.Context(), r, abs, s.cfg.OutputDir, "output")
+	switch outcome {
+	case serveArchived:
+		writeArchived(w)
+		return
+	case serveMissing:
 		http.NotFound(w, r)
 		return
 	}

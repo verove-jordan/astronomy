@@ -18,20 +18,28 @@ import (
 const spccTimeout = 4 * time.Minute
 
 // CalMethod is which rung of the colour-calibration ladder actually produced the balance — callers
-// branch on it (e.g. an SCNR green removal is right after SPCC but tips a star-field-calibrated field
-// magenta, since the star-field gains already make the median star neutral by construction).
+// branch on it: both trustworthy rungs (SPCC and the warm-anchored star-field gains) establish a
+// balance whose RESIDUAL green is safe to strip with a lightness-preserving SCNR, while the GIMP
+// green trim stays reserved for genuinely uncalibrated colour (compose.go — stacking it on a
+// calibrated field once tipped an M31 pink-galaxy/purple-star).
 type CalMethod int
 
 const (
 	CalNone        CalMethod = iota // colour left uncalibrated (disabled + no green removal)
-	CalSPCC                         // photometric SPCC (the trustworthy, green-residual-leaving path)
-	CalStarField                    // star-field per-channel gains (neutral by construction — no SCNR)
+	CalSPCC                         // spectrophotometric SPCC (the most precise path)
+	CalStarField                    // star-field per-channel gains, warm-anchored (trustworthy fallback)
 	CalNeutralized                  // background neutralization + green strip (last resort; green already removed)
+	CalPalette                      // narrowband palette mapping — the colour IS the channel assignment, no calibration applies
+	CalPCC                          // photometric PCC (Gaia photometry; the rung when SPCC itself fails, e.g. the arm64 1.4.4 segfault)
 )
 
-// Calibrated reports whether the method established a TRUSTWORTHY channel balance (SPCC or star-field),
-// worth preserving with a linked stretch and enough to suppress the GIMP green trim.
-func (m CalMethod) Calibrated() bool { return m == CalSPCC || m == CalStarField }
+// Calibrated reports whether the method established a TRUSTWORTHY channel balance (SPCC, PCC or
+// star-field), worth preserving with a linked stretch and enough to suppress the GIMP green trim.
+func (m CalMethod) Calibrated() bool { return m == CalSPCC || m == CalPCC || m == CalStarField }
+
+// Photometric reports whether the balance came from real catalogue photometry (SPCC or PCC) — the
+// rungs that need no "colours come from a fallback" caveat.
+func (m CalMethod) Photometric() bool { return m == CalSPCC || m == CalPCC }
 
 // ColorCalOptions parameterize the color-calibration stage.
 type ColorCalOptions struct {
@@ -45,14 +53,19 @@ type ColorCalOptions struct {
 
 // ColorCalibrate calibrates the named linear image in dir, overwriting it. The ladder:
 //
-//  1. plate-solve + SPCC — true photometric color (natural star/nebulosity hues);
-//  2. star-field gain calibration (StarField) — per-channel GAINS estimated from the field's own
-//     stars, so results stay neutral-natural even fully offline (the neutralization fallback below
-//     only equalizes the sky pedestal and leaves a red-strong rig's signal systematically warm);
-//  3. SCNR green removal over a degree-1 background neutralization — the last resort.
+//  1. plate-solve + SPCC — spectrophotometric color (per-star Gaia spectra; the most precise);
+//  2. plate-solve + PCC — catalogue photometry without the spectral synthesis. SPCC can fail where
+//     PCC succeeds on the same solve (the distro arm64 Siril 1.4.4 segfaults inside SPCC's aperture
+//     photometry — local and online catalogues alike — while `pcc` completes), and a photometric
+//     balance is far closer to SPCC than any star-derived guess;
+//  3. star-field gain calibration (StarField) — per-channel GAINS estimated from the field's own
+//     stars against a warm median-star anchor, so results stay natural even fully offline/unsolvable
+//     (the neutralization fallback below only equalizes the sky pedestal and leaves a red-strong
+//     rig's signal systematically warm);
+//  4. SCNR green removal over a degree-1 background neutralization — the last resort.
 //
 // It returns a human-readable note describing which path ran and the CalMethod that established the
-// balance (SPCC/star-field are trustworthy; see CalMethod.Calibrated). The fallback note now names WHY
+// balance (SPCC/PCC/star-field are trustworthy; see CalMethod.Calibrated). The fallback note names WHY
 // SPCC was unavailable (timeout / solve error / a matched log marker) so run.json explains the ladder
 // step. Only a hard Siril failure of the last-resort fallback returns an error, so a calibration miss
 // never aborts the run.
@@ -78,6 +91,17 @@ func ColorCalibrate(ctx context.Context, runner *siril.Runner, dir, base string,
 			} else {
 				spccReason = "no solution"
 			}
+		}
+	}
+	if opts.Enabled {
+		// SPCC's script died (crash/timeout/no solution) — PCC re-solves and calibrates from Gaia
+		// photometry. The SPCC script saves only AFTER its spcc line, so a mid-script failure left
+		// the linear image untouched and this rung starts clean.
+		pctx, cancel := context.WithTimeout(ctx, spccTimeout)
+		res, perr := runner.Run(pctx, dir, siril.PhotometricCalibrateScript(base, base, opts.Solve), nil)
+		cancel()
+		if perr == nil && res != nil && !solveFailed(res.Log) {
+			return fmt.Sprintf("PCC photometric color calibration applied (SPCC unavailable: %s)", spccReason), CalPCC, nil
 		}
 	}
 	if opts.Enabled && opts.StarField {

@@ -101,6 +101,12 @@ func ReadImage(path string) (*Image, error) {
 // WriteFITS writes the image as 32-bit float, planar RGB (or mono), ROWORDER top-down — matching
 // the convention of Siril's own output so the file opens consistently in Siril/GIMP.
 func (im *Image) WriteFITS(path string) error {
+	return im.WriteFITSWith(path, nil)
+}
+
+// WriteFITSWith is WriteFITS with extra pre-padded header cards (e.g. WCS.Cards()) appended before
+// END — the way the mosaic assembler stamps a real plate solution into a canvas it synthesized.
+func (im *Image) WriteFITSWith(path string, extraCards []string) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -130,6 +136,7 @@ func (im *Image) WriteFITS(path string) error {
 		strCard("ROWORDER", "TOP-DOWN", "Order of the rows in image array"),
 		strCard("PROGRAM", "astrostack", "Software that created this HDU"),
 	)
+	cards = append(cards, extraCards...)
 	if err := writeHeader(w, cards); err != nil {
 		return err
 	}

@@ -105,7 +105,7 @@ func TestDeriveType(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, deriveType(tt.rec))
+			assert.Equal(t, tt.want, DeriveType(tt.rec))
 		})
 	}
 }
@@ -193,6 +193,49 @@ func TestPlan_GatesAndRanks(t *testing.T) {
 
 	// Ranked by score descending: the visible galaxy outranks the gated cluster.
 	assert.Equal(t, "M81", res.Targets[0].Name)
+}
+
+func TestPlan_MaxMagGate(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "messier.csv",
+		"name,ra,dec,diameter,mag,alias\nM81,148.888,69.065,26.9,6.9,Bode's Galaxy\nM999,149.0,69.0,5,12.4,Faintest\n")
+	writeFile(t, dir, "ldn.csv", "name,ra,dec\nLDN1234,148.9,69.1\n") // no magnitude column
+
+	planner := New(dir)
+	base := Params{
+		At:        time.Date(2026, time.March, 15, 23, 0, 0, 0, time.UTC),
+		Lat:       48.8566,
+		Lon:       2.3522,
+		Optics:    fc100,
+		MinAltDeg: 30,
+		Twilight:  "astro",
+		Limit:     50,
+		Weights:   DefaultWeights(),
+		Location:  time.UTC,
+	}
+
+	tests := []struct {
+		name   string
+		maxMag float64
+		want   []string
+	}{
+		{"off keeps everything", 0, []string{"M81", "M999", "LDN1234"}},
+		{"gate drops the faint object, no-mag records pass", 10, []string{"M81", "LDN1234"}},
+		{"gate below everything keeps only no-mag records", 5, []string{"LDN1234"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prm := base
+			prm.MaxMag = tt.maxMag
+			res, err := planner.Plan(context.Background(), prm)
+			require.NoError(t, err)
+			var names []string
+			for _, tg := range res.Targets {
+				names = append(names, tg.Name)
+			}
+			assert.ElementsMatch(t, tt.want, names)
+		})
+	}
 }
 
 func writeFile(t *testing.T, dir, name, content string) {

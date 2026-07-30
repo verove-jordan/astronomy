@@ -30,6 +30,7 @@ func FrameFromHeader(path string, h *fits.Header) *Frame {
 	}
 	if g, ok := h.Int("GAIN"); ok {
 		fr.Gain = g
+		fr.HasGain = true
 	}
 	if o, ok := h.Int("OFFSET"); ok {
 		fr.Offset = o
@@ -54,10 +55,14 @@ func FrameFromHeader(path string, h *fits.Header) *Frame {
 	fr.Width, fr.Height = int(n1), int(n2)
 	fr.Object, _ = h.String("OBJECT")
 	fr.Instrument, _ = h.String("INSTRUME")
+	fr.Creator, _ = h.String("SWCREATE")
 	fr.Telescope, _ = h.String("TELESCOP")
 	if v, ok := h.String("DATE-OBS"); ok {
 		fr.DateObs = v
 		fr.DateObsMs = parseDateObs(v)
+		// Night key stamped HERE, at construction: ScanCache shares frames read-only across scans,
+		// so a later (finalize-time) stamp would be a data race on cached frames.
+		fr.Session = NightKey(fr.DateObsMs)
 	}
 	if v, ok := h.Float("FOCALLEN"); ok {
 		fr.FocalLenMM = v

@@ -1,5 +1,7 @@
 // Shared class combinations (complete static strings — JIT-safe, never concatenated dynamically).
 
+import type { Filter } from "@/constants/filters";
+
 export const btn =
   "inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50";
 
@@ -46,7 +48,9 @@ export const td =
 
 // filterChip: per-filter chip colors. Each carries a ring so L (slate/white) stays visible on white,
 // and a dark: counterpart for every utility. Always render the filter LETTER too (color-blind safe).
-export const filterChip: Record<string, string> = {
+// `satisfies Record<Filter, string>` makes this EXHAUSTIVE: adding a filter to constants/filters.ts
+// without a chip colour here is a type error, not a silently-grey chip.
+const filterChipCanonical = {
   L: "bg-slate-100 text-slate-700 ring-1 ring-slate-300 dark:bg-slate-600/40 dark:text-slate-100 dark:ring-slate-500",
   R: "bg-red-100 text-red-800 ring-1 ring-red-200 dark:bg-red-900/40 dark:text-red-300 dark:ring-red-800/50",
   G: "bg-green-100 text-green-800 ring-1 ring-green-200 dark:bg-green-900/40 dark:text-green-300 dark:ring-green-800/50",
@@ -54,7 +58,8 @@ export const filterChip: Record<string, string> = {
   Ha: "bg-rose-100 text-rose-800 ring-1 ring-rose-200 dark:bg-rose-900/40 dark:text-rose-300 dark:ring-rose-800/50",
   OIII: "bg-cyan-100 text-cyan-800 ring-1 ring-cyan-200 dark:bg-cyan-900/40 dark:text-cyan-300 dark:ring-cyan-800/50",
   SII: "bg-amber-100 text-amber-800 ring-1 ring-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:ring-amber-800/50",
-};
+} satisfies Record<Filter, string>;
+export const filterChip: Record<string, string> = filterChipCanonical;
 export const filterChipFallback =
   "bg-slate-100 text-slate-700 ring-1 ring-slate-300 dark:bg-slate-600/40 dark:text-slate-100 dark:ring-slate-500";
 export const filterChipClass = (filter?: string): string =>

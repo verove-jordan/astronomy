@@ -29,14 +29,18 @@ func (svc *Service) List(ctx context.Context) ([]store.S3Connection, error) {
 }
 
 // Create encrypts secretKey, stores the connection, and makes it the default when asked or when it is the
-// first one. Returns the new id.
-func (svc *Service) Create(ctx context.Context, name, endpoint, region, accessKeyID, secretKey string, useSSL, makeDefault bool) (int64, error) {
+// first one. Returns the new id. defaultStorageClass must be an instant class (validated here).
+func (svc *Service) Create(ctx context.Context, name, endpoint, region, accessKeyID, secretKey string, useSSL, makeDefault bool, defaultStorageClass string) (int64, error) {
+	if err := validateDefaultClass(defaultStorageClass); err != nil {
+		return 0, err
+	}
 	enc, err := svc.box.Seal([]byte(secretKey))
 	if err != nil {
 		return 0, err
 	}
 	id, err := svc.store.CreateS3Connection(ctx, store.S3Connection{
 		Name: name, Endpoint: endpoint, Region: region, AccessKeyID: accessKeyID, SecretEnc: enc, UseSSL: useSSL,
+		DefaultStorageClass: defaultStorageClass,
 	})
 	if err != nil {
 		return 0, err
@@ -51,7 +55,10 @@ func (svc *Service) Create(ctx context.Context, name, endpoint, region, accessKe
 }
 
 // Update changes a connection's fields. A blank newSecret keeps the stored secret (edit without re-entry).
-func (svc *Service) Update(ctx context.Context, id int64, name, endpoint, region, accessKeyID, newSecret string, useSSL bool) error {
+func (svc *Service) Update(ctx context.Context, id int64, name, endpoint, region, accessKeyID, newSecret string, useSSL bool, defaultStorageClass string) error {
+	if err := validateDefaultClass(defaultStorageClass); err != nil {
+		return err
+	}
 	var enc []byte
 	if newSecret != "" {
 		var err error
@@ -59,7 +66,16 @@ func (svc *Service) Update(ctx context.Context, id int64, name, endpoint, region
 			return err
 		}
 	}
-	return svc.store.UpdateS3Connection(ctx, id, name, endpoint, region, accessKeyID, enc, useSSL)
+	return svc.store.UpdateS3Connection(ctx, id, name, endpoint, region, accessKeyID, enc, useSSL, defaultStorageClass)
+}
+
+// validateDefaultClass rejects an archived default storage class: uploads (including the pipeline's own
+// run.json/manifests) must stay immediately readable, so only an instant class (or "") is a legal default.
+func validateDefaultClass(class string) error {
+	if class != "" && s3store.IsArchivedClass(class) {
+		return fmt.Errorf("default storage class %q is archived; choose an instant class (uploads must stay readable)", class)
+	}
+	return nil
 }
 
 // Delete removes a connection.
@@ -121,10 +137,11 @@ func (svc *Service) toConfig(c store.S3Connection) (s3store.Config, error) {
 		return s3store.Config{}, fmt.Errorf("s3 connection %q (id %d): %w", c.Name, c.ID, err)
 	}
 	return s3store.Config{
-		Endpoint:    c.Endpoint,
-		Region:      c.Region,
-		AccessKeyID: c.AccessKeyID,
-		SecretKey:   string(secretKey),
-		UseSSL:      c.UseSSL,
+		Endpoint:            c.Endpoint,
+		Region:              c.Region,
+		AccessKeyID:         c.AccessKeyID,
+		SecretKey:           string(secretKey),
+		UseSSL:              c.UseSSL,
+		DefaultStorageClass: c.DefaultStorageClass,
 	}, nil
 }

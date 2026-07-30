@@ -3,13 +3,18 @@ package weather
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log"
 	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	"github.com/verove-jordan/astronomy/internal/config"
 )
@@ -19,19 +24,28 @@ const userAgent = "AstroStack/1.0 (+https://github.com/verove-jordan/astronomy)"
 // Provider fetches and caches astronomy weather. It is safe for concurrent use, and every public method
 // soft-fails: a value (possibly partial or stale) is always returned together with an optional warning.
 type Provider struct {
-	http          *http.Client
-	openMeteoURL  string
-	airQualityURL string
-	sevenTimerURL string
-	swpcURL       string
-	gridRadius    float64
-	gridSize      int
-	ttl           time.Duration
-	cacheDir      string
+	http            *http.Client
+	openMeteoURL    string
+	openMeteoModels string // optional models= pin (empty = best_match auto-selection)
+	airQualityURL   string
+	sevenTimerURL   string
+	swpcURL         string
+	gridRadius      float64
+	gridSize        int
+	ttl             time.Duration
+	cacheDir        string
 
 	mu       sync.Mutex
 	memoFc   map[string]cachedForecast
 	memoGrid map[string]cachedGrid
+	// rlUntil is the upstream-429 circuit breaker: until this instant no Open-Meteo fetch is attempted
+	// (each would fail and burn more of the minutely/daily quota). gridFail is a short per-cube negative
+	// memo so a just-failed cube isn't retried by every tile request in a Leaflet burst.
+	rlUntil  time.Time
+	gridFail map[string]time.Time
+	// flight collapses concurrent Grid calls for the same cube key into ONE upstream fetch — a viewport
+	// fires dozens of tile requests at once, and without this each cache miss stampeded its own fetch.
+	flight singleflight.Group
 }
 
 // New builds a Provider, placing its on-disk cache under the work dir (falling back to the user cache).
@@ -56,17 +70,19 @@ func New(cfg *config.Config) *Provider {
 		radius = 4
 	}
 	return &Provider{
-		http:          &http.Client{Timeout: 12 * time.Second},
-		openMeteoURL:  cfg.WeatherOpenMeteoURL,
-		airQualityURL: cfg.WeatherAirQualityURL,
-		sevenTimerURL: cfg.WeatherSevenTimerURL,
-		swpcURL:       cfg.WeatherSWPCURL,
-		gridRadius:    radius,
-		gridSize:      size,
-		ttl:           ttl,
-		cacheDir:      cache,
-		memoFc:        map[string]cachedForecast{},
-		memoGrid:      map[string]cachedGrid{},
+		http:            &http.Client{Timeout: 12 * time.Second},
+		openMeteoURL:    cfg.WeatherOpenMeteoURL,
+		openMeteoModels: cfg.WeatherOpenMeteoModels,
+		airQualityURL:   cfg.WeatherAirQualityURL,
+		sevenTimerURL:   cfg.WeatherSevenTimerURL,
+		swpcURL:         cfg.WeatherSWPCURL,
+		gridRadius:      radius,
+		gridSize:        size,
+		ttl:             ttl,
+		cacheDir:        cache,
+		memoFc:          map[string]cachedForecast{},
+		memoGrid:        map[string]cachedGrid{},
+		gridFail:        map[string]time.Time{},
 	}
 }
 
@@ -94,8 +110,13 @@ func (p *Provider) Forecast(ctx context.Context, lat, lon float64) (SiteForecast
 	wg.Add(4)
 	go func() {
 		defer wg.Done()
+		if p.rateLimited() {
+			return // breaker open: a fetch is guaranteed to 429 — fall through to the stale path below
+		}
 		if r, err := p.fetchOpenMeteoPoint(ctx, lat, lon); err == nil {
 			om, omOK = r, true
+		} else if errors.Is(err, ErrRateLimited) {
+			p.tripRateLimit()
 		}
 	}()
 	go func() {
@@ -135,53 +156,96 @@ func (p *Provider) Forecast(ctx context.Context, lat, lon float64) (SiteForecast
 	return f, ""
 }
 
-// Grid returns the regional cloud cube for the animated map overlay (chunked Open-Meteo multi-point
-// GETs, see fetchOpenMeteoGrid).
-func (p *Provider) Grid(ctx context.Context, lat, lon, radiusDeg float64, layers []string) (Grid, string) {
-	if len(layers) == 0 {
-		layers = []string{"clouds"}
-	}
-	layers = expandGridLayers(layers)
+// gridSupersetLayers is the FIXED layer set every cube carries. One cube (one Open-Meteo fetch) serves
+// every map metric — total clouds + the altitude bands, humidity, precipitation chance and the fog/dew
+// spread — so the frames endpoint and every tile metric share ONE cache entry. The v6 design keyed the
+// cube on the requested layers, so each metric fetched its own multi-hundred-point cube and the free-tier
+// minutely quota starved (429 → silently blank layers). 8 hourly variables keeps the per-location call
+// weight at 1× on Open-Meteo's free tier (weight rises past 10 variables).
+var gridSupersetLayers = []string{"clouds", "clouds_low", "clouds_mid", "clouds_high", "humidity", "precip", "dewspread"}
+
+// Grid returns the regional weather cube for the animated map overlay (chunked Open-Meteo multi-point
+// GETs, see fetchOpenMeteoGrid). The layers parameter is advisory: the cube always carries
+// gridSupersetLayers (see there), so any requested metric is served from the same shared cube.
+func (p *Provider) Grid(ctx context.Context, lat, lon, radiusDeg float64, _ []string) (Grid, string) {
+	layers := gridSupersetLayers
 	geom := p.snapGrid(lat, lon, p.gridRadiusFor(radiusDeg))
 	key := gridKey(geom, layers)
 	if g, ok := p.cachedGrid(key); ok {
 		return g, ""
 	}
-	lats, lons := geom.points()
-	resp, err := p.fetchOpenMeteoGrid(ctx, lats, lons, omGridVars(layers))
-	if err != nil || len(resp) == 0 {
-		if g, ok := p.anyGrid(key); ok {
-			return g, "live cloud map unavailable — showing the last cached frames"
-		}
-		return Grid{BBox: geom.bbox(), Nx: geom.nx, Ny: geom.ny, Layers: map[string][][]float32{}, IssuedMs: nowMs()}, "cloud map currently unavailable"
+	if p.rateLimited() || p.recentlyFailed(key) {
+		return p.staleOrEmpty(geom, key)
 	}
-	g := assembleGrid(resp, geom.nx, geom.ny, geom.bbox(), layers)
-	p.storeGrid(key, g)
-	return g, ""
+	v, err, _ := p.flight.Do(key, func() (any, error) {
+		// Detached from the caller: a browser aborting one tile request must not cancel the shared
+		// fetch every other tile of the burst is waiting on.
+		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gridFetchTimeout)
+		defer cancel()
+		lats, lons := geom.points()
+		log.Printf("weather: grid fetch %s (%d points)", key, len(lats))
+		resp, err := p.fetchOpenMeteoGrid(fctx, lats, lons, omGridVars(layers))
+		if err != nil {
+			return nil, err
+		}
+		if len(resp) == 0 {
+			return nil, errors.New("empty upstream response")
+		}
+		g := assembleGrid(resp, geom.nx, geom.ny, geom.bbox(), layers)
+		p.storeGrid(key, g)
+		return g, nil
+	})
+	if err != nil {
+		log.Printf("weather: grid fetch %s failed (%d points): %v", key, geom.nx*geom.ny, err)
+		if errors.Is(err, ErrRateLimited) {
+			p.tripRateLimit()
+		}
+		p.noteFailure(key)
+		return p.staleOrEmpty(geom, key)
+	}
+	return v.(Grid), ""
 }
 
-// expandGridLayers expands composite layer names into every concrete layer the cube must carry:
-// "clouds" also yields its per-altitude bands ("clouds_low"/"clouds_mid"/"clouds_high"), which the map
-// composites into an intensity-true cloud raster. Deduplicated and order-stable, so the expanded list
-// doubles as a deterministic cache key.
-func expandGridLayers(layers []string) []string {
-	seen := map[string]bool{}
-	out := make([]string, 0, len(layers)+3)
-	add := func(l string) {
-		if !seen[l] {
-			seen[l] = true
-			out = append(out, l)
-		}
+// staleOrEmpty serves the last good cube for key (age-bounded, see staleGrid) with a degraded warning,
+// else an empty cube — the map keeps showing the previous frames instead of going silently blank.
+func (p *Provider) staleOrEmpty(geom gridGeom, key string) (Grid, string) {
+	if g, ok := p.staleGrid(key); ok {
+		return g, "live cloud map unavailable — showing the last cached frames"
 	}
-	for _, l := range layers {
-		add(l)
-		if l == "clouds" {
-			add("clouds_low")
-			add("clouds_mid")
-			add("clouds_high")
-		}
+	return Grid{BBox: geom.bbox(), Nx: geom.nx, Ny: geom.ny, Layers: map[string][][]float32{}, IssuedMs: nowMs()}, "cloud map currently unavailable"
+}
+
+// rateLimited reports whether the upstream-429 cooldown is still open (no Open-Meteo calls allowed).
+func (p *Provider) rateLimited() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return time.Now().Before(p.rlUntil)
+}
+
+// tripRateLimit opens the breaker: Open-Meteo's minutely quota resets every minute, so fetches inside
+// the cooldown are guaranteed 429s that only burn more of the daily budget. Logged once per trip.
+func (p *Provider) tripRateLimit() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if time.Now().Before(p.rlUntil) {
+		return
 	}
-	return out
+	p.rlUntil = time.Now().Add(rateLimitCooldown)
+	log.Printf("weather: upstream rate-limited — pausing Open-Meteo fetches for %s", rateLimitCooldown)
+}
+
+// recentlyFailed reports whether this cube failed within the negative-memo window, so a Leaflet tile
+// burst doesn't re-attempt a just-failed fetch dozens of times. noteFailure records such a failure.
+func (p *Provider) recentlyFailed(key string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return time.Since(p.gridFail[key]) < gridFailMemo
+}
+
+func (p *Provider) noteFailure(key string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.gridFail[key] = time.Now()
 }
 
 // gridGeom is the regional sample lattice: a box snapped OUTWARD to integer multiples of a fixed cell
@@ -269,15 +333,38 @@ func (p *Provider) gridRadiusFor(radiusDeg float64) float64 {
 }
 
 const (
-	gridRadiusMinDeg = 0.5  // a very zoomed-in view still fetches a usable box
-	gridRadiusMaxDeg = 24   // cap a zoomed-out request (the step coarsens, keeping the point count bounded)
-	gridStepMinDeg   = 0.1  // finest cell ≈ Open-Meteo's native resolution; finer would only interpolate
-	gridStepMaxDeg   = 8    // coarsest cell, for a very zoomed-out view
-	gridMarginFrac   = 0.5  // fetch 50% beyond the region half-span: a small pan needs no refetch, and adjacent
+	gridRadiusMinDeg = 0.5 // a very zoomed-in view still fetches a usable box
+	gridRadiusMaxDeg = 24  // cap a zoomed-out request (the step coarsens, keeping the point count bounded)
+	gridStepMinDeg   = 0.1 // finest cell ≈ Open-Meteo's native resolution; finer would only interpolate
+	gridStepMaxDeg   = 8   // coarsest cell, for a very zoomed-out view
+	gridMarginFrac   = 0.5 // fetch 50% beyond the region half-span: a small pan needs no refetch, and adjacent
 	//                         tile-block cubes overlap by ≥2 cells so the bicubic stays seamless across a block edge
 	//                         (both cubes snap to the same global lattice, so overlap cells are identical)
-	maxGridPoints    = 2500 // fetch-budget guard (≈7 chunked GETs); the step coarsens if a box exceeds it
+	maxGridPoints = 400 // fetch-budget guard = ONE chunked GET ≈ ≤400 location-calls on Open-Meteo's
+	//                        free tier (~600/min) — a single cube fetch must fit the minutely quota with
+	//                        headroom. The step coarsens if a box exceeds it; the bicubic upsample keeps
+	//                        the render smooth at the coarser lattice.
 )
+
+// Upstream-failure handling knobs (see Grid): the breaker window after a 429, the per-cube negative
+// memo, how far past TTL a stale cube may still be served, and the detached shared-fetch budget.
+const (
+	rateLimitCooldown = 70 * time.Second // Open-Meteo's minutely quota resets each minute; +10 s slack
+	gridFailMemo      = 30 * time.Second // don't re-attempt a just-failed cube on every tile request
+	staleGrace        = 6 * time.Hour    // stale cubes older than TTL+grace read as empty, not as live data
+	gridFetchTimeout  = 60 * time.Second // sequential chunks × 12 s HTTP timeout fits comfortably
+)
+
+// ErrRateLimited marks an upstream HTTP 429 — callers open the fetch breaker (tripRateLimit) so the
+// remaining minutely/daily quota isn't burned on calls that are guaranteed to fail.
+var ErrRateLimited = errors.New("weather upstream rate-limited")
+
+// omError is Open-Meteo's error envelope ({"error":true,"reason":"..."}); other feeds return plain
+// non-200s and leave the reason empty.
+type omError struct {
+	Error  bool   `json:"error"`
+	Reason string `json:"reason"`
+}
 
 func (p *Provider) getJSON(ctx context.Context, url string, v any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -291,6 +378,18 @@ func (p *Provider) getJSON(ctx context.Context, url string, v any) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
+		// Failures used to be swallowed silently all the way up to a blank map — always name the
+		// status (and Open-Meteo's reason, e.g. "Minutely API request limit exceeded") in the log.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		reason := ""
+		var oe omError
+		if json.Unmarshal(body, &oe) == nil && oe.Error {
+			reason = oe.Reason
+		}
+		log.Printf("weather: upstream %s → %d %q", req.URL.Host, resp.StatusCode, reason)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return fmt.Errorf("status 429 (%s): %w", reason, ErrRateLimited)
+		}
 		return fmt.Errorf("weather upstream status %d", resp.StatusCode)
 	}
 	return json.NewDecoder(resp.Body).Decode(v)
@@ -301,8 +400,9 @@ func siteKey(lat, lon float64) string { return fmt.Sprintf("%+.2f_%+.2f", lat, l
 // gridCacheVersion namespaces the grid cache; bump it when a layer's semantics change (e.g. precip went
 // from rain amount in mm to chance of precipitation in %) or the grid geometry changes, so stale cached
 // cubes are ignored. v3 = default grid size 16→22; v4 = per-viewport radius in the key; v5 = cloud
-// bands + denser chunked grid; v6 = fixed global-lattice snap (stable under pan/zoom) + viewport margin.
-const gridCacheVersion = 6
+// bands + denser chunked grid; v6 = fixed global-lattice snap (stable under pan/zoom) + viewport margin;
+// v7 = one shared superset cube (frames + every metric, incl. dewspread) + 400-point budget.
+const gridCacheVersion = 7
 
 // gridKey keys the cache on the SNAPPED geometry (not the raw viewport centre), so every viewport that
 // resolves to the same lattice box shares one cached cube — the mechanism that keeps values stable.

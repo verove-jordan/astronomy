@@ -20,6 +20,14 @@ import { btnPrimary, btnGhost, input, checkbox } from "@/constants/styles";
 import AccordionGroup from "@/components/Common/AccordionGroup.vue";
 import BackupPanel from "@/components/Common/BackupPanel.vue";
 import FileBrowser from "@/components/Common/FileBrowser.vue";
+import MoveProgress from "@/components/Common/MoveProgress.vue";
+import TierProgress from "@/components/Common/TierProgress.vue";
+import StorageClassPicker from "@/components/Common/StorageClassPicker.vue";
+import {
+  RESTORE_TIERS,
+  INSTANT_CLASSES,
+  isArchivedClass,
+} from "@/constants/storageClasses";
 import Spinner from "@/components/Common/Spinner.vue";
 import IconFolder from "@/components/Icons/IconFolder.vue";
 import IconDownload from "@/components/Icons/IconDownload.vue";
@@ -52,6 +60,7 @@ function blankForm(): ConnForm {
     secret_access_key: "",
     use_ssl: true,
     make_default: false,
+    default_storage_class: "",
   };
 }
 const form = ref<ConnForm | null>(null);
@@ -74,6 +83,7 @@ function editConnection(c: S3Connection) {
     secret_access_key: "", // blank = keep the stored secret
     use_ssl: c.use_ssl,
     make_default: c.is_default,
+    default_storage_class: c.default_storage_class ?? "",
   };
   editingId.value = c.id;
   testResult.value = null;
@@ -303,6 +313,10 @@ const moveTargets = ref<BrowseEntry[]>([]); // the entries being moved
 const movePickerPath = ref(""); // destination folder currently browsed in the dialog
 const movePickerFolders = ref<BrowseEntry[]>([]); // subfolders at movePickerPath
 const moving = ref(false);
+// The in-flight move job: the strip subscribes to its SSE stream (keyed by id so a new move remounts it).
+const moveJobId = ref<number | null>(null);
+const moveCount = ref(0);
+const moveStartedAt = ref(0);
 
 function openMovePicker(entries: BrowseEntry[]) {
   if (!entries.length) return;
@@ -328,27 +342,35 @@ function movePickerUp() {
   movePickerPath.value = parts.join("/");
   void loadMovePicker();
 }
-// runMove moves each src key into destFolder (a folder key, "" = bucket root), then refreshes.
+// runMove enqueues ONE move job for all src keys into destFolder (a folder key, "" = bucket root) and shows
+// its live progress strip; the browser refreshes when the job finishes (onMoveDone).
 async function runMove(srcKeys: string[], destFolder: string) {
-  if (selectedConn.value == null || !currentBucket.value) return;
+  if (selectedConn.value == null || !currentBucket.value || !srcKeys.length)
+    return;
   moving.value = true;
   browserError.value = "";
   try {
-    for (const src of srcKeys) {
-      await store.move(
-        selectedConn.value,
-        currentBucket.value,
-        src,
-        destFolder,
-      );
-    }
+    const id = await store.move(
+      selectedConn.value,
+      currentBucket.value,
+      srcKeys,
+      destFolder,
+    );
+    moveJobId.value = id;
+    moveCount.value = srcKeys.length;
+    moveStartedAt.value = Date.now();
     selectedEntries.value = [];
-    await refreshBrowser();
   } catch (err) {
     browserError.value = (err as Error).message;
   } finally {
     moving.value = false;
   }
+}
+// onMoveDone fires when the move job stream ends (success or failure): hide the strip and refresh the folder
+// so the relocated objects appear in their new place (and are gone from the old one).
+function onMoveDone() {
+  moveJobId.value = null;
+  void refreshBrowser();
 }
 async function confirmMove() {
   const dest = movePickerPath.value ? movePickerPath.value + "/" : "";
@@ -359,6 +381,79 @@ async function confirmMove() {
 function onDragMove(p: { src: string; dst: string; srcIsDir: boolean }) {
   const srcKey = p.srcIsDir ? p.src + "/" : p.src;
   void runMove([srcKey], p.dst ? p.dst + "/" : "");
+}
+
+// --- storage class change (archive → Glacier / restore → classic) ---
+const tierOpen = ref(false);
+const tierTargets = ref<BrowseEntry[]>([]);
+const tierClass = ref("GLACIER");
+const tierRestoreOnly = ref(false);
+const tierRetrieval = ref("Standard");
+const tiering = ref(false);
+const tierJobId = ref<number | null>(null);
+const tierCount = ref(0);
+const tierStartedAt = ref(0);
+const tierVerbLabel = ref("retier"); // archive | restore | retier — selects the progress heading
+const retrievalTiers = RESTORE_TIERS;
+const instantClassIds = INSTANT_CLASSES.map((c) => c.id);
+
+// A cold (archived) source in the selection means the op will THAW — so the retrieval-tier selector and the
+// "restore only" option are relevant.
+const tierHasCold = computed(() => tierTargets.value.some((e) => e.archived));
+const tierNeedsRetrieval = computed(
+  () => tierRestoreOnly.value || tierHasCold.value,
+);
+
+function openTierPicker(entries: BrowseEntry[]) {
+  if (!entries.length) return;
+  tierTargets.value = entries;
+  // Default: cold selection → thaw back to STANDARD; hot selection → archive to GLACIER.
+  tierClass.value = entries.some((e) => e.archived) ? "STANDARD" : "GLACIER";
+  tierRestoreOnly.value = false;
+  tierRetrieval.value = "Standard";
+  tierOpen.value = true;
+}
+// restoreEntry is the per-row quick "Restore from Glacier" action on a single archived object/folder.
+function restoreEntry(entry: BrowseEntry) {
+  openTierPicker([entry]);
+  tierRestoreOnly.value = true;
+  tierClass.value = "STANDARD";
+}
+async function confirmTier() {
+  if (
+    selectedConn.value == null ||
+    !currentBucket.value ||
+    !tierTargets.value.length
+  )
+    return;
+  tiering.value = true;
+  browserError.value = "";
+  try {
+    const srcs = tierTargets.value.map(entryKey);
+    const id = await store.tier(selectedConn.value, currentBucket.value, srcs, {
+      targetClass: tierClass.value,
+      restoreOnly: tierRestoreOnly.value,
+      tier: tierRetrieval.value,
+    });
+    tierJobId.value = id;
+    tierCount.value = srcs.length;
+    tierStartedAt.value = Date.now();
+    tierVerbLabel.value = tierRestoreOnly.value
+      ? "restore"
+      : isArchivedClass(tierClass.value)
+        ? "archive"
+        : "retier";
+    selectedEntries.value = [];
+    tierOpen.value = false;
+  } catch (err) {
+    browserError.value = (err as Error).message;
+  } finally {
+    tiering.value = false;
+  }
+}
+function onTierDone() {
+  tierJobId.value = null;
+  void refreshBrowser();
 }
 
 // --- local drives → S3 ---
@@ -388,6 +483,47 @@ async function copyFolder(sourcePath: string): Promise<void> {
   try {
     const id = await drives.copyToS3(sourcePath, s3.bucket, s3.prefix);
     router.push({ name: "job", params: { id: String(id) } });
+  } catch (e) {
+    actionError.value = (e as Error).message;
+  } finally {
+    copyingPath.value = "";
+  }
+}
+
+// The column browser's primary-action label: "Copy N folders" over the checked selection, else the
+// single open folder (preserving the original one-folder workflow).
+const copySelectedLabel = computed(() =>
+  drives.selected.length
+    ? t("drives.copySelected", { n: drives.selected.length })
+    : t("drives.copyThisFolder"),
+);
+
+// copySelectedFolders fans out one verified copy job per checked folder (the upload lane is strictly
+// one-folder-per-job; the two transfer workers drain them), after dropping any folder that is a
+// DESCENDANT of another checked one — the ancestor's copy already includes it, and a second job would
+// re-upload the same files under their own key.
+async function copySelectedFolders(paths: string[]): Promise<void> {
+  if (!paths.length) return;
+  if (!bucketReady.value) {
+    actionError.value = t("drives.pickBucketFirst");
+    return;
+  }
+  actionError.value = "";
+  const roots = paths.filter(
+    (p) => !paths.some((q) => q !== p && p.startsWith(q + "/")),
+  );
+  copyingPath.value = roots[0] ?? "";
+  try {
+    const ids: number[] = [];
+    for (const p of roots) {
+      ids.push(await drives.copyToS3(p, s3.bucket, s3.prefix));
+    }
+    drives.clearSelected();
+    if (ids.length === 1) {
+      router.push({ name: "job", params: { id: String(ids[0]) } });
+    } else if (ids.length > 1) {
+      router.push({ name: "jobs" });
+    }
   } catch (e) {
     actionError.value = (e as Error).message;
   } finally {
@@ -553,6 +689,20 @@ onMounted(() => {
                 {{ t("storage.makeDefault") }}
               </label>
             </div>
+            <div>
+              <label class="mb-1 block text-sm font-medium">{{
+                t("storage.defaultClass")
+              }}</label>
+              <select v-model="form.default_storage_class" :class="input">
+                <option value="">{{ t("storage.defaultClassNone") }}</option>
+                <option v-for="c in instantClassIds" :key="c" :value="c">
+                  {{ t(`storageClass.classes.${c}.label`) }}
+                </option>
+              </select>
+              <p class="mt-1 text-xs text-slate-500">
+                {{ t("storage.defaultClassHint") }}
+              </p>
+            </div>
           </div>
           <div class="mt-3 flex flex-wrap items-center gap-3">
             <button :class="btnGhost" :disabled="testing" @click="testForm">
@@ -605,6 +755,30 @@ onMounted(() => {
           <p v-if="browserError" class="mb-2 text-xs text-danger-500">
             {{ browserError }}
           </p>
+
+          <!-- Live progress for an in-flight move (keyed so a new move remounts a fresh SSE stream). -->
+          <MoveProgress
+            v-if="moveJobId"
+            :key="moveJobId"
+            class="mb-3"
+            :job-id="moveJobId"
+            :count="moveCount"
+            :started-at-ms="moveStartedAt"
+            @done="onMoveDone"
+          />
+
+          <!-- Live progress for an in-flight storage-class change / restore (a thaw stays running for a
+               while as it polls Glacier — visitable any time in Tasks too). -->
+          <TierProgress
+            v-if="tierJobId"
+            :key="tierJobId"
+            class="mb-3"
+            :job-id="tierJobId"
+            :count="tierCount"
+            :verb="tierVerbLabel"
+            :started-at-ms="tierStartedAt"
+            @done="onTierDone"
+          />
 
           <!-- Bucket picker -->
           <div v-if="!currentBucket" class="space-y-2">
@@ -671,6 +845,13 @@ onMounted(() => {
               >
                 {{ t("storage.move.moveSelected") }}
               </button>
+              <button
+                v-if="selectedEntries.length"
+                :class="btnGhost"
+                @click="openTierPicker(selectedEntries)"
+              >
+                {{ t("storage.tier.changeSelected") }}
+              </button>
               <button :class="btnGhost" @click="newFolder">
                 {{ t("storage.newFolder") }}
               </button>
@@ -706,8 +887,28 @@ onMounted(() => {
               @move="onDragMove"
             >
               <template #rowActions="{ entry }">
+                <!-- Storage-class badge for a cold object; a hot object shows nothing (STANDARD is implicit). -->
+                <span
+                  v-if="entry.archived"
+                  class="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                  :title="
+                    t('storage.tier.archivedBadge', {
+                      class: entry.storage_class,
+                    })
+                  "
+                  >❄ {{ entry.storage_class }}</span
+                >
+                <!-- A cold object can't be downloaded until restored → offer Restore instead of Download. -->
+                <button
+                  v-if="entry.archived"
+                  :title="t('storage.tier.restoreTitle')"
+                  class="rounded p-1 text-amber-500 hover:text-amber-600"
+                  @click="restoreEntry(entry)"
+                >
+                  ❄
+                </button>
                 <a
-                  v-if="!entry.is_dir"
+                  v-else-if="!entry.is_dir"
                   :href="downloadHref(entry)"
                   :title="t('storage.download')"
                   class="rounded p-1 text-slate-400 hover:text-brand-600"
@@ -797,6 +998,75 @@ onMounted(() => {
                     @click="confirmMove"
                   >
                     {{ t("storage.move.moveHere") }}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Storage-class change dialog: pick a target class (archive / thaw), with per-class
+                 explanations, an optional restore-only mode, and a retrieval-tier selector when thawing. -->
+            <div
+              v-if="tierOpen"
+              class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+              @click.self="tierOpen = false"
+            >
+              <div
+                class="w-full max-w-md space-y-3 rounded-xl border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-700 dark:bg-slate-900"
+              >
+                <h3 class="text-sm font-semibold">
+                  {{ t("storage.tier.title", { n: tierTargets.length }) }}
+                </h3>
+                <p class="text-xs text-slate-500">
+                  {{ t("storage.tier.subtitle") }}
+                </p>
+
+                <template v-if="!tierRestoreOnly">
+                  <StorageClassPicker v-model="tierClass" />
+                </template>
+                <p
+                  v-else
+                  class="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
+                >
+                  {{ t("storage.tier.restoreOnlyNote") }}
+                </p>
+
+                <label
+                  v-if="tierHasCold"
+                  class="flex items-center gap-2 text-sm"
+                >
+                  <input
+                    v-model="tierRestoreOnly"
+                    type="checkbox"
+                    :class="checkbox"
+                  />
+                  {{ t("storage.tier.restoreOnly") }}
+                </label>
+
+                <div v-if="tierNeedsRetrieval">
+                  <label
+                    class="mb-1 block text-xs font-medium uppercase text-slate-500"
+                    >{{ t("storage.tier.retrieval") }}</label
+                  >
+                  <select v-model="tierRetrieval" :class="input">
+                    <option v-for="tv in retrievalTiers" :key="tv" :value="tv">
+                      {{ t(`storageClass.tiers.${tv}`) }}
+                    </option>
+                  </select>
+                  <p class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                    {{ t("storage.tier.thawNote") }}
+                  </p>
+                </div>
+
+                <div class="flex items-center justify-end gap-2">
+                  <button :class="btnGhost" @click="tierOpen = false">
+                    {{ t("common.cancel") }}
+                  </button>
+                  <button
+                    :class="btnPrimary"
+                    :disabled="tiering"
+                    @click="confirmTier"
+                  >
+                    {{ t("storage.tier.apply") }}
                   </button>
                 </div>
               </div>
@@ -909,12 +1179,41 @@ onMounted(() => {
             {{ drives.error || actionError }}
           </div>
 
-          <div v-if="drives.loading" class="py-6 text-center">
+          <div v-if="drives.loading && atDriveList" class="py-6 text-center">
             <Spinner>{{ t("common.loading") }}</Spinner>
           </div>
 
           <!-- Drive list -->
           <div v-else-if="atDriveList">
+            <!-- The app's own dirs (Input/Output/Work) as browse shortcuts, above the removable drives. -->
+            <div v-if="drives.sources.length" class="mb-4">
+              <p
+                class="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400"
+              >
+                {{ t("drives.sourcesHeading") }}
+              </p>
+              <ul class="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <li v-for="src in drives.sources" :key="src.key">
+                  <button
+                    class="flex w-full items-center gap-3 rounded-lg border border-slate-200 p-3 text-left transition-colors hover:border-brand-400 dark:border-slate-700 dark:hover:border-brand-500"
+                    :title="src.path"
+                    @click="drives.enterRoot(src.path)"
+                  >
+                    <IconFolder class="h-6 w-6 shrink-0 text-brand-500" />
+                    <span class="min-w-0 flex-1">
+                      <span
+                        class="block truncate text-sm font-medium text-slate-800 dark:text-slate-100"
+                        >{{ t(`drives.sources.${src.key}`) }}</span
+                      >
+                      <span class="block truncate text-xs text-slate-400">{{
+                        src.path
+                      }}</span>
+                    </span>
+                  </button>
+                </li>
+              </ul>
+            </div>
+
             <p
               v-if="!drives.drives.length"
               class="py-6 text-center text-sm text-slate-400"
@@ -925,7 +1224,7 @@ onMounted(() => {
               <li v-for="d in drives.drives" :key="d.path">
                 <button
                   class="flex w-full items-center gap-3 rounded-lg border border-slate-200 p-3 text-left transition-colors hover:border-brand-400 dark:border-slate-700 dark:hover:border-brand-500"
-                  @click="drives.browse(d.path)"
+                  @click="drives.enterRoot(d.path)"
                 >
                   <IconFolder class="h-6 w-6 shrink-0 text-brand-500" />
                   <span class="min-w-0 flex-1">
@@ -950,64 +1249,22 @@ onMounted(() => {
             </ul>
           </div>
 
-          <!-- Folder contents -->
-          <div v-else>
-            <p
-              v-if="!drives.entries.length"
-              class="py-6 text-center text-sm text-slate-400"
-            >
-              {{ t("drives.emptyFolder") }}
-            </p>
-            <ul
-              v-else
-              class="max-h-[32rem] divide-y divide-slate-200 overflow-y-auto dark:divide-slate-700"
-            >
-              <li
-                v-for="e in drives.entries"
-                :key="e.path"
-                class="flex items-center justify-between gap-2 py-1.5"
-              >
-                <button
-                  v-if="e.is_dir"
-                  class="flex min-w-0 items-center gap-2 text-sm font-medium hover:text-brand-600"
-                  @click="drives.browse(e.path)"
-                >
-                  <IconFolder class="h-4 w-4 shrink-0 text-slate-400" />
-                  <span class="truncate">{{ e.name }}</span>
-                </button>
-                <span
-                  v-else
-                  class="flex min-w-0 items-center gap-2 text-sm text-slate-600 dark:text-slate-300"
-                >
-                  <IconFile class="h-4 w-4 shrink-0 text-slate-400" />
-                  <span class="truncate">{{ e.name }}</span>
-                  <span
-                    v-if="fmtBytes(e.size)"
-                    class="shrink-0 text-xs text-slate-400"
-                    >{{ fmtBytes(e.size) }}</span
-                  >
-                </span>
-                <button
-                  v-if="e.is_dir"
-                  :class="btnGhost"
-                  :disabled="!bucketReady || copyingPath === e.path"
-                  :title="
-                    bucketReady
-                      ? t('drives.copyFolderHint')
-                      : t('drives.pickBucketFirst')
-                  "
-                  @click="copyFolder(e.path)"
-                >
-                  <IconCloud class="h-4 w-4" />
-                  <span>{{
-                    copyingPath === e.path
-                      ? t("drives.copying")
-                      : t("drives.copy")
-                  }}</span>
-                </button>
-              </li>
-            </ul>
-          </div>
+          <!-- Folder contents: the project-standard Miller-column browser with checkboxes. The primary
+               action copies the checked folders (or the open folder) to S3 — one verified job each. -->
+          <FileBrowser
+            v-else
+            :path="drives.path"
+            :root="drives.root || drives.path"
+            :entries="drives.entries"
+            :loading="drives.loading"
+            :selected="drives.selected"
+            :fetch-children="drives.listDir"
+            :action-label="copySelectedLabel"
+            @navigate="(p) => drives.browse(p)"
+            @toggle="(e) => drives.toggleSelected(e)"
+            @clear-selection="drives.clearSelected()"
+            @inspect="copySelectedFolders"
+          />
         </div>
       </template>
 

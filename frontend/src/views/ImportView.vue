@@ -6,6 +6,7 @@ import { useBrowseStore } from "@/stores/browse";
 import { useJobsStore } from "@/stores/jobs";
 import { useS3Store, type TransferOp } from "@/stores/s3";
 import { usePresetsStore } from "@/stores/presets";
+import { useMosaicStore } from "@/stores/mosaic";
 import { useCaptureSummary } from "@/composables/useCaptureSummary";
 import { useChannelMapping } from "@/composables/useChannelMapping";
 import GenericTable, {
@@ -18,6 +19,8 @@ import CaptureSummary from "@/components/Capture/CaptureSummary.vue";
 import FilterMappingEditor from "@/components/Capture/FilterMappingEditor.vue";
 import ReusePanel from "@/components/Capture/ReusePanel.vue";
 import CalibrationPanel from "@/components/Capture/CalibrationPanel.vue";
+import SetArtifactsModal from "@/components/Capture/SetArtifactsModal.vue";
+import SessionBreakdown from "@/components/Capture/SessionBreakdown.vue";
 import FilePreviewButton from "@/components/Common/FilePreviewButton.vue";
 import ParamGlossary from "@/components/Common/ParamGlossary.vue";
 import CollapsibleCard from "@/components/Common/CollapsibleCard.vue";
@@ -26,13 +29,16 @@ import StatusPill from "@/components/Common/StatusPill.vue";
 import EnvWarnings from "@/components/Common/EnvWarnings.vue";
 import IconFolder from "@/components/Icons/IconFolder.vue";
 import IconCloud from "@/components/Icons/IconCloud.vue";
-import type { CreateOpts } from "@/stores/jobs";
+import type { CreateOpts, KnobRange } from "@/stores/jobs";
 import type {
+  AlignPointsEstimate,
   ReusePreview,
   CalibPreview,
+  RunPlanPreview,
   ProcessingHistoryEntry,
   PresetItem,
   PresetPayload,
+  SetQaReport,
 } from "@/types";
 import {
   btnPrimary,
@@ -44,6 +50,7 @@ import {
   frameTypeCardClass,
 } from "@/constants/styles";
 import { humanizeMs, baseName, formatTimestamp } from "@/utils/format";
+import { nudged, oppositeOf } from "@/utils/params";
 import type { FrameSet } from "@/types";
 
 const router = useRouter();
@@ -86,10 +93,21 @@ const colorCalibration = ref(true);
 const denoise = ref(true);
 const dropWheelTransition = ref(true);
 const haExcludeStars = ref(true); // default: Hα on the galaxy/nebulosity only; uncheck → over everything
+const mosaic = ref(false); // multi-night union canvas (keep every night's full field) — consent knob, never preset-enabled
+// Extra monochrome side-outputs (deepsky/nebula), saved next to the colour final: a processed
+// Luminance-only image (default on) and a combined all-channel integration (default off).
+const outputLuminance = ref(true);
+const outputMonoStack = ref(false);
+const earthshine = ref(false); // planetary: reveal the Moon's unlit side (earthshine) on the final render
+// Planetary align-points estimator: min detail size (px; null = auto), busy flag, last result/error.
+const alignPointsMinPx = ref<number | null>(null);
+const alignPointsBusy = ref(false);
+const alignPointsResult = ref<AlignPointsEstimate | null>(null);
+const alignPointsError = ref("");
 // Opt-in: drive the local AI agent to auto-tune the finish (every stacking mode). Off by default.
 const supervise = ref(false);
 
-const modes = ["deepsky", "nebula", "milkyway", "planetary", "comet"];
+const modes = ["deepsky", "nebula", "milkyway", "planetary", "comet", "mosaic"];
 const formats = ["image", "video", "both"];
 
 // Milky-Way nightscape render style (foreground composite + linear grade); only shown for milkyway.
@@ -135,6 +153,14 @@ const darkDir = ref("");
 const flatDir = ref("");
 const biasDir = ref("");
 const isMilkyway = computed(() => selectedMode.value === "milkyway");
+const isPlanetary = computed(() => selectedMode.value === "planetary");
+// Tiled-panel mosaic mode: offers the saved-plan selector (panel labeling/validation + solve hints).
+const isMosaicMode = computed(() => selectedMode.value === "mosaic");
+const mosaicStore = useMosaicStore();
+const mosaicPlanId = ref(0);
+watch(isMosaicMode, (on) => {
+  if (on) void mosaicStore.listPlans();
+});
 // The supervisor now re-tunes every mode's finish — deepsky/nebula LRGB composite, comet colour
 // composite, milkyway grade, planetary sharpen — so every stacking mode in the picker supports it.
 const supportsSupervise = computed(() => modes.includes(selectedMode.value));
@@ -143,6 +169,10 @@ const supportsSupervise = computed(() => modes.includes(selectedMode.value));
 // overrides as a JSON object (same whitelist/clamps as the supervisor). The JSON is validated here —
 // invalid text turns the field red and blocks the run; empty means "send nothing".
 const goal = ref("");
+// Imaging target for plate-solve/SPCC seeding (deepsky family): a catalogue name ("M66") or "RA,Dec"
+// for captures whose FITS headers and folder names can't identify the field (e.g. SharpCap's
+// "CapObj"). Optional — the backend discovers the target from the folder path when it can.
+const target = ref("");
 const paramsText = ref("");
 const runParams = computed<Record<string, unknown> | null | undefined>(() => {
   const txt = paramsText.value.trim();
@@ -168,23 +198,43 @@ const CHECKBOX_PARAM_KEYS = [
   "denoise_chroma",
   "denoise_lum",
   "ha_exclude_stars",
+  "earthshine_gain", // owned by the planetary "Reveal earthshine" checkbox
+  "mosaic", // owned by the deepsky-family "Mosaic canvas" checkbox
 ];
 const paramsDirty = ref(false);
 const advancedOpen = ref(false);
 const applyingPreset = ref(false); // true while applyPreset() spreads a preset onto the form
 
-async function prefillParams() {
-  if (paramsDirty.value) return;
+// The selected mode's full effective knob map (pipeline.ParamsFor), cached in the store. Kept here so
+// clicking a glossary row can insert that knob with its real default value — even while the box is dirty.
+const modeDefaults = ref<Record<string, unknown>>({});
+// The selected mode's per-knob min/max clamp bounds (pipeline.KnobRangesFor), shown in the glossary.
+const modeRanges = ref<Record<string, KnobRange>>({});
+
+// loadModeDefaults refreshes modeDefaults + modeRanges from the (cached) /api/mode-params fetch, keeping
+// the last-known maps on failure so a transient error never wipes the toggle's source of defaults.
+async function loadModeDefaults(): Promise<Record<string, unknown>> {
   try {
-    const { defaults } = await jobsStore.fetchModeParams(selectedMode.value);
-    const shown: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(defaults)) {
-      if (!CHECKBOX_PARAM_KEYS.includes(k)) shown[k] = v;
-    }
-    paramsText.value = JSON.stringify(shown, null, 2);
+    const { defaults, ranges } = await jobsStore.fetchModeParams(
+      selectedMode.value,
+    );
+    modeDefaults.value = defaults;
+    modeRanges.value = ranges;
   } catch {
-    // Leave the box as-is on failure — the run still works without prefilled params.
+    // keep the last-known defaults
   }
+  return modeDefaults.value;
+}
+
+async function prefillParams() {
+  const defaults = await loadModeDefaults(); // also arms the click-to-add toggle below
+  if (paramsDirty.value) return;
+  if (Object.keys(defaults).length === 0) return; // fetch failed: leave the box as-is
+  const shown: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(defaults)) {
+    if (!CHECKBOX_PARAM_KEYS.includes(k)) shown[k] = v;
+  }
+  paramsText.value = JSON.stringify(shown, null, 2);
 }
 
 function onAdvancedToggle(e: Event) {
@@ -196,6 +246,9 @@ function onAdvancedToggle(e: Event) {
 // A preset drives mode + knobs together (applyPreset), so skip the prefill while it is applying —
 // otherwise the mode-change prefill would clobber the preset's recipe.
 watch(selectedMode, () => {
+  alignPointsResult.value = null;
+  alignPointsError.value = "";
+  resetSetQa(); // set IDs only apply to the deepsky-family scan they came from
   if (applyingPreset.value) return;
   paramsDirty.value = false;
   if (advancedOpen.value) void prefillParams();
@@ -205,6 +258,54 @@ watch(selectedMode, () => {
 function resetParams() {
   paramsDirty.value = false;
   void prefillParams();
+}
+
+// stringifySorted serialises a params object with alphabetically-ordered keys — matching the box's
+// existing layout (Go json.Marshal sorts map keys, so prefill/preset JSON is already alphabetical).
+function stringifySorted(obj: Record<string, unknown>): string {
+  const sorted: Record<string, unknown> = {};
+  for (const k of Object.keys(obj).sort()) sorted[k] = obj[k];
+  return JSON.stringify(sorted, null, 2);
+}
+
+// toggleParam adds a knob to the JSON with its mode default (from modeDefaults), or removes it if already
+// present — the click/keyboard action behind the advanced-params glossary. It no-ops on invalid JSON
+// (nothing safe to merge into) and keeps the box alphabetical so add/remove stays stable.
+// toggleParam cycles a knob through the glossary's 3 states: absent → its default → its "opposite"
+// (bool flip / far end of the numeric range) → removed. Enums have no opposite and stay 2-state; a
+// hand-edited value flips to the opposite first, then removes — the cycle always terminates.
+async function toggleParam(key: string) {
+  if (paramsInvalid.value) return;
+  const defaults = Object.keys(modeDefaults.value).length
+    ? modeDefaults.value
+    : await loadModeDefaults();
+  const next: Record<string, unknown> = { ...(runParams.value ?? {}) };
+  if (!Object.prototype.hasOwnProperty.call(next, key)) {
+    if (!Object.prototype.hasOwnProperty.call(defaults, key)) {
+      return; // unknown key with no default — nothing to insert
+    }
+    next[key] = defaults[key];
+  } else {
+    const opp = oppositeOf(defaults[key], modeRanges.value[key]);
+    if (opp !== undefined && next[key] !== opp) {
+      next[key] = opp; // second click: flip to the opposite value
+    } else {
+      delete next[key]; // third click (or an enum's second): remove
+    }
+  }
+  paramsText.value = Object.keys(next).length ? stringifySorted(next) : "";
+  paramsDirty.value = true;
+}
+
+// nudgeParam steps an active numeric knob with the keyboard (↑/↓ on its glossary row), clamped min/max.
+function nudgeParam(key: string, dir: 1 | -1) {
+  if (paramsInvalid.value) return;
+  const range = modeRanges.value[key];
+  const next: Record<string, unknown> = { ...(runParams.value ?? {}) };
+  if (!range || !Object.prototype.hasOwnProperty.call(next, key)) return;
+  next[key] = nudged(next[key], dir, range, modeDefaults.value[key]);
+  paramsText.value = stringifySorted(next);
+  paramsDirty.value = true;
 }
 
 onMounted(async () => {
@@ -294,6 +395,26 @@ const reuseSelected = ref<number[]>([]);
 // Calibration suggestions from the library + the suggestion ids the user unchecked to skip.
 const calibPreview = ref<CalibPreview | null>(null);
 const calibExcluded = ref<string[]>([]);
+// The joined per-session run plan (which masters pair with which night's lights) — the data behind
+// the multi-night "Capture nights" breakdown.
+const runPlan = ref<RunPlanPreview | null>(null);
+// Force mismatched (gain/exposure/temperature) library masters onto the lights (relaxes the matcher).
+const forceCalibration = ref(false);
+
+// Pre-stack stray-light check (deepsky/nebula): the analysis report, the results modal, and the
+// set IDs the user chose to exclude — threaded into the run as exclude_sets.
+const setQaBusy = ref(false);
+const setQaError = ref("");
+const setQaReport = ref<SetQaReport | null>(null);
+const setQaOpen = ref(false);
+const excludedSets = ref<string[]>([]);
+
+function resetSetQa() {
+  setQaReport.value = null;
+  setQaError.value = "";
+  setQaOpen.value = false;
+  excludedSets.value = [];
+}
 
 const reuseSessionIds = computed(() =>
   (reusePreview.value?.reuse.sessions ?? []).map((s) => s.session_id),
@@ -315,10 +436,12 @@ const reuseSelectionForRun = computed(() =>
 async function doInspect(paths: string[]) {
   selectedPaths.value = paths;
   await browseStore.inspect(paths);
-  // Reuse + calibration previews are independent — fetch them together.
-  const [reuse, calib] = await Promise.all([
+  // Reuse + calibration previews are independent — fetch them together. The calibration preview honors
+  // the (sticky) force toggle so a pre-checked "force" already shows the mismatched masters it will apply.
+  const [reuse, calib, plan] = await Promise.all([
     jobsStore.previewReuse(paths),
-    jobsStore.previewCalibration(paths),
+    jobsStore.previewCalibration(paths, forceCalibration.value),
+    jobsStore.previewPlan(paths, forceCalibration.value),
   ]);
   reusePreview.value = reuse;
   // Default: fold in every discovered prior session (user can deselect).
@@ -327,7 +450,21 @@ async function doInspect(paths: string[]) {
   // Default: include every matched library master (user can uncheck).
   calibPreview.value = calib;
   calibExcluded.value = [];
+  runPlan.value = plan;
+  // A new selection invalidates the stray-light report and its set IDs.
+  resetSetQa();
 }
+
+// Toggling "force" re-matches the library: mismatched darks/flats/bias appear (or disappear) as
+// suggestions, so the panel + frozen calib_plan reflect exactly what a forced run would apply.
+watch(forceCalibration, async (on) => {
+  if (!selectedPaths.value.length) return;
+  calibPreview.value = await jobsStore.previewCalibration(
+    selectedPaths.value,
+    on,
+  );
+  calibExcluded.value = [];
+});
 
 // onInspect is the primary action for both tabs: download any S3-picked folders to local (kept local),
 // then inspect the combined set (local selection + the downloaded S3 folders). Falls back to the emitted
@@ -371,6 +508,14 @@ const { detectedFilters, mapping, overrides } = useChannelMapping(inv);
 const isDeepskyFamily = computed(
   () => selectedMode.value === "deepsky" || selectedMode.value === "nebula",
 );
+// force_calibration_frames only affects the Siril-master modes (deepsky/nebula/planetary/comet); the
+// milky-way (per-pixel phone calibration) and live-stacking paths calibrate differently and ignore it.
+const calibForceApplies = computed(
+  () =>
+    isDeepskyFamily.value ||
+    isPlanetary.value ||
+    selectedMode.value === "comet",
+);
 // The filters a palette needs but the current input lacks (→ disable it in the selector, with a hint).
 function paletteMissing(needs: string[]): string[] {
   return needs.filter((f) => !detectedFilters.value.includes(f));
@@ -382,9 +527,12 @@ function paletteMissing(needs: string[]): string[] {
 // Postgres). The picker is keyed by a stable string so the currently-applied preset stays highlighted.
 const presetsStore = usePresetsStore();
 const selectedPresetKey = ref(""); // "" = custom (nothing applied)
-const presetEdit = ref<"" | "save" | "rename">(""); // which inline name input is showing
+const presetEdit = ref<"" | "save" | "rename" | "duplicate">(""); // which inline name input is showing
 const presetNameField = ref("");
 const presetError = ref("");
+// The payload being duplicated, stashed at click time — the live form may not match the selected
+// preset, and a built-in's payload only exists on the item, never in the form.
+const duplicateSource = ref<PresetPayload | null>(null);
 
 const presetKey = (p: PresetItem) => (p.builtin ? `b:${p.name}` : `u:${p.id}`);
 const presetLabel = (p: PresetItem) =>
@@ -420,9 +568,19 @@ function applyPreset(item: PresetItem) {
   if (p.denoise !== undefined) denoise.value = p.denoise;
   if (p.ha_exclude_stars !== undefined)
     haExcludeStars.value = p.ha_exclude_stars;
+  if (typeof p.mosaic === "boolean") mosaic.value = p.mosaic;
+  if (p.output_luminance !== undefined)
+    outputLuminance.value = p.output_luminance;
+  if (p.output_mono_stack !== undefined)
+    outputMonoStack.value = p.output_mono_stack;
   if (p.drop_wheel_transition !== undefined)
     dropWheelTransition.value = p.drop_wheel_transition;
   if (p.supervise !== undefined) supervise.value = p.supervise;
+  // Earthshine rides the params knob channel (earthshine_gain), so the checkbox mirrors the recipe.
+  const presetGain = Number(
+    (p.params as Record<string, unknown> | undefined)?.earthshine_gain,
+  );
+  earthshine.value = Number.isFinite(presetGain) && presetGain > 0;
   goal.value = p.goal ?? "";
 
   const hasParams = !!p.params && Object.keys(p.params).length > 0;
@@ -453,18 +611,99 @@ function capturePayload(): PresetPayload {
     drop_wheel_transition: dropWheelTransition.value,
     supervise: supervise.value,
   };
-  if (isDeepskyFamily.value) payload.palette = palette.value;
+  if (isDeepskyFamily.value) {
+    payload.palette = palette.value;
+    payload.output_luminance = outputLuminance.value;
+    payload.output_mono_stack = outputMonoStack.value;
+  }
   if (isMilkyway.value) {
     payload.look = look.value;
     payload.brightness = brightness.value;
   }
   const g = goal.value.trim();
   if (g) payload.goal = g;
-  const params = runParams.value;
-  if (params && typeof params === "object") {
-    payload.params = params as Record<string, unknown>;
+  const params = effectiveRunParams();
+  if (params) {
+    payload.params = params;
   }
   return payload;
+}
+
+// effectiveRunParams merges the planetary "Reveal earthshine" checkbox into the Advanced-JSON knobs:
+// the option is the params-only earthshine_gain — an explicit positive value typed in the JSON wins,
+// otherwise the checkbox sends the natural 1.0. Unchecked leaves the JSON exactly as typed (an
+// advanced user's explicit gain still applies).
+function effectiveRunParams(): Record<string, unknown> | undefined {
+  const out: Record<string, unknown> = { ...(runParams.value ?? {}) };
+  if (isPlanetary.value && earthshine.value) {
+    const typed = Number(out.earthshine_gain);
+    out.earthshine_gain = Number.isFinite(typed) && typed > 0 ? typed : 1;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+// runAlignPointsEstimate fits the first luminance frame of the selection server-side, shows the
+// usable-point count, and fills align_points in the fine-parameters JSON (paramsDirty guards the
+// merge from the mode-watch prefill; advancedOpen reveals the filled box — mirrors applyPreset).
+async function runAlignPointsEstimate() {
+  if (
+    !selectedPaths.value.length ||
+    paramsInvalid.value ||
+    alignPointsBusy.value
+  )
+    return;
+  alignPointsBusy.value = true;
+  alignPointsError.value = "";
+  try {
+    const est = await jobsStore.estimateAlignPoints(
+      selectedPaths.value,
+      alignPointsMinPx.value ?? 0,
+    );
+    alignPointsResult.value = est;
+    const next: Record<string, unknown> = { ...(runParams.value ?? {}) };
+    next.align_points = est.suggested_align_points;
+    paramsText.value = stringifySorted(next);
+    paramsDirty.value = true;
+    advancedOpen.value = true;
+  } catch (e) {
+    alignPointsResult.value = null;
+    alignPointsError.value = (e as Error).message;
+  } finally {
+    alignPointsBusy.value = false;
+  }
+}
+
+// runSetQaAnalysis probes the selection's light sets for stray-light artifacts server-side and
+// opens the results modal — even with zero flagged sets, so a clean report is verifiable. The
+// modal's choice lands in excludedSets and applies at launch via exclude_sets.
+async function runSetQaAnalysis() {
+  if (!selectedPaths.value.length || setQaBusy.value) return;
+  setQaBusy.value = true;
+  setQaError.value = "";
+  try {
+    setQaReport.value = await jobsStore.analyzeSetQuality(selectedPaths.value);
+    setQaOpen.value = true;
+  } catch (e) {
+    setQaReport.value = null;
+    setQaError.value = (e as Error).message;
+  } finally {
+    setQaBusy.value = false;
+  }
+}
+
+function applySetExclusions(ids: string[]) {
+  excludedSets.value = ids;
+  setQaOpen.value = false;
+}
+
+// excludedSetLabel names an excluded set for its chip: filter · night · exposure.
+function excludedSetLabel(id: string): string {
+  const s = setQaReport.value?.sets.find((x) => x.id === id);
+  if (!s) return id;
+  const parts = [s.key.filter || "?"];
+  if (s.key.session) parts.push(s.key.session);
+  parts.push(humanizeMs(s.key.exposure_ms));
+  return parts.join(" · ");
 }
 
 function onPresetChange() {
@@ -472,9 +711,39 @@ function onPresetChange() {
   const p = selectedPreset.value;
   if (p) applyPreset(p);
 }
+
+// defaultPresetName pre-fills the save field with a self-describing summary of the captured
+// recipe — <mode>_<palette/look/ai>_<first knobs+values>(+N) — so a saved preset is recognizable
+// without typing (e.g. "planetary_best_percent30_clahe1.5_headroom0.85+2"). Deduped against the
+// existing presets because save() upserts by name (a colliding default would silently overwrite).
+function defaultPresetName(): string {
+  const parts: string[] = [selectedMode.value];
+  if (isDeepskyFamily.value && palette.value && palette.value !== "natural")
+    parts.push(palette.value);
+  if (isMilkyway.value && look.value) parts.push(look.value);
+  if (supervise.value) parts.push("ai");
+  const knobs = effectiveRunParams() ?? {};
+  const keys = Object.keys(knobs).sort();
+  for (const k of keys.slice(0, 3)) {
+    const v = knobs[k];
+    parts.push(
+      typeof v === "boolean" ? (v ? k : `no-${k}`) : `${k}${String(v)}`,
+    );
+  }
+  let name = parts.join("_");
+  if (keys.length > 3) name += `+${keys.length - 3}`;
+  const taken = new Set(
+    presetsStore.userPresets.map((p) => p.name.toLowerCase()),
+  );
+  if (!taken.has(name.toLowerCase())) return name;
+  for (let i = 2; ; i++) {
+    if (!taken.has(`${name}_${i}`.toLowerCase())) return `${name}_${i}`;
+  }
+}
+
 function startPresetSave() {
   presetError.value = "";
-  presetNameField.value = "";
+  presetNameField.value = defaultPresetName();
   presetEdit.value = "save";
 }
 function startPresetRename() {
@@ -484,10 +753,33 @@ function startPresetRename() {
   presetNameField.value = p.name;
   presetEdit.value = "rename";
 }
+// Duplicate works on built-ins too — the copy becomes a normal, editable user preset (the only way
+// to fork a read-only built-in recipe).
+function startPresetDuplicate() {
+  const p = selectedPreset.value;
+  if (!p) return;
+  presetError.value = "";
+  duplicateSource.value = p.payload;
+  presetNameField.value = duplicateName(presetLabel(p));
+  presetEdit.value = "duplicate";
+}
+// duplicateName builds "<label> copy", deduped ("… 2", "… 3") against the user presets — save()
+// upserts by case-insensitive name, so a colliding default would silently overwrite.
+function duplicateName(label: string): string {
+  const base = `${label} ${t("preset.copySuffix")}`;
+  const taken = new Set(
+    presetsStore.userPresets.map((p) => p.name.toLowerCase()),
+  );
+  if (!taken.has(base.toLowerCase())) return base;
+  for (let i = 2; ; i++) {
+    if (!taken.has(`${base} ${i}`.toLowerCase())) return `${base} ${i}`;
+  }
+}
 function cancelPresetEdit() {
   presetEdit.value = "";
   presetNameField.value = "";
   presetError.value = "";
+  duplicateSource.value = null;
 }
 async function confirmPresetEdit() {
   const name = presetNameField.value.trim();
@@ -497,6 +789,22 @@ async function confirmPresetEdit() {
       const p = selectedUserPreset.value;
       if (!p) return;
       await presetsStore.rename(p.id, name);
+    } else if (presetEdit.value === "duplicate") {
+      const payload = duplicateSource.value;
+      if (!payload) return;
+      // A duplicate must never silently overwrite (save() upserts by name) — reject collisions.
+      const clash = presetsStore.userPresets.some(
+        (p) => p.name.toLowerCase() === name.toLowerCase(),
+      );
+      if (clash) {
+        presetError.value = t("preset.nameTaken");
+        return;
+      }
+      await presetsStore.save(name, payload);
+      const saved = presetsStore.userPresets.find(
+        (p) => p.name.toLowerCase() === name.toLowerCase(),
+      );
+      if (saved) selectedPresetKey.value = presetKey(saved);
     } else {
       if (paramsInvalid.value) return;
       await presetsStore.save(name, capturePayload());
@@ -516,6 +824,13 @@ async function deleteSelectedPreset() {
   await presetsStore.remove(p.id);
   if (selectedPresetKey.value === presetKey(p)) selectedPresetKey.value = "";
 }
+// Star/unstar the selected user preset — favorites sort first in the picker. Built-ins have no DB row
+// to star (duplicate one first to get a starrable copy).
+async function toggleFavoriteSelected() {
+  const p = selectedUserPreset.value;
+  if (!p) return;
+  await presetsStore.setFavorite(p.id, !p.favorite);
+}
 
 onMounted(() => {
   void presetsStore.list();
@@ -525,6 +840,14 @@ const counts = computed(() => {
   const c: Record<string, number> = {};
   for (const f of inv.value?.frames ?? []) c[f.type] = (c[f.type] || 0) + 1;
   return c;
+});
+
+// Calibration-only selection (darks/flats/bias, zero lights): the launch button becomes "build the
+// masters & add them to the library" — a masters-only job instead of a pipeline run.
+const mastersOnly = computed(() => {
+  const c = counts.value;
+  const cal = (c.DARK || 0) + (c.FLAT || 0) + (c.BIAS || 0) + (c.DARKFLAT || 0);
+  return !!inv.value && !(c.LIGHT || 0) && cal > 0;
 });
 
 type Row = Record<string, unknown>;
@@ -686,16 +1009,25 @@ const summaryPath = computed(() => {
 // The run options shared by "Run" (immediate) and "Add to queue" (sequential lane).
 function runOpts(): CreateOpts {
   return {
+    // Calibration-only selection → a masters-only build job (no lights, no image).
+    buildMasters: mastersOnly.value || undefined,
     paths: selectedPaths.value,
     filterMap: overrides.value,
     colorCalibration: colorCalibration.value,
     denoise: denoise.value,
     haExcludeStars: haExcludeStars.value,
+    mosaic: isDeepskyFamily.value && mosaic.value ? true : undefined,
+    // Extra mono side-outputs are deepsky/nebula-only; omit for other modes (they ignore them).
+    outputLuminance: isDeepskyFamily.value ? outputLuminance.value : undefined,
+    outputMonoStack: isDeepskyFamily.value ? outputMonoStack.value : undefined,
     dropWheelTransition: dropWheelTransition.value,
     supervise: supportsSupervise.value && supervise.value,
+    target: isDeepskyFamily.value
+      ? target.value.trim() || undefined
+      : undefined,
     // Advanced AI parameters (empty goal / empty-or-absent params are simply not sent).
     goal: goal.value.trim() || undefined,
-    params: runParams.value || undefined,
+    params: effectiveRunParams(),
     look: isMilkyway.value ? look.value : undefined,
     palette:
       isDeepskyFamily.value && palette.value !== "natural"
@@ -712,9 +1044,16 @@ function runOpts(): CreateOpts {
     reuseSessions: reuseSelectionForRun.value,
     // Library masters the user unchecked in the Calibration panel (skipped at process time).
     calibExclude: calibExcluded.value,
+    // Light sets excluded in the stray-light check (deepsky/nebula; dropped before grouping).
+    excludeSets: isDeepskyFamily.value ? excludedSets.value : undefined,
+    // Force mismatched (gain/exposure/temperature) masters onto the lights (relaxes the matcher).
+    forceCalibration: forceCalibration.value,
     // Freeze the matched-calibration preview with the job so its page can show the included darks/flats/
     // bias and their params (the pipeline still re-matches independently, honoring calibExclude).
     calibPlan: calibPreview.value,
+    // Tiled-mosaic run: reference the saved plan (panel labels, expected centers, solve hints).
+    mosaicPlanId:
+      isMosaicMode.value && mosaicPlanId.value ? mosaicPlanId.value : undefined,
     // Full-S3 run: pull inputs from S3, process, push inputs+results, then free local (only when active).
     storageMode: s3.active && processMode.value === "s3" ? "s3" : undefined,
     s3:
@@ -817,6 +1156,68 @@ async function useHistory(entry: ProcessingHistoryEntry) {
   }
   await nextTick();
   runControls.value?.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+// Naming/starring a history entry (saved selections): one inline edit at a time, keyed by the
+// row's signature. star=true routes an unnamed row's ☆ through the naming input, so the star is
+// saved with the name in one call (favorites exist only on named selections).
+const histEdit = ref<{
+  signature: string;
+  draft: string;
+  star: boolean;
+} | null>(null);
+const histError = ref("");
+
+function startHistName(entry: ProcessingHistoryEntry, star = false) {
+  histError.value = "";
+  histEdit.value = {
+    signature: entry.signature,
+    draft: entry.selection?.name || entry.object || "",
+    star,
+  };
+}
+function cancelHistName() {
+  histEdit.value = null;
+  histError.value = "";
+}
+async function confirmHistName(entry: ProcessingHistoryEntry) {
+  const edit = histEdit.value;
+  const name = edit?.draft.trim();
+  if (!edit || !name) return;
+  try {
+    if (entry.selection) {
+      await browseStore.renameSelection(entry.selection.id, name);
+    } else {
+      await browseStore.saveSelection(name, entry, edit.star || undefined);
+    }
+    cancelHistName();
+  } catch {
+    histError.value = t("import.history.nameTaken"); // the only expected failure: 409 collision
+  }
+}
+async function toggleHistFavorite(entry: ProcessingHistoryEntry) {
+  histError.value = "";
+  if (!entry.selection) {
+    startHistName(entry, true);
+    return;
+  }
+  try {
+    await browseStore.setSelectionFavorite(
+      entry.selection.id,
+      !entry.selection.favorite,
+    );
+  } catch (e) {
+    histError.value = (e as Error).message;
+  }
+}
+async function forgetHistSelection(entry: ProcessingHistoryEntry) {
+  if (!entry.selection) return;
+  histError.value = "";
+  try {
+    await browseStore.deleteSelection(entry.selection.id);
+  } catch (e) {
+    histError.value = (e as Error).message;
+  }
 }
 
 // Chip style for a history folder: muted + struck-through when the folder no longer exists on disk.
@@ -989,17 +1390,101 @@ function histChip(exists: boolean): string {
       <ul class="max-h-72 space-y-3 overflow-y-auto">
         <li
           v-for="entry in browseStore.processingHistory"
-          :key="entry.jobId"
+          :key="entry.signature"
           class="rounded-md border border-slate-200 p-2 dark:border-slate-700"
         >
           <div class="flex flex-wrap items-center gap-2">
-            <StatusPill :status="entry.status" />
-            <span class="text-sm font-medium">{{
-              entry.object || t("import.history.untitled")
-            }}</span>
+            <StatusPill v-if="entry.jobId" :status="entry.status" />
+            <span
+              v-else
+              class="rounded bg-brand-500/10 px-1.5 py-0.5 text-[10px] font-medium text-brand-500"
+              >{{ t("import.history.saved") }}</span
+            >
+            <button
+              class="text-sm"
+              :class="
+                entry.selection?.favorite
+                  ? 'text-amber-400'
+                  : 'text-slate-400 hover:text-amber-400'
+              "
+              :title="
+                t(
+                  entry.selection?.favorite
+                    ? 'import.history.unfavorite'
+                    : 'import.history.favorite',
+                )
+              "
+              @click="toggleHistFavorite(entry)"
+            >
+              {{ entry.selection?.favorite ? "★" : "☆" }}
+            </button>
+            <template v-if="histEdit?.signature === entry.signature">
+              <input
+                v-model="histEdit.draft"
+                :class="input"
+                class="!w-44 !py-1 text-sm"
+                :placeholder="t('import.history.namePlaceholder')"
+                @keyup.enter="confirmHistName(entry)"
+                @keyup.esc="cancelHistName"
+              />
+              <button
+                :class="btnGhost"
+                class="!px-2 !py-1 !text-xs"
+                :disabled="!histEdit.draft.trim()"
+                @click="confirmHistName(entry)"
+              >
+                {{ t("preset.saveBtn") }}
+              </button>
+              <button
+                :class="btnGhost"
+                class="!px-2 !py-1 !text-xs"
+                @click="cancelHistName"
+              >
+                {{ t("preset.cancel") }}
+              </button>
+            </template>
+            <template v-else>
+              <span class="text-sm font-medium">{{
+                entry.selection?.name ||
+                entry.object ||
+                t("import.history.untitled")
+              }}</span>
+              <button
+                class="text-xs text-slate-400 hover:text-brand-500"
+                :title="
+                  t(
+                    entry.selection
+                      ? 'import.history.rename'
+                      : 'import.history.name',
+                  )
+                "
+                @click="startHistName(entry)"
+              >
+                ✎
+              </button>
+              <button
+                v-if="entry.selection"
+                class="text-xs text-slate-400 hover:text-danger"
+                :title="t('import.history.forget')"
+                @click="forgetHistSelection(entry)"
+              >
+                ✕
+              </button>
+            </template>
             <span class="text-xs text-slate-400">
-              {{ entry.mode ? t("run.modes." + entry.mode) : "" }} ·
-              {{ formatTimestamp(entry.createdAtMs) }}
+              <template
+                v-if="
+                  entry.selection &&
+                  entry.object &&
+                  entry.selection.name !== entry.object
+                "
+                >{{ entry.object }} ·
+              </template>
+              {{ entry.mode ? t("run.modes." + entry.mode) + " · " : "" }}
+              <template v-if="entry.jobId">{{
+                formatTimestamp(entry.createdAtMs)
+              }}</template>
+              <template v-else>{{ t("import.history.saved") }}</template>
               <template v-if="entry.runs > 1">
                 · {{ t("import.history.runs", { n: entry.runs }) }}</template
               >
@@ -1036,6 +1521,7 @@ function histChip(exists: boolean): string {
           </div>
         </li>
       </ul>
+      <p v-if="histError" class="mt-2 text-xs text-danger">{{ histError }}</p>
       <!-- Feedback while a history re-run pulls its freed folders back from the S3 mirror. -->
       <div
         v-if="s3Busy"
@@ -1068,10 +1554,17 @@ function histChip(exists: boolean): string {
       <FilterMappingEditor
         v-if="detectedFilters.length"
         v-model="mapping"
-        :detected-filters="detectedFilters"
         :detection="inv.channel_detection"
+        :detected-filters="detectedFilters"
       />
     </div>
+
+    <!-- Multi-night selection: per-night breakdown + calibration mapping (renders nothing single-night). -->
+    <SessionBreakdown
+      v-if="inv?.sessions && inv.sessions.length > 1"
+      :sessions="inv.sessions"
+      :plan="runPlan"
+    />
 
     <!-- Reuse + calibration advisories sit side-by-side on wide screens (both fold prior data into the run). -->
     <TwoPane v-if="inv" split="even">
@@ -1120,7 +1613,7 @@ function histChip(exists: boolean): string {
               :value="presetKey(p)"
               :title="presetDesc(p)"
             >
-              {{ presetLabel(p) }}
+              {{ (p.favorite ? "★ " : "") + presetLabel(p) }}
             </option>
           </optgroup>
         </select>
@@ -1128,6 +1621,30 @@ function histChip(exists: boolean): string {
         <template v-if="presetEdit === ''">
           <button type="button" :class="btnGhost" @click="startPresetSave">
             {{ t("preset.save") }}
+          </button>
+          <button
+            v-if="selectedPreset"
+            type="button"
+            :class="[btnGhost, '!px-2']"
+            :title="t('preset.duplicate')"
+            @click="startPresetDuplicate"
+          >
+            ⧉
+          </button>
+          <button
+            v-if="selectedUserPreset"
+            type="button"
+            :class="[btnGhost, '!px-2']"
+            :title="
+              t(
+                selectedUserPreset.favorite
+                  ? 'preset.unfavorite'
+                  : 'preset.favorite',
+              )
+            "
+            @click="toggleFavoriteSelected"
+          >
+            {{ selectedUserPreset.favorite ? "★" : "☆" }}
           </button>
           <button
             v-if="selectedUserPreset"
@@ -1202,6 +1719,20 @@ function histChip(exists: boolean): string {
             </option>
           </select>
         </label>
+        <label v-if="isMosaicMode" class="text-sm">
+          <span class="mb-1 block text-xs font-medium text-slate-500">{{
+            t("mosaic.import.planLabel")
+          }}</span>
+          <select v-model.number="mosaicPlanId" :class="input">
+            <option :value="0">{{ t("mosaic.import.noPlan") }}</option>
+            <option v-for="p in mosaicStore.plans" :key="p.id" :value="p.id">
+              {{ p.name }} ({{ p.grid.cols }}×{{ p.grid.rows }})
+            </option>
+          </select>
+        </label>
+        <p v-if="isMosaicMode" class="basis-full text-xs text-slate-400">
+          {{ t("mosaic.import.folderHint") }}
+        </p>
         <label v-if="s3.active" class="text-sm" :title="t('s3.storageHint')">
           <span class="mb-1 block text-xs font-medium text-slate-500">{{
             t("s3.storage")
@@ -1314,6 +1845,45 @@ function histChip(exists: boolean): string {
             />
             {{ t("run.haExcludeStars") }}
           </label>
+          <label
+            v-if="isDeepskyFamily"
+            class="flex items-center gap-2"
+            :title="t('run.mosaicHint')"
+          >
+            <input
+              v-model="mosaic"
+              type="checkbox"
+              :class="checkbox"
+              data-demo="opt-mosaic"
+            />
+            {{ t("run.mosaic") }}
+          </label>
+          <label
+            v-if="isDeepskyFamily"
+            class="flex items-center gap-2"
+            :title="t('run.outputLuminanceHint')"
+          >
+            <input
+              v-model="outputLuminance"
+              type="checkbox"
+              :class="checkbox"
+              data-demo="opt-outputLuminance"
+            />
+            {{ t("run.outputLuminance") }}
+          </label>
+          <label
+            v-if="isDeepskyFamily"
+            class="flex items-center gap-2"
+            :title="t('run.outputMonoStackHint')"
+          >
+            <input
+              v-model="outputMonoStack"
+              type="checkbox"
+              :class="checkbox"
+              data-demo="opt-outputMonoStack"
+            />
+            {{ t("run.outputMonoStack") }}
+          </label>
           <label class="flex items-center gap-2">
             <input
               v-model="dropWheelTransition"
@@ -1322,6 +1892,144 @@ function histChip(exists: boolean): string {
               data-demo="opt-dropWheelTransition"
             />
             {{ t("run.dropTransition") }}
+          </label>
+          <label
+            v-if="isPlanetary"
+            class="flex items-center gap-2"
+            :title="t('run.earthshineHint')"
+          >
+            <input
+              v-model="earthshine"
+              type="checkbox"
+              :class="checkbox"
+              data-demo="opt-earthshine"
+            />
+            {{ t("run.earthshine") }}
+          </label>
+          <div v-if="isPlanetary" class="flex flex-col gap-1">
+            <div class="flex items-center gap-2 text-xs text-slate-500">
+              <label class="flex items-center gap-1">
+                {{ t("run.alignPointsMinSize") }}
+                <input
+                  v-model.number="alignPointsMinPx"
+                  type="number"
+                  min="24"
+                  step="1"
+                  :placeholder="t('run.alignPointsAuto')"
+                  :class="input"
+                  class="!w-20 !py-1"
+                />
+              </label>
+              <button
+                type="button"
+                :class="btnGhost"
+                class="!px-2 !py-1"
+                :disabled="
+                  alignPointsBusy || !selectedPaths.length || paramsInvalid
+                "
+                :title="t('run.alignPointsHint')"
+                data-demo="opt-alignPoints"
+                @click="runAlignPointsEstimate"
+              >
+                {{
+                  alignPointsBusy
+                    ? t("run.alignPointsEstimating")
+                    : t("run.alignPointsEstimate")
+                }}
+              </button>
+            </div>
+            <span v-if="alignPointsResult" class="text-xs text-slate-500">
+              {{
+                t("run.alignPointsResult", {
+                  usable: alignPointsResult.usable_points,
+                  n: alignPointsResult.per_axis,
+                  cell: alignPointsResult.cell_px,
+                  suggested: alignPointsResult.suggested_align_points,
+                })
+              }}
+            </span>
+            <span v-if="alignPointsError" class="text-xs text-danger">{{
+              alignPointsError
+            }}</span>
+          </div>
+          <div v-if="isDeepskyFamily" class="flex flex-col gap-1">
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                :class="btnGhost"
+                class="!px-2 !py-1"
+                :disabled="setQaBusy || !selectedPaths.length"
+                :title="t('setqa.hint')"
+                data-demo="opt-setqa"
+                @click="runSetQaAnalysis"
+              >
+                {{ setQaBusy ? t("setqa.checking") : t("setqa.button") }}
+              </button>
+              <button
+                v-if="setQaReport && !setQaOpen"
+                type="button"
+                class="text-xs text-brand-500 underline"
+                @click="setQaOpen = true"
+              >
+                {{ t("setqa.reopen") }}
+              </button>
+            </div>
+            <span
+              v-if="setQaReport && !setQaBusy"
+              class="text-xs text-slate-500"
+            >
+              {{
+                setQaReport.flagged
+                  ? t("setqa.summary", { n: setQaReport.flagged })
+                  : t("setqa.none")
+              }}
+            </span>
+            <span v-if="setQaError" class="text-xs text-danger">{{
+              setQaError
+            }}</span>
+            <div
+              v-if="excludedSets.length"
+              class="flex flex-wrap items-center gap-1 text-xs"
+            >
+              <span class="text-slate-500">
+                {{ t("setqa.excludedOnRun", { n: excludedSets.length }) }}
+              </span>
+              <span
+                v-for="id in excludedSets"
+                :key="id"
+                class="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-600 dark:text-amber-400"
+              >
+                {{ excludedSetLabel(id) }}
+                <button
+                  type="button"
+                  class="hover:text-danger"
+                  :title="t('setqa.reinclude')"
+                  @click="excludedSets = excludedSets.filter((x) => x !== id)"
+                >
+                  ✕
+                </button>
+              </span>
+              <button
+                type="button"
+                class="text-slate-500 underline"
+                @click="excludedSets = []"
+              >
+                {{ t("setqa.clear") }}
+              </button>
+            </div>
+          </div>
+          <label
+            v-if="calibForceApplies"
+            class="flex items-center gap-2"
+            :title="t('run.forceCalibrationHint')"
+          >
+            <input
+              v-model="forceCalibration"
+              type="checkbox"
+              :class="checkbox"
+              data-demo="opt-forceCalibration"
+            />
+            {{ t("run.forceCalibration") }}
           </label>
           <label
             v-if="supportsSupervise"
@@ -1340,10 +2048,11 @@ function histChip(exists: boolean): string {
         <button
           :class="btnPrimary"
           :disabled="!canRun"
+          :title="mastersOnly ? t('run.buildMastersHint') : undefined"
           data-demo="run-pipeline"
           @click="runPipeline"
         >
-          {{ t("common.run") }}
+          {{ t(mastersOnly ? "run.buildMasters" : "common.run") }}
         </button>
         <button
           :class="btnGhost"
@@ -1353,6 +2062,12 @@ function histChip(exists: boolean): string {
         >
           {{ t("run.addToQueue") }}
         </button>
+        <p
+          v-if="mastersOnly"
+          class="w-full text-xs text-slate-500 dark:text-slate-400"
+        >
+          {{ t("run.buildMastersHint") }}
+        </p>
       </div>
 
       <!-- Optional calibration-frame folders (milkyway): point at separate dark/flat/bias dirs. -->
@@ -1408,6 +2123,23 @@ function histChip(exists: boolean): string {
         <summary class="cursor-pointer text-xs font-medium text-slate-500">
           {{ t("run.advancedParams") }}
         </summary>
+
+        <!-- Imaging target (deepsky family): seeds the plate-solve so SPCC colour calibration can run
+             when the FITS headers / folder names can't identify the field. -->
+        <section v-if="isDeepskyFamily" class="mt-3">
+          <label class="block text-sm">
+            <span class="mb-1 block text-xs font-medium text-slate-500">{{
+              t("run.target")
+            }}</span>
+            <input
+              v-model="target"
+              type="text"
+              :placeholder="t('run.targetHint')"
+              :class="input"
+              data-demo="run-target"
+            />
+          </label>
+        </section>
 
         <!-- AI guidance: a plain-language objective the finish supervisor carries (only used when the
              "Supervise finish" AI agent is on). -->
@@ -1484,7 +2216,16 @@ function histChip(exists: boolean): string {
           </label>
           <!-- Per-parameter reference for the JSON above: every knob this mode exposes, the ones set in
                the JSON highlighted with their live value. -->
-          <ParamGlossary :mode="selectedMode" :params="runParams" />
+          <ParamGlossary
+            :mode="selectedMode"
+            :params="runParams"
+            :defaults="modeDefaults"
+            :ranges="modeRanges"
+            interactive
+            :disabled="paramsInvalid"
+            @toggle="toggleParam"
+            @nudge="nudgeParam"
+          />
         </section>
       </details>
       <p v-if="!selectedPaths.length" class="mt-2 text-xs text-slate-400">
@@ -1589,5 +2330,13 @@ function histChip(exists: boolean): string {
     <p v-else-if="!browseStore.loading" class="text-sm text-slate-400">
       {{ t("import.noData") }}
     </p>
+
+    <SetArtifactsModal
+      v-if="setQaOpen && setQaReport"
+      :report="setQaReport"
+      :initial="excludedSets"
+      @apply="applySetExclusions"
+      @close="setQaOpen = false"
+    />
   </div>
 </template>

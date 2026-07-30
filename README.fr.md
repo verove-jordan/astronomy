@@ -94,7 +94,7 @@ ligne**, téléchargez une fois les catalogues Gaia : `just download-catalogues`
 
 | Mode | Entrée | Pipeline |
 |------|--------|----------|
-| `deepsky` | FITS mono (L/R/G/B/Ha…) | calibration → notation → empilement par canal → co-registration → composition GIMP LRGB+Ha (palettes : natural/HaRGB/HOO/SHO/Foraxx/mono) |
+| `deepsky` | FITS mono (L/R/G/B/Ha/OIII/SII) | calibration → notation → empilement par canal → co-registration → composition GIMP LRGB avec superpositions d'émission Ha/OIII/SII (palettes : natural/HaRGB/HOO/SHO/HOS/Foraxx/mono) |
 | `nebula` | FITS mono | deepsky réglé pour l'émission faible : notation indulgente, Ha en avant, réduction d'étoiles |
 | `milkyway` | couleur one-shot (iPhone ProRAW/HEIC, raw reflex) | développement photométrique → empilement du ciel seul → composite avec premier plan + rendu gradé |
 | `planetary` | vidéo (SER/AVI/MP4/MOV) ou photos | lucky imaging : tri par netteté → alignement multi-points → empilement pondéré → déconvolution |

@@ -1,12 +1,16 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
-import { apiGet, apiPost, health, withS3 } from "@/services/api";
+import { ApiError, apiGet, apiPost, health, withS3 } from "@/services/api";
 import type {
+  AlignPointsEstimate,
   Inventory,
   Job,
   ReusePreview,
   CalibPreview,
+  RunPlanPreview,
   RunSummary,
+  SetQaReport,
+  StarAnnotations,
 } from "@/types";
 
 export interface CreateOpts {
@@ -15,6 +19,12 @@ export interface CreateOpts {
   colorCalibration?: boolean;
   denoise?: boolean;
   haExcludeStars?: boolean;
+  mosaic?: boolean;
+  mosaicPlanId?: number; // tiled-mosaic mode: the saved plan a run references
+  // Extra monochrome side-outputs (deepsky/nebula): a processed Luminance-only image (default on) and
+  // a combined all-channel integration (default off), saved next to the colour final.
+  outputLuminance?: boolean;
+  outputMonoStack?: boolean;
   supervise?: boolean; // opt-in: drive the local AI agent to auto-tune the finish
   sequential?: boolean; // queue into the single-worker sequential lane (chained "Add to queue")
   look?: string; // milkyway render style: natural | iphone | deepsky
@@ -33,6 +43,13 @@ export interface CreateOpts {
   reuseSessions?: number[];
   // Library calibration the user unchecked in the Calibration panel (calib.SuggestID keys to skip).
   calibExclude?: string[];
+  // Light sets the user excluded in the stray-light check (inspect SetKey.ID tokens to drop).
+  excludeSets?: string[];
+  // Force mismatched (gain/exposure/temperature) dark/flat/bias masters to be applied anyway.
+  forceCalibration?: boolean;
+  // Masters-only build (selection has calibration frames but no lights): stack them into library
+  // masters and stop — no image. The backend runs it as a kind "masters" job.
+  buildMasters?: boolean;
   // Frozen snapshot of the matched calibration masters (the Calibration preview), persisted with the job
   // so its page can show which darks/flats/bias are included and with what params. Informational only.
   calibPlan?: CalibPreview | null;
@@ -48,6 +65,9 @@ export interface CreateOpts {
     prefix?: string;
     exposureSec?: number;
   };
+  // Imaging target for plate-solve/SPCC seeding — a catalogue name ("M66") or "RA,Dec" — for
+  // captures whose headers/folders can't identify the field. Never renames the run.
+  target?: string;
   // Advanced AI parameters: a free-text objective the agent carries for the run, fine tunable-knob
   // overrides (same whitelist/clamps as the supervisor), its re-entry ceiling and iteration cap.
   goal?: string;
@@ -74,11 +94,22 @@ export interface RerunOpts {
   params?: Record<string, unknown>;
 }
 
-// ModeParams is a stacking mode's effective tunable knobs (the run's real values) + the human-readable
-// knob menu, from GET /api/mode-params. Powers the Advanced-parameters prefill in the Import run controls.
+// KnobRange is a numeric knob's clamp bounds (min/max) + whether it is integer-valued, from
+// pipeline.KnobRangesFor. The glossary shows these beside each param's default. Boolean/enum knobs
+// carry no range (absent from the map).
+export interface KnobRange {
+  min: number;
+  max: number;
+  int?: boolean;
+}
+
+// ModeParams is a stacking mode's effective tunable knobs (the run's real values) + their min/max
+// ranges + the human-readable knob menu, from GET /api/mode-params. Powers the Advanced-parameters
+// prefill and the glossary's default/min/max reference in the Import run controls.
 export interface ModeParams {
   mode: string;
   defaults: Record<string, unknown>;
+  ranges: Record<string, KnobRange>;
   menu: string;
 }
 
@@ -101,6 +132,10 @@ export const useJobsStore = defineStore("jobs", () => {
   // Conversation turn id stashed at create/refine-time (supervised jobs only) so JobView can open the
   // live steerable conversation for the run it just started.
   const turnByJob = ref<Record<number, string>>({});
+  // Star annotations (stars.json) cached per job, so a computed count/overlay survives navigation.
+  const starsByJob = ref<Record<number, StarAnnotations>>({});
+  // POST in flight per job — survives a JobView remount so the button can't double-submit.
+  const starsBusy = ref<Record<number, boolean>>({});
 
   // list refreshes the currently-loaded window (newest first). It re-fetches from offset 0 with a limit of
   // however many are already shown (min one page), so the Tasks poll updates live status without discarding
@@ -176,6 +211,11 @@ export const useJobsStore = defineStore("jobs", () => {
     if (opts.denoise !== undefined) body.denoise = opts.denoise;
     if (opts.haExcludeStars !== undefined)
       body.ha_exclude_stars = opts.haExcludeStars;
+    if (opts.mosaic) body.union_canvas = true; // renamed wire key ("mosaic" stays a read alias)
+    if (opts.mosaicPlanId) body.mosaic_plan_id = opts.mosaicPlanId;
+    if (opts.outputLuminance !== undefined)
+      body.output_luminance = opts.outputLuminance;
+    if (opts.outputMonoStack) body.output_mono_stack = true;
     if (opts.supervise) body.supervise = true;
     if (opts.sequential) body.sequential = true;
     if (opts.look) body.look = opts.look;
@@ -190,6 +230,10 @@ export const useJobsStore = defineStore("jobs", () => {
       body.reuse_sessions = opts.reuseSessions;
     if (opts.calibExclude && opts.calibExclude.length)
       body.calib_exclude = opts.calibExclude;
+    if (opts.excludeSets && opts.excludeSets.length)
+      body.exclude_sets = opts.excludeSets;
+    if (opts.forceCalibration) body.force_calibration_frames = true;
+    if (opts.buildMasters) body.build_masters = true;
     if (opts.calibPlan) body.calib_plan = opts.calibPlan;
     if (opts.live)
       body.live = {
@@ -203,6 +247,7 @@ export const useJobsStore = defineStore("jobs", () => {
       body.s3 = { bucket: opts.s3.bucket, prefix: opts.s3.prefix };
       if (typeof opts.lowDisk === "boolean") body.low_disk = opts.lowDisk;
     }
+    if (opts.target) body.target = opts.target;
     if (opts.goal) body.goal = opts.goal;
     if (opts.params && Object.keys(opts.params).length)
       body.params = opts.params;
@@ -241,14 +286,52 @@ export const useJobsStore = defineStore("jobs", () => {
   }
 
   // previewCalibration asks which library master dark/flat/bias would calibrate each inspected channel.
+  // force=true relaxes the matcher so mismatched (gain/exposure/temperature) masters are surfaced too.
   async function previewCalibration(
     paths: string[],
+    force = false,
   ): Promise<CalibPreview | null> {
     try {
-      return await apiPost<CalibPreview>("/api/calib/preview", { paths });
+      return await apiPost<CalibPreview>("/api/calib/preview", {
+        paths,
+        force,
+      });
     } catch {
       return null;
     }
+  }
+
+  // previewPlan asks for the JOINED per-session run plan: every (session, night, config) group a run
+  // would form — current capture nights AND folded prior sessions — with the masters each would get.
+  // Backs the Import "Capture nights" breakdown; soft-nulls like the other previews.
+  async function previewPlan(
+    paths: string[],
+    force = false,
+  ): Promise<RunPlanPreview | null> {
+    try {
+      return await apiPost<RunPlanPreview>("/api/calib/plan", { paths, force });
+    } catch {
+      return null;
+    }
+  }
+
+  // estimateAlignPoints fits the first luminance frame of the selected folders and suggests the
+  // planetary align_points knob. Throws (ApiError) so the form can surface the backend's reason
+  // (no lights, SER capture, …) rather than silently swallowing it.
+  async function estimateAlignPoints(
+    paths: string[],
+    minPx = 0,
+  ): Promise<AlignPointsEstimate> {
+    return apiPost<AlignPointsEstimate>("/api/planetary/align-points", {
+      paths,
+      min_px: minPx > 0 ? Math.round(minPx) : 0,
+    });
+  }
+
+  // analyzeSetQuality runs the pre-stack stray-light check over the selection's light sets
+  // (POST /api/quality/sets). Throws (ApiError) so the form surfaces the backend's reason.
+  async function analyzeSetQuality(paths: string[]): Promise<SetQaReport> {
+    return apiPost<SetQaReport>("/api/quality/sets", { paths });
   }
 
   function captureFor(id: number): Inventory | null {
@@ -313,6 +396,60 @@ export const useJobsStore = defineStore("jobs", () => {
   async function denoiseFinal(id: number): Promise<number> {
     const data = await apiPost<{ id: number }>(`/api/jobs/${id}/denoise-final`);
     return data.id;
+  }
+
+  // normalizeStars makes the annotation safe for the overlay: labels never null, importance-sorted
+  // once (DSOs slightly boosted so the target's name wins ties against anonymous field stars).
+  function normalizeStars(a: StarAnnotations): StarAnnotations {
+    const labels = (a.labels ?? [])
+      .slice()
+      .sort(
+        (x, y) =>
+          (x.kind === "dso" ? x.mag - 2 : x.mag) -
+          (y.kind === "dso" ? y.mag - 2 : y.mag),
+      );
+    return { ...a, labels };
+  }
+
+  function starsFor(id: number): StarAnnotations | null {
+    return starsByJob.value[id] ?? null;
+  }
+
+  // fetchStars loads the cached annotation (GET). 404 = never computed → null, silently; other
+  // failures also yield null so the count button simply remains available. Both stars calls carry
+  // the S3 tags (withS3) so the backend can pull freed-to-S3 masters back on demand.
+  async function fetchStars(id: number): Promise<StarAnnotations | null> {
+    const cached = starsByJob.value[id];
+    if (cached) return cached;
+    try {
+      const data = await apiGet<StarAnnotations>(
+        withS3(`/api/jobs/${id}/stars`),
+      );
+      starsByJob.value[id] = normalizeStars(data);
+      return starsByJob.value[id];
+    } catch {
+      return null;
+    }
+  }
+
+  // countStars computes the annotation (POST — may take up to ~1 min when the field needs a fresh
+  // plate-solve). Rethrows the ApiError for inline display; guards double-submit via starsBusy.
+  async function countStars(id: number): Promise<StarAnnotations> {
+    if (starsBusy.value[id]) {
+      const cached = starsByJob.value[id];
+      if (cached) return cached;
+      throw new ApiError(409, "count already running");
+    }
+    starsBusy.value[id] = true;
+    try {
+      const data = await apiPost<StarAnnotations>(
+        withS3(`/api/jobs/${id}/stars`),
+      );
+      starsByJob.value[id] = normalizeStars(data);
+      return starsByJob.value[id];
+    } finally {
+      starsBusy.value[id] = false;
+    }
   }
 
   // freeLocal frees a finished full-S3 run's local input+output files (each verified present on S3 first)
@@ -426,6 +563,9 @@ export const useJobsStore = defineStore("jobs", () => {
     fetchModeParams,
     previewReuse,
     previewCalibration,
+    previewPlan,
+    estimateAlignPoints,
+    analyzeSetQuality,
     captureFor,
     turnFor,
     inspectCapture,
@@ -434,6 +574,10 @@ export const useJobsStore = defineStore("jobs", () => {
     continueJob,
     restart,
     denoiseFinal,
+    starsBusy,
+    starsFor,
+    fetchStars,
+    countStars,
     freeLocal,
     refine,
     rerun,

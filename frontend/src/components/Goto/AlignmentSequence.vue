@@ -5,7 +5,7 @@ import { useGotoStore } from "@/stores/goto";
 import AlignStarCard from "@/components/Goto/AlignStarCard.vue";
 import ScoreBadge from "@/components/Common/ScoreBadge.vue";
 import { card, btnGhost } from "@/constants/styles";
-import type { GotoStar } from "@/types";
+import type { GotoStar, GotoWarning } from "@/types";
 
 const { t } = useI18n();
 const store = useGotoStore();
@@ -32,6 +32,23 @@ const lastAcceptedOrder = computed(() => {
   const accepted = stars.value.filter((s) => s.status === "accepted");
   return accepted.length ? accepted[accepted.length - 1].order : -1;
 });
+
+// warningText renders a structured plan warning. `side` is the bare translated side word
+// (calib_same_side); `sideClause` is the optional " on the … side of the meridian" fragment
+// (few_stars), empty when no meridian rule applies so the sentence still reads naturally.
+function warningText(w: GotoWarning): string {
+  const sideWord = w.side ? t(`goto.card.${w.side}`) : "";
+  const sideClause = w.side ? t("goto.warnings.side", { side: sideWord }) : "";
+  return t(`goto.warnings.${w.code}`, {
+    available: w.available ?? 0,
+    requested: w.requested ?? 0,
+    min_alt: Math.round(w.min_alt ?? 0),
+    max_alt: Math.round(w.max_alt ?? 0),
+    count: w.count ?? 0,
+    side: sideWord,
+    sideClause,
+  });
+}
 </script>
 
 <template>
@@ -59,7 +76,7 @@ const lastAcceptedOrder = computed(() => {
       v-if="store.warnings.length"
       class="mt-2 text-xs text-amber-600 dark:text-amber-400"
     >
-      {{ store.warnings[0] }}
+      {{ warningText(store.warnings[0]) }}
     </p>
 
     <div v-if="stars.length && hasPhases" class="mt-3 space-y-2">

@@ -37,6 +37,13 @@ type Runner struct {
 // New returns a Runner for the given siril-cli path and resource limits.
 func New(bin string, lim Limits) *Runner { return &Runner{bin: bin, lim: lim} }
 
+// Limits returns the runner's configured resource limits.
+func (r *Runner) Limits() Limits { return r.lim }
+
+// WithLimits returns a copy of the runner with different limits (same binary) — the parallel
+// channel waves divide the CPU/memory budget between concurrent Siril instances.
+func (r *Runner) WithLimits(lim Limits) *Runner { return &Runner{bin: r.bin, lim: lim} }
+
 // Progress is one line of Siril output, with any embedded percentage extracted. When Sample is
 // non-nil the Progress carries a live resource reading instead of a log line (Line is empty).
 type Progress struct {
@@ -52,9 +59,10 @@ type Result struct {
 }
 
 var (
-	percentRe = regexp.MustCompile(`(\d+)\s?%`)
-	logPrefix = regexp.MustCompile(`^log:\s?`)
-	versionRe = regexp.MustCompile(`(?i)siril\s+v?(\d+)\.(\d+)`)
+	percentRe    = regexp.MustCompile(`(\d+)\s?%`)
+	logPrefix    = regexp.MustCompile(`^log:\s?`)
+	versionRe    = regexp.MustCompile(`(?i)siril\s+v?(\d+)\.(\d+)`)
+	errLocatorRe = regexp.MustCompile(`(?i)^error in line \d+`)
 )
 
 // The pipeline emits Siril 1.4 script syntax (e.g. rgbcomp -lum=/-out=, which older Siril silently
@@ -163,24 +171,105 @@ func (r *Runner) Run(ctx context.Context, workDir, script string, onProgress fun
 	return res, nil
 }
 
-// sirilErrorHint pulls the most informative error line(s) out of a Siril log — Siril prints the cause and
-// a locator ("Error in line N") before "Script execution failed." — so a failed run is diagnosable.
+// sirilErrorHint pulls the real cause out of a Siril log. On a script failure Siril prints the
+// cause line(s), then a locator ("Error in line N: '<cmd>'."), then "Script execution failed." —
+// the hint is the informative lines right before the LAST locator plus the locator itself.
+// Recovery noise ("Reading sequence failed: …", printed while Siril retries a sequence-name
+// lookup) is skipped so it can't shadow the true error, which may carry no error keyword at all
+// ("Provided filtering options do not allow at least two images to be processed"). Without a
+// locator it falls back to keyword matching.
 func sirilErrorHint(logText string) string {
-	var hits []string
+	lines := cleanedLogLines(logText)
+	if hint := hintAtLocator(lines); hint != "" {
+		return hint
+	}
+	return hintByKeywords(lines)
+}
+
+func cleanedLogLines(logText string) []string {
+	var out []string
 	for _, ln := range strings.Split(logText, "\n") {
-		l := strings.TrimSpace(logPrefix.ReplaceAllString(ln, ""))
-		if l == "" {
+		if l := strings.TrimSpace(logPrefix.ReplaceAllString(ln, "")); l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// causeLookback bounds how far above the locator the cause is searched for, so an old unrelated
+// line can never be presented as the reason a later command failed.
+const causeLookback = 8
+
+// hintAtLocator returns up to 3 cause lines preceding the last "Error in line N" locator, plus the
+// locator itself; "" when the log has no locator.
+func hintAtLocator(lines []string) string {
+	last := -1
+	for i, l := range lines {
+		if errLocatorRe.MatchString(l) {
+			last = i
+		}
+	}
+	if last == -1 {
+		return ""
+	}
+	var cause []string
+	for i := last - 1; i >= 0 && i >= last-causeLookback && len(cause) < 3; i-- {
+		if isSirilNoise(lines[i]) || errLocatorRe.MatchString(lines[i]) {
 			continue
 		}
+		cause = append([]string{lines[i]}, cause...)
+	}
+	return strings.Join(append(cause, lines[last]), "; ")
+}
+
+var errorKeywords = []string{"error", "not found", "failed", "do not allow", "cannot", "could not",
+	"invalid", "not enough", "no space", "abort"}
+
+// hintByKeywords is the fallback when Siril produced no locator (e.g. it crashed mid-run): the
+// last few keyword-matching lines, preferring lines that are not known recovery noise.
+func hintByKeywords(lines []string) string {
+	var hits, noise []string
+	for _, l := range lines {
 		low := strings.ToLower(l)
-		if strings.Contains(low, "error") || strings.Contains(low, "not found") || strings.Contains(low, "failed") {
-			hits = append(hits, l)
+		if !hasErrorKeyword(low) {
+			continue
 		}
+		if isSirilNoise(l) {
+			noise = append(noise, l)
+			continue
+		}
+		hits = append(hits, l)
+	}
+	if len(hits) == 0 {
+		hits = noise // last resort: better a noisy hint than "exit status 1"
 	}
 	if len(hits) > 3 {
-		hits = hits[len(hits)-3:] // the last few lines are the actual cause + its locator
+		hits = hits[len(hits)-3:]
 	}
 	return strings.Join(hits, "; ")
+}
+
+func hasErrorKeyword(low string) bool {
+	for _, kw := range errorKeywords {
+		if strings.Contains(low, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSirilNoise reports log lines that look like errors but are routine recovery/boilerplate —
+// "progress:" status lines (live Siril reports a failed script as "progress: Script execution
+// failed., 100.00%", an outcome marker, never a cause) and success summaries whose counters
+// contain the word "failed" ("Conversion succeeded, … 0 failed" shadowed a real disk-full cause).
+func isSirilNoise(l string) bool {
+	low := strings.ToLower(l)
+	return strings.HasPrefix(low, "progress:") ||
+		strings.HasPrefix(low, "reading sequence failed") ||
+		strings.HasPrefix(low, "searching for sequences") ||
+		strings.HasPrefix(low, "finalizing sequence processing failed") || // generic wrapper, cause precedes it
+		strings.Contains(low, "succeeded") ||
+		strings.Contains(low, "script execution failed")
 }
 
 func parsePercent(line string) int {

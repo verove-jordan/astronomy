@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -230,4 +231,83 @@ func TestScan_ClassifiesAndGroups(t *testing.T) {
 	require.NotNil(t, haSet)
 	assert.Equal(t, 2, haSet.Count)
 	assert.Equal(t, int64(600_000), haSet.TotalIntegrationMs)
+}
+
+// backfillMeta must name a FLAT's filter from the EFW "(Alias: L)" sidecar once the folder token settled
+// its type — per-filter SharpCap flats otherwise collapse into one Filter="" set (one merged cross-filter
+// master flat). Darks keep Filter="" (their SetKey ignores it) and pre-classification lights are left for
+// nameRemainingWheelSlots.
+func TestBackfillMeta_FlatFilterFromSlotAlias(t *testing.T) {
+	dir := t.TempDir()
+	frameAt := func(sub, name, sidecar string) *Frame {
+		d := filepath.Join(dir, sub)
+		require.NoError(t, os.MkdirAll(d, 0o755))
+		p := filepath.Join(d, name)
+		require.NoError(t, os.WriteFile(p, []byte("tiff"), 0o644))
+		require.NoError(t, os.WriteFile(p+".txt", []byte(sidecar), 0o644))
+		fr := &Frame{Path: p, Type: Unknown, ClassSource: SourceExtension}
+		backfillMeta(fr, p)
+		return fr
+	}
+
+	t.Run("flat gains the alias filter", func(t *testing.T) {
+		fr := frameAt("flats", "cap_0001.tif", "EFW Slot = 1(Alias: L)\nExposure = 10ms\nGain = 0\n")
+		require.Equal(t, Flat, fr.Type)
+		assert.Equal(t, "L", fr.Filter)
+	})
+	t.Run("dark ignores the alias", func(t *testing.T) {
+		fr := frameAt("darks", "cap_0001.tif", "EFW Slot = 5(Alias: Ha)\nExposure = 10ms\nGain = 0\n")
+		require.Equal(t, Dark, fr.Type)
+		assert.Empty(t, fr.Filter, "dark SetKey ignores filter — alias must not name it")
+	})
+	t.Run("unclassified light is left for the wheel pass", func(t *testing.T) {
+		fr := frameAt("session1", "cap_0001.tif", "EFW Slot = 1(Alias: L)\nExposure = 10ms\nGain = 0\n")
+		require.Equal(t, Unknown, fr.Type)
+		assert.Empty(t, fr.Filter, "lights are named by nameRemainingWheelSlots, not the backfill")
+	})
+	t.Run("filename filter wins over the alias", func(t *testing.T) {
+		fr := frameAt("flats", "filter_R_0001.tif", "EFW Slot = 1(Alias: L)\n")
+		require.Equal(t, Flat, fr.Type)
+		assert.Equal(t, "R", fr.Filter, "backfill only ever fills blanks")
+	})
+}
+
+// TestScan_ProcessedLeftoversBesideRaws: exports and live-stack saves living INSIDE the capture tree
+// (Autosave001.tif, m33_L_v2.tif — the M33 2019 session) must never become stackable LIGHT frames:
+// as zero-metadata "lights" they form a phantom group that fails its whole channel. The name veto
+// catches Autosave* (trailing copy counter stripped); a leftover the veto misses is dropped by the
+// no-metadata + unreadable-pixels rule. A REAL headerless TIF capture keeps its sidecar exposure and
+// must survive as a Light.
+func TestScan_ProcessedLeftoversBesideRaws(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "L", "2019-08-26_00_32_30Z")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	fitstest.Write(t, filepath.Join(dir, "L"), "capture_0001.fits", 8, 8, 2400, map[string]string{
+		"IMAGETYP": "'Light'", "FILTER": "'L'", "EXPOINUS": "120000000", "GAIN": "300"})
+	// Name-vetoed live-stack save (copy counter after the token).
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "Autosave001.tif"), []byte("not a tiff"), 0o644))
+	// A hand-exported leftover the name veto cannot catch: no metadata, unreadable pixels.
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "m33_L_v2.tif"), []byte("not a tiff"), 0o644))
+	// A real headerless TIF capture: pixels equally unreadable, but the SharpCap sidecar carries the
+	// exposure — it must stay a Light (the Linux-engine path for TIF captures).
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "tifcap_0001.tif"), []byte("not a tiff"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "tifcap_0001.tif.txt"),
+		[]byte("Exposure = 30s\nGain = 300\n"), 0o644))
+
+	inv, err := Scan(context.Background(), dir)
+	require.NoError(t, err)
+
+	var lights []string
+	for _, s := range inv.SetsOfType(Light) {
+		for _, fr := range s.Frames {
+			lights = append(lights, filepath.Base(fr.Path))
+		}
+	}
+	assert.ElementsMatch(t, []string{"capture_0001.fits", "tifcap_0001.tif"}, lights,
+		"only real captures may enter stackable light sets")
+	joined := strings.Join(inv.Warnings, "\n")
+	assert.Contains(t, joined, "skipped as a processed leftover", "the drop must be surfaced")
+	for _, fr := range inv.Frames {
+		assert.NotContains(t, filepath.Base(fr.Path), "Autosave", "name-vetoed files are never ingested")
+	}
 }

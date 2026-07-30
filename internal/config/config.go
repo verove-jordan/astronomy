@@ -17,6 +17,7 @@ type Config struct {
 
 	DataDir    string // root the UI may browse for capture folders
 	WorkDir    string // scratch space for intermediate FITS / sequences
+	KeepWork   bool   // keep run scratch after terminal jobs (debugging) — disables the work sweep
 	OutputDir  string // where final stacks and reports are written
 	LibraryDir string // persistent master-calibration library
 
@@ -41,7 +42,14 @@ type Config struct {
 	GraxpertURL   string // optional host GraXpert HTTP service (cmd/graxpert-host); empty → exec GraxpertBin locally
 	GraxpertGPU   bool   // pass -gpu true (helps background-extraction on Apple Silicon; denoise stays CPU — its model is CoreML-incompatible)
 	GraxpertBatch int    // GraXpert denoise -batch_size (tiles denoised in parallel; 0 → GraXpert's default of 4)
-	StarnetBin    string // StarNet++ v2: star removal (for star-reduced finishing)
+	// DenoiseScale (0,1) runs the joint AI colour denoise on a downscaled copy and transfers only
+	// the chroma back (luminance untouched, ~scale² of the cost — best for LRGB where L carries
+	// detail). 1.0 (the default) keeps the full-resolution pass byte-identical.
+	DenoiseScale float64
+	// ChannelParallel stacks up to N deep-sky channels concurrently (each Siril instance gets an
+	// equal share of the CPU/memory budget). 1 (the default) keeps the proven serial loop.
+	ChannelParallel int
+	StarnetBin      string // StarNet++ v2: star removal (for star-reduced finishing)
 
 	// Optional local LLM "supervisor" (opt-in via the run request / --supervise). The engine drives a
 	// host-run, OpenAI-compatible model server (LM Studio / mlx-vlm) over HTTP to auto-tune the finish.
@@ -66,19 +74,32 @@ type Config struct {
 	// Plate-solving + SPCC (color calibration). Focal/pixel describe the rig (the FITS rarely
 	// carries FOCALLEN); the SPCC names must match Siril's catalogs. Empty values fall back to
 	// Siril defaults. PlateSolveCatalog empty → Siril chooses automatically.
-	FocalLenMM     float64
-	PixelSizeUm    float64
-	SpccMonoSensor string
-	SpccRFilter    string
-	SpccGFilter    string
-	SpccBFilter    string
-	SpccWhiteRef   string
+	FocalLenMM  float64
+	PixelSizeUm float64
+
+	// MountWormPeriodSec is the RA worm's revolution time, the period the tracking analysis folds
+	// on. 478 s is Celestron's figure for the Advanced VX; other mounts differ, and the fit searches
+	// around this value rather than trusting it.
+	MountWormPeriodSec float64
+	// TrackingSolveEveryNth solves one light in N to measure tracking. 1 is affordable at minute-long
+	// subs; raise it for short subs so the solves cannot fall behind the capture cadence.
+	TrackingSolveEveryNth int
+	SpccMonoSensor        string
+	SpccRFilter           string
+	SpccGFilter           string
+	SpccBFilter           string
+	SpccWhiteRef          string
 	// NightscapeOSCSensor is the SPCC OSC sensor name for the milkyway/nightscape path (the one-shot
 	// camera, e.g. a DSLR). Empty (the default) disables SPCC for nightscapes — a phone sensor is rarely
 	// in Siril's SPCC database — so the run uses the background-neutralization colour path instead.
 	NightscapeOSCSensor string
 	PlateSolveCatalog   string
 	SirilCatalogDir     string // Siril's bundled object catalogues (for name→coords resolution)
+
+	// DeviceAddr is where the device server (camera / filter wheel / mount) listens, and where the
+	// engine proxies /api/device/* to. It runs as its own process so an engine restart — air does
+	// one on every source save — cannot drop a USB connection mid-sequence.
+	DeviceAddr string
 	// Local Gaia DR3 catalogues (downloaded once via `just download-catalogues[-spcc]`) make
 	// plate-solving and SPCC work fully offline. GaiaAstroCat is the astrometric extract FILE;
 	// GaiaXpsampDir is the DIRECTORY holding the xp_sampled chunk files. Use the LocalGaia*()
@@ -225,10 +246,14 @@ type Config struct {
 	WeatherAirQualityURL string
 	WeatherSevenTimerURL string
 	WeatherSWPCURL       string
-	WeatherGridRadiusDeg float64
-	WeatherGridSize      int
-	WeatherCacheTTLMin   int
-	WeatherMeteoblueKey  string
+	// WeatherOpenMeteoModels is Open-Meteo's optional `models=` selector: empty = best_match (the API
+	// auto-picks the finest regional model, e.g. AROME over France). Set EXACTLY ONE model to pin it
+	// (a comma list multiplies the per-location call weight against the free-tier quota).
+	WeatherOpenMeteoModels string
+	WeatherGridRadiusDeg   float64
+	WeatherGridSize        int
+	WeatherCacheTTLMin     int
+	WeatherMeteoblueKey    string
 }
 
 // Load reads configuration from the environment, applying sensible defaults.
@@ -245,6 +270,7 @@ func Load() *Config {
 		LogLevel:       env("LOG_LEVEL", "info"),
 		DataDir:        env("ASTRO_DATA_DIR", "./data"),
 		WorkDir:        env("ASTRO_WORK_DIR", "./work"),
+		KeepWork:       envBool("ASTRO_KEEP_WORK", false),
 		OutputDir:      env("ASTRO_OUTPUT_DIR", "./output"),
 		LibraryDir:     libraryDir,
 		BrowseRoots:    envStrList("ASTRO_BROWSE_ROOTS"),
@@ -257,11 +283,13 @@ func Load() *Config {
 		// GraXpert/StarNet are resolved via PATH by default (pip/pipx installs land in PATH as
 		// `graxpert`); the old default pointed at a GraXpert.app that pip installs don't create, so AI
 		// background extraction was silently skipped. exec.LookPath accepts a bare name or an abs path.
-		GraxpertBin:   env("GRAXPERT_BIN", "graxpert"),
-		GraxpertURL:   env("ASTRO_GRAXPERT_URL", ""),
-		GraxpertGPU:   envBool("ASTRO_GRAXPERT_GPU", false),
-		GraxpertBatch: envInt("ASTRO_GRAXPERT_BATCH", 0),
-		StarnetBin:    env("STARNET_BIN", "starnet++"),
+		GraxpertBin:     env("GRAXPERT_BIN", "graxpert"),
+		GraxpertURL:     env("ASTRO_GRAXPERT_URL", ""),
+		GraxpertGPU:     envBool("ASTRO_GRAXPERT_GPU", false),
+		GraxpertBatch:   envInt("ASTRO_GRAXPERT_BATCH", 0),
+		DenoiseScale:    envFloat("ASTRO_DENOISE_SCALE", 1.0),
+		ChannelParallel: envInt("ASTRO_CHANNEL_PARALLEL", 1),
+		StarnetBin:      env("STARNET_BIN", "starnet++"),
 
 		LLMBaseURL:           env("ASTRO_LLM_URL", "http://127.0.0.1:1234/v1"),
 		LLMModel:             env("ASTRO_LLM_MODEL", ""),
@@ -276,6 +304,9 @@ func Load() *Config {
 
 		FocalLenMM:  envFloat("ASTRO_FOCAL_MM", 740), // Takahashi FC-100 DF native
 		PixelSizeUm: envFloat("ASTRO_PIXEL_UM", 3.8), // ASI1600MM Pro
+
+		MountWormPeriodSec:    envFloat("ASTRO_WORM_PERIOD_SEC", 478), // Celestron Advanced VX
+		TrackingSolveEveryNth: envInt("ASTRO_TRACKING_SOLVE_EVERY", 1),
 		// SPCC names MUST match Siril's spcc-database exactly (case/spacing). The ASI1600MM Pro's
 		// sensor entry is "ZWO ASI1600MM" (no " Pro" — that name does not exist in the DB and makes
 		// SPCC abort, silently falling back to green-only neutralization → a brown sky). For a mono
@@ -288,6 +319,7 @@ func Load() *Config {
 		NightscapeOSCSensor: env("ASTRO_NIGHTSCAPE_OSC_SENSOR", ""),
 		PlateSolveCatalog:   env("ASTRO_PLATESOLVE_CATALOG", ""),
 		SirilCatalogDir:     catalogDir,
+		DeviceAddr:          env("ASTRO_DEVICE_ADDR", "127.0.0.1:8084"),
 		GaiaAstroCat:        env("ASTRO_GAIA_ASTRO_CAT", filepath.Join(libraryDir, "catalogues", "siril_cat_healpix8_astro.dat")),
 		GaiaXpsampDir:       env("ASTRO_GAIA_XPSAMP_DIR", filepath.Join(libraryDir, "catalogues")),
 		LocalAsnet:          envBool("ASTRO_LOCAL_ASNET", false),
@@ -365,11 +397,12 @@ func Load() *Config {
 		RoutingURL:           env("ASTRO_ROUTING_URL", "https://router.project-osrm.org"),
 		RoutingCacheTTLHours: envInt("ASTRO_ROUTING_CACHE_TTL", 720),
 
-		WeatherOpenMeteoURL:  env("ASTRO_WEATHER_OPENMETEO_URL", "https://api.open-meteo.com/v1/forecast"),
-		WeatherAirQualityURL: env("ASTRO_WEATHER_AIRQUALITY_URL", "https://air-quality-api.open-meteo.com/v1/air-quality"),
-		WeatherSevenTimerURL: env("ASTRO_WEATHER_SEVENTIMER_URL", "https://www.7timer.info/bin/api.pl"),
-		WeatherSWPCURL:       env("ASTRO_WEATHER_SWPC_URL", "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"),
-		WeatherGridRadiusDeg: envFloat("ASTRO_WEATHER_GRID_RADIUS_DEG", 4),
+		WeatherOpenMeteoURL:    env("ASTRO_WEATHER_OPENMETEO_URL", "https://api.open-meteo.com/v1/forecast"),
+		WeatherOpenMeteoModels: env("ASTRO_WEATHER_OPENMETEO_MODELS", ""),
+		WeatherAirQualityURL:   env("ASTRO_WEATHER_AIRQUALITY_URL", "https://air-quality-api.open-meteo.com/v1/air-quality"),
+		WeatherSevenTimerURL:   env("ASTRO_WEATHER_SEVENTIMER_URL", "https://www.7timer.info/bin/api.pl"),
+		WeatherSWPCURL:         env("ASTRO_WEATHER_SWPC_URL", "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"),
+		WeatherGridRadiusDeg:   envFloat("ASTRO_WEATHER_GRID_RADIUS_DEG", 4),
 		// 32×32 = 1024 pts over the default 8° box ≈ 0.25°/cell ≈ 27 km — about the forecast model's own
 		// resolution, so the overlay is as sharp as the data allows (was 22). Fetched as 3 chunked
 		// Open-Meteo GETs of ≤400 coords each, trimmed to 3 decimals (see fetchOpenMeteoGrid/joinFloats).

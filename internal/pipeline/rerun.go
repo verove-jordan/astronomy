@@ -125,7 +125,17 @@ func RerunFromStage(ctx context.Context, opts Options, runDir string, patch json
 	// Milestone: the new final (Process captures this after combine(); a rerun must too).
 	captureFinalPreview(ctx, opts, outDir, final)
 
+	prevFinal := prior.Final
 	prior.Final = final
+	// Mono side-outputs (final_luminance / final_monostack): a Tier-B/C rerun rebuilt the prep they
+	// derive from, so re-render them with the new knobs; a Tier-A composite tweak leaves the files
+	// valid but the fresh Final record starts empty and would silently drop them from run.json and
+	// the results UI — carry the previous listing forward instead.
+	if t >= tierB {
+		emitMonoOutputs(ctx, opts, channels, prior, workRun, outDir)
+	} else {
+		carryMonoOutputs(prevFinal, prior.Final)
+	}
 	prior.Options = runOptionsFrom(&next)
 	if len(channels) > 0 {
 		prior.Channels = filterChannelRecords(prior.Channels, channels)
@@ -153,7 +163,7 @@ func rerunFinish(ctx context.Context, opts Options, t tier, prior *Result, workR
 			return nil, nil, fmt.Errorf("re-stack: %w", err)
 		}
 		recaptureStackedPreviews(ctx, opts, outDir, channels)
-		final, err := finishWithGimp(ctx, opts, channels, workRun, outDir)
+		final, _, err := finishWithGimp(ctx, opts, channels, workRun, outDir)
 		return final, channels, err
 	}
 
@@ -169,7 +179,7 @@ func rerunFinish(ctx context.Context, opts Options, t tier, prior *Result, workR
 		// No persisted prep (an older run) → rebuild it (Tier B); still correct, just not instant.
 		opts.report(Progress{Step: "rerun", Line: "no persisted linear prep — rebuilding it for this composite tweak"})
 	}
-	final, err := finishWithGimp(ctx, opts, channels, workRun, outDir)
+	final, _, err := finishWithGimp(ctx, opts, channels, workRun, outDir)
 	return final, channels, err
 }
 

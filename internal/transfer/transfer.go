@@ -22,6 +22,17 @@ import (
 // semantics, so already-copied files are not re-transferred.
 var ErrPaused = errors.New("transfer paused")
 
+// ArchivedError is returned by a download when one or more objects in the pull set are in an archived
+// storage class (Glacier Flexible / Deep Archive) and not yet restored — a GET would fail with
+// InvalidObjectState. The engine detects this up front (pre-flight, before streaming anything) and
+// surfaces the offending keys so the job layer can initiate a thaw and park the job until the objects
+// are readable, then resume the pull. Distinct from a hard error so a run is never failed by cold inputs.
+type ArchivedError struct{ Keys []string }
+
+func (e *ArchivedError) Error() string {
+	return fmt.Sprintf("transfer: %d archived object(s) need a Glacier restore before download", len(e.Keys))
+}
+
 // Op is a transfer operation.
 type Op string
 
@@ -74,6 +85,11 @@ type Request struct {
 	// mirror, whose LibraryDir also holds a multi-GB Gaia `catalogues/` tree that is not a master and must
 	// never be mirrored. Empty → walk everything (existing behaviour).
 	ExcludeDirs []string
+	// SkipSymlinks drops symlinked files/dirs from the walk. filepath.WalkDir uses Lstat, so a symlink is
+	// reported with the link's own (tiny) size while os.Open on it streams the target's full content —
+	// ballooning the upload and corrupting byte accounting. WorkDir is full of Siril `link` symlinks to the
+	// input frames, so the local-folder copy sets this. Empty → walk everything (existing behaviour).
+	SkipSymlinks bool
 }
 
 // excluded reports whether a directory name is in ExcludeDirs.
@@ -232,8 +248,10 @@ type localFile struct {
 }
 
 // walkLocalFiles lists every regular file under dir (skipping dotfiles, .part temp files, and any
-// excludeDirs subtree) with its size.
-func walkLocalFiles(dir string, excludeDirs []string) ([]localFile, int64, error) {
+// excludeDirs subtree) with its size. When skipSymlinks is set, symlinked entries are dropped too: WalkDir
+// reports a symlink via Lstat (link-sized, never descended), but the uploader os.Opens it and streams the
+// full target — so following work/ `link` frames would balloon the copy and corrupt byte accounting.
+func walkLocalFiles(dir string, excludeDirs []string, skipSymlinks bool) ([]localFile, int64, error) {
 	excl := make(map[string]bool, len(excludeDirs))
 	for _, d := range excludeDirs {
 		excl[d] = true
@@ -243,6 +261,9 @@ func walkLocalFiles(dir string, excludeDirs []string) ([]localFile, int64, error
 	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if skipSymlinks && d.Type()&os.ModeSymlink != 0 {
+			return nil // a symlink to a dir is never descended (Lstat type is ModeSymlink), so this is enough
 		}
 		if d.IsDir() {
 			if p != dir && (strings.HasPrefix(d.Name(), ".") || excl[d.Name()]) {

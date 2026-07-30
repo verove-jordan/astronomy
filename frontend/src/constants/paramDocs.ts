@@ -21,9 +21,16 @@ const DEEPSKY_GROUPS: ParamGroup[] = [
       "saturation",
       "star_desat",
       "lum_opacity",
+      "lum_boost",
       "ha_screen",
       "ha_black_point",
+      "oiii_screen",
+      "oiii_black_point",
+      "sii_screen",
+      "sii_black_point",
+      "sii_tint",
       "ha_exclude_stars",
+      "ha_continuum_sub",
       "chroma_blur",
       "core_highlight_knee",
       "core_highlight_ceil",
@@ -44,7 +51,13 @@ const DEEPSKY_GROUPS: ParamGroup[] = [
       "background_degree",
       "combined_background_ai",
       "color_denoise_ai",
+      "chroma_smooth_px",
+      "chroma_bg_smooth_px",
+      "sky_chroma_flatten_px",
+      "sky_lum_flatten_px",
       "star_reduce",
+      "emit_luminance_mono",
+      "emit_all_channel_mono",
     ],
   },
   {
@@ -56,11 +69,33 @@ const DEEPSKY_GROUPS: ParamGroup[] = [
       "background_sigma",
       "star_count_frac",
       "trail_mask_k",
+      "seam_offset_refit",
+      "seam_noise_eq",
+      "union_canvas",
+      "union_canvas_fill",
       "denoise_lum",
       "denoise_chroma",
       "background_ai",
     ],
   },
+];
+
+// Tiled-panel mosaic (mosaicPatch on top of the deepsky surface): the assembler's own knobs, then
+// the shared deep-sky finish groups.
+const MOSAIC_GROUPS: ParamGroup[] = [
+  {
+    titleKey: "paramDocs.groups.mosaicAssembly",
+    hintKey: "paramDocs.groups.mosaicAssemblyHint",
+    keys: [
+      "overlap_expected",
+      "feather_frac",
+      "photom_match",
+      "canvas_crop",
+      "min_panel_frames",
+      "panel_source",
+    ],
+  },
+  ...DEEPSKY_GROUPS,
 ];
 
 // Planetary / lunar (planetaryPatch): a fast finish + an expensive re-stack tier.
@@ -71,10 +106,15 @@ const PLANETARY_GROUPS: ParamGroup[] = [
     keys: [
       "stretch",
       "highlight",
+      "shadow_lift",
       "sharpen",
       "clahe",
       "saturation",
       "headroom",
+      "limb_balance",
+      "earthshine_gain",
+      "earthshine_feather",
+      "true_lum",
     ],
   },
   {
@@ -83,9 +123,13 @@ const PLANETARY_GROUPS: ParamGroup[] = [
     keys: [
       "best_percent",
       "ap_align",
+      "double_stack",
+      "calibrate",
       "deconv_fwhm",
       "deconv_iters",
       "deconv_alpha",
+      "drizzle_scale",
+      "align_points",
     ],
   },
 ];
@@ -106,6 +150,10 @@ const COMET_GROUPS: ParamGroup[] = [
       "background_sigma",
       "star_count_frac",
       "trail_mask_k",
+      "seam_offset_refit",
+      "seam_noise_eq",
+      "union_canvas",
+      "union_canvas_fill",
       "per_frame_starnet",
     ],
   },
@@ -127,6 +175,7 @@ const GROUPS_BY_MODE: Record<string, ParamGroup[]> = {
   planetary: PLANETARY_GROUPS,
   comet: COMET_GROUPS,
   milkyway: MILKYWAY_GROUPS,
+  mosaic: MOSAIC_GROUPS,
 };
 
 // groupsForMode returns the knob groups for a stacking mode (deep-sky is the fallback for any unknown).

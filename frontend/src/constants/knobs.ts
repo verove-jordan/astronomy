@@ -34,6 +34,15 @@ const COMPOSITE_KNOBS: KnobDef[] = [
     step: 0.05,
   },
   {
+    key: "lum_boost",
+    labelKey: "rerun.knobs.lum_boost",
+    kind: "number",
+    def: 0,
+    min: 0,
+    max: 0.25,
+    step: 0.02,
+  },
+  {
     key: "saturation",
     labelKey: "rerun.knobs.saturation",
     kind: "number",
@@ -70,6 +79,49 @@ const COMPOSITE_KNOBS: KnobDef[] = [
     step: 0.01,
   },
   {
+    key: "oiii_screen",
+    labelKey: "rerun.knobs.oiii_screen",
+    kind: "number",
+    def: 0,
+    min: 0,
+    max: 0.8,
+    step: 0.02,
+  },
+  {
+    key: "oiii_black_point",
+    labelKey: "rerun.knobs.oiii_black_point",
+    kind: "number",
+    def: 0.06,
+    min: 0,
+    max: 0.3,
+    step: 0.01,
+  },
+  {
+    key: "sii_screen",
+    labelKey: "rerun.knobs.sii_screen",
+    kind: "number",
+    def: 0,
+    min: 0,
+    max: 0.8,
+    step: 0.02,
+  },
+  {
+    key: "sii_black_point",
+    labelKey: "rerun.knobs.sii_black_point",
+    kind: "number",
+    def: 0.06,
+    min: 0,
+    max: 0.3,
+    step: 0.01,
+  },
+  {
+    key: "sii_tint",
+    labelKey: "rerun.knobs.sii_tint",
+    kind: "select",
+    def: "deep_red",
+    options: ["deep_red", "gold"],
+  },
+  {
     key: "chroma_blur",
     labelKey: "rerun.knobs.chroma_blur",
     kind: "number",
@@ -97,6 +149,12 @@ const COMPOSITE_KNOBS: KnobDef[] = [
 
 // Tier B — linear finish prep (tens of s–min): the Combined / ColorCal milestones.
 const PREP_KNOBS: KnobDef[] = [
+  {
+    key: "ha_continuum_sub",
+    labelKey: "rerun.knobs.ha_continuum_sub",
+    kind: "toggle",
+    def: true,
+  },
   {
     key: "palette",
     labelKey: "rerun.knobs.palette",
@@ -156,6 +214,42 @@ const PREP_KNOBS: KnobDef[] = [
     def: true,
   },
   {
+    key: "chroma_smooth_px",
+    labelKey: "rerun.knobs.chroma_smooth_px",
+    kind: "number",
+    def: 6,
+    min: 0,
+    max: 16,
+    step: 1,
+  },
+  {
+    key: "chroma_bg_smooth_px",
+    labelKey: "rerun.knobs.chroma_bg_smooth_px",
+    kind: "number",
+    def: 24,
+    min: 0,
+    max: 64,
+    step: 2,
+  },
+  {
+    key: "sky_chroma_flatten_px",
+    labelKey: "rerun.knobs.sky_chroma_flatten_px",
+    kind: "number",
+    def: 32,
+    min: 0,
+    max: 128,
+    step: 4,
+  },
+  {
+    key: "sky_lum_flatten_px",
+    labelKey: "rerun.knobs.sky_lum_flatten_px",
+    kind: "number",
+    def: 64,
+    min: 0,
+    max: 256,
+    step: 8,
+  },
+  {
     key: "star_reduce",
     labelKey: "rerun.knobs.star_reduce",
     kind: "number",
@@ -163,6 +257,18 @@ const PREP_KNOBS: KnobDef[] = [
     min: 0,
     max: 1,
     step: 0.05,
+  },
+  {
+    key: "emit_luminance_mono",
+    labelKey: "rerun.knobs.emit_luminance_mono",
+    kind: "toggle",
+    def: true,
+  },
+  {
+    key: "emit_all_channel_mono",
+    labelKey: "rerun.knobs.emit_all_channel_mono",
+    kind: "toggle",
+    def: false,
   },
 ];
 
@@ -212,6 +318,33 @@ const STACK_KNOBS: KnobDef[] = [
     min: 0,
     max: 6,
     step: 0.5,
+  },
+  {
+    key: "seam_offset_refit",
+    labelKey: "rerun.knobs.seam_offset_refit",
+    kind: "toggle",
+    def: true,
+  },
+  {
+    key: "seam_noise_eq",
+    labelKey: "rerun.knobs.seam_noise_eq",
+    kind: "toggle",
+    def: true,
+  },
+  {
+    // The multi-night union-canvas consent knob (wire key renamed from the legacy "mosaic" —
+    // the engine still accepts both; unrelated to the tiled-panel mosaic MODE).
+    key: "union_canvas",
+    labelKey: "rerun.knobs.union_canvas",
+    kind: "toggle",
+    def: false,
+  },
+  {
+    key: "union_canvas_fill",
+    labelKey: "rerun.knobs.union_canvas_fill",
+    kind: "select",
+    def: "crop",
+    options: ["crop", "fill"],
   },
   {
     key: "denoise_lum",

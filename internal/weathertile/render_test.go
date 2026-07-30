@@ -89,9 +89,49 @@ func TestRenderTile_CloudsSingleFallback(t *testing.T) {
 	assert.Equal(t, r, b)
 }
 
+func TestRenderTile_StandaloneBandMetrics(t *testing.T) {
+	// Each altitude band renders standalone with its composite colour, so a band overlay matches its
+	// contribution inside the "clouds" render.
+	g := uniformGrid([4]float64{0, 0, 10, 10}, 4, map[string]float32{
+		"clouds_low": 100, "clouds_mid": 100, "clouds_high": 100,
+	})
+	for metric, wantR := range map[string]uint8{"clouds_low": 236, "clouds_mid": 205, "clouds_high": 190} {
+		img, painted := RenderTile(g, metric, 0, 5, 16, 15)
+		require.True(t, painted, metric)
+		r, _, _, a, ok := firstPainted(img, img.Pix)
+		require.True(t, ok, metric)
+		assert.InDelta(t, wantR, r, 2, metric)
+		assert.Greater(t, a, uint8(0), metric)
+	}
+}
+
+func TestRenderTile_DewSpread(t *testing.T) {
+	// Saturated air (spread ≈1 °C) paints strongly; dry air (spread ≥10 °C) is transparent — the ramp is
+	// INVERSE of the % metrics.
+	wet := uniformGrid([4]float64{0, 0, 10, 10}, 4, map[string]float32{"dewspread": 1})
+	img, painted := RenderTile(wet, "dewspread", 0, 5, 16, 15)
+	require.True(t, painted)
+	_, _, _, a, ok := firstPainted(img, img.Pix)
+	require.True(t, ok, "fog-risk air paints")
+	assert.Greater(t, a, uint8(120), "small spread → strong overlay")
+
+	dry := uniformGrid([4]float64{0, 0, 10, 10}, 4, map[string]float32{"dewspread": 10})
+	img2, painted2 := RenderTile(dry, "dewspread", 0, 5, 16, 15)
+	require.True(t, painted2, "the metric exists → the tile renders (transparent pixels)")
+	// The ordered dither adds ±2/255 of alpha noise even at ramp-alpha 0 (same as the precip ramp's
+	// zero stop), so "invisible" means ≤2, not exactly 0.
+	maxA := uint8(0)
+	for i := 3; i < len(img2.Pix); i += 4 {
+		if img2.Pix[i] > maxA {
+			maxA = img2.Pix[i]
+		}
+	}
+	assert.LessOrEqual(t, maxA, uint8(2), "dry air (spread ≥8 °C) is visually transparent")
+}
+
 func TestRampAt(t *testing.T) {
 	// Below/above the range clamps; a midpoint interpolates.
-	assert.Equal(t, uint8(80), rampAt(humidityRamp, 0).r)  // clamps to the 50% stop
+	assert.Equal(t, uint8(80), rampAt(humidityRamp, 0).r) // clamps to the 50% stop
 	assert.Equal(t, uint8(232), rampAt(humidityRamp, 100).r)
 	mid := rampAt(humidityRamp, 60) // halfway 50→70
 	assert.InDelta(t, (80+150)/2, mid.r, 1)

@@ -15,8 +15,9 @@ import type {
 const FRAME_MS = 700; // animation cadence per timestep
 
 // RainViewer live observation layers: a tiny keyless public JSON listing recent + nowcast tile frames.
-// We consume radar today (its `satellite.infrared` is frequently empty on the free tier), but the frame
-// shape is generic so satellite can be registered later with no store change.
+// Both products are consumed: radar (past + nowcast) and the satellite IR frames, which drive the
+// "satellite" overlay — REAL observed clouds, zero forecast-API quota. Either list may be empty on the
+// free tier; an empty product simply leaves its layer blank.
 const RV_MAPS_URL = "https://api.rainviewer.com/public/weather-maps.json";
 const RADAR_TOL_MS = 15 * 60 * 1000; // a radar frame only paints within ±15 min of the playhead…
 const SAT_TOL_MS = 30 * 60 * 1000; //  …satellite IR is coarser, so a wider match window.
@@ -216,21 +217,22 @@ export const useWeatherStore = defineStore("weather", () => {
   }
 
   // fetchFrames loads the animated overlay's lightweight time axis (bbox + timesteps + issued_ms, no float
-  // data) for a map centre + radius (deg). It drives the scrubber and warms the backend cube cache that the
-  // server-rendered tiles reuse; the tiles themselves carry the heavy data and are fetched by Leaflet per
-  // viewport. Because the forecast hours are the same everywhere, this needs to run only on load / site
-  // change — NOT on every pan/zoom (Leaflet handles tile coverage natively). A 0 radius uses the default.
+  // data) for the map centre at the map's zoom. The backend anchors the request to the SAME tile-block
+  // region the tile handler uses, so this fetch warms exactly the cube every subsequent tile request
+  // reads (one upstream fetch serves the scrubber and all metrics). The tiles themselves carry the heavy
+  // data and are fetched by Leaflet per viewport; this runs on load / site change / zoom-scale change,
+  // NOT on every pan.
   async function fetchFrames(
     lat: number,
     lon: number,
-    radiusDeg = 0,
+    zoom = 8,
     force = false,
   ): Promise<void> {
     if (lat == null || lon == null) return;
     // While upstream is degraded, keep the last good axis rather than hammering it: an automatic refetch is
     // skipped during the cooldown; an explicit force (site change) tries.
     if (!force && framesMeta.value && Date.now() < framesFailUntil) return;
-    const key = `${lat.toFixed(2)},${lon.toFixed(2)},${radiusDeg.toFixed(2)}`;
+    const key = `${lat.toFixed(2)},${lon.toFixed(2)},z${Math.round(zoom)}`;
     if (!force && key === framesReqKey && framesMeta.value) return; // cache hit
     if (framesInflight && key === framesReqKey) return framesInflight; // in-flight dedup
     framesController?.abort();
@@ -240,7 +242,7 @@ export const useWeatherStore = defineStore("weather", () => {
     framesInflight = (async () => {
       try {
         const fr = await apiGet<WeatherFrames>(
-          `/api/sky/weather/grid/frames${queryString({ lat, lon, radius: radiusDeg || undefined })}`,
+          `/api/sky/weather/grid/frames${queryString({ lat, lon, z: Math.round(zoom) })}`,
           signal,
         );
         if (framesUsable(fr)) {

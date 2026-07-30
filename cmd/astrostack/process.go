@@ -15,6 +15,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/llm"
 	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
+	"github.com/verove-jordan/astronomy/internal/planetary"
 	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/report"
 	"github.com/verove-jordan/astronomy/internal/siril"
@@ -40,6 +41,10 @@ func runProcess(args []string) error {
 	bias := fs.String("bias", "", "milkyway: folder of bias/offset calibration frames (optional)")
 	supervise := fs.Bool("supervise", false, "opt-in: drive a local AI agent (host model server) to auto-tune the finish; needs ASTRO_LLM_URL")
 	noCrop := fs.Bool("no-crop", false, "export the full frame — skip the automatic ragged-edge crop so you can crop it yourself (the layered .xcf is always full-frame)")
+	earthshine := fs.Float64("earthshine", 0, "planetary: reveal the Moon's unlit side (earthshine) in the final render; 0 = off, 1 = natural, up to 2")
+	drizzle := fs.Float64("drizzle", 0, "planetary: super-resolution output grid (1, 1.5 or 2 — snapped); 0 keeps the preset default (1.5)")
+	alignPoints := fs.Int("align-points", 0, "planetary: total stacking reference points for the distortion grid (100..2304, snapped to N×N); 0 = auto")
+	target := fs.String("target", "", "imaging target for plate-solve/SPCC seeding — a catalogue name (\"M66\") or \"RA,Dec\" — when headers/folders can't identify it")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -75,6 +80,15 @@ func runProcess(args []string) error {
 	if *noCrop {
 		preset.CropFrac = 0 // export full-frame; the user crops the ragged stacking edges themselves
 	}
+	if *earthshine > 0 {
+		preset.Planetary.Finish.EarthshineGain = *earthshine
+	}
+	if *drizzle > 0 {
+		preset.Planetary.DrizzleScale = planetary.SnapDrizzle(*drizzle)
+	}
+	if *alignPoints > 0 {
+		preset.Planetary.AlignPoints = planetary.SnapAlignPoints(*alignPoints)
+	}
 	cfg := config.Load()
 	outDir := pick(*out, cfg.OutputDir)
 	workDir := pick(*work, cfg.WorkDir)
@@ -95,13 +109,37 @@ func runProcess(args []string) error {
 		preset.Supervise = true
 	}
 
+	// The calibration-master library (Postgres-indexed) serves the deepsky path AND planetary frame
+	// calibration, so it is resolved before the per-mode branches. -no-db (or an unreachable DB) simply
+	// disables persistence: planetary falls back to in-run scratch masters, deepsky to no reuse.
+	var library calib.MasterStore
+	var catalog pipeline.Catalog
+	var rawCalib calib.RawCalibProvider
+	var deep calib.DeepOptions
+	var reuse pipeline.ReuseConfig
+	if !*noDB {
+		if st, err := store.New(ctx, cfg.DatabaseURL); err != nil {
+			fmt.Fprintf(os.Stderr, "note: calibration library disabled (%v)\n", err)
+		} else {
+			defer st.Close()
+			library = st
+			catalog = st // record the run so its frames become reusable
+			if cfg.ReuseEnabled {
+				rawCalib = st // pool raw bias/darks across sessions into deep masters
+				deep = calib.DeepOptions{TempTolC: cfg.ReuseTempTolC, DarkSinceMs: cfg.DarkSinceMs()}
+				reuse = pipeline.ReuseConfig{Provider: st, ConeDeg: cfg.ReuseConeDeg} // fold in all matching prior lights
+			}
+		}
+	}
+
 	if m == mode.Planetary {
 		if _, err := os.Stat(path); err != nil {
 			return fmt.Errorf("planetary input not found: %s", path)
 		} // a video file, a SER, or a folder of frames are all accepted by planetary.Process
 		res, err := pipeline.ProcessPlanetary(ctx, pipeline.Options{
 			InputDir: path, OutputDir: outDir, WorkDir: workDir, Runner: runner, FfmpegBin: cfg.FfmpegBin,
-			Preset: &preset, Supervisor: superRunner, OnProgress: pipelineProgress(*verbose),
+			Preset: &preset, Supervisor: superRunner, Library: library, LibraryDir: cfg.LibraryDir,
+			OnProgress: pipelineProgress(*verbose),
 		})
 		if err != nil {
 			return err
@@ -123,6 +161,31 @@ func runProcess(args []string) error {
 			Grade: &grd, Preset: &preset, Gimp: gimp.New(cfg.GimpBin, cfg.GimpHost, cfg.GimpPort),
 			Graxpert: graxRunner, Starnet: starRunner, Solve: solve, Spcc: spcc, Supervisor: superRunner,
 			CatalogDir: cfg.SirilCatalogDir, OnProgress: pipelineProgress(*verbose),
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Print(report.RunText(res))
+		if res.Final != nil {
+			maybeRenderVideo(ctx, cfg, format, res.Final.Outputs)
+		}
+		return nil
+	}
+	if m == mode.Mosaic {
+		// Tiled-panel mosaic: panels under path (p01/… folders, or clustered by pointing headers)
+		// stack individually then assemble onto one canvas. Plan-referenced runs go through the API
+		// (POST /api/jobs with mosaic_plan_id) — the CLI always auto-detects.
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			return fmt.Errorf("mosaic mode expects a directory of panel FITS frames: %s", path)
+		}
+		grd := preset.Grade
+		res, err := pipeline.ProcessMosaic(ctx, pipeline.Options{
+			InputDir: path, OutputDir: outDir, WorkDir: workDir, Runner: runner,
+			Grade: &grd, Preset: &preset, Gimp: gimp.New(cfg.GimpBin, cfg.GimpHost, cfg.GimpPort),
+			Graxpert: graxRunner, Starnet: starRunner, Supervisor: superRunner,
+			Library: library, LibraryDir: cfg.LibraryDir, RawCalib: rawCalib, Deep: deep,
+			Solve: solve, Spcc: spcc, TargetHint: *target, CatalogDir: cfg.SirilCatalogDir,
+			OnProgress: pipelineProgress(*verbose),
 		})
 		if err != nil {
 			return err
@@ -160,6 +223,7 @@ func runProcess(args []string) error {
 			Supervisor: superRunner,
 			Solve:      solve,
 			Spcc:       spcc,
+			TargetHint: *target,
 			DarkDir:    *darks,
 			FlatDir:    *flats,
 			BiasDir:    *bias,
@@ -180,26 +244,6 @@ func runProcess(args []string) error {
 	if info, err := os.Stat(path); err != nil || !info.IsDir() {
 		return fmt.Errorf("%s mode expects a directory of FITS frames: %s", m, path)
 	}
-	var library calib.MasterStore
-	var catalog pipeline.Catalog
-	var rawCalib calib.RawCalibProvider
-	var deep calib.DeepOptions
-	var reuse pipeline.ReuseConfig
-	if !*noDB {
-		if st, err := store.New(ctx, cfg.DatabaseURL); err != nil {
-			fmt.Fprintf(os.Stderr, "note: calibration library disabled (%v)\n", err)
-		} else {
-			defer st.Close()
-			library = st
-			catalog = st // record the run so its frames become reusable
-			if cfg.ReuseEnabled {
-				rawCalib = st // pool raw bias/darks across sessions into deep masters
-				deep = calib.DeepOptions{TempTolC: cfg.ReuseTempTolC, DarkSinceMs: cfg.DarkSinceMs()}
-				reuse = pipeline.ReuseConfig{Provider: st, ConeDeg: cfg.ReuseConeDeg} // fold in all matching prior lights
-			}
-		}
-	}
-
 	grd := preset.Grade
 	res, err := pipeline.Process(ctx, pipeline.Options{
 		InputDir:   path,
@@ -220,6 +264,7 @@ func runProcess(args []string) error {
 		Reuse:      reuse,
 		Solve:      solve,
 		Spcc:       spcc,
+		TargetHint: *target,
 		CatalogDir: cfg.SirilCatalogDir,
 		OnProgress: pipelineProgress(*verbose),
 	})

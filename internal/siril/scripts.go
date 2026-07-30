@@ -147,6 +147,23 @@ func CalibrateOnlyScript(seq string, m CalibMasters) string {
 	return b.String()
 }
 
+// CalibrateSingleScript is CalibrateOnlyScript for a one-frame group: `link` converts the lone
+// frame (light_00001.fits) but writes NO .seq — Siril does not consider a single image a sequence —
+// so the sequence `calibrate` aborts with "No sequence `light' found" (task #352: a night that
+// contributed one frame per filter killed every channel). calibrate_single takes the converted
+// image directly, accepts the same option set, and saves the same pp_-prefixed output, so the
+// CalibratedSeq naming contract holds unchanged. Verified on Siril 1.4.3 (host macOS) and 1.4.4
+// (container linux/arm64).
+func CalibrateSingleScript(seq string, m CalibMasters) string {
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	fmt.Fprintf(&b, "link %s -out=.\n", seq)
+	if args := calibrateArgs(m); len(args) > 0 {
+		fmt.Fprintf(&b, "calibrate_single %s_00001 %s -prefix=pp_\n", seq, strings.Join(args, " "))
+	}
+	return b.String()
+}
+
 // CalibrateRegisterScript calibrates (if masters are given) and registers a light sequence
 // WITHOUT stacking, so the per-frame registration metrics are written to the .seq for grading.
 func CalibrateRegisterScript(seq string, m CalibMasters) string {
@@ -169,32 +186,95 @@ func RegisterOnlyScript(seq string) string {
 	return scriptHeader + fmt.Sprintf("register %s\n", seq)
 }
 
-// CalibrateRegisterFramedScript calibrates (if masters are given), computes registration in two passes
-// (metrics only, no transformed images), then applies it with a chosen output framing. Used for the
-// cross-session merge so frames from differently-oriented sessions are cropped to their common field of
-// view (framing="min" = the area shared by all frames). The two-pass register also picks the reference
-// by quality + framing, which suits heterogeneous data. transf defaults to homography — Siril's default,
-// which already absorbs field rotation. Metrics land in <target>_.seq (read by grading), and seqapplyreg
-// generates r_<target> for the frames that registered, preserving the 1:1 index space grading relies on.
-func CalibrateRegisterFramedScript(seq string, m CalibMasters, transf, framing string) string {
+// Register2PassScript links an already-calibrated sequence and computes its registration in two
+// passes — per-frame metrics and homographies land in <seq>_.seq, no transformed images are
+// written. The caller inspects the sequence in Go (anchor reference choice, transform sanity)
+// before applying it with ApplyRegistrationScript. transf defaults to homography — Siril's
+// default, which already absorbs field rotation between sessions.
+func Register2PassScript(seq, transf string) string {
 	var b strings.Builder
 	b.WriteString(scriptHeader)
 	fmt.Fprintf(&b, "link %s -out=.\n", seq)
-	target := seq
-	if args := calibrateArgs(m); len(args) > 0 {
-		fmt.Fprintf(&b, "calibrate %s %s -prefix=pp_\n", seq, strings.Join(args, " "))
-		target = "pp_" + seq
-	}
-	reg := "register " + target + " -2pass"
+	reg := "register " + seq + " -2pass"
 	if transf != "" {
 		reg += " -transf=" + transf
 	}
 	fmt.Fprintf(&b, "%s\n", reg)
-	apply := "seqapplyreg " + target
+	return b.String()
+}
+
+// flattenPrefix names the per-frame background-flattened copies seqsubsky writes ahead of a
+// multi-night merged registration.
+const flattenPrefix = "flat_"
+
+// FlattenedSeq is the sequence name seqsubsky produces for seq under the pipeline's flatten prefix.
+func FlattenedSeq(seq string) string { return flattenPrefix + seq }
+
+// FlattenRegister2PassScript is Register2PassScript with a per-frame background flatten ahead of
+// the metric pass: link → seqsubsky (each frame's own degree-`degree` gradient removed, its MEAN
+// level preserved — pinned by TestSirilLive_SeqSubskyPrefixAndLevel) → 2-pass register over the
+// flattened sequence. Multi-night merges stack frames whose sky gradients lie at their own field
+// rotations; scalar addscale matching cannot remove them, and they surface as background STEPS at
+// footprint boundaries in the master (task #354's seams). One script, so a seqsubsky failure fails
+// atomically and the caller retries unflattened. Registered outputs land under FlattenedSeq(seq).
+func FlattenRegister2PassScript(seq, transf string, degree int) string {
+	if degree < 1 {
+		degree = 1
+	}
+	if degree > 4 {
+		degree = 4
+	}
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	fmt.Fprintf(&b, "link %s -out=.\n", seq)
+	fmt.Fprintf(&b, "seqsubsky %s %d -prefix=%s\n", seq, degree, flattenPrefix)
+	reg := "register " + FlattenedSeq(seq) + " -2pass"
+	if transf != "" {
+		reg += " -transf=" + transf
+	}
+	fmt.Fprintf(&b, "%s\n", reg)
+	return b.String()
+}
+
+// ApplyRegistrationScript applies a previously computed 2-pass registration (a fresh Siril process
+// finds the sequence by name in the CWD — the StackSelectedScript pattern). refIndex > 0 pins the
+// sequence reference first (setref, 1-based): with framing "current" the output canvas is exactly
+// that frame's field, so every channel of a multi-night run lands on the SAME anchor-night canvas
+// no matter how each night was framed — where the old framing=min intersected every registered
+// footprint and one drifted/rotated/mis-matched frame collapsed the master to a sliver.
+func ApplyRegistrationScript(seq string, refIndex int, framing string) string {
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	if refIndex > 0 {
+		fmt.Fprintf(&b, "setref %s %d\n", seq, refIndex)
+	}
+	apply := "seqapplyreg " + seq
 	if framing != "" {
 		apply += " -framing=" + framing
 	}
 	fmt.Fprintf(&b, "%s\n", apply)
+	return b.String()
+}
+
+// ApplyRegistrationSelectedScript is ApplyRegistrationScript restricted to the selected frames:
+// each excluded 1-based sequence index is unselected before `seqapplyreg -filter-incl`, so an
+// excluded frame can neither be registered nor — the mosaic union case — inflate a framing=max
+// canvas with a false star match's absurd footprint. Outputs renumber sequentially over the
+// included frames (live-pinned by TestSirilLive_FramingMaxRespectsSelection).
+func ApplyRegistrationSelectedScript(seq string, refIndex int, framing string, excluded []int) string {
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	if refIndex > 0 {
+		fmt.Fprintf(&b, "setref %s %d\n", seq, refIndex)
+	}
+	for _, idx := range excluded {
+		fmt.Fprintf(&b, "unselect %s %d %d\n", seq, idx, idx)
+	}
+	apply := "seqapplyreg " + seq
+	if framing != "" {
+		apply += " -framing=" + framing
+	}
+	fmt.Fprintf(&b, "%s -filter-incl\n", apply)
 	return b.String()
 }
 
@@ -280,16 +360,22 @@ func RegisteredSeq(seq string, m CalibMasters) string {
 // weight (if non-empty) is a Siril stack weighting mode (noise|wfwhm|nbstars|nbstack); it favors the
 // sharper/deeper subs and is used for the cross-session merge. Empty leaves the stack unweighted.
 func StackSelectedScript(regSeq string, regCount int, rejected []int, outName, weight string) string {
+	// Siril names a registered sequence after its frame prefix, trailing separator included
+	// (frames r_pp_light_00001.fits → sequence file "r_pp_light_.seq"). Addressing it exactly
+	// avoids the noisy-but-benign name-lookup recovery ("Reading sequence failed: r_pp_light.seq")
+	// that used to shadow real errors in the log. Frame-file derivation (RegisteredSeq/
+	// CalibratedSeq callers) keeps the bare name.
+	seqName := regSeq + "_"
 	var b strings.Builder
 	b.WriteString(scriptHeader)
 	if regCount > 0 {
-		fmt.Fprintf(&b, "select %s 1 %d\n", regSeq, regCount)
+		fmt.Fprintf(&b, "select %s 1 %d\n", seqName, regCount)
 	}
 	for _, idx := range rejected {
-		fmt.Fprintf(&b, "unselect %s %d %d\n", regSeq, idx, idx)
+		fmt.Fprintf(&b, "unselect %s %d %d\n", seqName, idx, idx)
 	}
 	fmt.Fprintf(&b, "stack %s %s -norm=addscale -output_norm%s -filter-incl -out=%s\n",
-		regSeq, Rejection(regCount-len(rejected)), weightArg(weight), outName)
+		seqName, Rejection(regCount-len(rejected)), weightArg(weight), outName)
 	return b.String()
 }
 
@@ -305,6 +391,29 @@ func weightArg(weight string) string {
 // ConvertScript converts the files in the work dir into a FITS sequence named `seq`.
 func ConvertScript(seq string) string {
 	return scriptHeader + fmt.Sprintf("convert %s -out=.\n", seq)
+}
+
+// IntegrateChannelsScript links the already co-registered channel masters staged in the work dir as
+// sequence `seq` (one symlink per channel — no registration, they share one grid) and stacks them into
+// a single synthetic-luminance master at outName (absolute, extension-less → outName.fits). This pools
+// every channel's photons into one high-SNR mono for the "combined all-channel" output.
+//
+// Siril names the linked sequence with a trailing separator (staged files 0_L.fits… become "<seq>_.seq"),
+// so the stack addresses "<seq>_" — exactly as StackSelectedScript does. This Siril's average-stacking
+// grammar has no bare "mean"; it requires a rejection method + two sigmas, so a *gentle* winsorized
+// rejection is used (which caps rather than drops, and clips ~0% across the few, dissimilar channel
+// frames — it only trims a gross per-channel artifact). `addscale` normalization brings the very
+// different broadband/narrowband channels onto one footing so none swamps the others, and weight (e.g.
+// "nbstack") favours the deeper channels by their STACKCNT sub-count (empty → unweighted).
+func IntegrateChannelsScript(seq, outName, weight string) string {
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	fmt.Fprintf(&b, "link %s -out=.\n", seq)
+	// `rej none` (live-pinned grammar): the "frames" here are DIFFERENT CHANNELS, not repeated
+	// samples — outlier rejection treats a channel's real morphology (an Ha-bright starburst core)
+	// as per-pixel outliers and clips it patchily, posterizing the monostack's bright cores.
+	fmt.Fprintf(&b, "stack %s_ rej none -norm=addscale -output_norm%s -out=%s\n", seq, weightArg(weight), outName)
+	return b.String()
 }
 
 // PlanetaryStackScript stacks the best (selected) frames of a converted video sequence — no
@@ -367,6 +476,12 @@ func DeconvolveLuminanceScript(master string, fwhm float64, iters, alpha int) st
 type PlanetaryFinish struct {
 	Stretch    float64 // ght -D: overall hyperbolic stretch intensity
 	Highlight  float64 // ght -HP: highlight-protection point ([HP,1] stays linear, keeping bright craters intact)
+	// ShadowLift opens the shadow tones (crater floors, the terminator side) by sliding the ght
+	// symmetry point — where the stretch is most intense — down into the shadows: SP = 0.18·(1−s) +
+	// 0.04·s. Dark tones gain slope (visible detail) instead of compressing toward black; [HP,1]
+	// stays linear so the highlights are untouched. 0 (default) emits the historical `-SP=0.18`
+	// literal, keeping the finish script byte-identical.
+	ShadowLift float64
 	Sharpen    float64 // à-trous mid-layer boost scalar (1 = default; 0 = none, >1 sharper); ignored when sharpen=false
 	Clahe      float64 // CLAHE clip limit (local relief)
 	Saturation float64 // colour saturation boost (colour path only)
@@ -375,13 +490,38 @@ type PlanetaryFinish struct {
 	// overshoot before it clips to white — this is what stops the bright full-Moon disk "burning". Only
 	// applied when 0 < Headroom < 1; 1 or 0 → no scaling (a refine/agent can disable it).
 	Headroom float64
+	// EarthshineGain reveals the Moon's unlit side (earthshine) in the final render: 0 = off (the
+	// default), the UI opt-in sends 1.0, clamped to 0.2..2 when enabled. PlanetaryFinishScript
+	// deliberately ignores it — the lift is a Go compositing step between the finish script and the
+	// export script (planetary.runFinish) — so with it unset the single-script finish stays
+	// byte-identical to the historical path.
+	EarthshineGain float64
+	// EarthshineFeather is the terminator protection margin of the earthshine composite, as a
+	// FRACTION of the fitted disc radius (drizzle-safe): it sets the hard dilation of the
+	// illumination mask's byte-identical lit support (larger keeps the lift farther from the
+	// lit edge). 0 means the default (0.006); clamped to 0.002..0.02 when set. Ignored by the
+	// finish script, exactly like EarthshineGain.
+	EarthshineFeather float64
+	// TrueLum splits the colour finish so Go can re-impose the deconvolved L master as the EXACT
+	// output luminance after the RGB compose: Siril's `rgbcomp -lum` leaks the soft, un-deconvolved
+	// RGB lightness into the composite, visibly diluting the sharp L that carries the detail. On by
+	// default for LRGB runs (planetary.runFinish); mono runs and a zero-value PlanetaryFinish are
+	// unaffected. Like EarthshineGain, this script deliberately ignores it.
+	TrueLum bool
+	// LimbBalance (0..1) compresses the smooth ILLUMINATION field of the lit surface before the
+	// stretch — local (crater-scale) contrast is untouched, so the bright limb keeps its detail
+	// instead of stretching into a burnt band while the terminator keeps its depth. A Go stage on
+	// master copies (planetary.limbBalance); the scripts deliberately ignore it. 0 = off.
+	LimbBalance float64
 }
 
-// DefaultPlanetaryFinish is the original mineral-Moon finish (ght -D=0.6 -HP=0.85, wrecons 1 2.2 1.8 1.1
-// 1 1 = Sharpen 1.0, clahe 1.2, satu 0.8), with a 0.85 headroom so the bright disk keeps structure
-// instead of clipping to white after the sharpen/CLAHE boost.
+// DefaultPlanetaryFinish is the original mineral-Moon finish (ght -D=0.6 -SP=0.18 -HP=0.85, wrecons
+// 1 2.2 1.8 1.1 1 1 = Sharpen 1.0, clahe 1.2, satu 0.8), with a 0.85 headroom so the bright disk keeps
+// structure instead of clipping to white after the sharpen/CLAHE boost. ShadowLift 0 (off) → the
+// historical `-SP=0.18` line.
 func DefaultPlanetaryFinish() PlanetaryFinish {
-	return PlanetaryFinish{Stretch: 0.6, Highlight: 0.85, Sharpen: 1.0, Clahe: 1.2, Saturation: 0.8, Headroom: 0.85}
+	return PlanetaryFinish{Stretch: 0.6, Highlight: 0.85, Sharpen: 1.0, Clahe: 1.2, Saturation: 0.8,
+		Headroom: 0.85, TrueLum: true, EarthshineFeather: 0.006}
 }
 
 func PlanetaryFinishScript(r, g, b, l, mono, outBase string, sharpen bool, fin PlanetaryFinish, formats []string) string {
@@ -400,27 +540,78 @@ func PlanetaryFinishScript(r, g, b, l, mono, outBase string, sharpen bool, fin P
 	default:
 		fmt.Fprintf(&sb, "load %s\n", mono)
 	}
+	writePlanetaryTone(&sb, color, sharpen, fin)
+	for _, f := range formats {
+		sb.WriteString(saveCmd(f, outBase) + "\n")
+	}
+	return sb.String()
+}
+
+// writePlanetaryTone emits the tone chain shared by PlanetaryFinishScript and PlanetaryToneScript
+// (single source, so the split finish can never drift from the historical one).
+func writePlanetaryTone(sb *strings.Builder, color, sharpen bool, fin PlanetaryFinish) {
 	// Scale down first so the brightest detail lands at HP with room to spare: the sharpen + CLAHE that
 	// follow overshoot the highlights, and without this headroom the bright disk clips to a burned white.
 	if fin.Headroom > 0 && fin.Headroom < 1 {
-		fmt.Fprintf(&sb, "fmul %.3f\n", fin.Headroom)
+		fmt.Fprintf(sb, "fmul %.3f\n", fin.Headroom)
 	}
 	// Highlight-safe stretch: everything above HP stays linear, so the Moon's bright ray-craters and
-	// highlands keep their structure instead of clipping to white.
-	fmt.Fprintf(&sb, "ght -D=%.3f -SP=0.18 -HP=%.3f\n", fin.Stretch, fin.Highlight)
+	// highlands keep their structure instead of clipping to white. ShadowLift slides the symmetry
+	// point (max-slope tone) into the shadows so dark detail gains slope instead of crushing toward
+	// black; at 0 the emitted line is byte-identical to the historical `-SP=0.18`.
+	sp := "0.18"
+	if fin.ShadowLift > 0 {
+		sp = fmt.Sprintf("%.3f", 0.18*(1-fin.ShadowLift)+0.04*fin.ShadowLift)
+	}
+	fmt.Fprintf(sb, "ght -D=%.3f -SP=%s -HP=%.3f\n", fin.Stretch, sp, fin.Highlight)
 	if sharpen {
 		// À-trous wavelet sharpen: boost the mid-fine detail layers (crater edges), leave coarse ≈1, then
 		// a gentle CLAHE for local relief. The Sharpen scalar scales the mid-layer boost (1.0 reproduces the
 		// original 1 2.2 1.8 1.1 1 1). Deconvolution already recovered the fine detail, so no unsharp.
 		sb.WriteString("wavelet 6 2\n")
-		fmt.Fprintf(&sb, "wrecons 1 %.2f %.2f %.2f 1 1\n", 1+1.2*fin.Sharpen, 1+0.8*fin.Sharpen, 1+0.1*fin.Sharpen)
-		fmt.Fprintf(&sb, "clahe %.2f 12\n", fin.Clahe)
+		fmt.Fprintf(sb, "wrecons 1 %.2f %.2f %.2f 1 1\n", 1+1.2*fin.Sharpen, 1+0.8*fin.Sharpen, 1+0.1*fin.Sharpen)
+		fmt.Fprintf(sb, "clahe %.2f 12\n", fin.Clahe)
 	}
 	if color {
 		// The Moon's mineral colour (blue titanium maria, tan iron highlands) is real but faint at these
 		// exposures — boost saturation to reveal it (the classic "mineral Moon").
-		fmt.Fprintf(&sb, "satu %.3f 0\n", fin.Saturation)
+		fmt.Fprintf(sb, "satu %.3f 0\n", fin.Saturation)
 	}
+}
+
+// PlanetaryComposeScript is the compose half of the split colour finish: ONLY the rgbcomp into
+// outBase, so Go can re-impose the deconvolved L as the true luminance before the tone stage.
+func PlanetaryComposeScript(r, g, b, l, outBase string) string {
+	var sb strings.Builder
+	sb.WriteString(scriptHeader)
+	if l != "" {
+		fmt.Fprintf(&sb, "rgbcomp %s %s %s -lum=%s -out=%s\n", r, g, b, l, outBase)
+	} else {
+		fmt.Fprintf(&sb, "rgbcomp %s %s %s -out=%s\n", r, g, b, outBase)
+	}
+	return sb.String()
+}
+
+// PlanetaryToneScript is the tone half of the split finish: load the composite (or the mono
+// master), run the shared tone chain, save the given formats to outBase.
+func PlanetaryToneScript(loadPath, outBase string, color, sharpen bool, fin PlanetaryFinish, formats []string) string {
+	var sb strings.Builder
+	sb.WriteString(scriptHeader)
+	fmt.Fprintf(&sb, "load %s\n", loadPath)
+	writePlanetaryTone(&sb, color, sharpen, fin)
+	for _, f := range formats {
+		sb.WriteString(saveCmd(f, outBase) + "\n")
+	}
+	return sb.String()
+}
+
+// ExportScript loads an already-finished image (outBase.fits, written by the finish script and
+// possibly rewritten by the Go earthshine composite) and saves it in the given formats — the second
+// stage of the two-stage earthshine finish.
+func ExportScript(outBase string, formats []string) string {
+	var sb strings.Builder
+	sb.WriteString(scriptHeader)
+	fmt.Fprintf(&sb, "load %s\n", outBase)
 	for _, f := range formats {
 		sb.WriteString(saveCmd(f, outBase) + "\n")
 	}
@@ -574,6 +765,23 @@ func ColorCalibrateScript(loadName, outName string, s SolveOptions, c SpccOption
 	fmt.Fprintf(&b, "load %s\n", loadName)
 	b.WriteString(platesolveCmd(s) + "\n")
 	b.WriteString(spccCmd(c) + "\n")
+	fmt.Fprintf(&b, "save %s\n", outName)
+	return b.String()
+}
+
+// PhotometricCalibrateScript plate-solves and colour-calibrates the linear image with Siril's PCC
+// (Gaia photometry, no per-star spectra) — the ladder rung between SPCC and the star-field fallback.
+// It exists because SPCC can fail where PCC succeeds on the very same solve: the distro arm64 Siril
+// 1.4.4 segfaults inside SPCC's aperture photometry (verified in-container on real data, local AND
+// online catalogues), while `pcc` completes in seconds. Same catalogue redirection as
+// ColorCalibrateScript so the offline Gaia data is used when present.
+func PhotometricCalibrateScript(loadName, outName string, s SolveOptions) string {
+	var b strings.Builder
+	b.WriteString(scriptHeader)
+	b.WriteString(catalogueSetCmds(s))
+	fmt.Fprintf(&b, "load %s\n", loadName)
+	b.WriteString(platesolveCmd(s) + "\n")
+	b.WriteString("pcc\n")
 	fmt.Fprintf(&b, "save %s\n", outName)
 	return b.String()
 }

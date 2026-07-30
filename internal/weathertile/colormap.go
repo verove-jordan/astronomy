@@ -94,15 +94,33 @@ var precipRamp = []rampStop{
 	{70, 80, 70, 220, 0.8}, {100, 125, 45, 200, 0.9},
 }
 
+// dewSpreadRamp keys on temperature−dew-point (°C), INVERSE of the % ramps: a small spread means
+// saturated air (fog forming, dew on the optics) → strong teal; ≥8 °C is dry → fully transparent.
+var dewSpreadRamp = []rampStop{
+	{0, 45, 190, 200, 0.80}, {2, 70, 185, 205, 0.62}, {4, 120, 190, 215, 0.38},
+	{6, 170, 200, 225, 0.18}, {8, 200, 215, 235, 0},
+}
+
 // singleRamp returns the per-value colour function for a non-band metric ("" for an unknown metric).
+// The standalone altitude-band metrics reuse the cloudBands colours so a band overlay matches its
+// contribution inside the composite "clouds" render.
 func singleRamp(metric string) func(float64) rgba {
 	switch metric {
 	case "humidity":
 		return func(v float64) rgba { return rampAt(humidityRamp, v) }
 	case "precip":
 		return func(v float64) rgba { return rampAt(precipRamp, v) }
+	case "dewspread":
+		return func(v float64) rgba { return rampAt(dewSpreadRamp, v) }
 	case "clouds":
 		return cloudsTotal
+	case "clouds_low", "clouds_mid", "clouds_high":
+		for _, bd := range cloudBands {
+			if bd.metric == metric {
+				return bd.at
+			}
+		}
+		return nil
 	default:
 		return nil
 	}

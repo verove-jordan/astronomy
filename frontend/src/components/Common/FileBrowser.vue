@@ -39,6 +39,9 @@ const props = withDefaults(
     downloading?: boolean;
     // busyLabel: overrides the busy-button label (e.g. "Inspecting…" once the download finishes).
     busyLabel?: string;
+    // actionLabel overrides the primary button's label entirely (e.g. the Storage drives browser's
+    // "Copy N folders to S3") — the default labels are Import-specific inspect wording.
+    actionLabel?: string;
     // manage: object-manager mode (the Storage explorer) — files are selectable too, each row exposes a
     // #row-actions slot, and rows can be dragged onto a folder to emit a "move". Off (default) = picker.
     manage?: boolean;
@@ -130,6 +133,7 @@ const hasRemoteOnly = computed(() =>
 // S3-only folders, else the normal inspect/use-folder labels.
 const inspectLabel = computed(() => {
   if (props.downloading) return props.busyLabel || t("import.downloadingBtn");
+  if (props.actionLabel) return props.actionLabel;
   if (props.multiSelect && props.selected.length) {
     return hasRemoteOnly.value
       ? t("import.downloadInspect", { n: props.selected.length })

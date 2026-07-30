@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/verove-jordan/astronomy/internal/calib"
@@ -23,6 +24,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/livestack"
 	"github.com/verove-jordan/astronomy/internal/llm"
 	"github.com/verove-jordan/astronomy/internal/mode"
+	"github.com/verove-jordan/astronomy/internal/photom"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
 	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/s3conn"
@@ -47,14 +49,21 @@ type Event struct {
 	Ts       int64  `json:"ts,omitempty"`      // wall-clock ms the line was captured
 	Preview  string `json:"preview,omitempty"` // a preview PNG path produced mid-run
 
-	RSSBytes     int64   `json:"rss_bytes,omitempty"`      // live resident memory of the step's subprocess
+	RSSBytes     int64   `json:"rss_bytes,omitempty"`      // live resident memory of the whole engine tree
 	CPUPercent   float64 `json:"cpu_percent,omitempty"`    // live CPU usage (100 == one core)
-	PeakRSSBytes int64   `json:"peak_rss_bytes,omitempty"` // peak resident memory seen this step
+	PeakRSSBytes int64   `json:"peak_rss_bytes,omitempty"` // job-wide peak engine memory
+	CPUCores     int     `json:"cpu_cores,omitempty"`      // host core count (context for cpu_percent)
 
 	// Live byte progress for an S3 transfer job (streamed, never persisted — the Progress int is).
 	BytesDone   int64 `json:"bytes_done,omitempty"`
 	BytesTotal  int64 `json:"bytes_total,omitempty"`
 	BytesPerSec int64 `json:"bytes_per_sec,omitempty"` // smoothed transfer throughput (débit)
+
+	// Session attributes the event to one capture night ("YYYY-MM-DD") inside a cross-session
+	// channel step — the UI's per-night progress rows key on it. "" = run-level.
+	Session string `json:"session,omitempty"`
+	// Photom streams one group's photometric-normalization record (×scale/offset chips) live.
+	Photom *photom.GroupRecord `json:"photom,omitempty"`
 
 	// Iteration carries one supervised-finish pass (preview + tier + defects + scores) as it happens,
 	// so the UI streams the AI agent's iterations live instead of only after the job finishes.
@@ -91,6 +100,17 @@ const (
 	logCap      = 5000
 	flushEveryN = 15
 )
+
+// mirrorToStdout selects the few journal lines worth echoing to the engine's stdout (docker logs):
+// step/outcome markers (▶ ✓ ⚠ ✗) — not the full Siril output.
+func mirrorToStdout(line string) bool {
+	for _, p := range []string{"▶", "✓", "⚠", "✗"} {
+		if strings.HasPrefix(line, p) {
+			return true
+		}
+	}
+	return false
+}
 
 var flushInterval = time.Second
 
@@ -138,6 +158,8 @@ type Manager struct {
 	queue     chan int64
 	seqQueue  chan int64 // sequential lane: stacked "Add to queue" jobs run one-at-a-time, auto-advancing
 	xferQueue chan int64 // S3 transfer lane: uploads/downloads run in their own pool, never starving runs
+	thawQueue chan int64 // Glacier tier/thaw lane: only Restore/Stat + cheap server-side copies, never local I/O
+	inFlight  atomic.Int64 // jobs currently executing across all lanes — the work sweep only runs at zero
 	mu        sync.Mutex
 	subs      map[int64][]chan Event
 	cancels   map[int64]context.CancelFunc // cancel funcs for in-flight jobs (kill support)
@@ -153,6 +175,10 @@ type Manager struct {
 
 	confirmSeq int64 // monotonic counter for unique expensive-step confirmation call ids
 
+	// engineMon publishes each running compute job's live engine-wide CPU/RSS reading (the single
+	// publisher of resource numbers; refcounted sampler over this process's whole subtree).
+	engineMon *engineMonitor
+
 	locker *pathLocker // serializes jobs whose input roots overlap (shared library/output)
 }
 
@@ -162,14 +188,32 @@ type RunRequest struct {
 	// Paths, when non-empty, are the multiple capture folders to merge into one session (cross-folder
 	// multi-select). Path stays the primary dir (first selected) used for the session, target lock, and
 	// run naming. Empty Paths → single-folder run over Path (unchanged).
-	Paths               []string          `json:"paths,omitempty"`
-	Mode                string            `json:"mode"`
-	Format              string            `json:"format"`
+	Paths  []string `json:"paths,omitempty"`
+	Mode   string   `json:"mode"`
+	Format string   `json:"format"`
+	// Target optionally names the imaging target — a catalogue name ("M66") or "RA,Dec" — when the
+	// FITS headers and folder names cannot identify it; it seeds plate-solving and therefore SPCC
+	// colour calibration (deepsky/nebula family). It never renames the run.
+	Target              string            `json:"target,omitempty"`
 	FilterMap           map[string]string `json:"filter_map,omitempty"`            // detected/known filter → chosen channel ("ignore" drops)
 	DropWheelTransition *bool             `json:"drop_wheel_transition,omitempty"` // override preset default
 	ColorCalibration    *bool             `json:"color_calibration,omitempty"`     // override preset default
 	Denoise             *bool             `json:"denoise,omitempty"`               // false disables denoise
 	HaExcludeStars      *bool             `json:"ha_exclude_stars,omitempty"`      // true: screen Ha onto nebulosity only, not stars
+	Mosaic              *bool             `json:"mosaic,omitempty"`                // legacy alias of union_canvas (kept readable)
+	// UnionCanvas is the multi-night union-canvas consent knob (keep every night's full field, same
+	// pointing) — current wire key; when both it and the legacy "mosaic" alias are set it wins.
+	// Unrelated to Mode "mosaic" (tiled panels), which forces the union machinery off.
+	UnionCanvas *bool `json:"union_canvas,omitempty"`
+	// MosaicPlanID references a saved mosaic plan (mosaic_plans table) for a Mode "mosaic" run:
+	// panel labels/validation, expected tile centers as solve hints, and the canvas center. 0 = no
+	// plan (panels are auto-detected). Validated at Enqueue.
+	MosaicPlanID int64 `json:"mosaic_plan_id,omitempty"`
+	// OutputLuminanceMono, when non-nil, forces the standalone processed Luminance mono output on/off;
+	// nil inherits the mode default (on for deepsky/nebula). OutputMonoStack requests the combined
+	// all-channel mono integration (default off). Both are deepsky/nebula-only side outputs.
+	OutputLuminanceMono *bool `json:"output_luminance,omitempty"`
+	OutputMonoStack     bool  `json:"output_mono_stack,omitempty"`
 
 	// Nightscape (milkyway) overrides. Look selects the render style (natural/iphone/deepsky);
 	// ForegroundFrame overrides the auto-picked clean foreground (a raw frame path); Orientation
@@ -245,6 +289,17 @@ type RunRequest struct {
 	// "Calibration" panel; those darks/flats/bias are dropped from each channel's matched selection.
 	CalibExclude []string `json:"calib_exclude,omitempty"`
 
+	// ExcludeSets lists canonical inspect.SetKey.ID tokens the user chose to exclude in the Import
+	// stray-light check (POST /api/quality/sets); those whole light sets are dropped from the scan
+	// before grouping, so calibration matching and integration accounting recompute without them.
+	// Deepsky/nebula only.
+	ExcludeSets []string `json:"exclude_sets,omitempty"`
+
+	// ForceCalibration forces the available dark/flat/bias masters to be applied to the lights even when
+	// their gain/offset/bin, exposure or sensor temperature don't match (the Import "force these
+	// calibration frames" toggle). false → the strict, physically-matched default.
+	ForceCalibration bool `json:"force_calibration_frames,omitempty"`
+
 	// CalibPlan is a frozen snapshot of the calibration masters matched for this capture at queue time
 	// (the Import "Calibration" preview), so the job page can show which darks/flats/bias are included and
 	// with what params — visible while queued/running, before the run's result masters exist. Purely
@@ -252,9 +307,28 @@ type RunRequest struct {
 	// CLI/non-UI jobs, which simply show no calibration panel.
 	CalibPlan *calib.CalibPreview `json:"calib_plan,omitempty"`
 
+	// BuildMasters, when set, makes this a masters-only calibration build: stack the selection's
+	// dark/flat/bias frames into library masters and stop — no lights, no image (the Import button shown
+	// when a selection has calibration frames but no lights). Intercepted before mode parsing (kind
+	// "masters"), reusing the whole job progress/SSE stack. See runBuildMasters.
+	BuildMasters bool `json:"build_masters,omitempty"`
+
 	// Transfer, when set, makes this an S3 transfer job (upload/sync/download/remove-local) instead of a
 	// pipeline run — it is intercepted before mode parsing and reuses the whole job progress/SSE stack.
 	Transfer *TransferRequest `json:"transfer,omitempty"`
+
+	// Move, when set, makes this an S3→S3 object/folder move (server-side copy → ledger rekey → delete
+	// source, per object) instead of a pipeline run — intercepted before mode parsing like Transfer, reusing
+	// the whole progress/SSE stack so the explorer move shows a live bar + speed + ETA. It runs on the
+	// explorer's chosen connection (Conn), NOT the pipeline default.
+	Move *MoveRequest `json:"move,omitempty"`
+
+	// TierChange, when set, makes this an S3 storage-class change (archive classic→Glacier, restore/thaw
+	// Glacier→classic, or restore-only) instead of a pipeline run — intercepted like Move. Archived sources
+	// are thawed first: the job PARKS (causeThaw) and the auto-resume sweep re-checks on a thaw cadence until
+	// the restore completes, then transitions. Runs on the explorer connection (Conn), on the low-cost lane.
+	// (Named TierChange, not Tier — Tier above is the unrelated supervised re-entry ceiling.)
+	TierChange *TierRequest `json:"tier_change,omitempty"`
 
 	// StorageMode selects where a pipeline run's files live: "local" (default, keep) or "s3" (pull inputs,
 	// process, push inputs+outputs, then remove local copies). S3 targets the run's S3Target.
@@ -281,6 +355,11 @@ type BackupRequest struct {
 	Components []string `json:"components"` // db | library | atlas | appstate
 	AppState   string   `json:"appstate,omitempty"`
 	StampMs    int64    `json:"stamp_ms"`
+	// StorageClass, when a non-STANDARD class, archives the heavy backup components (db.dump, library.tar,
+	// atlas) to that class after upload — backups are the natural archival target. The manifest and appstate
+	// are always kept instant so the backup picker + browser-side appstate restore work without a thaw. An
+	// archived (GLACIER/DEEP_ARCHIVE) backup is thawed before restore; GLACIER_IR restores instantly.
+	StorageClass string `json:"storage_class,omitempty"`
 }
 
 // RestoreRequest restores the chosen components from <Prefix>/backup/<Stamp>/ in Bucket. The appstate
@@ -315,6 +394,36 @@ type TransferRequest struct {
 	// The calibration-library mirror sets it to ["catalogues"] so the multi-GB Gaia catalogues tree under
 	// LibraryDir is never uploaded.
 	ExcludeDirs []string `json:"exclude_dirs,omitempty"`
+	// SkipSymlinks drops symlinked entries from the upload walk (see transfer.Request.SkipSymlinks). The
+	// local-folder copy sets it so copying WorkDir does not follow Siril's `link` symlinks and re-upload
+	// every input frame with a wrong (tiny) size.
+	SkipSymlinks bool `json:"skip_symlinks,omitempty"`
+}
+
+// MoveRequest describes an S3→S3 move of one or more objects/folders into a destination folder, all within
+// one Bucket on the UI-selected connection Conn. Srcs are object keys (a folder key ends "/"); Dst is the
+// destination folder key ("" = bucket root). Credentials are resolved from Conn (never carried here).
+type MoveRequest struct {
+	Conn   int64    `json:"conn"`
+	Bucket string   `json:"bucket"`
+	Srcs   []string `json:"srcs"`
+	Dst    string   `json:"dst"`
+}
+
+// TierRequest describes a storage-class change of one or more objects/folders on the UI-selected connection
+// Conn. Srcs are object keys (a folder key ends "/") that get expanded to their contained objects.
+// TargetClass is the class to transition to (STANDARD|GLACIER|DEEP_ARCHIVE|GLACIER_IR|…). RestoreOnly thaws
+// an archived object to a temporarily-readable copy WITHOUT a permanent transition (for a download/inspect
+// without paying to re-hydrate to STANDARD). Days is the restore lifetime (0 → engine default); Tier is the
+// retrieval speed (Standard|Bulk|Expedited; "" → Standard). Credentials come from Conn (never carried here).
+type TierRequest struct {
+	Conn        int64    `json:"conn"`
+	Bucket      string   `json:"bucket"`
+	Srcs        []string `json:"srcs"`
+	TargetClass string   `json:"target_class"`
+	RestoreOnly bool     `json:"restore_only,omitempty"`
+	Days        int      `json:"days,omitempty"`
+	Tier        string   `json:"tier,omitempty"`
 }
 
 // S3Target is the bucket + prefix a full-S3 run reads inputs from and pushes results to.
@@ -397,6 +506,7 @@ func NewManager(st *store.Store, runner *siril.Runner, cfg *config.Config, hub T
 		queue:         make(chan int64, 256),
 		seqQueue:      make(chan int64, 256),
 		xferQueue:     make(chan int64, 256),
+		thawQueue:     make(chan int64, 256),
 		subs:          map[int64][]chan Event{},
 		cancels:       map[int64]context.CancelFunc{},
 		pauses:        map[int64]*pauseGate{},
@@ -405,6 +515,17 @@ func NewManager(st *store.Store, runner *siril.Runner, cfg *config.Config, hub T
 		stagePreviews: map[int64][]postprocess.StagePreview{},
 		locker:        newPathLocker(),
 	}
+}
+
+// initEngineMon lazily builds the engine monitor (it needs m.publish, so it can't be a literal
+// field in NewManager).
+func (m *Manager) initEngineMon() *engineMonitor {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.engineMon == nil {
+		m.engineMon = newEngineMonitor(m.publish)
+	}
+	return m.engineMon
 }
 
 // newS3ConnService builds the encrypted-connection service for the worker (nil when the master key can't be
@@ -438,6 +559,9 @@ func (m *Manager) Start(ctx context.Context, n int) {
 	} else if rows > 0 {
 		log.Printf("astrostack: reconciled %d orphaned running job(s) as failed on startup", rows)
 	}
+	// Crash leftovers: a previous instance's runs never got their terminal sweep — reclaim their
+	// scratch before the workers start (a full work disk wedges the whole host, not just one run).
+	go m.sweepWorkScratch()
 	for i := 0; i < n; i++ {
 		go m.worker(ctx, m.queue)
 	}
@@ -445,6 +569,11 @@ func (m *Manager) Start(ctx context.Context, n int) {
 	// Two transfer workers so a couple of uploads/downloads can overlap without touching the run pool.
 	go m.worker(ctx, m.xferQueue)
 	go m.worker(ctx, m.xferQueue)
+	// Two thaw workers for the storage-class/restore lane. Their active work is cheap (Restore/Stat +
+	// server-side copies) and the long WAIT happens via a paused checkpoint, so they occupy no worker while
+	// a restore is in flight — they never starve the transfer or run pools.
+	go m.worker(ctx, m.thawQueue)
+	go m.worker(ctx, m.thawQueue)
 	// Re-dispatch jobs a previous instance left 'queued'. Enqueue schedules a job by pushing its id onto
 	// an in-process lane channel, which is lost on restart — so, like the orphaned-running reconcile above,
 	// a job queued when the previous instance stopped has no live worker and would sit queued forever.
@@ -492,6 +621,12 @@ func (m *Manager) Enqueue(ctx context.Context, req RunRequest) (int64, error) {
 			if _, perr := pipeline.ApplyParamPatch(&scratch, req.Params); perr != nil {
 				return 0, fmt.Errorf("invalid params: %w", perr)
 			}
+		}
+	}
+	// A referenced mosaic plan must exist NOW — a stale id must fail the request, not the worker.
+	if req.MosaicPlanID != 0 {
+		if _, err := m.store.GetMosaicPlan(ctx, req.MosaicPlanID); err != nil {
+			return 0, fmt.Errorf("mosaic plan %d not found", req.MosaicPlanID)
 		}
 	}
 	sessionID, err := m.store.CreateSession(ctx, req.Path, "")
@@ -879,11 +1014,14 @@ func (m *Manager) worker(ctx context.Context, q chan int64) {
 // every in-flight job as "interrupted by a server restart". Now a panic fails only its own job and the
 // engine stays up for the others.
 func (m *Manager) runGuarded(ctx context.Context, id int64) {
+	m.inFlight.Add(1)
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("astrostack: job %d panicked: %v\n%s", id, r, debug.Stack())
 			m.finishTerminal(id, store.JobFailed, fmt.Errorf("internal error (recovered): %v", r))
 		}
+		m.inFlight.Add(-1)
+		go m.sweepWorkScratch() // every terminal job is a chance to reclaim stale run scratch
 	}()
 	m.run(ctx, id)
 }
@@ -932,6 +1070,13 @@ func (m *Manager) run(ctx context.Context, id int64) {
 	_ = m.store.SetJobRunning(ctx, id)
 	m.publish(Event{JobID: id, Status: store.JobRunning, Progress: 0, Step: "starting"})
 
+	// A thaw wait that has blown past its 48 h retrieval window fails clearly rather than polling forever
+	// (a restore should have completed long ago; something is wrong on the provider side).
+	if thawExpired(cp, time.Now().UnixMilli()) {
+		m.finishTerminal(id, store.JobFailed, fmt.Errorf("Glacier restore did not complete within the retrieval window (%dh)", thawDeadlineMs/3600/1000))
+		return
+	}
+
 	// Resume fast path: a job paused after a SUCCESSFUL compute (only the S3 push failed) just re-pushes
 	// the kept result — no recompute.
 	if cp.Phase == phasePush {
@@ -952,6 +1097,17 @@ func (m *Manager) run(ctx context.Context, id int64) {
 	// executeDenoiseFinal via ensureRunDirLocal, never the raw captures.
 	if p.wantsS3Storage() && !m.lowDiskActive(p) && p.DenoiseFinal == nil {
 		if err := m.pullS3Inputs(runCtx, id, p); err != nil {
+			// Archived (Glacier) inputs → initiate a thaw and PARK on a thaw cadence; resume re-pulls once
+			// they are readable. This is the "download and process from Glacier data" path.
+			var ae *transfer.ArchivedError
+			if errors.As(err, &ae) {
+				if terr := m.beginThaw(runCtx, id, p.S3.Bucket, ae.Keys); terr != nil {
+					m.finishTerminal(id, store.JobFailed, terr)
+					return
+				}
+				m.pauseJob(id, thawCheckpoint(phasePull, cp.Attempts, thawDeadlineOr(cp)), nil)
+				return
+			}
 			m.settleS3Error(id, runCtx, phasePull, nil, err, cp.Attempts)
 			return
 		}
@@ -969,6 +1125,19 @@ func (m *Manager) run(ctx context.Context, id int64) {
 		// before PausedError/ErrPaused because a StagePullError unwraps to ErrPaused for a manual pause.
 		var spe *pipeline.StagePullError
 		if errors.As(runErr, &spe) {
+			// Cold (archived) inputs surfaced by a low-disk wave pull → thaw + park the compute phase
+			// (carrying run id/outDir so resume reuses the output dir + skips finished channels).
+			var ae *transfer.ArchivedError
+			if errors.As(spe.Err, &ae) {
+				if terr := m.beginThaw(runCtx, id, p.S3.Bucket, ae.Keys); terr != nil {
+					m.finishTerminal(id, store.JobFailed, terr)
+					return
+				}
+				tcp := thawCheckpoint(phaseCompute, cp.Attempts, thawDeadlineOr(cp))
+				tcp.RunID, tcp.OutDir = spe.RunID, spe.OutDir
+				m.pauseJob(id, tcp, nil)
+				return
+			}
 			switch classifyS3Error(runCtx.Err(), spe.Err) {
 			case outcomeCancel:
 				m.finishTerminal(id, store.JobCancelled, spe.Err)
@@ -991,6 +1160,36 @@ func (m *Manager) run(ctx context.Context, id int64) {
 			m.pauseJob(id, resumeCheckpoint{Phase: phaseTransfer, Cause: causeManual,
 				Reason: "paused by you — will resume the transfer"}, nil)
 			return
+		}
+		// A tier/thaw job with objects still restoring parks as a causeThaw pause; the auto-resume sweep
+		// re-checks on a thaw cadence and re-runs the transition once they are readable. Bounded by the 48 h
+		// deadline threaded through the checkpoint.
+		var tw *thawWaiting
+		if errors.As(runErr, &tw) {
+			m.pauseJob(id, thawCheckpoint(phaseTransfer, cp.Attempts, thawDeadlineOr(cp)), nil)
+			return
+		}
+		// Cold (archived) objects surfaced through execute(): a full-S3 run's low-disk scan full-pull
+		// fallback (park at pull), or a standalone S3→local download such as the Import-from-S3 tab (park at
+		// transfer). Either way: thaw the cold keys and park on a thaw cadence; resume re-enters and proceeds
+		// once they are readable — the "download from Glacier" path.
+		var ae *transfer.ArchivedError
+		if errors.As(runErr, &ae) {
+			bucket, phase := "", phaseTransfer
+			switch {
+			case p.S3 != nil:
+				bucket, phase = p.S3.Bucket, phasePull
+			case p.Transfer != nil:
+				bucket, phase = p.Transfer.Bucket, phaseTransfer
+			}
+			if bucket != "" {
+				if terr := m.beginThaw(runCtx, id, bucket, ae.Keys); terr != nil {
+					m.finishTerminal(id, store.JobFailed, terr)
+					return
+				}
+				m.pauseJob(id, thawCheckpoint(phase, cp.Attempts, thawDeadlineOr(cp)), nil)
+				return
+			}
 		}
 		// Terminal writes use a fresh context so they persist even if the run was cancelled.
 		status := store.JobFailed
@@ -1032,6 +1231,12 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 	if p.Transfer != nil {
 		return m.runTransfer(ctx, id, p.Transfer)
 	}
+	if p.Move != nil {
+		return m.runS3Move(ctx, id, p.Move)
+	}
+	if p.TierChange != nil {
+		return m.runTier(ctx, id, p.TierChange)
+	}
 	if p.Backup != nil {
 		return m.runBackup(ctx, id, p.Backup)
 	}
@@ -1040,6 +1245,10 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 	}
 	if p.Path == "" {
 		return nil, fmt.Errorf("job has no path")
+	}
+	// A masters-only calibration build needs the paths but no pipeline mode (kind is "masters").
+	if p.BuildMasters {
+		return m.runBuildMasters(ctx, id, p)
 	}
 	mo, err := mode.ParseMode(kind)
 	if err != nil {
@@ -1064,6 +1273,18 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 	}
 	if p.HaExcludeStars != nil {
 		preset.HaExcludeStars = *p.HaExcludeStars
+	}
+	if p.Mosaic != nil { // legacy alias first …
+		preset.Mosaic = *p.Mosaic
+	}
+	if p.UnionCanvas != nil { // … the current wire key wins
+		preset.Mosaic = *p.UnionCanvas
+	}
+	if p.OutputLuminanceMono != nil {
+		preset.EmitLuminanceMono = *p.OutputLuminanceMono
+	}
+	if p.OutputMonoStack {
+		preset.EmitAllChannelMono = true
 	}
 	if p.Look != "" {
 		preset.Look = p.Look
@@ -1124,12 +1345,37 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 
 	logRing := make([]logEntry, 0, 256)
 	var (
-		lastFlush  time.Time
-		sinceFlush int
-		stepPeak   int64 // peak subprocess RSS seen during the current step
-		lastPct    int   // last progress + step, for the guaranteed final flush
-		lastStep   string
+		lastFlush    time.Time
+		sinceFlush   int
+		lastBoundary string // last step mirrored to stdout (dedupes boundary echoes)
 	)
+	// The job's live position + per-step tool peak — shared with the engine monitor (which
+	// publishes every resource number at this position) and read back by warning/preview events.
+	ls := &liveStats{}
+	m.initEngineMon().register(id, ls)
+	defer m.engineMon.release(id)
+
+	// Proof-of-life while the progress stream is quiet (the CPU-only AI denoise can be silent for
+	// an hour): a ticker publishes "still running: <step> — …" lines to SSE + stdout, never the
+	// persisted ring. Every pipeProg event touches it; ctx cancel stops it with the run.
+	hb := newHeartbeat(nil)
+	hb.enrich = m.engineMon.liveNote
+	go func() {
+		tick := time.NewTicker(heartbeatTick)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				if line, step, pct := hb.beat(); line != "" {
+					m.publish(Event{JobID: id, Status: store.JobRunning, Progress: pct, Step: step,
+						Line: line, Ts: time.Now().UnixMilli()})
+					log.Printf("astrostack: job %d %s", id, line)
+				}
+			}
+		}
+	}()
 	flush := func(pct int, step string) {
 		_ = m.store.UpdateJobProgress(ctx, id, pct, step, encodeLog(logRing))
 		lastFlush, sinceFlush = time.Now(), 0
@@ -1138,19 +1384,42 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 	// whole log even when the last lines never tripped the debounce. A fresh context survives a
 	// cancelled run, matching the terminal writes in run().
 	defer func() {
-		_ = m.store.UpdateJobProgress(context.Background(), id, lastPct, lastStep, encodeLog(logRing))
+		pct, step, _ := ls.position()
+		_ = m.store.UpdateJobProgress(context.Background(), id, pct, step, encodeLog(logRing))
 	}()
 	pipeProg := func(pr pipeline.Progress) {
 		// Milestone preview: a labeled PNG saved at a processing step. It carries no Index/Total, so publish
 		// it at the last real progress value (never yanking the % bar to 0) — it accumulates into the UI's
 		// stage timeline, and also drives the single live-preview image via Preview.
 		if pr.StagePreview != nil {
+			lastPct, _, _ := ls.position()
+			hb.touch(pr.Step, lastPct)
 			m.publish(Event{JobID: id, Status: store.JobRunning, Progress: lastPct, Step: pr.Step,
-				Preview: pr.StagePreview.PngPath, StagePreview: pr.StagePreview})
+				Session: pr.Session, Preview: pr.StagePreview.PngPath, StagePreview: pr.StagePreview})
 			return
 		}
+		// A context-free event (a live ⚠ warning line emitted between steps carries no Step and no
+		// Index/Total) rides at the current progress — it must never yank the bar to 0 or blank the
+		// step label.
 		pct := stepPercent(pr.Index, pr.Total)
-		lastPct, lastStep = pct, pr.Step
+		if pr.Total == 0 && pr.Step == "" {
+			lastPct, lastStep, _ := ls.position()
+			pct, pr.Step = lastPct, lastStep
+		}
+		ls.setProgress(pct, pr.Step)
+		if pr.Sample == nil {
+			// Resource samples are not "output": a tool can sample for an hour while printing
+			// nothing, and that silence is exactly what the heartbeat must report.
+			hb.touch(pr.Step, pct)
+		}
+
+		// Photometric-normalization record: stream one group's ×scale/offset the moment it was
+		// measured, so the per-night progress rows show the numbers live (they also land in run.json).
+		if pr.Photom != nil {
+			m.publish(Event{JobID: id, Status: store.JobRunning, Progress: pct, Step: pr.Step,
+				Session: pr.Session, Photom: pr.Photom})
+			return
+		}
 
 		// Supervised-finish iteration: stream the completed pass (preview + tier + defects + scores) so
 		// the UI shows the agent iterating live. Live-only (persistence is handled in the pipeline).
@@ -1166,23 +1435,23 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 			return
 		}
 
-		// Live resource reading: track the step's peak RSS and stream it. Never persisted (live-only).
-		// Skip an all-zero sample (subprocess already gone) so a streamed resource event always carries
-		// a real RSS — that keeps the frontend's "is this a resource event?" check unambiguous.
+		// Tool resource reading: folded into the step's tool peak only. The engine monitor is the
+		// single publisher of live resource events (it covers the whole subtree, so per-tool
+		// numbers would double-report); the peak resurfaces on the step's ✓ line.
 		if pr.Sample != nil {
-			if pr.Sample.RSSBytes == 0 {
-				return
-			}
-			if pr.Sample.RSSBytes > stepPeak {
-				stepPeak = pr.Sample.RSSBytes
-			}
-			m.publish(Event{JobID: id, Status: store.JobRunning, Progress: pct, Step: pr.Step,
-				RSSBytes: pr.Sample.RSSBytes, CPUPercent: pr.Sample.CPUPercent, PeakRSSBytes: stepPeak})
+			ls.toolSample(pr.Sample.RSSBytes)
 			return
 		}
 
-		// Log line: stamp it, ring-buffer it, persist on a debounce so a refresh keeps the tail.
+		// Log line: stamp it, ring-buffer it, persist on a debounce so a refresh keeps the tail. A
+		// step-closing ✓ line carries the step's peak tool RSS (the samples themselves are no
+		// longer streamed).
 		if pr.Line != "" {
+			if strings.HasPrefix(pr.Line, "✓") {
+				if peak := ls.takeToolPeak(); peak > 0 {
+					pr.Line += " — peak tool RSS " + humanBytes(peak)
+				}
+			}
 			ts := time.Now().UnixMilli()
 			logRing = append(logRing, logEntry{ts: ts, line: pr.Line})
 			if len(logRing) > logCap {
@@ -1192,15 +1461,24 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 			if sinceFlush >= flushEveryN || time.Since(lastFlush) >= flushInterval {
 				flush(pct, pr.Step)
 			}
+			if mirrorToStdout(pr.Line) {
+				log.Printf("astrostack: job %d %s", id, pr.Line)
+			}
 			m.publish(Event{JobID: id, Status: store.JobRunning, Progress: pct, Step: pr.Step,
-				Line: pr.Line, Ts: ts, Preview: pr.Preview})
+				Session: pr.Session, Line: pr.Line, Ts: ts, Preview: pr.Preview})
 			return
 		}
 
-		// Step boundary (or a preview-only event): reset the per-step peak, persist, and stream.
-		stepPeak = 0
+		// Step boundary (or a preview-only event): drop any unclaimed tool peak (paths that emit no
+		// ✓ lines, e.g. OSC, stay per-step), persist, and stream.
+		_ = ls.takeToolPeak()
+		if pr.Step != "" && pr.Step != lastBoundary { // docker logs shows the step skeleton, once per step
+			lastBoundary = pr.Step
+			log.Printf("astrostack: job %d [%d/%d] %s", id, pr.Index, pr.Total, pr.Step)
+		}
 		flush(pct, pr.Step)
-		m.publish(Event{JobID: id, Status: store.JobRunning, Progress: pct, Step: pr.Step, Preview: pr.Preview})
+		m.publish(Event{JobID: id, Status: store.JobRunning, Progress: pct, Step: pr.Step,
+			Session: pr.Session, Preview: pr.Preview})
 	}
 
 	// A denoise-final job runs GraXpert AI denoise on the completed run's final image (on demand,
@@ -1221,10 +1499,13 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 	case mode.Planetary:
 		// ProcessPlanetary runs lucky imaging then the optional supervised finish (re-tunes the
 		// sharpen/stretch over the persisted masters); it routes Siril logs through pipeProg like the
-		// deep-sky path, and returns the same flat planetary.Result.
+		// deep-sky path, and returns the same flat planetary.Result. Library/CalibExclude feed the
+		// per-pixel frame calibration (masters built from the capture's dark/flat/offset folders,
+		// persisted + reused like deep-sky masters).
 		r, err := pipeline.ProcessPlanetary(ctx, pipeline.Options{
-			InputDir: p.Path, OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
+			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
 			FfmpegBin: m.cfg.FfmpegBin, Preset: &preset,
+			Library: m.store, LibraryDir: m.cfg.LibraryDir, CalibExclude: p.CalibExclude, ForceCalibration: p.ForceCalibration,
 			Supervisor: superRunner, JobID: id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal, // opt-in local-AI-agent finish
 			OnProgress: pipeProg, Steer: steer, Confirm: confirm,
 		})
@@ -1237,9 +1518,9 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 	case mode.Milkyway:
 		r, err := pipeline.ProcessOSC(ctx, pipeline.Options{
 			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
-			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
+			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner, DenoiseScale: m.cfg.DenoiseScale, ChannelParallel: m.cfg.ChannelParallel,
 			Supervisor: superRunner, JobID: id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal, // opt-in local-AI-agent finish
-			Solve: solve, Spcc: spcc, DarkDir: p.DarkDir, FlatDir: p.FlatDir, BiasDir: p.BiasDir,
+			Solve: solve, Spcc: spcc, TargetHint: p.Target, DarkDir: p.DarkDir, FlatDir: p.FlatDir, BiasDir: p.BiasDir,
 			PhoneCalib: m.store, LibraryDir: m.cfg.LibraryDir, LibraryMirror: m.libPuller(ctx),
 			CatalogDir: m.cfg.SirilCatalogDir, OnProgress: pipeProg, Steer: steer, Confirm: confirm,
 		})
@@ -1262,11 +1543,11 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 		}
 		fopts := pipeline.Options{
 			InputDir: src.LocalRoot(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
-			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
+			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner, DenoiseScale: m.cfg.DenoiseScale, ChannelParallel: m.cfg.ChannelParallel,
 			Supervisor: superRunner,                                                          // opt-in local-AI-agent finish (nil → standard finish)
 			JobID:      id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal, // persist supervised iterations against this job
 			Library: m.store, LibraryDir: m.cfg.LibraryDir, LibraryMirror: m.libPuller(ctx), OnProgress: pipeProg, Steer: steer, Confirm: confirm,
-			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir,
+			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, TargetHint: p.Target, CatalogDir: m.cfg.SirilCatalogDir,
 			Catalog: m.store,
 		}
 		if m.cfg.ReuseEnabled && !p.ReuseDisabled {
@@ -1301,11 +1582,41 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 		// Moving-comet mode: a dual star/comet stack + star-layer recomposite (pipeline.ProcessComet).
 		r, err := pipeline.ProcessComet(ctx, pipeline.Options{
 			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
-			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
+			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner, DenoiseScale: m.cfg.DenoiseScale, ChannelParallel: m.cfg.ChannelParallel,
 			Supervisor: superRunner, JobID: id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal, // opt-in local-AI-agent finish
 			Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir, FilterMapping: p.FilterMap,
-			Catalog: m.store, OnProgress: pipeProg, Steer: steer, Confirm: confirm,
+			Catalog: m.store, CalibExclude: p.CalibExclude, ForceCalibration: p.ForceCalibration,
+			OnProgress: pipeProg, Steer: steer, Confirm: confirm,
 		})
+		if err != nil {
+			return nil, err
+		}
+		if r.Final != nil {
+			r.Final.Outputs = m.appendVideo(ctx, id, format, r.Final.Outputs)
+		}
+		return r, nil
+
+	case mode.Mosaic:
+		// Tiled-panel mosaic: per-panel deepsky stacks, one plate-solve per panel, WCS assembly onto
+		// one canvas, then the standard finish (pipeline.ProcessMosaic). Cross-session reuse and the
+		// low-disk stager are deliberately off in v1.
+		mopts := pipeline.Options{
+			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
+			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner, DenoiseScale: m.cfg.DenoiseScale, ChannelParallel: m.cfg.ChannelParallel,
+			Supervisor: superRunner, JobID: id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal,
+			Library: m.store, LibraryDir: m.cfg.LibraryDir, LibraryMirror: m.libPuller(ctx),
+			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, TargetHint: p.Target, CatalogDir: m.cfg.SirilCatalogDir,
+			Catalog: m.store, CalibExclude: p.CalibExclude, ExcludeSets: p.ExcludeSets, ForceCalibration: p.ForceCalibration,
+			OnProgress: pipeProg, Steer: steer, Confirm: confirm,
+		}
+		if p.MosaicPlanID != 0 {
+			plan, perr := m.mosaicPlanFor(ctx, p.MosaicPlanID)
+			if perr != nil {
+				return nil, fmt.Errorf("mosaic plan: %w", perr)
+			}
+			mopts.MosaicPlan = plan
+		}
+		r, err := pipeline.ProcessMosaic(ctx, mopts)
 		if err != nil {
 			return nil, err
 		}
@@ -1317,13 +1628,15 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 	default: // deepsky / nebula — combine() builds the postprocess options from the preset + solve/spcc
 		opts := pipeline.Options{
 			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
-			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
+			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner, DenoiseScale: m.cfg.DenoiseScale, ChannelParallel: m.cfg.ChannelParallel,
 			Supervisor: superRunner,                                                          // opt-in local-AI-agent finish (nil → standard finish)
 			JobID:      id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal, // persist supervised iterations against this job
 			Library: m.store, LibraryDir: m.cfg.LibraryDir, LibraryMirror: m.libPuller(ctx), OnProgress: pipeProg, Steer: steer, Confirm: confirm,
-			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir,
-			Catalog:      m.store, // always record the run so its frames become reusable
-			CalibExclude: p.CalibExclude,
+			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, TargetHint: p.Target, CatalogDir: m.cfg.SirilCatalogDir,
+			Catalog:          m.store, // always record the run so its frames become reusable
+			CalibExclude:     p.CalibExclude,
+			ExcludeSets:      p.ExcludeSets,
+			ForceCalibration: p.ForceCalibration,
 			// Pause/resume: reuse a paused run's output dir (skip already-stacked channels) and let the user
 			// pause mid-stack at a channel boundary. Only the deep-sky path honors mid-stack pause.
 			Resume:         resume,
@@ -1384,9 +1697,9 @@ func (m *Manager) executeRefine(ctx context.Context, id int64, p RunRequest, pre
 	}
 	opts := pipeline.Options{
 		OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
-		Preset: &preset, Gimp: gclient, Graxpert: grax, Starnet: star,
+		Preset: &preset, Gimp: gclient, Graxpert: grax, Starnet: star, DenoiseScale: m.cfg.DenoiseScale,
 		Supervisor: super, JobID: id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal,
-		Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir, OnProgress: pipeProg,
+		Solve: solve, Spcc: spcc, TargetHint: p.Target, CatalogDir: m.cfg.SirilCatalogDir, OnProgress: pipeProg,
 		Steer: steer, Confirm: confirm,
 	}
 	final, err := pipeline.RefineExistingRun(ctx, opts, p.Refine.RunDir)
@@ -1433,10 +1746,10 @@ func (m *Manager) executeRerun(ctx context.Context, id int64, p RunRequest, pres
 	grd := preset.Grade
 	opts := pipeline.Options{
 		InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
-		Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: grax, Starnet: star,
+		Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: grax, Starnet: star, DenoiseScale: m.cfg.DenoiseScale,
 		JobID: id, Library: m.store, LibraryDir: m.cfg.LibraryDir, OnProgress: pipeProg,
-		FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir,
-		Catalog: m.store, CalibExclude: p.CalibExclude,
+		FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, TargetHint: p.Target, CatalogDir: m.cfg.SirilCatalogDir,
+		Catalog: m.store, CalibExclude: p.CalibExclude, ForceCalibration: p.ForceCalibration,
 	}
 	if m.cfg.ReuseEnabled && !p.ReuseDisabled {
 		opts.RawCalib = m.store // Tier-C re-stack pools raw bias/darks into deep masters, like a normal run
@@ -1546,10 +1859,17 @@ func (m *Manager) appendVideo(ctx context.Context, id int64, format mode.Format,
 	// Held at 99% (not 100%): the still image is done but the MP4 is still rendering — 100% is reserved
 	// for the job's "done" event so the bar never reads complete while work remains.
 	m.publish(Event{JobID: id, Status: store.JobRunning, Progress: 99, Step: "rendering video"})
+	m.publish(Event{JobID: id, Status: store.JobRunning, Progress: 99, Step: "rendering video",
+		Line: "▶ rendering video (ffmpeg) …", Ts: time.Now().UnixMilli()})
 	_ = m.store.UpdateJobProgress(ctx, id, 99, "rendering video", "")
 	mp4 := strings.TrimSuffix(png, ".png") + ".mp4"
-	if err := videoout.Render(ctx, m.cfg.FfmpegBin, png, mp4, videoout.DefaultOptions()); err != nil {
+	started := time.Now()
+	if err := videoout.RenderAuto(ctx, m.cfg.FfmpegBin, png, mp4); err != nil {
+		m.publish(Event{JobID: id, Status: store.JobRunning, Progress: 99, Step: "rendering video",
+			Line: "⚠ video render failed (keeping the still image): " + err.Error(), Ts: time.Now().UnixMilli()})
 		return outputs
 	}
+	m.publish(Event{JobID: id, Status: store.JobRunning, Progress: 99, Step: "rendering video",
+		Line: "✓ video rendered in " + time.Since(started).Round(time.Second).String(), Ts: time.Now().UnixMilli()})
 	return append(outputs, mp4)
 }

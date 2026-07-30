@@ -68,9 +68,15 @@ func BuildDeepMasters(ctx context.Context, runner *siril.Runner, inv *inspect.In
 			masters = append(masters, m)
 		}
 	}
+	// Library rows back the raws-freed fallback: a signature whose raw pool is entirely off-disk
+	// (freed to S3) calibrates with its existing library master instead of silently skipping.
+	libRows, lerr := lib.ListMasters(ctx)
+	if lerr != nil {
+		warnings = append(warnings, "could not read calibration library: "+lerr.Error())
+	}
 
 	for _, sig := range biasSigs(inv) {
-		m, ok, warn := buildDeepBias(ctx, runner, inv, provider, sig, mastersDir, workDir, onProgress)
+		m, ok, warn := buildDeepBias(ctx, runner, inv, provider, libRows, sig, mastersDir, workDir, onProgress)
 		add(m, ok, warn)
 	}
 	for _, set := range inv.SetsOfType(inspect.DarkFlat) { // session-local (used to calibrate flats)
@@ -79,7 +85,7 @@ func BuildDeepMasters(ctx context.Context, runner *siril.Runner, inv *inspect.In
 		add(m, err == nil, errString(err))
 	}
 	for _, sig := range darkSigs(inv) {
-		m, ok, warn := buildDeepDark(ctx, runner, inv, provider, sig, opts, mastersDir, workDir, onProgress)
+		m, ok, warn := buildDeepDark(ctx, runner, inv, provider, libRows, sig, opts, mastersDir, workDir, onProgress)
 		add(m, ok, warn)
 	}
 	for _, set := range inv.SetsOfType(inspect.Flat) { // session-local: this night's dust/vignetting
@@ -89,6 +95,9 @@ func BuildDeepMasters(ctx context.Context, runner *siril.Runner, inv *inspect.In
 	}
 
 	for _, m := range masters {
+		if m.Session != "" {
+			continue // per-night (multi-night flat) masters are run-local — see BuildOrReuseMasters
+		}
 		if err := lib.SaveMaster(ctx, m); err != nil {
 			warnings = append(warnings, "could not add master to library: "+err.Error())
 		}

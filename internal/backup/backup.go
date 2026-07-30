@@ -292,6 +292,12 @@ func List(ctx context.Context, client *s3store.Client, bucket, userPrefix string
 		}
 		data, err := client.GetBytes(ctx, bucket, o.Key)
 		if err != nil {
+			// A manifest that was archived (e.g. the whole backup folder cold-tiered via the explorer) can't
+			// be read until thawed — still surface a minimal entry (stamp from the key) so the user sees the
+			// backup and can restore it (which thaws it) instead of it silently vanishing from the picker.
+			if s3store.IsArchivedReadErr(err) {
+				mans = append(mans, Manifest{Stamp: path.Base(path.Dir(o.Key))})
+			}
 			continue
 		}
 		var m Manifest

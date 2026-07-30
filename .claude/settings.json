@@ -29,6 +29,15 @@
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pre-edit-gitnexus.sh"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/require-job-for-processing.sh"
+          }
+        ]
       }
     ]
   }

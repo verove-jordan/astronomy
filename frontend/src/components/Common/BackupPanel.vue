@@ -9,7 +9,14 @@ import {
   type BackupComponent,
   type BackupManifest,
 } from "@/stores/backup";
-import { card, btnPrimary, btnGhost, checkbox } from "@/constants/styles";
+import {
+  card,
+  btnPrimary,
+  btnGhost,
+  checkbox,
+  input,
+} from "@/constants/styles";
+import { STORAGE_CLASSES } from "@/constants/storageClasses";
 import IconCloud from "@/components/Icons/IconCloud.vue";
 
 // embedded drops the card frame + header so the panel can sit inside an existing card/accordion section
@@ -30,6 +37,10 @@ const busy = ref(false);
 const toast = ref("");
 const restoringStamp = ref("");
 const needsReload = ref(false);
+// Optional archival class for the backup ("" = Standard, hot). Archiving to Deep Archive/Glacier is the
+// natural fit for backups; the manifest stays instant so the picker keeps working, and a restore thaws it.
+const storageClass = ref("");
+const backupClasses = STORAGE_CLASSES;
 
 onMounted(() => store.list());
 
@@ -43,7 +54,7 @@ async function runBackup() {
   busy.value = true;
   toast.value = "";
   try {
-    await store.backup(comps);
+    await store.backup(comps, storageClass.value);
     toast.value = t("backup.queued");
     // The manifest lands only when the job finishes — refresh the list shortly after.
     setTimeout(() => void store.list(), 2000);
@@ -100,6 +111,19 @@ function reloadPage() {
       </label>
     </div>
     <p class="mt-2 text-xs text-slate-400">{{ t("backup.secretsNote") }}</p>
+
+    <!-- Optional archival tier for the backup data (manifest is always kept instant). -->
+    <div class="mt-2 flex items-center gap-2 text-sm">
+      <label class="text-xs font-medium text-slate-500">{{
+        t("backup.storageClass")
+      }}</label>
+      <select v-model="storageClass" :class="input" class="!w-auto">
+        <option value="">{{ t("backup.storageClassStandard") }}</option>
+        <option v-for="c in backupClasses" :key="c.id" :value="c.id">
+          {{ t(`storageClass.classes.${c.id}.label`) }}
+        </option>
+      </select>
+    </div>
 
     <div class="mt-3 flex items-center gap-3">
       <button

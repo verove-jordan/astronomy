@@ -1,27 +1,39 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { fileUrl } from "@/services/api";
+import { fileUrl, type ApiError } from "@/services/api";
+import { useJobsStore } from "@/stores/jobs";
 import GenericTable, {
   type Column,
 } from "@/components/Common/GenericTable.vue";
 import MetricsChart from "@/components/Dataviz/MetricsChart.vue";
 import ImageViewer from "@/components/Common/ImageViewer.vue";
+import StarLabelOverlay from "@/components/Common/StarLabelOverlay.vue";
 import FilePreviewButton from "@/components/Common/FilePreviewButton.vue";
 import FilterChip from "@/components/Common/FilterChip.vue";
 import EngineChip from "@/components/Common/EngineChip.vue";
+import Pill from "@/components/Common/Pill.vue";
+import Spinner from "@/components/Common/Spinner.vue";
 import StagePreviewTimeline from "@/components/Common/StagePreviewTimeline.vue";
 import IconCheck from "@/components/Icons/IconCheck.vue";
 import IconMinus from "@/components/Icons/IconMinus.vue";
 import IconDownload from "@/components/Icons/IconDownload.vue";
 import IconChevronRight from "@/components/Icons/IconChevronRight.vue";
-import { card } from "@/constants/styles";
+import IconStar from "@/components/Icons/IconStar.vue";
+import { btnGhost, card } from "@/constants/styles";
 import { humanizeMs, baseName, tempC } from "@/utils/format";
-import type { ChannelResult, RunResult } from "@/types";
+import type { ChannelResult, PhotomRecord, RunResult } from "@/types";
 
-const props = defineProps<{ result: RunResult; rerunnable?: boolean }>();
+import { compareFilters } from "@/constants/filters";
+// jobId is optional: JobView passes it for succeeded runs (enables the star count/labels); the
+// Runs gallery mounts this component from a disk-loaded run.json with no job id — feature inert.
+const props = defineProps<{
+  result: RunResult;
+  rerunnable?: boolean;
+  jobId?: number;
+}>();
 const emit = defineEmits<{ "rerun-stage": [stage: string] }>();
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 type Row = Record<string, unknown>;
 const ms = (v: unknown) => humanizeMs(Number(v));
@@ -89,25 +101,42 @@ const planetaryFrameColumns: Column<Row>[] = [
 
 // Channel switcher: flip the preview between the final composite and each channel. Channel PNGs load
 // only when selected (deferred). Ordered by the canonical filter sequence (L, R, G, B, Ha, …).
-const FILTER_ORDER = ["L", "R", "G", "B", "Ha", "OIII", "SII"];
 const channelViews = computed(() =>
   (props.result.channels ?? [])
     .filter((c) => c.preview_path)
     .slice()
-    .sort(
-      (a, b) =>
-        (FILTER_ORDER.indexOf(a.filter) + 1 || 99) -
-        (FILTER_ORDER.indexOf(b.filter) + 1 || 99),
-    )
+    .sort((a, b) => compareFilters(a.filter, b.filter))
     .map((c) => ({ filter: c.filter, src: fileUrl(c.preview_path as string) })),
 );
-const activeView = ref("final"); // "final" or a channel filter name
-const activeSrc = computed(() =>
-  activeView.value === "final"
-    ? finalImage.value
-    : (channelViews.value.find((v) => v.filter === activeView.value)?.src ??
-      finalImage.value),
+// Extra monochrome deliverables (processed Luminance-only / combined all-channel) — shown as their
+// own switcher entries next to the channels, opened in the same viewer. View key = "mono:<kind>".
+const monoViews = computed(() =>
+  (props.result.final?.mono_outputs ?? [])
+    .filter((m) => m.png)
+    .map((m) => ({
+      key: `mono:${m.kind}`,
+      label: t(`job.mono.${m.kind}`),
+      src: fileUrl(m.png),
+    })),
 );
+const activeView = ref("final"); // "final", a channel filter name, or a "mono:<kind>" key
+const activeSrc = computed(() => {
+  if (activeView.value === "final") return finalImage.value;
+  const mono = monoViews.value.find((v) => v.key === activeView.value);
+  if (mono) return mono.src;
+  return (
+    channelViews.value.find((v) => v.filter === activeView.value)?.src ??
+    finalImage.value
+  );
+});
+// Label for the currently-shown view (Final / a mono output's name / the channel filter).
+const activeLabel = computed(() => {
+  if (activeView.value === "final") return t("job.finalView");
+  return (
+    monoViews.value.find((v) => v.key === activeView.value)?.label ??
+    activeView.value
+  );
+});
 // Reset to the composite whenever a different run is opened (the component instance is reused).
 watch(
   () => props.result,
@@ -116,16 +145,69 @@ watch(
   },
 );
 
-// Ordered list of switchable views (Final first, then each channel) for the prev/next arrows; cyclic.
+// Ordered list of switchable views (Final, then each channel, then the mono outputs) for the prev/next
+// arrows; cyclic.
 const views = computed(() => [
   "final",
   ...channelViews.value.map((v) => v.filter),
+  ...monoViews.value.map((v) => v.key),
 ]);
 function step(dir: number) {
   const list = views.value;
   if (list.length < 2) return;
   const i = list.indexOf(activeView.value);
   activeView.value = list[(i + dir + list.length) % list.length];
+}
+
+// --- Star count + name overlay (jobId-gated; see the prop comment) --------------------------------
+const jobsStore = useJobsStore();
+const STAR_MODES = ["deepsky", "nebula", "livestack", "comet", "milkyway"];
+const starsEnabled = computed(
+  () =>
+    !!props.jobId &&
+    !!finalImage.value &&
+    !!props.result.final &&
+    STAR_MODES.includes(props.result.final.mode ?? ""),
+);
+const stars = computed(() =>
+  props.jobId ? jobsStore.starsFor(props.jobId) : null,
+);
+const counting = computed(
+  () => !!props.jobId && !!jobsStore.starsBusy[props.jobId],
+);
+const starsError = ref("");
+const overlayOn = ref(false);
+const overlayAvailable = computed(
+  () => !!stars.value?.solved && (stars.value?.labels.length ?? 0) > 0,
+);
+const overlayVisible = computed(
+  () =>
+    overlayOn.value && overlayAvailable.value && activeView.value === "final",
+);
+const formattedCount = computed(() =>
+  (stars.value?.count ?? 0).toLocaleString(locale.value),
+);
+
+// Load the cached annotation as soon as the feature applies (silent when never computed).
+watch(
+  () => [props.jobId, starsEnabled.value] as const,
+  ([id, enabled]) => {
+    starsError.value = "";
+    if (id && enabled) void jobsStore.fetchStars(id);
+  },
+  { immediate: true },
+);
+
+async function countStarsAction() {
+  if (!props.jobId || counting.value) return;
+  starsError.value = "";
+  try {
+    const res = await jobsStore.countStars(props.jobId);
+    // The user just asked for stars — turn the labels on when there are any to show.
+    if (res.solved && res.labels.length) overlayOn.value = true;
+  } catch (e) {
+    starsError.value = (e as ApiError).message || t("stars.failed");
+  }
 }
 
 // Integration (exposure) time that went into the final image: per channel = stacked subs × per-sub
@@ -156,7 +238,72 @@ const channelRows = computed<Row[]>(() =>
     flat: c.selection?.flat ? "✓" : "—",
     bias: c.selection?.bias ? "✓" : "—",
     pointing: pointingLabel(c.dither?.pattern),
+    coverage:
+      c.covered_frac != null ? `${(c.covered_frac * 100).toFixed(0)}%` : "—",
   })),
+);
+
+// Photometric normalization of a cross-session run: one row per (channel, group), from the rich
+// per-group provenance when present (run.json `groups`), falling back to the bare photom records so
+// older reuse-merged runs display too. Absent for single-session runs → the section hides.
+const photomRows = computed<Row[]>(() =>
+  (props.result.channels ?? []).flatMap((c) => {
+    const groups = c.groups?.length
+      ? c.groups.map((g) => ({ g, rec: g.photom }))
+      : (c.photom ?? []).map((rec) => ({ g: undefined, rec }));
+    return groups
+      .filter(({ rec }) => rec)
+      .map(({ g, rec }) => ({
+        session: g?.session || rec!.session || rec!.label,
+        filter: c.filter,
+        frames: g?.frames ?? rec!.frames,
+        stacked:
+          g?.stacked_frames != null ? `${g.stacked_frames}/${g.frames}` : "—",
+        scale: `×${rec!.scale.toFixed(2)}`,
+        offset: `${rec!.offset >= 0 ? "+" : ""}${rec!.offset.toFixed(3)}`,
+        residual: `${(rec!.resid * 100).toFixed(1)}%`,
+        rotation:
+          g?.rotation_deg != null
+            ? `↻ ${g.rotation_deg.toFixed(1)}°${g.overlap_frac != null ? ` · ${(g.overlap_frac * 100).toFixed(0)}%` : ""}`
+            : "—",
+        applied: photomStateLabel(rec!),
+        masters: [g?.dark, g?.flat, g?.bias].filter(Boolean).join(" · ") || "—",
+      }));
+  }),
+);
+const photomColumns: Column<Row>[] = [
+  { key: "session", label: t("fields.session"), sortable: true },
+  { key: "filter", label: t("fields.filter"), sortable: true },
+  { key: "frames", label: t("fields.count"), sortable: true, align: "right" },
+  { key: "stacked", label: t("job.photomStacked"), align: "right" },
+  { key: "scale", label: t("fields.scale"), align: "right" },
+  { key: "offset", label: t("fields.offset"), align: "right" },
+  { key: "residual", label: t("fields.residual"), align: "right" },
+  { key: "rotation", label: t("fields.rotation"), align: "right" },
+  { key: "applied", label: t("fields.applied") },
+  { key: "masters", label: t("calib.title") },
+];
+
+// photomStateLabel renders a record's outcome + the ladder rung that set its scale (method) and
+// the no-clip degrade flag — the "which evidence balanced this night" chip.
+const photomStateLabel = (rec: PhotomRecord): string => {
+  let state = rec.ref
+    ? t("job.photomReference")
+    : rec.applied
+      ? t("job.photomApplied")
+      : t("job.photomSkipped");
+  const method = rec.method || (rec.meta_seeded ? "seeded" : "");
+  if (method && method !== "measured" && !rec.ref)
+    state += ` · ${t(`job.photomMethod.${method}`)}`;
+  if (rec.reverted) state += ` · ⚠ ${t("job.photomReverted")}`;
+  return state;
+};
+
+// Photom records flattened for the filmstrip captions on the prenorm/normalized cards.
+const photomRecords = computed(() =>
+  (props.result.channels ?? []).flatMap(
+    (c) => c.groups?.map((g) => g.photom).filter((r) => !!r) ?? c.photom ?? [],
+  ),
 );
 const channelColumns: Column<Row>[] = [
   {
@@ -182,6 +329,7 @@ const channelColumns: Column<Row>[] = [
   { key: "flat", label: "Flat", align: "right" },
   { key: "bias", label: "Bias", align: "right" },
   { key: "pointing", label: t("fields.pointing"), align: "right" },
+  { key: "coverage", label: t("fields.coverage"), align: "right" },
 ];
 
 const masterRows = computed<Row[]>(() =>
@@ -325,9 +473,9 @@ const rejectedClass = (r: Row) =>
           }}</span>
         </span>
       </div>
-      <!-- Channel switcher: flip the preview between the final composite and each channel -->
+      <!-- Channel switcher: flip the preview between the final composite, each channel, and any mono output -->
       <div
-        v-if="channelViews.length"
+        v-if="channelViews.length || monoViews.length"
         class="mb-2 flex flex-wrap items-center gap-1.5"
       >
         <button
@@ -357,11 +505,59 @@ const rejectedClass = (r: Row) =>
         >
           <FilterChip :filter="v.filter" />
         </button>
+        <button
+          v-for="v in monoViews"
+          :key="v.key"
+          type="button"
+          class="rounded-md border px-2.5 py-1 text-xs font-medium transition-colors"
+          :class="
+            activeView === v.key
+              ? 'border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-900/30 dark:text-brand-200'
+              : 'border-slate-200 text-slate-600 hover:border-brand-400 dark:border-slate-700 dark:text-slate-300'
+          "
+          @click="activeView = v.key"
+        >
+          {{ v.label }}
+        </button>
       </div>
       <div class="relative">
-        <ImageViewer :src="activeSrc" :alt="activeView" />
-        <!-- Prev/next arrows: step through Final + each channel (cyclic) so it's clear you can switch -->
-        <template v-if="channelViews.length">
+        <ImageViewer
+          :src="activeSrc"
+          :alt="activeView"
+          :no-transition="overlayVisible"
+        >
+          <template v-if="overlayVisible && stars" #overlay="frame">
+            <StarLabelOverlay
+              :labels="stars.labels"
+              :image-w="stars.image?.width || frame.natW"
+              :image-h="stars.image?.height || frame.natH"
+              :nat-w="frame.natW"
+              :nat-h="frame.natH"
+              :scale="frame.scale"
+              :tx="frame.tx"
+              :ty="frame.ty"
+              :cw="frame.cw"
+              :ch="frame.ch"
+            />
+          </template>
+        </ImageViewer>
+        <!-- Star-name overlay toggle (bottom-left; the viewer's own toolbar owns the top-right). -->
+        <button
+          v-if="overlayAvailable && activeView === 'final'"
+          type="button"
+          class="absolute bottom-2 left-2 z-10 rounded-md bg-slate-900/80 p-2 text-slate-200 backdrop-blur transition-colors hover:bg-slate-700"
+          :aria-pressed="overlayOn"
+          :aria-label="
+            overlayOn ? t('stars.overlayHide') : t('stars.overlayShow')
+          "
+          :title="overlayOn ? t('stars.overlayHide') : t('stars.overlayShow')"
+          data-demo="stars-toggle"
+          @click="overlayOn = !overlayOn"
+        >
+          <IconStar :filled="overlayOn" />
+        </button>
+        <!-- Prev/next arrows: step through Final + each channel + mono output (cyclic) so it's clear you can switch -->
+        <template v-if="channelViews.length || monoViews.length">
           <button
             type="button"
             class="absolute left-2 top-1/2 z-10 -translate-y-1/2 rounded-md bg-slate-900/80 p-2 text-slate-200 backdrop-blur transition-colors hover:bg-slate-700"
@@ -383,10 +579,49 @@ const rejectedClass = (r: Row) =>
           <span
             class="pointer-events-none absolute left-2 top-2 z-10 rounded-md bg-slate-900/80 px-2 py-1 text-xs font-medium text-slate-100 backdrop-blur"
           >
-            {{ activeView === "final" ? t("job.finalView") : activeView }}
+            {{ activeLabel }}
           </span>
         </template>
       </div>
+      <!-- Star counter: manual compute → count badge (+ the overlay toggle above once solved). -->
+      <div
+        v-if="starsEnabled"
+        class="mt-2 flex flex-wrap items-center gap-3 text-sm"
+      >
+        <button
+          v-if="!stars"
+          :class="btnGhost"
+          :disabled="counting"
+          data-demo="stars-count"
+          @click="countStarsAction"
+        >
+          ★ {{ counting ? t("stars.counting") : t("stars.count") }}
+        </button>
+        <Spinner v-if="counting">{{ t("stars.solveHint") }}</Spinner>
+        <Pill
+          v-if="stars"
+          color-class="bg-brand-100 text-brand-800 ring-1 ring-brand-200 dark:bg-brand-900/40 dark:text-brand-300 dark:ring-brand-800/50"
+          data-demo="stars-badge"
+        >
+          ★ {{ t("stars.detected", { n: formattedCount }) }}
+        </Pill>
+        <span
+          v-if="stars && !stars.solved"
+          class="text-xs text-slate-500 dark:text-slate-400"
+        >
+          {{ t("stars.noSolve")
+          }}<template v-if="stars.solve?.reason">
+            ({{ stars.solve.reason }})</template
+          >
+        </span>
+      </div>
+      <p
+        v-if="starsError"
+        class="mt-1 text-sm text-red-600 dark:text-red-400"
+        data-demo="stars-error"
+      >
+        {{ starsError }}
+      </p>
       <video
         v-if="finalVideo"
         :src="finalVideo"
@@ -419,6 +654,7 @@ const rejectedClass = (r: Row) =>
     <StagePreviewTimeline
       :result="props.result"
       :editable="rerunnable"
+      :photom="photomRecords"
       @edit="(s) => emit('rerun-stage', s)"
     />
 
@@ -476,6 +712,40 @@ const rejectedClass = (r: Row) =>
             v-else
             class="ml-auto text-slate-300 dark:text-slate-600"
           />
+        </template>
+      </GenericTable>
+    </section>
+
+    <!-- Cross-session runs: how each night's signal was mapped onto the reference before stacking. -->
+    <section v-if="photomRows.length">
+      <h2 class="mb-2 text-lg font-medium">{{ t("job.photomTitle") }}</h2>
+      <p class="mb-2 text-xs text-slate-500 dark:text-slate-400">
+        {{ t("job.photomHint") }}
+      </p>
+      <p
+        v-if="result.combine_crop"
+        class="mb-2 text-xs"
+        :class="
+          result.combine_crop.applied
+            ? 'text-emerald-600 dark:text-emerald-400'
+            : 'text-amber-600 dark:text-amber-400'
+        "
+      >
+        {{
+          result.combine_crop.applied
+            ? t("job.combineCropApplied", {
+                w: result.combine_crop.w,
+                h: result.combine_crop.h,
+                pct: Math.round(result.combine_crop.frac * 100),
+              })
+            : t("job.combineCropSkipped", {
+                pct: Math.round(result.combine_crop.frac * 100),
+              })
+        }}
+      </p>
+      <GenericTable :columns="photomColumns" :rows="photomRows">
+        <template #cell-filter="{ value }">
+          <FilterChip :filter="String(value)" />
         </template>
       </GenericTable>
     </section>

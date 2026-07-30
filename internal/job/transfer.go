@@ -77,14 +77,15 @@ func (m *Manager) execTransfer(ctx context.Context, id int64, tr *TransferReques
 		return transfer.Result{}, err
 	}
 	req := transfer.Request{
-		Op:          transfer.Op(tr.Op),
-		LocalRoot:   rootAbs,
-		RelPath:     tr.RelPath,
-		Bucket:      tr.Bucket,
-		KeyPrefix:   path.Join(tr.Prefix, tr.Namespace),
-		Verify:      tr.Verify,
-		ExcludeDirs: tr.ExcludeDirs,
-		Concurrency: m.cfg.S3Concurrency, // 0 → the transfer engine's default parallelism
+		Op:           transfer.Op(tr.Op),
+		LocalRoot:    rootAbs,
+		RelPath:      tr.RelPath,
+		Bucket:       tr.Bucket,
+		KeyPrefix:    path.Join(tr.Prefix, tr.Namespace),
+		Verify:       tr.Verify,
+		ExcludeDirs:  tr.ExcludeDirs,
+		SkipSymlinks: tr.SkipSymlinks,
+		Concurrency:  m.cfg.S3Concurrency, // 0 → the transfer engine's default parallelism
 	}
 	// Let a manual pause stop the transfer BETWEEN files (checked in the ops loops), so a long S3 copy —
 	// pull, push or a standalone transfer — pauses instead of ignoring the request until it finishes.
@@ -112,17 +113,20 @@ func (m *Manager) runTransferReq(ctx context.Context, id int64, client *s3store.
 	if name == "" {
 		name = string(req.Op)
 	}
-
 	m.publish(Event{JobID: id, Status: store.JobRunning, Progress: 0, Step: name + " scanning…"})
+	return transfer.Run(ctx, client, req, m.newTransferProgress(ctx, id, name))
+}
 
-	// The engine can emit a progress callback per file (thousands for a big folder), so throttle the DB
-	// write + SSE publish to a few per second, and smooth the throughput (débit) with an EMA so the UI
-	// shows a steady MB/s rather than a spiky instantaneous rate. A throttled log line names the file
-	// currently moving, so the Live log shows what is being copied instead of sitting empty.
+// newTransferProgress builds the throttled byte-progress callback shared by every transfer-style job (the S3
+// folder ops AND the S3→S3 move). The engine can fire a callback per file (thousands for a big folder), so
+// it throttles the DB write + SSE publish to a few per second and smooths the throughput (débit) with an EMA
+// so the UI shows a steady MB/s rather than a spiky instantaneous rate. A throttled log line names the file
+// currently moving. name prefixes the step text ("upload"/"download"/"Moving"/…).
+func (m *Manager) newTransferProgress(ctx context.Context, id int64, name string) func(transfer.Progress) {
 	var lastPub, lastLog, lastSample time.Time
 	var lastBytes int64
 	var emaRate float64
-	onProg := func(pr transfer.Progress) {
+	return func(pr transfer.Progress) {
 		now := time.Now()
 		if !lastSample.IsZero() {
 			if dt := now.Sub(lastSample).Seconds(); dt > 0 {
@@ -165,7 +169,6 @@ func (m *Manager) runTransferReq(ctx context.Context, id int64, client *s3store.
 		}
 		m.publish(ev)
 	}
-	return transfer.Run(ctx, client, req, onProg)
 }
 
 // humanBytes formats a byte count in binary units (e.g. "3.4 GiB", "18.0 MiB"). Used for transfer step

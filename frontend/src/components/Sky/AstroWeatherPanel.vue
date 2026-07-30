@@ -44,6 +44,14 @@ watch(
       wx.fetch(true);
   },
 );
+// A custom planning time re-anchors the forecast night: refetch (the store's dedup key includes
+// `at`, so a same-night refresh is a no-op while a night change really reloads).
+watch(
+  () => sky.query?.at_utc_ms,
+  (at, prev) => {
+    if (at && prev && at !== prev) wx.fetch();
+  },
+);
 
 const tz = computed(() => {
   const l = sky.query?.location;
@@ -52,19 +60,42 @@ const tz = computed(() => {
     : Intl.DateTimeFormat().resolvedOptions().timeZone;
 });
 
-// Show the dark-window chart range (dusk−½h → dawn+½h, ±1 h slack); fall back to the next 18 h.
+// Show the SELECTED night's dark-window range (dusk−½h → dawn+½h, ±1 h slack). When the page plans a
+// night the forecast horizon does not reach, show nothing rather than silently falling back to
+// "now" hours that belong to a different night; the fallback only serves the no-dark-window case.
 const hours = computed<WeatherHour[]>(() => {
   const all = wx.forecast?.hours ?? [];
   const d = sky.darkWindow;
   if (d?.night_start_ms && d?.night_end_ms) {
-    const win = all.filter(
+    return all.filter(
       (h) =>
         h.t_ms >= d.night_start_ms - 3.6e6 && h.t_ms <= d.night_end_ms + 3.6e6,
     );
-    if (win.length) return win;
   }
   const now = Date.now();
   return all.filter((h) => h.t_ms >= now - 3.6e6).slice(0, 18);
+});
+
+// The planned night exists and the forecast loaded, but its horizon stops short of that night —
+// the honest "no forecast for this night yet" state (vs. a feed being down entirely).
+const outOfHorizon = computed(
+  () =>
+    !hours.value.length &&
+    !!sky.darkWindow?.night_start_ms &&
+    (wx.forecast?.hours?.length ?? 0) > 0,
+);
+
+// Badge label: "Tonight" for the live night, "Night of <date>" when planning another night.
+const nightBadgeLabel = computed(() => {
+  const start = sky.darkWindow?.night_start_ms ?? 0;
+  if (!start || Math.abs(start - Date.now()) < 12 * 3.6e6)
+    return t("tonight.weather.tonightLabel");
+  const date = new Intl.DateTimeFormat(undefined, {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone: tz.value,
+  }).format(new Date(start));
+  return t("tonight.weather.nightOf", { date });
 });
 
 const metrics = computed(() =>
@@ -113,7 +144,7 @@ const nightLabel = computed(() => verdictLabel(nightVerdict.value));
           :style="{ backgroundColor: verdictColor(nightVerdict) }"
           :title="t('tonight.weather.verdict')"
         >
-          {{ t("tonight.weather.tonightLabel") }} ·
+          {{ nightBadgeLabel }} ·
           {{ t(`tonight.weather.verdictLabel.${nightLabel}`) }}
         </span>
       </div>
@@ -140,7 +171,11 @@ const nightLabel = computed(() => verdictLabel(nightVerdict.value));
       v-else-if="!hours.length"
       class="py-6 text-center text-sm text-slate-400"
     >
-      {{ t("tonight.weather.unavailable") }}
+      {{
+        outOfHorizon
+          ? t("tonight.weather.noForecastNight")
+          : t("tonight.weather.unavailable")
+      }}
     </p>
 
     <div v-else class="mt-3 overflow-x-auto">

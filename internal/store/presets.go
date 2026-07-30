@@ -13,11 +13,12 @@ type Preset struct {
 	ID        int64  `json:"id" db:"id"`
 	Name      string `json:"name" db:"name"`
 	Payload   []byte `json:"payload" db:"payload"` // JSONB; opaque to the store
+	Favorite  bool   `json:"favorite" db:"favorite"`
 	CreatedAt int64  `json:"created_at" db:"created_at"`
 	UpdatedAt int64  `json:"updated_at" db:"updated_at"`
 }
 
-const presetCols = `id,name,payload,created_at,updated_at`
+const presetCols = `id,name,payload,favorite,created_at,updated_at`
 
 // ListPresets returns all saved presets, ordered by lowercased name for a stable, human-friendly UI order.
 func (s *Store) ListPresets(ctx context.Context) ([]Preset, error) {
@@ -31,6 +32,7 @@ func (s *Store) ListPresets(ctx context.Context) ([]Preset, error) {
 
 // SavePreset upserts a preset by case-insensitive name: re-saving under an existing name overwrites its
 // payload (so tweaking then re-saving does not duplicate), otherwise inserts a new row. Returns its id.
+// The favorite star is deliberately untouched on conflict — re-saving a starred preset keeps its star.
 func (s *Store) SavePreset(ctx context.Context, name string, payload []byte) (int64, error) {
 	now := nowMs()
 	var id int64
@@ -49,6 +51,14 @@ func (s *Store) RenamePreset(ctx context.Context, id int64, name string) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE processing_presets SET name=$2, updated_at=$3 WHERE id=$1`,
 		id, name, nowMs())
+	return err
+}
+
+// SetPresetFavorite stars/unstars a saved preset (favorites sort first in the UI picker).
+func (s *Store) SetPresetFavorite(ctx context.Context, id int64, favorite bool) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE processing_presets SET favorite=$2, updated_at=$3 WHERE id=$1`,
+		id, favorite, nowMs())
 	return err
 }
 

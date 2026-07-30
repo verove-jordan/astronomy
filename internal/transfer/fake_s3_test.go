@@ -57,6 +57,26 @@ func (f *fakeS3) Stat(_ context.Context, _, key string) (s3store.Object, bool, e
 	return o, ok, nil
 }
 
+// Readiness mirrors the real client: derive readiness from the stored object's class + restore status.
+func (f *fakeS3) Readiness(_ context.Context, _, key string) (s3store.Readiness, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	o, ok := f.objects[key]
+	if !ok {
+		return 0, os.ErrNotExist
+	}
+	switch {
+	case !o.Archived():
+		return s3store.Readable, nil
+	case o.RestoreReady():
+		return s3store.Readable, nil
+	case o.RestorePending():
+		return s3store.Pending, nil
+	default:
+		return s3store.NeedsRestore, nil
+	}
+}
+
 func (f *fakeS3) Upload(_ context.Context, _, key, localPath string, onBytes func(int64)) error {
 	f.mu.Lock()
 	f.uploadCalls[key]++

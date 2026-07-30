@@ -1,6 +1,7 @@
 // Package channeldetect infers which filter each light frame belongs to when the capture is
-// unlabeled (no FILTER in header/filename/folder). It is pure (stdlib only): callers supply a
-// per-frame signal Fingerprint, and it returns per-frame filter Assignments plus the run grouping.
+// unlabeled (no FILTER in header/filename/folder). It is pure (stdlib plus the dependency-free
+// internal/filters token table): callers supply a per-frame signal Fingerprint, and it returns
+// per-frame filter Assignments plus the run grouping.
 //
 // The method exploits the fact that a motorized filter wheel always turns in a fixed cyclic order
 // (e.g. L→R→G→B→Ha and wrap): frames are captured in contiguous same-filter runs, runs advance
@@ -70,6 +71,15 @@ type Options struct {
 }
 
 // DefaultOptions returns robust defaults for block-captured deep-sky sequences.
+//
+// Order stops at Ha ON PURPOSE, even though the pipeline handles OIII and SII as well: signal
+// detection cannot tell one emission line from another — Ha, OIII and SII are all faint AND
+// star-poor, which is the only evidence this package has — so adding them as extra cyclic states
+// would let the DP scatter a genuine Ha run across three indistinguishable labels. Callers with a
+// wider wheel should pass the real slot order in Options.Order.
+//
+// Naming a PHYSICAL wheel slot is a different question and does use the full canonical set — see
+// inspect.defaultSlotLegend.
 func DefaultOptions() Options {
 	return Options{
 		Order:               []string{"L", "R", "G", "B", "Ha"},

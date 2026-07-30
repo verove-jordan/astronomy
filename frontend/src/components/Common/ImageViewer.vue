@@ -10,7 +10,27 @@ import IconFit from "@/components/Icons/IconFit.vue";
 import IconReset from "@/components/Icons/IconReset.vue";
 import IconOneToOne from "@/components/Icons/IconOneToOne.vue";
 
-defineProps<{ src: string; alt?: string; heightClass?: string }>();
+// noTransition suppresses the 150 ms zoom glide — required while an overlay canvas tracks the
+// image, so both consume the same reactive transform in the same frame (no label slide).
+defineProps<{
+  src: string;
+  alt?: string;
+  heightClass?: string;
+  noTransition?: boolean;
+}>();
+defineSlots<{
+  // Scoped overlay layer painted between the image and the toolbar: receives the raw zoom frame
+  // so it can map image pixels → container pixels (used by the star-name label canvas).
+  overlay?(p: {
+    scale: number;
+    tx: number;
+    ty: number;
+    cw: number;
+    ch: number;
+    natW: number;
+    natH: number;
+  }): unknown;
+}>();
 const { t } = useI18n();
 
 const container = ref<HTMLElement | null>(null);
@@ -21,6 +41,13 @@ const {
   zoomPercent,
   canZoom,
   viewport,
+  scale,
+  tx,
+  ty,
+  cw,
+  ch,
+  natW,
+  natH,
   setNatural,
   fit,
   reset,
@@ -82,9 +109,20 @@ function navUp() {
       :alt="alt || ''"
       draggable="false"
       class="absolute left-0 top-0 max-w-none select-none will-change-transform"
-      :class="transitionClass"
+      :class="noTransition ? '' : transitionClass"
       :style="{ transform, transformOrigin: '0 0' }"
       @load="onLoad"
+    />
+    <slot
+      v-if="loaded"
+      name="overlay"
+      :scale="scale"
+      :tx="tx"
+      :ty="ty"
+      :cw="cw"
+      :ch="ch"
+      :natW="natW"
+      :natH="natH"
     />
     <div
       v-if="!loaded"

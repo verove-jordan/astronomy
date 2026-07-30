@@ -2,11 +2,14 @@ package job
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path"
 	"path/filepath"
 	"time"
 
 	"github.com/verove-jordan/astronomy/internal/backup"
+	"github.com/verove-jordan/astronomy/internal/s3store"
 	"github.com/verove-jordan/astronomy/internal/store"
 )
 
@@ -70,7 +73,41 @@ func (m *Manager) runBackup(ctx context.Context, id int64, br *BackupRequest) (a
 	if err != nil {
 		return nil, err
 	}
+	// Optionally archive the heavy components to a cold class (backups are the natural archival target).
+	// Best-effort: the backup already succeeded, so an archival hiccup warns rather than fails the job.
+	if s3store.ValidTargetClass(br.StorageClass) && !sameClass(br.StorageClass, s3store.ClassStandard) {
+		if err := m.archiveBackupComponents(ctx, client, br.Bucket, keyPrefix, br.StorageClass); err != nil {
+			m.publish(Event{JobID: id, Status: store.JobRunning,
+				Line: "⚠ backup uploaded but not fully archived: " + err.Error(), Ts: time.Now().UnixMilli()})
+		} else {
+			m.publish(Event{JobID: id, Status: store.JobRunning,
+				Line: "🧊 archived backup data to " + br.StorageClass, Ts: time.Now().UnixMilli()})
+		}
+	}
 	return res, nil
+}
+
+// archiveBackupComponents transitions the heavy data objects of a just-written backup to a cold storage
+// class, KEEPING manifest.json and appstate.json instant — the backup picker lists manifests and the
+// browser restores appstate directly, both of which must not require a thaw.
+func (m *Manager) archiveBackupComponents(ctx context.Context, client *s3store.Client, bucket, keyPrefix, class string) error {
+	objs, err := client.List(ctx, bucket, keyPrefix+"/")
+	if err != nil {
+		return err
+	}
+	for _, o := range objs {
+		switch path.Base(o.Key) {
+		case "manifest.json", "appstate.json":
+			continue // kept instant on purpose
+		}
+		if sameClass(o.StorageClass, class) {
+			continue
+		}
+		if err := client.ChangeStorageClass(ctx, bucket, o.Key, class); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // runRestore restores the selected components from <prefix>/backup/<stamp>/ on S3.
@@ -85,10 +122,51 @@ func (m *Manager) runRestore(ctx context.Context, id int64, rr *RestoreRequest) 
 		comps = backup.AllComponents
 	}
 
+	// Thaw-gate: an archived backup must be restored before its components can be read. Any archived object
+	// under the backup folder has its thaw ensured; if some are not yet readable, the job PARKS on a thaw
+	// cadence (causeThaw) and resumes to re-check — the same durable, visitable wait as processing from
+	// Glacier. GLACIER_IR components are instant, so they never park.
+	if waiting, err := m.thawBackup(ctx, id, client, rr.Bucket, keyPrefix); err != nil {
+		return nil, err
+	} else if len(waiting) > 0 {
+		return nil, &thawWaiting{keys: waiting}
+	}
+
 	m.publish(Event{JobID: id, Status: store.JobRunning, Progress: 0, Step: "restore starting"})
 	if err := backup.Restore(ctx, client, rr.Bucket, keyPrefix, comps, m.backupConfig(),
 		m.progressPublisher(ctx, id, 25)); err != nil {
 		return nil, err
 	}
 	return map[string]any{"restored": comps, "stamp": rr.Stamp}, nil
+}
+
+// thawBackup ensures a thaw of every archived object under a backup folder and returns the keys not yet
+// readable (empty → all readable, restore may proceed). manifest.json/appstate.json are kept instant, so
+// they never appear here. An endpoint without Glacier stops the scan (nothing is archivable there anyway).
+func (m *Manager) thawBackup(ctx context.Context, id int64, client *s3store.Client, bucket, keyPrefix string) ([]string, error) {
+	objs, err := client.List(ctx, bucket, keyPrefix+"/")
+	if err != nil {
+		return nil, err
+	}
+	var waiting []string
+	for _, o := range objs {
+		if !s3store.IsArchivedClass(o.StorageClass) {
+			continue
+		}
+		rd, terr := m.ensureThaw(ctx, client, bucket, o.Key, 0, s3store.TierStandard)
+		if terr != nil {
+			if errors.Is(terr, s3store.ErrRestoreUnsupported) {
+				break // no Glacier here → treat as not-archived and let restore try (it will error clearly if truly cold)
+			}
+			return nil, terr
+		}
+		if rd != s3store.Readable {
+			waiting = append(waiting, o.Key)
+		}
+	}
+	if len(waiting) > 0 {
+		m.publish(Event{JobID: id, Status: store.JobRunning,
+			Line: fmt.Sprintf("❄ thawing %d archived backup object(s) from Glacier…", len(waiting)), Ts: time.Now().UnixMilli()})
+	}
+	return waiting, nil
 }

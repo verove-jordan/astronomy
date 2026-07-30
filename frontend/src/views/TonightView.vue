@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { useSkyStore } from "@/stores/sky";
+import { MAG_ALL, useSkyStore } from "@/stores/sky";
 import { useAutoRefresh } from "@/composables/useAutoRefresh";
 import GenericTable, {
   type Column,
@@ -110,6 +110,15 @@ const awayMoon = ref(false);
 const favoritesOnly = ref(false);
 const narrowbandOnly = ref(false);
 
+// Limiting magnitude — a SERVER-side query param, unlike the view filters above: the returned list
+// is score-truncated, so only the backend gate can actually reveal fainter objects (galaxies).
+// Dragging updates the label live; the refetch fires on release (@change). Persisted with the sky
+// query; the map follows automatically since it plots store.targets.
+const magLimit = ref(store.params.max_mag ?? MAG_ALL);
+function applyMagLimit() {
+  void store.fetch({ max_mag: magLimit.value });
+}
+
 const availableTypes = computed(() =>
   [...new Set(store.targets.map((tg) => tg.type))].sort(),
 );
@@ -138,6 +147,7 @@ const rows = computed<Row[]>(() =>
     type: tg.type,
     palette: tg.composition.palette,
     score: tg.score,
+    score_live: tg.score_live,
     alt_now_deg: tg.alt_now_deg,
     max_alt_deg: tg.max_alt_deg,
     transit_utc_ms: tg.transit_utc_ms,
@@ -216,6 +226,12 @@ const columns = computed<Column<Row>[]>(() => [
   {
     key: "score",
     label: t("tonight.cols.score"),
+    sortable: true,
+    align: "right",
+  },
+  {
+    key: "score_live",
+    label: t("tonight.cols.scoreLive"),
     sortable: true,
     align: "right",
   },
@@ -446,6 +462,24 @@ const fovH = computed(() => store.query?.equipment.fov_h_deg ?? 1);
               class="block w-40 accent-brand-500"
             />
           </label>
+          <label class="text-xs text-slate-500 dark:text-slate-400">
+            {{ t("tonight.controls.magLimit") }}:
+            {{
+              magLimit >= MAG_ALL
+                ? t("tonight.controls.magAll")
+                : magLimit.toFixed(1)
+            }}
+            <input
+              v-model.number="magLimit"
+              type="range"
+              min="4"
+              :max="MAG_ALL"
+              step="0.5"
+              class="block w-40 accent-brand-500"
+              data-demo="tonight-mag"
+              @change="applyMagLimit"
+            />
+          </label>
           <label
             class="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400"
           >
@@ -554,6 +588,18 @@ const fovH = computed(() => store.query?.equipment.fov_h_deg ?? 1);
         </template>
         <template #cell-score="{ row }">
           <ScoreBadge :score="Number(row.score)" />
+        </template>
+        <template #cell-score_live="{ row }">
+          <ScoreBadge
+            v-if="row.score_live != null"
+            :score="Number(row.score_live)"
+          />
+          <span
+            v-else
+            class="text-slate-500"
+            :title="t('tonight.weather.noForecastNight')"
+            >—</span
+          >
         </template>
       </GenericTable>
 

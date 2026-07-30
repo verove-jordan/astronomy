@@ -1,17 +1,9 @@
 import { computed, ref, toValue, watch, type MaybeRefOrGetter } from "vue";
 import type { Inventory } from "@/types";
+import { FILTERS } from "@/constants/filters";
 
 // Channels the user can assign a detected filter to. "ignore" excludes those frames from stacking.
-export const CHANNEL_TARGETS = [
-  "L",
-  "R",
-  "G",
-  "B",
-  "Ha",
-  "OIII",
-  "SII",
-  "ignore",
-] as const;
+export const CHANNEL_TARGETS = [...FILTERS, "ignore"] as const;
 
 // useChannelMapping exposes the distinct detected/known filters and a user-editable mapping from
 // each to a target channel. `overrides` is the compact diff to POST as filter_map (identity entries

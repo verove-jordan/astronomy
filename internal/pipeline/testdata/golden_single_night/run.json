@@ -1,0 +1,491 @@
+{
+  "channels": [
+    {
+      "exposure_ms": 10000,
+      "filter": "L",
+      "input_frames": 3,
+      "metrics": [
+        {
+          "background": -0.00525149,
+          "fwhm": 4.87451,
+          "index": 1,
+          "path": "\u003cROOT\u003e/in/lights/light_L_0.fits",
+          "quality": 0,
+          "rejected": false,
+          "roundness": 0.994922,
+          "star_count": 36,
+          "trail_detected": false,
+          "trail_score": 0.3046875,
+          "wfwhm": 4.87451
+        },
+        {
+          "background": -0.00535193,
+          "fwhm": 4.86537,
+          "index": 2,
+          "path": "\u003cROOT\u003e/in/lights/light_L_1.fits",
+          "quality": 0,
+          "rejected": false,
+          "roundness": 0.998574,
+          "shift_x": -1.49864,
+          "shift_y": 0.505404,
+          "star_count": 36,
+          "trail_detected": false,
+          "trail_score": 0.30859375,
+          "wfwhm": 4.86537
+        },
+        {
+          "background": -0.00522041,
+          "fwhm": 4.87376,
+          "index": 3,
+          "path": "\u003cROOT\u003e/in/lights/light_L_2.fits",
+          "quality": 0,
+          "rejected": false,
+          "roundness": 0.995008,
+          "shift_x": -3.00062,
+          "shift_y": 0.99911,
+          "star_count": 36,
+          "trail_detected": false,
+          "trail_score": 0.30859375,
+          "wfwhm": 4.87376
+        }
+      ],
+      "noise": {
+        "background": 0.0193003099411726,
+        "sigma_before": 0.00028517706758531203,
+        "snr": 1580.3051115549786
+      },
+      "object": "TESTFIELD",
+      "output_path": "\u003cROOT\u003e/out/TESTFIELD/\u003cRUN\u003e/master_L.fits",
+      "selection": {
+        "bias": {
+          "bin": 1,
+          "exposure_ms": 0,
+          "frame_count": 3,
+          "gain": 100,
+          "has_temp": true,
+          "offset": 10,
+          "path": "\u003cROOT\u003e/work/run_\u003cRUN\u003e/masters/master_BIAS_g100o10_b1.fits",
+          "temp_milli_c": -10000,
+          "type": "BIAS"
+        },
+        "dark": {
+          "bin": 1,
+          "exposure_ms": 10000,
+          "frame_count": 3,
+          "gain": 100,
+          "has_temp": true,
+          "offset": 10,
+          "path": "\u003cROOT\u003e/work/run_\u003cRUN\u003e/masters/master_DARK_10000ms_g100o10_b1_-10C.fits",
+          "temp_milli_c": -10000,
+          "type": "DARK"
+        },
+        "flat": {
+          "bin": 1,
+          "exposure_ms": 5,
+          "frame_count": 3,
+          "gain": 100,
+          "has_temp": true,
+          "offset": 10,
+          "path": "\u003cROOT\u003e/work/run_\u003cRUN\u003e/masters/master_FLAT_5ms_g100o10_b1_-10C.fits",
+          "temp_milli_c": -10000,
+          "type": "FLAT"
+        },
+        "notes": [
+          "no L flat — using the session flat (corrects shared dust/vignetting)"
+        ]
+      },
+      "stacked_frames": 3
+    },
+    {
+      "exposure_ms": 10000,
+      "filter": "R",
+      "input_frames": 3,
+      "metrics": [
+        {
+          "background": -0.00525149,
+          "fwhm": 4.87451,
+          "index": 1,
+          "path": "\u003cROOT\u003e/in/lights/light_R_0.fits",
+          "quality": 0,
+          "rejected": false,
+          "roundness": 0.994922,
+          "star_count": 36,
+          "trail_detected": false,
+          "trail_score": 0.3046875,
+          "wfwhm": 4.87451
+        },
+        {
+          "background": -0.00535193,
+          "fwhm": 4.86537,
+          "index": 2,
+          "path": "\u003cROOT\u003e/in/lights/light_R_1.fits",
+          "quality": 0,
+          "rejected": false,
+          "roundness": 0.998574,
+          "shift_x": -1.49864,
+          "shift_y": 0.505404,
+          "star_count": 36,
+          "trail_detected": false,
+          "trail_score": 0.30859375,
+          "wfwhm": 4.86537
+        },
+        {
+          "background": -0.00522041,
+          "fwhm": 4.87376,
+          "index": 3,
+          "path": "\u003cROOT\u003e/in/lights/light_R_2.fits",
+          "quality": 0,
+          "rejected": false,
+          "roundness": 0.995008,
+          "shift_x": -3.00062,
+          "shift_y": 0.99911,
+          "star_count": 36,
+          "trail_detected": false,
+          "trail_score": 0.30859375,
+          "wfwhm": 4.87376
+        }
+      ],
+      "noise": {
+        "background": 0.0193003099411726,
+        "sigma_before": 0.00028517706758531203,
+        "snr": 1580.3051115549786
+      },
+      "object": "TESTFIELD",
+      "output_path": "\u003cROOT\u003e/out/TESTFIELD/\u003cRUN\u003e/master_R.fits",
+      "selection": {
+        "bias": {
+          "bin": 1,
+          "exposure_ms": 0,
+          "frame_count": 3,
+          "gain": 100,
+          "has_temp": true,
+          "offset": 10,
+          "path": "\u003cROOT\u003e/work/run_\u003cRUN\u003e/masters/master_BIAS_g100o10_b1.fits",
+          "temp_milli_c": -10000,
+          "type": "BIAS"
+        },
+        "dark": {
+          "bin": 1,
+          "exposure_ms": 10000,
+          "frame_count": 3,
+          "gain": 100,
+          "has_temp": true,
+          "offset": 10,
+          "path": "\u003cROOT\u003e/work/run_\u003cRUN\u003e/masters/master_DARK_10000ms_g100o10_b1_-10C.fits",
+          "temp_milli_c": -10000,
+          "type": "DARK"
+        },
+        "flat": {
+          "bin": 1,
+          "exposure_ms": 5,
+          "frame_count": 3,
+          "gain": 100,
+          "has_temp": true,
+          "offset": 10,
+          "path": "\u003cROOT\u003e/work/run_\u003cRUN\u003e/masters/master_FLAT_5ms_g100o10_b1_-10C.fits",
+          "temp_milli_c": -10000,
+          "type": "FLAT"
+        },
+        "notes": [
+          "no R flat — using the session flat (corrects shared dust/vignetting)"
+        ]
+      },
+      "stacked_frames": 3
+    },
+    {
+      "exposure_ms": 10000,
+      "filter": "G",
+      "input_frames": 3,
+      "metrics": [
+        {
+          "background": -0.00525149,
+          "fwhm": 4.87451,
+          "index": 1,
+          "path": "\u003cROOT\u003e/in/lights/light_G_0.fits",
+          "quality": 0,
+          "rejected": false,
+          "roundness": 0.994922,
+          "star_count": 36,
+          "trail_detected": false,
+          "trail_score": 0.3046875,
+          "wfwhm": 4.87451
+        },
+        {
+          "background": -0.00535193,
+          "fwhm": 4.86537,
+          "index": 2,
+          "path": "\u003cROOT\u003e/in/lights/light_G_1.fits",
+          "quality": 0,
+          "rejected": false,
+          "roundness": 0.998574,
+          "shift_x": -1.49864,
+          "shift_y": 0.505404,
+          "star_count": 36,
+          "trail_detected": false,
+          "trail_score": 0.30859375,
+          "wfwhm": 4.86537
+        },
+        {
+          "background": -0.00522041,
+          "fwhm": 4.87376,
+          "index": 3,
+          "path": "\u003cROOT\u003e/in/lights/light_G_2.fits",
+          "quality": 0,
+          "rejected": false,
+          "roundness": 0.995008,
+          "shift_x": -3.00062,
+          "shift_y": 0.99911,
+          "star_count": 36,
+          "trail_detected": false,
+          "trail_score": 0.30859375,
+          "wfwhm": 4.87376
+        }
+      ],
+      "noise": {
+        "background": 0.0193003099411726,
+        "sigma_before": 0.00028517706758531203,
+        "snr": 1580.3051115549786
+      },
+      "object": "TESTFIELD",
+      "output_path": "\u003cROOT\u003e/out/TESTFIELD/\u003cRUN\u003e/master_G.fits",
+      "selection": {
+        "bias": {
+          "bin": 1,
+          "exposure_ms": 0,
+          "frame_count": 3,
+          "gain": 100,
+          "has_temp": true,
+          "offset": 10,
+          "path": "\u003cROOT\u003e/work/run_\u003cRUN\u003e/masters/master_BIAS_g100o10_b1.fits",
+          "temp_milli_c": -10000,
+          "type": "BIAS"
+        },
+        "dark": {
+          "bin": 1,
+          "exposure_ms": 10000,
+          "frame_count": 3,
+          "gain": 100,
+          "has_temp": true,
+          "offset": 10,
+          "path": "\u003cROOT\u003e/work/run_\u003cRUN\u003e/masters/master_DARK_10000ms_g100o10_b1_-10C.fits",
+          "temp_milli_c": -10000,
+          "type": "DARK"
+        },
+        "flat": {
+          "bin": 1,
+          "exposure_ms": 5,
+          "frame_count": 3,
+          "gain": 100,
+          "has_temp": true,
+          "offset": 10,
+          "path": "\u003cROOT\u003e/work/run_\u003cRUN\u003e/masters/master_FLAT_5ms_g100o10_b1_-10C.fits",
+          "temp_milli_c": -10000,
+          "type": "FLAT"
+        },
+        "notes": [
+          "no G flat — using the session flat (corrects shared dust/vignetting)"
+        ]
+      },
+      "stacked_frames": 3
+    },
+    {
+      "exposure_ms": 10000,
+      "filter": "B",
+      "input_frames": 3,
+      "metrics": [
+        {
+          "background": -0.00525149,
+          "fwhm": 4.87451,
+          "index": 1,
+          "path": "\u003cROOT\u003e/in/lights/light_B_0.fits",
+          "quality": 0,
+          "rejected": false,
+          "roundness": 0.994922,
+          "star_count": 36,
+          "trail_detected": false,
+          "trail_score": 0.3046875,
+          "wfwhm": 4.87451
+        },
+        {
+          "background": -0.00535193,
+          "fwhm": 4.86537,
+          "index": 2,
+          "path": "\u003cROOT\u003e/in/lights/light_B_1.fits",
+          "quality": 0,
+          "rejected": false,
+          "roundness": 0.998574,
+          "shift_x": -1.49864,
+          "shift_y": 0.505404,
+          "star_count": 36,
+          "trail_detected": false,
+          "trail_score": 0.30859375,
+          "wfwhm": 4.86537
+        },
+        {
+          "background": -0.00522041,
+          "fwhm": 4.87376,
+          "index": 3,
+          "path": "\u003cROOT\u003e/in/lights/light_B_2.fits",
+          "quality": 0,
+          "rejected": false,
+          "roundness": 0.995008,
+          "shift_x": -3.00062,
+          "shift_y": 0.99911,
+          "star_count": 36,
+          "trail_detected": false,
+          "trail_score": 0.30859375,
+          "wfwhm": 4.87376
+        }
+      ],
+      "noise": {
+        "background": 0.0193003099411726,
+        "sigma_before": 0.00028517706758531203,
+        "snr": 1580.3051115549786
+      },
+      "object": "TESTFIELD",
+      "output_path": "\u003cROOT\u003e/out/TESTFIELD/\u003cRUN\u003e/master_B.fits",
+      "selection": {
+        "bias": {
+          "bin": 1,
+          "exposure_ms": 0,
+          "frame_count": 3,
+          "gain": 100,
+          "has_temp": true,
+          "offset": 10,
+          "path": "\u003cROOT\u003e/work/run_\u003cRUN\u003e/masters/master_BIAS_g100o10_b1.fits",
+          "temp_milli_c": -10000,
+          "type": "BIAS"
+        },
+        "dark": {
+          "bin": 1,
+          "exposure_ms": 10000,
+          "frame_count": 3,
+          "gain": 100,
+          "has_temp": true,
+          "offset": 10,
+          "path": "\u003cROOT\u003e/work/run_\u003cRUN\u003e/masters/master_DARK_10000ms_g100o10_b1_-10C.fits",
+          "temp_milli_c": -10000,
+          "type": "DARK"
+        },
+        "flat": {
+          "bin": 1,
+          "exposure_ms": 5,
+          "frame_count": 3,
+          "gain": 100,
+          "has_temp": true,
+          "offset": 10,
+          "path": "\u003cROOT\u003e/work/run_\u003cRUN\u003e/masters/master_FLAT_5ms_g100o10_b1_-10C.fits",
+          "temp_milli_c": -10000,
+          "type": "FLAT"
+        },
+        "notes": [
+          "no B flat — using the session flat (corrects shared dust/vignetting)"
+        ]
+      },
+      "stacked_frames": 3
+    }
+  ],
+  "final": {
+    "channels": [
+      "L",
+      "R",
+      "G",
+      "B"
+    ],
+    "finish_quality": {
+      "background": 0.12549019607843137,
+      "bg_chroma": 1.5185752119930994e-7,
+      "black_clip": [
+        0.0274200439453125,
+        0.0274200439453125,
+        0.0274200439453125
+      ],
+      "green_cast": 0,
+      "median": [
+        0.25098039215686274,
+        0.25098039215686274,
+        0.25098039215686274
+      ],
+      "signal_cast": 0,
+      "star_color_spread": 0,
+      "star_sat_frac": 0,
+      "star_warm_frac": 0,
+      "warm_cast": 0,
+      "white_clip": [
+        0.000213623046875,
+        0.000213623046875,
+        0.000213623046875
+      ]
+    },
+    "mode": "LRGB",
+    "mono_outputs": [
+      {
+        "kind": "luminance",
+        "png": "\u003cROOT\u003e/out/TESTFIELD/\u003cRUN\u003e/final_luminance.png",
+        "tif": "\u003cROOT\u003e/out/TESTFIELD/\u003cRUN\u003e/final_luminance.tif"
+      }
+    ],
+    "notes": [
+      "background-neutralization color balance",
+      "saved luminance-only mono (final_luminance)"
+    ],
+    "outputs": [
+      "\u003cROOT\u003e/out/TESTFIELD/\u003cRUN\u003e/final.png",
+      "\u003cROOT\u003e/out/TESTFIELD/\u003cRUN\u003e/final.tif",
+      "\u003cROOT\u003e/out/TESTFIELD/\u003cRUN\u003e/final_luminance.png",
+      "\u003cROOT\u003e/out/TESTFIELD/\u003cRUN\u003e/final_luminance.tif"
+    ]
+  },
+  "input_dir": "\u003cROOT\u003e/in",
+  "masters": [
+    {
+      "bin": 1,
+      "exposure_ms": 0,
+      "frame_count": 3,
+      "gain": 100,
+      "has_temp": true,
+      "offset": 10,
+      "path": "\u003cROOT\u003e/work/run_\u003cRUN\u003e/masters/master_BIAS_g100o10_b1.fits",
+      "temp_milli_c": -10000,
+      "type": "BIAS"
+    },
+    {
+      "bin": 1,
+      "exposure_ms": 10000,
+      "frame_count": 3,
+      "gain": 100,
+      "has_temp": true,
+      "offset": 10,
+      "path": "\u003cROOT\u003e/work/run_\u003cRUN\u003e/masters/master_DARK_10000ms_g100o10_b1_-10C.fits",
+      "temp_milli_c": -10000,
+      "type": "DARK"
+    },
+    {
+      "bin": 1,
+      "exposure_ms": 5,
+      "frame_count": 3,
+      "gain": 100,
+      "has_temp": true,
+      "offset": 10,
+      "path": "\u003cROOT\u003e/work/run_\u003cRUN\u003e/masters/master_FLAT_5ms_g100o10_b1_-10C.fits",
+      "temp_milli_c": -10000,
+      "type": "FLAT"
+    }
+  ],
+  "object": "TESTFIELD",
+  "options": {
+    "drop_transition": true,
+    "ha_continuum_sub": true,
+    "ha_exclude_stars": true,
+    "luminance_mono": true,
+    "mode": "deepsky",
+    "seam_noise_eq": true,
+    "seam_offset_refit": true,
+    "stack_weight": "wfwhm"
+  },
+  "output_dir": "\u003cROOT\u003e/out/TESTFIELD/\u003cRUN\u003e",
+  "run_id": "\u003cRUN\u003e",
+  "warnings": [
+    "channel parity check skipped (no master could be plate-solved)"
+  ]
+}

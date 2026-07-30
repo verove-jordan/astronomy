@@ -88,6 +88,29 @@ func TestPlanetaryRenderer_ApplyPatch(t *testing.T) {
 		_, _, changed := c.applyPatch(base, rawPatch(t, map[string]any{}), tierA)
 		assert.False(t, changed)
 	})
+	t.Run("shadow_lift tunes and clamps, tierA never reverted", func(t *testing.T) {
+		next, tr, changed := c.applyPatch(base, rawPatch(t, map[string]any{"shadow_lift": 2.0}), tierA)
+		assert.Equal(t, tierA, tr)
+		assert.True(t, changed)
+		assert.InDelta(t, 1.0, next.Planetary.Finish.ShadowLift, 1e-9, "clamped to max, not reverted by the tierC path")
+	})
+	t.Run("earthshine cannot be enabled by the agent", func(t *testing.T) {
+		next, tr, changed := c.applyPatch(base, rawPatch(t, map[string]any{"earthshine_gain": 1.0}), tierA)
+		assert.Equal(t, tierA, tr)
+		assert.False(t, changed, "an enable-only patch must read as no-change so the loop converges")
+		assert.Zero(t, next.Planetary.Finish.EarthshineGain)
+	})
+	t.Run("earthshine tunes and clamps when the user enabled it", func(t *testing.T) {
+		on := base
+		on.Planetary.Finish.EarthshineGain = 1.0
+		next, tr, changed := c.applyPatch(on, rawPatch(t, map[string]any{"earthshine_gain": 9.0}), tierA)
+		assert.Equal(t, tierA, tr)
+		assert.True(t, changed)
+		assert.InDelta(t, 2.0, next.Planetary.Finish.EarthshineGain, 1e-9, "clamped to max")
+
+		next, _, _ = c.applyPatch(on, rawPatch(t, map[string]any{"earthshine_gain": 0.05}), tierA)
+		assert.InDelta(t, 0.2, next.Planetary.Finish.EarthshineGain, 1e-9, "clamped to the enabled floor")
+	})
 }
 
 // TestModeRenderers_ParamsAndTiers pins the single-stage contract the shared loop relies on: every

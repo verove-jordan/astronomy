@@ -45,8 +45,13 @@ func BuildOrReuseMasters(ctx context.Context, runner *siril.Runner, inv *inspect
 				warnings = append(warnings, err.Error())
 				continue
 			}
-			if err := lib.SaveMaster(ctx, built); err != nil {
-				warnings = append(warnings, "could not add master to library: "+err.Error())
+			// Per-night masters (multi-night flats) are RUN-LOCAL: master_frames has no night column,
+			// so SaveMaster's dedup key would make two nights overwrite each other in the library.
+			// They rebuild in seconds; only night-blind masters persist.
+			if built.Session == "" {
+				if err := lib.SaveMaster(ctx, built); err != nil {
+					warnings = append(warnings, "could not add master to library: "+err.Error())
+				}
 			}
 			masters = append(masters, built)
 		}
@@ -56,23 +61,37 @@ func BuildOrReuseMasters(ctx context.Context, runner *siril.Runner, inv *inspect
 
 // findExisting returns a library master compatible with a calibration set, or nil.
 func findExisting(masters []Master, set inspect.Set) *Master {
-	mt := masterByFrameType[set.Key.Type]
-	k := set.Key
 	for i := range masters {
-		m := &masters[i]
-		if m.Type != mt || m.Gain != k.Gain || m.Offset != k.Offset || m.Bin != k.Bin || m.Filter != k.Filter {
-			continue
+		if masterMatchesSet(&masters[i], set) {
+			return &masters[i]
 		}
-		if mt != MasterBias && m.ExposureMs != k.ExposureMs {
-			continue
-		}
-		if (mt == MasterDark || mt == MasterDarkFlat) &&
-			math.Abs(float64(m.TempMilliC-int64(k.TempBucket)*1000))/1000 > tempTolC {
-			continue
-		}
-		return m
 	}
 	return nil
+}
+
+// masterMatchesSet reports whether a master is field-compatible with a calibration set — the reuse
+// predicate shared by the run's build-or-reuse above and the preview's candidate assembly
+// (PreviewCandidates): same type, camera settings, filter and capture night; same exposure for
+// non-bias; sensor temperature within tolerance for darks. The night term makes a night-stamped
+// flat set (multi-night scan) ALWAYS rebuild — library masters load night-blind (Session ""), and a
+// night-blind flat must never satisfy a per-night set (dust may have moved).
+func masterMatchesSet(m *Master, set inspect.Set) bool {
+	mt := masterByFrameType[set.Key.Type]
+	k := set.Key
+	if m.Type != mt || m.Gain != k.Gain || m.Offset != k.Offset || m.Bin != k.Bin || m.Filter != k.Filter {
+		return false
+	}
+	if m.Session != k.Session {
+		return false
+	}
+	if mt != MasterBias && m.ExposureMs != k.ExposureMs {
+		return false
+	}
+	if (mt == MasterDark || mt == MasterDarkFlat) &&
+		math.Abs(float64(m.TempMilliC-int64(k.TempBucket)*1000))/1000 > tempTolC {
+		return false
+	}
+	return true
 }
 
 func fileExists(path string) bool {

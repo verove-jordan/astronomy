@@ -19,7 +19,9 @@
     "processing": "Traitement",
     "astroAgent": "AstroAgent",
     "collapse": "Réduire",
-    "expand": "Agrandir"
+    "expand": "Agrandir",
+    "mosaic": "Mosaïque",
+    "capture": "Capture"
   },
   "astroAgent": {
     "title": "AstroAgent",
@@ -143,6 +145,12 @@
       "empty": "Toutes les étoiles sont centrées — aucune cible suivante.",
       "face": "Tournez-vous vers {dir}, regardez à environ {alt}° de hauteur",
       "hint": "glisser pour déplacer · molette pour zoomer",
+      "expand": "Agrandir la carte",
+      "close": "Fermer la carte",
+      "milkyWay": "Voie lactée",
+      "offset": "Décalage temporel",
+      "now": "Revenir à l'heure de la page",
+      "scrubHint": "Lune et planètes restent affichées à l'heure de la page (estompées) — le plan d'alignement y reste calé",
       "controls": {
         "zoomIn": "Zoomer",
         "zoomOut": "Dézoomer",
@@ -156,6 +164,300 @@
         "mars": "Mars",
         "jupiter": "Jupiter",
         "saturn": "Saturne"
+      }
+    },
+    "compass": {
+      "N": "N",
+      "NNE": "NNE",
+      "NE": "NE",
+      "ENE": "ENE",
+      "E": "E",
+      "ESE": "ESE",
+      "SE": "SE",
+      "SSE": "SSE",
+      "S": "S",
+      "SSW": "SSO",
+      "SW": "SO",
+      "WSW": "OSO",
+      "W": "O",
+      "WNW": "ONO",
+      "NW": "NO",
+      "NNW": "NNO"
+    },
+    "reasons": {
+      "very_bright": "très brillante (mag {mag}) — facile à repérer",
+      "bright": "brillante (mag {mag})",
+      "naked_eye": "visible à l'œil nu (mag {mag})",
+      "low": "assez basse ({alt}° de hauteur)",
+      "high_overhead": "presque au zénith ({alt}° de hauteur)",
+      "well_placed": "bien placée ({alt}° de hauteur)",
+      "spread": "à {deg}° de l'étoile choisie la plus proche — garde une répartition large"
+    },
+    "warnings": {
+      "few_stars": "Seulement {available} étoile(s) sur {requested} demandées sont disponibles entre {min_alt}° et {max_alt}° de hauteur{sideClause} pour l'instant. Réduisez le nombre d'étoiles, attendez que d'autres se lèvent, ou essayez un autre profil de monture.",
+      "calib_same_side": "Le côté {side} du méridien compte trop peu d'étoiles du catalogue pour l'instant ; {count} étoile(s) de calibration sont placées du même côté que les étoiles d'alignement.",
+      "side": " du côté {side} du méridien"
+    },
+    "tuning": {
+      "title": "Défauts connus de la monture & compensations",
+      "intro": "Chaque monture a ses défauts mécaniques connus. Choisissez votre modèle pour voir ce qui la limite typiquement et les compensations — pour la plupart gratuites — qui contournent chacun d'eux.",
+      "mountLabel": "Modèle de monture",
+      "summaryTitle": "Ce qui cloche sur cette monture",
+      "issuesTitle": "Défauts connus",
+      "fixesTitle": "Compensations",
+      "severity": {
+        "high": "majeur",
+        "medium": "modéré"
+      },
+      "effort": {
+        "free": "gratuit",
+        "paid": "payant"
+      },
+      "minutes": "~{m} min",
+      "models": {
+        "avx": {
+          "name": "Celestron Advanced VX (AVX)",
+          "summary": "D'après les retours d'utilisateurs AVX, la monture souffre surtout d'un jeu (backlash) important — en particulier en déclinaison — et d'une erreur périodique conséquente en ascension droite. Environ 70 % du gain se joue en réglages gratuits, avant tout achat.",
+          "issues": {
+            "dec_backlash": {
+              "label": "Jeu en déclinaison (backlash)",
+              "symptom": "Les corrections d'autoguidage en DEC mettent plusieurs secondes à « mordre », dépassent la cible, ou oscillent entre nord et sud.",
+              "why": "Le couple vis sans fin / roue dentée a du jeu : à chaque inversion de sens, le moteur doit d'abord traverser la zone morte avant que l'axe ne bouge réellement."
+            },
+            "periodic_error": {
+              "label": "Erreur périodique (AD)",
+              "symptom": "Les étoiles filent d'est en ouest sur les poses non guidées ; le guidage montre une ondulation lente plus une oscillation rapide en AD.",
+              "why": "L'erreur d'usinage de la vis sans fin AD se répète à chaque tour : une composante lente d'environ 620 s (~15″ crête-à-crête), facile à corriger, plus une oscillation rapide d'environ 11 s que le guidage suit mal."
+            }
+          },
+          "fixes": {
+            "east_heavy": {
+              "title": "Équilibrage volontairement « east-heavy » en AD",
+              "steps": [
+                "Équilibrez normalement la monture, puis décalez légèrement le contrepoids pour que le côté est soit un peu plus lourd — l'axe tire toujours contre la vis sans fin.",
+                "Après un retournement au méridien, redécalez la charge pour rester east-heavy.",
+                "Objectif : garder la vis sans fin plaquée contre un même flanc de la roue — le jeu en AD disparaît du guidage.",
+                "Réglage recommandé par Celestron ; retours d'utilisateurs : 1,5–2,25″ RMS ramenés à 0,85–1,25″ en le combinant au PEC et à la compensation de backlash PHD2."
+              ]
+            },
+            "dec_unidirectional": {
+              "title": "Guidage DEC unidirectionnel",
+              "steps": [
+                "Biaisez très légèrement la mise en station (quelques minutes d'arc) pour que la dérive en déclinaison se fasse toujours dans le même sens.",
+                "Dans PHD2, limitez le guidage DEC à « North only » ou « South only », selon le sens de la dérive.",
+                "Les corrections ne changent plus jamais de sens : le backlash DEC ne s'exprime plus — le contournement classique sur AVX."
+              ]
+            },
+            "guiding_assistant": {
+              "title": "Lancez le Guiding Assistant de PHD2",
+              "steps": [
+                "Lancez le Guiding Assistant (menu Outils) quelques minutes sur une étoile proche du méridien et de l'équateur céleste.",
+                "Il mesure le backlash DEC et la turbulence, puis propose la compensation et les réglages min-move.",
+                "Acceptez ses suggestions puis vérifiez sur quelques minutes de guidage. Gratuit et indispensable (~15 min)."
+              ]
+            },
+            "pec": {
+              "title": "PEC + Predictive PEC en AD",
+              "steps": [
+                "Enregistrez le PEC dans la monture sur au moins un tour complet de vis sans fin (~10 min) : la composante lente ~620 s (~15″ crête-à-crête) se corrige bien.",
+                "Activez l'algorithme Predictive PEC (PPEC) de PHD2 en AD : l'erreur résiduelle est apprise et anticipée.",
+                "L'oscillation rapide (~11 s) est difficile à guider : lissez-la avec des poses de guidage courtes (0,5–1 s)."
+              ]
+            }
+          }
+        },
+        "celestron-eq-generic": {
+          "name": "Celestron ÉQ (CGEM, CGX…)",
+          "summary": "Les équatoriales Celestron partagent les traits de la famille AVX, en plus atténué : un peu de jeu de vis sans fin et une erreur périodique modérée. Équilibrage, mesure et bons réglages de guidage en éliminent l'essentiel, gratuitement.",
+          "issues": {
+            "backlash": {
+              "label": "Jeu des axes (backlash)",
+              "symptom": "Les corrections mettent un instant à s'engager après un changement de sens ; l'étoile flotte autour du centre.",
+              "why": "Toute vis sans fin a du jeu ; il augmente avec un engrènement desserré et se voit surtout en déclinaison, où les corrections s'inversent sans cesse."
+            },
+            "periodic_error": {
+              "label": "Erreur périodique (AD)",
+              "symptom": "Les étoiles filent lentement d'est en ouest sur les poses non guidées, de façon répétitive sur quelques minutes.",
+              "why": "Les tolérances d'usinage de la vis sans fin se répètent à chaque tour : l'erreur est périodique, donc mesurable et corrigeable."
+            }
+          },
+          "fixes": {
+            "balance": {
+              "title": "Équilibrez soigneusement les deux axes",
+              "steps": [
+                "Équilibrez d'abord la DEC (tube + tout l'équipement monté), puis l'AD avec les contrepoids.",
+                "Gardez un léger biais east-heavy en AD pour que la vis sans fin reste plaquée d'un côté.",
+                "Revérifiez l'équilibrage après chaque changement de matériel ou retournement au méridien."
+              ]
+            },
+            "cables": {
+              "title": "Soignez le routage des câbles",
+              "steps": [
+                "Fixez les câbles à la monture pour que rien n'accroche ni ne tire pendant le suivi.",
+                "Laissez du mou au niveau des axes : un câble tendu se lit comme des à-coups de guidage.",
+                "Revérifiez avec le tube pointé vers la zone que vous allez réellement imager."
+              ]
+            },
+            "polar_quality": {
+              "title": "Soignez la mise en station",
+              "steps": [
+                "Utilisez les outils de mise en station ci-dessus (ou une routine par résolution astrométrique) et prenez votre temps.",
+                "Une mise en station approximative devient une dérive en DEC que le guidage doit combattre en permanence.",
+                "Revérifiez après tout choc ou déplacement du trépied."
+              ]
+            },
+            "backlash_measure": {
+              "title": "Mesurez le backlash",
+              "steps": [
+                "Lancez le Guiding Assistant de PHD2 quelques minutes près du méridien et de l'équateur céleste.",
+                "Appliquez la compensation de backlash et les min-move proposés.",
+                "Re-mesurez après tout réglage mécanique (engrènement, équilibrage)."
+              ]
+            }
+          }
+        },
+        "synscan-eq-generic": {
+          "name": "SkyWatcher SynScan ÉQ (EQ5/HEQ5/EQ6-R…)",
+          "summary": "Les montures SynScan ÉQ souffrent surtout de jeu de vis sans fin et d'une erreur périodique modérée — mesurables et largement corrigeables par des réglages gratuits (équilibrage, engrènement, PEC, guidage).",
+          "issues": {
+            "backlash": {
+              "label": "Jeu des axes (backlash)",
+              "symptom": "Les corrections mettent un instant à s'engager après un changement de sens ; l'étoile flotte autour du centre.",
+              "why": "Toute vis sans fin a du jeu ; il augmente avec un engrènement desserré et se voit surtout en déclinaison, où les corrections s'inversent sans cesse."
+            },
+            "periodic_error": {
+              "label": "Erreur périodique (AD)",
+              "symptom": "Les étoiles filent lentement d'est en ouest sur les poses non guidées, de façon répétitive sur quelques minutes.",
+              "why": "Les tolérances d'usinage de la vis sans fin se répètent à chaque tour : l'erreur est périodique, donc mesurable et corrigeable."
+            }
+          },
+          "fixes": {
+            "balance": {
+              "title": "Équilibrez soigneusement les deux axes",
+              "steps": [
+                "Équilibrez d'abord la DEC (tube + tout l'équipement monté), puis l'AD avec les contrepoids.",
+                "Gardez un léger biais east-heavy en AD pour que la vis sans fin reste plaquée d'un côté.",
+                "Revérifiez l'équilibrage après chaque changement de matériel ou retournement au méridien."
+              ]
+            },
+            "cables": {
+              "title": "Soignez le routage des câbles",
+              "steps": [
+                "Fixez les câbles à la monture pour que rien n'accroche ni ne tire pendant le suivi.",
+                "Laissez du mou au niveau des axes : un câble tendu se lit comme des à-coups de guidage.",
+                "Revérifiez avec le tube pointé vers la zone que vous allez réellement imager."
+              ]
+            },
+            "polar_quality": {
+              "title": "Soignez la mise en station",
+              "steps": [
+                "Utilisez les outils de mise en station ci-dessus (ou une routine par résolution astrométrique) et prenez votre temps.",
+                "Une mise en station approximative devient une dérive en DEC que le guidage doit combattre en permanence.",
+                "Revérifiez après tout choc ou déplacement du trépied."
+              ]
+            },
+            "backlash_measure": {
+              "title": "Mesurez le backlash",
+              "steps": [
+                "Lancez le Guiding Assistant de PHD2 quelques minutes près du méridien et de l'équateur céleste.",
+                "Appliquez la compensation de backlash et les min-move proposés.",
+                "Re-mesurez après tout réglage mécanique (engrènement, équilibrage)."
+              ]
+            }
+          }
+        },
+        "altaz-generic": {
+          "name": "GoTo azimutale (toute marque)",
+          "summary": "Une GoTo azimutale suit bien, mais le champ tourne : les poses longues filent en bord de champ. Gardez des poses courtes et un alignement d'étoiles impeccable ; le backlash pèse moins car le suivi s'inverse rarement.",
+          "issues": {
+            "field_rotation": {
+              "label": "Rotation de champ",
+              "symptom": "Sur les poses longues, les étoiles en bord de champ tracent des arcs autour du centre.",
+              "why": "Une monture azimutale suit sur deux axes sans faire tourner la caméra : le champ pivote lentement autour de la cible — au plus vite près du zénith."
+            },
+            "backlash": {
+              "label": "Jeu des axes (backlash)",
+              "symptom": "Les corrections mettent un instant à s'engager après un changement de sens ; l'étoile flotte autour du centre.",
+              "why": "Toute vis sans fin a du jeu ; il augmente avec un engrènement desserré — visible quand le suivi s'inverse ou en fin de pointé GoTo."
+            }
+          },
+          "fixes": {
+            "short_exposures": {
+              "title": "Poses courtes",
+              "steps": [
+                "Gardez des poses unitaires courtes (15–30 s) et empilez-en beaucoup.",
+                "Évitez les cibles proches du zénith, où la rotation est la plus rapide.",
+                "Pour des poses plus longues, envisagez une table équatoriale (transforme la monture en équatoriale)."
+              ]
+            },
+            "careful_align": {
+              "title": "Alignement 2–3 étoiles soigné",
+              "steps": [
+                "Centrez chaque étoile d'alignement avec précision — oculaire réticulé, ou défocalisez légèrement pour juger le centrage.",
+                "Choisissez des étoiles bien réparties (la séquence ci-dessus s'en charge).",
+                "Refaites l'alignement après tout choc ou coupure d'alimentation."
+              ]
+            },
+            "balance": {
+              "title": "Équilibrez le tube",
+              "steps": [
+                "Équilibrez le tube d'avant en arrière avec tout l'équipement monté, pour que les moteurs ne luttent pas contre la gravité.",
+                "Restez dans la charge admissible de la monture — les moteurs azimutaux décrochent brutalement.",
+                "Revérifiez après l'ajout d'une caméra ou d'un oculaire plus lourd."
+              ]
+            }
+          }
+        },
+        "generic": {
+          "name": "Autre monture (générique)",
+          "summary": "Quelle que soit la marque, les mêmes fondamentaux gratuits dominent : équilibrage, routage des câbles, qualité de la mise en station et compensation de backlash mesurée. Faites-les avant tout achat de matériel.",
+          "issues": {
+            "backlash": {
+              "label": "Jeu des axes (backlash)",
+              "symptom": "Les corrections mettent un instant à s'engager après un changement de sens ; l'étoile flotte autour du centre.",
+              "why": "Toute vis sans fin a du jeu ; il augmente avec un engrènement desserré et se voit surtout en déclinaison, où les corrections s'inversent sans cesse."
+            },
+            "periodic_error": {
+              "label": "Erreur périodique (AD)",
+              "symptom": "Les étoiles filent lentement d'est en ouest sur les poses non guidées, de façon répétitive sur quelques minutes.",
+              "why": "Les tolérances d'usinage de la vis sans fin se répètent à chaque tour : l'erreur est périodique, donc mesurable et corrigeable."
+            }
+          },
+          "fixes": {
+            "balance": {
+              "title": "Équilibrez soigneusement les deux axes",
+              "steps": [
+                "Équilibrez d'abord la DEC (tube + tout l'équipement monté), puis l'AD avec les contrepoids.",
+                "Sur une équatoriale, gardez un léger biais east-heavy en AD pour que la vis sans fin reste plaquée d'un côté.",
+                "Revérifiez l'équilibrage après chaque changement de matériel ou retournement au méridien."
+              ]
+            },
+            "cables": {
+              "title": "Soignez le routage des câbles",
+              "steps": [
+                "Fixez les câbles à la monture pour que rien n'accroche ni ne tire pendant le suivi.",
+                "Laissez du mou au niveau des axes : un câble tendu se lit comme des à-coups de guidage.",
+                "Revérifiez avec le tube pointé vers la zone que vous allez réellement imager."
+              ]
+            },
+            "polar_quality": {
+              "title": "Soignez la mise en station",
+              "steps": [
+                "Utilisez les outils de mise en station ci-dessus (ou une routine par résolution astrométrique) et prenez votre temps.",
+                "Une mise en station approximative devient une dérive en DEC que le guidage doit combattre en permanence.",
+                "Revérifiez après tout choc ou déplacement du trépied."
+              ]
+            },
+            "backlash_measure": {
+              "title": "Mesurez le backlash",
+              "steps": [
+                "Lancez le Guiding Assistant de PHD2 quelques minutes près du méridien et de l'équateur céleste.",
+                "Appliquez la compensation de backlash et les min-move proposés.",
+                "Re-mesurez après tout réglage mécanique (engrènement, équilibrage)."
+              ]
+            }
+          }
+        }
       }
     },
     "why": {
@@ -286,9 +588,16 @@
     "smartHint": "Copié sous votre préfixe, dans un dossier au nom de la source. Relancer n'envoie que ce qui a changé.",
     "noBuckets": "Cette connexion est injoignable ou n'a aucun bucket — vérifiez-la dans Stockage.",
     "drivesHeading": "Disques montés",
+    "sourcesHeading": "Dossiers de l'application",
+    "sources": {
+      "input": "Entrée (data)",
+      "output": "Sortie",
+      "work": "Travail"
+    },
     "up": "Remonter",
     "refresh": "Actualiser",
     "copyThisFolder": "Copier ce dossier vers S3",
+    "copySelected": "Copier {n} dossier(s) vers S3",
     "copyFolderHint": "Copie intelligente vers S3 — seuls les fichiers manquants ou corrompus sont envoyés",
     "pickBucketFirst": "Choisissez d'abord un bucket S3",
     "copy": "Copier vers S3",
@@ -349,10 +658,39 @@
       "hint": "Glissez une ligne sur un dossier pour la déplacer, ou cochez des lignes puis « Déplacer la sélection… ».",
       "title": "Déplacer {n} vers…",
       "moveHere": "Déplacer ici",
-      "noSubfolders": "Aucun sous-dossier"
+      "noSubfolders": "Aucun sous-dossier",
+      "moving": "Déplacement de {n} élément(s)…",
+      "started": "Démarré",
+      "elapsed": "Écoulé",
+      "remaining": "Restant",
+      "throughput": "Débit",
+      "transferred": "Transféré",
+      "done": "Déplacement terminé",
+      "failed": "Échec du déplacement : {error}"
     },
     "confirmDeleteObject": "Supprimer « {name} » ?",
-    "confirmDeleteFolder": "Supprimer le dossier « {name} » et tout son contenu ?"
+    "confirmDeleteFolder": "Supprimer le dossier « {name} » et tout son contenu ?",
+    "defaultClass": "Classe de stockage par défaut",
+    "defaultClassNone": "Par défaut du fournisseur (Standard)",
+    "defaultClassHint": "Les nouveaux envois sur cette connexion utilisent cette classe. Elle doit rester lisible instantanément — archivez plus tard via « Changer la classe de stockage ».",
+    "tier": {
+      "changeSelected": "Changer la classe de stockage…",
+      "title": "Changer la classe de stockage de {n} élément(s)",
+      "subtitle": "Archivez vers un palier froid moins cher, ou restaurez des données froides vers un accès instantané.",
+      "targetLabel": "Classe cible",
+      "restoreOnly": "Restaurer seulement (dégeler temporairement, garder la classe archivée)",
+      "restoreOnlyNote": "Les objets sélectionnés seront dégelés en une copie lisible temporaire, sans changer leur classe de stockage.",
+      "retrieval": "Vitesse de récupération",
+      "thawNote": "Les données archivées doivent d'abord être dégelées — cela peut prendre de quelques minutes à ~48 h. La tâche reste consultable dans Tâches et se termine automatiquement une fois prête.",
+      "apply": "Appliquer",
+      "archivedBadge": "Archivé dans Glacier ({class}) — restaurez avant de télécharger",
+      "restoreTitle": "Restaurer depuis Glacier",
+      "progress": {
+        "archive": "Archivage de {n} élément(s)…",
+        "restore": "Restauration de {n} élément(s) depuis Glacier…",
+        "retier": "Changement de classe de {n} élément(s)…"
+      }
+    }
   },
   "preset": {
     "label": "Préréglage",
@@ -363,6 +701,15 @@
     "saveName": "Nom du préréglage",
     "rename": "Renommer",
     "delete": "Supprimer",
+    "duplicate": "Dupliquer",
+    "copySuffix": "copie",
+    "nameTaken": "Un préréglage porte déjà ce nom",
+    "favorite": "Ajouter aux favoris",
+    "unfavorite": "Retirer des favoris",
+    "saveFromRun": "Enregistrer comme préréglage",
+    "saveFromRunHint": "Conserver les paramètres de ce traitement comme préréglage nommé pour les prochains empilements.",
+    "saveFavorite": "favori",
+    "savedFromRun": "Préréglage enregistré",
     "cancel": "Annuler",
     "category": {
       "deepsky": "Ciel profond",
@@ -445,8 +792,22 @@
     "colorCalibration": "Calibration couleur (SPCC)",
     "denoise": "Réduire le bruit",
     "haExcludeStars": "Hα sur la nébulosité seule (exclure les étoiles)",
+    "outputLuminance": "Générer aussi une mono Luminance seule",
+    "outputLuminanceHint": "Enregistre une image monochrome traitée de la seule couche Luminance (calibrée, débruitée, gradient extrait et étirée — le même traitement que L reçoit dans l'image couleur), à côté du résultat final.",
+    "outputMonoStack": "Générer aussi une mono combinée (toutes les couches)",
+    "outputMonoStackHint": "Enregistre une image monochrome qui empile toutes les couches (L/R/G/B/Hα…) ensemble, pondérées par le nombre de poses, pour un signal maximal. Désactivé par défaut.",
     "dropTransition": "Écarter les images de transition du filtre",
     "supervise": "Lancer avec l'agent IA local (expérimental)",
+    "earthshine": "Révéler la lumière cendrée (face non éclairée de la Lune)",
+    "earthshineHint": "Ajuste le disque lunaire complet et relève doucement la face non éclairée à partir du vrai signal empilé, fondu naturellement au terminateur et au limbe — pour les phases en croissant/partielles. Ignoré automatiquement (avec une note) à la pleine lune ou quand le signal est sous le bruit.",
+    "alignPointsMinSize": "Taille mini des détails (px)",
+    "alignPointsAuto": "auto",
+    "alignPointsEstimate": "Estimer les points",
+    "alignPointsEstimating": "Estimation…",
+    "alignPointsHint": "Ajuste le disque lunaire éclairé sur la première image de luminance de la sélection, compte combien de points d'alignement de cette taille l'image supporte, puis renseigne align_points dans les paramètres ci-dessous.",
+    "alignPointsResult": "≈{usable} points utilisables (grille {n}×{n}, cellules de {cell}px) — align_points réglé à {suggested}",
+    "forceCalibration": "Forcer les images de calibration",
+    "forceCalibrationHint": "Appliquer vos darks, flats et bias/offsets même si leur gain, exposition ou température ne correspondent pas aux poses. À n'utiliser que si vous savez les images compatibles — un dark non concordant peut sur- ou sous-soustraire.",
     "chips": {
       "s3": "S3 complet",
       "s3LowDisk": "Disque réduit",
@@ -454,12 +815,14 @@
       "spcc": "SPCC",
       "denoise": "Débruitage",
       "ha": "Hα nébulosité",
+      "earthshine": "Lumière cendrée",
       "dropTransition": "Sans transitions",
       "ai": "Agent IA",
       "sequential": "En file",
       "goal": "Objectif : {goal}",
       "tier": "Niveau {tier}",
-      "iters": "≤{n} itér."
+      "iters": "≤{n} itér.",
+      "mosaic": "canevas union"
     },
     "superviseHint": "Optionnel : un modèle de vision local ajuste automatiquement la finition sur quelques itérations et garde la meilleure — pour tous les modes d'empilement (composite ciel profond/nébuleuse, comète, rendu voie lactée, netteté planétaire). Nécessite un serveur de modèle local (ASTRO_LLM_URL).",
     "modes": {
@@ -469,7 +832,8 @@
       "planetary": "Planétaire",
       "comet": "Comète",
       "transfer": "Transfert",
-      "backup": "Sauvegarde"
+      "backup": "Sauvegarde",
+      "mosaic": "Mosaïque (panneaux)"
     },
     "formats": {
       "image": "Image",
@@ -507,18 +871,24 @@
     "bias": "Bias / offset",
     "addToQueue": "Ajouter à la file",
     "addToQueueHint": "Mettre ce traitement en file pour l'exécuter après les autres, un à la fois.",
+    "buildMasters": "Créer les masters → bibliothèque",
+    "buildMastersHint": "Empile les darks/flats/offsets sélectionnés en fichiers maîtres et les ajoute à votre bibliothèque de calibration — aucune image n'est produite.",
     "advancedParams": "Paramètres avancés",
     "aiSection": "Guidage IA",
     "aiSectionHint": "Utilisé uniquement quand « Superviser la finition » est activé — un objectif en langage naturel pour l'agent IA de finition.",
     "pipelineSection": "Paramètres du pipeline",
     "pipelineSectionHint": "Réglage fin appliqué à chaque traitement, avec ou sans IA. Pré-rempli avec les valeurs effectives du mode sélectionné.",
+    "target": "Cible (résolution astrométrique)",
+    "targetHint": "Nom de catalogue ou « AD,Déc » quand le dossier/les en-têtes n'identifient pas le champ — active les couleurs SPCC",
     "goal": "Objectif",
     "goalHint": "ex. faire ressortir les nébulosités externes faibles",
     "paramsJson": "Paramètres fins (JSON)",
     "paramsInvalid": "JSON invalide — objet attendu, ex. {'{'}\"denoise_lum\": 0.6{'}'}",
     "paramsPlaceholder": "Paramètres effectifs pour le mode sélectionné…",
     "paramsReset": "Réinitialiser",
-    "paramsCheckboxNote": "Le SPCC, la réduction de bruit et « Hα sur la nébulosité » sont gérés par les cases à cocher ci-dessus."
+    "paramsCheckboxNote": "Le SPCC, la réduction de bruit et « Hα sur la nébulosité » sont gérés par les cases à cocher ci-dessus.",
+    "mosaic": "Canevas union (multi-nuits, garder tout le champ de chaque nuit)",
+    "mosaicHint": "Les traitements multi-nuits couvrent l'UNION des champs de toutes les sessions au lieu de rogner au cadre de la nuit d'ancrage — une image plus grande, aucun pixel perdu. Le final est rogné à la zone où chaque canal a de vraies données (params : mosaic_fill)."
   },
   "reuse": {
     "title": "Réutiliser des données antérieures",
@@ -528,18 +898,75 @@
     "frames": "{n} images"
   },
   "calib": {
-    "title": "Calibration · depuis votre bibliothèque",
-    "subtitle": "Ces maîtres de votre bibliothèque correspondent à vos poses et seront appliqués. Décochez-en un pour l'ignorer.",
+    "title": "Calibration · maîtres associés",
+    "subtitle": "Créés à partir des darks/flats/offsets de cette capture ou réutilisés depuis votre bibliothèque — ils seront appliqués. Décochez-en un pour l'ignorer.",
     "includedTitle": "Calibration incluse",
     "includedSubtitle": "Darks, flats et bias/offsets appliqués à cette capture, avec leurs paramètres.",
     "selectAll": "Tout sélectionner",
     "deselectAll": "Tout désélectionner",
     "frames": "{n} images",
+    "source": {
+      "capture": "de cette capture",
+      "library": "de votre bibliothèque",
+      "sessionFlat": "reconstruit à partir des flats de la nuit"
+    },
     "role": {
       "dark": "Dark",
       "flat": "Flat",
       "bias": "Bias"
     }
+  },
+  "setqa": {
+    "button": "Vérifier les séries",
+    "checking": "Analyse des séries…",
+    "hint": "Analyse chaque série d'images light à la recherche de halos parasites et de gradients de fond avant l'empilement, puis choisissez les séries à exclure.",
+    "reopen": "Revoir le résultat",
+    "summary": "{n} série(s) suspecte(s) détectée(s) — vérifiez et choisissez quoi exclure.",
+    "none": "Aucun artefact détecté — toutes les séries sont propres.",
+    "title": "Contrôle qualité des séries",
+    "subtitle": "{n} série(s) présentent un halo parasite ou un artefact de gradient. Les séries cochées sont exclues de l'empilement.",
+    "close": "Fermer",
+    "selectAll": "Tout exclure",
+    "deselectAll": "Ne rien exclure",
+    "frames": "{n} images · {time}",
+    "score": "sévérité {n}",
+    "unmeasured": "non mesurée",
+    "impact": "Si exclue : −{pct}% de l'intégration {filter}, SNR prévu ×{snr}",
+    "emptiesFilter": "Cela ne laisserait AUCUNE image pour {filter} !",
+    "excludedSummary": "{filter} : −{pct}% d'intégration, SNR ×{snr}",
+    "noExclusion": "Aucune série exclue — l'empilement utilise tout.",
+    "apply": "Appliquer les exclusions",
+    "keepAll": "Tout garder",
+    "excludedOnRun": "{n} série(s) exclue(s) du prochain traitement :",
+    "reinclude": "Réinclure cette série",
+    "clear": "Effacer",
+    "border": {
+      "left": "gauche",
+      "right": "droit",
+      "top": "haut",
+      "bottom": "bas"
+    },
+    "reason": {
+      "border_glow": "Halo sur le bord {border} : +{sigma}σ ({pct}% du niveau de ciel)",
+      "strong_gradient": "Fort gradient de fond : {sigma}σ ({pct}% du niveau de ciel)",
+      "stack_visible": "Halo {border} subtil mais constant ({pct}% du ciel par image) — s'accumule jusqu'à ~{sigma}σ dans l'image empilée",
+      "outlier_vs_siblings": "Artefact de fond {sigma}σ au-dessus des séries sœurs",
+      "channel_imbalance": "Le canal {channel} brille +{sigma}σ au-dessus des autres canaux"
+    }
+  },
+  "sessions": {
+    "title": "Nuits de capture",
+    "subtitle": "{n} nuits dans cette sélection — chaque nuit est calibrée avec ses propres images, puis tout est fusionné en un seul empilement.",
+    "nightTitle": "Nuit du {date}",
+    "undated": "Images non datées",
+    "window": "Plage horaire",
+    "flipped": "En miroir",
+    "flippedHint": "Cette nuit est inversée en miroir par rapport aux autres (p. ex. renvoi coudé) — elle sera remise à l'endroit automatiquement avant la fusion.",
+    "anchor": "Nuit d'ancrage",
+    "anchorHint": "Chaque canal est aligné sur le champ de cette nuit — son cadrage définit le canevas final.",
+    "missingChannels": "Pas de {filters} cette nuit — ces canaux proviennent de l'autre ou des autres nuits.",
+    "calibTitle": "Calibration de cette nuit",
+    "noCalib": "Aucune calibration correspondante pour cette nuit."
   },
   "s3": {
     "title": "Stockage S3",
@@ -590,7 +1017,9 @@
     "confirmRestore": "Restaurer cette sauvegarde ? La base / bibliothèque / atlas seront écrasés par l'instantané.",
     "restoreQueued": "Restauration lancée.",
     "reload": "Recharger",
-    "reloadHint": "Réglages & discussions restaurés —"
+    "reloadHint": "Réglages & discussions restaurés —",
+    "storageClass": "Archiver la sauvegarde vers",
+    "storageClassStandard": "Standard (chaud, restauration instantanée)"
   },
   "common": {
     "inspect": "Inspecter",
@@ -656,7 +1085,15 @@
       "deleted": "Dossier introuvable",
       "onS3": "Sur S3 — téléchargé automatiquement lors de la réutilisation",
       "needS3": "Ces fichiers ont été libérés vers S3. Sélectionnez d'abord leur bucket S3, puis réessayez.",
-      "untitled": "Sans titre"
+      "untitled": "Sans titre",
+      "name": "Nommer cette sélection",
+      "namePlaceholder": "Nom de la sélection",
+      "rename": "Renommer",
+      "forget": "Retirer le nom et l'étoile",
+      "favorite": "Marquer comme favori",
+      "unfavorite": "Retirer des favoris",
+      "nameTaken": "Une sélection enregistrée porte déjà ce nom",
+      "saved": "Sélection enregistrée"
     }
   },
   "livestack": {
@@ -683,7 +1120,280 @@
     "lights": "Poses",
     "integration": "Intégration totale",
     "filters": "Filtres",
-    "frameTypes": "Types d’images"
+    "frameTypes": "Types d’images",
+    "title": "Capture",
+    "subtitle": "Caméra, roue à filtres et monture — visée en direct, mise au point et série auto.",
+    "device": {
+      "title": "Périphériques",
+      "camera": "Caméra",
+      "wheel": "Roue à filtres",
+      "mount": "Monture",
+      "connect": "Connecter",
+      "disconnect": "Déconnecter",
+      "notRunning": "Le serveur de périphériques n'est pas démarré. Lancez-le avec",
+      "drivers": "Pilotes : {list}",
+      "wheelDetail": "{slots} positions · emplacement {position}"
+    },
+    "live": {
+      "title": "Visée en direct",
+      "start": "Démarrer",
+      "stop": "Arrêter",
+      "waiting": "En attente de la première image…",
+      "stopped": "Visée arrêtée",
+      "autoStretch": "Étirement auto",
+      "reticle": "Réticule",
+      "grid": "Grille",
+      "box": "Cadre centre px",
+      "zoom": "Zoom",
+      "black": "Noir",
+      "white": "Blanc",
+      "gamma": "Gamma",
+      "fit": "Ajuster",
+      "zoomIn": "Zoom avant",
+      "zoomOut": "Zoom arrière",
+      "gestureHint": "Pincez pour zoomer · deux doigts pour déplacer · double-clic pour ajuster",
+      "realPixels": "pixels réels du capteur",
+      "fullscreen": "Plein écran",
+      "exitFullscreen": "Quitter le plein écran (Échap)",
+      "fewLevels": "Seulement {levels} valeurs de pixel distinctes ici — ce capteur est en 12 bits, donc un champ bouché ou vide n'en contient réellement que quelques-unes. Posez plus longtemps, montez le gain, ou visez une étoile."
+    },
+    "hist": {
+      "title": "Histogramme",
+      "waiting": "Aucune image",
+      "min": "min",
+      "median": "médiane",
+      "max": "max",
+      "saturated": "saturé"
+    },
+    "controls": {
+      "title": "Caméra",
+      "noCamera": "Connectez une caméra pour régler ses paramètres.",
+      "exposure": "Temps de pose",
+      "expRange": "Ce capteur accepte de {min} µs à {max} s.",
+      "expTooShort": "Sous le minimum du capteur ({min} µs)",
+      "expTooLong": "Plus long que ce que le capteur autorise",
+      "gain": "Gain (équivalent ISO)",
+      "offset": "Offset",
+      "cooling": "Refroidissement",
+      "target": "Cible °C",
+      "coolerOn": "Activer",
+      "coolerOff": "Désactiver",
+      "filter": "Filtre",
+      "wheelMoving": "en mouvement…"
+    },
+    "focus": {
+      "title": "Mise au point",
+      "needsLive": "Démarrez la visée pour mesurer la mise au point.",
+      "waiting": "Mesure…",
+      "hfd": "HFD",
+      "stars": "{n} étoiles",
+      "saturated": "Étoiles saturées — réduisez la pose ou le gain.",
+      "tooFewStars": "Trop peu d'étoiles — visez un champ plus riche ou posez plus longtemps.",
+      "advice_first": "Tournez un peu la molette, dans un sens ou l'autre — je vous dirai si ça aide.",
+      "advice_better": "Mieux. Continuez dans le même sens.",
+      "advice_worse": "Moins bien. Tournez dans l'autre sens.",
+      "advice_steady": "Pas de vrai changement — tournez un peu plus.",
+      "advice_at_focus": "Mise au point atteinte.",
+      "advice_unreliable": "Mesure pas encore fiable.",
+      "turns": "Environ {turns} tours ({um} µm)",
+      "microns": "Environ {um} µm hors mise au point",
+      "umPerTurn": "µm / tour",
+      "reset": "Réinitialiser",
+      "tilt": "La netteté varie de {pct}% entre les coins — c'est du tilt capteur, pas la mise au point.",
+      "hint": "Le sens ne se déduit pas d'une seule image : en deçà et au-delà se ressemblent. Tournez, puis regardez ici."
+    },
+    "run": {
+      "title": "Série automatique",
+      "tile": "tuile {panel}",
+      "filter": "Filtre",
+      "count": "Poses",
+      "exposure": "Pose s",
+      "gain": "Gain",
+      "dither": "Dither /",
+      "remove": "Retirer",
+      "addStep": "Ajouter un filtre",
+      "interleave": "Alterner les filtres",
+      "interleaveHint": "L'alternance répartit chaque couche sur la nuit : les nuages coûtent autant à chacune.",
+      "total": "{frames} poses · {hours} h",
+      "object": "Objet",
+      "path": "Enregistrer dans",
+      "pathPlaceholder": "input/M31/2026-07-27",
+      "start": "Démarrer la série",
+      "pause": "Pause",
+      "resume": "Reprendre",
+      "abort": "Arrêter",
+      "frames": "poses",
+      "eta": "{eta} restantes",
+      "save": "Enregistrer",
+      "savePlaceholder": "Nom du plan",
+      "loadSaved": "Charger un plan…",
+      "selectAll": "Tout sélectionner",
+      "selectRow": "Sélectionner ce filtre",
+      "editSelected": "Modifier {n} sélectionné(s)…",
+      "editAll": "Modifier tous les filtres…",
+      "subRemaining": "Temps restant sur la pose en cours"
+    },
+    "status": {
+      "idle": "Inactif",
+      "running": "En cours",
+      "paused": "En pause",
+      "completed": "Terminé",
+      "aborted": "Interrompu",
+      "failed": "Échec",
+      "interrupted": "interrompue"
+    },
+    "bulk": {
+      "title": "Modifier {n} filtre(s) d'un coup",
+      "subtitle": "Seules les valeurs cochées sont modifiées ; les autres restent inchangées.",
+      "frames": "Poses",
+      "exposure": "Temps de pose (s)",
+      "gain": "Gain",
+      "apply": "Appliquer",
+      "cancel": "Annuler"
+    },
+    "dest": {
+      "browse": "Parcourir…",
+      "placeholder": "Choisissez un dossier, ou saisissez un chemin complet",
+      "use": "Utiliser ce dossier",
+      "newFolder": "Nouveau sous-dossier (optionnel)",
+      "newFolderPlaceholder": "M31/2026-07-27",
+      "empty": "Aucun sous-dossier ici",
+      "noRoots": "Aucun disque détecté — branchez-en un, ou utilisez les dossiers de l'application.",
+      "source_input": "Dossier d'entrée",
+      "source_output": "Dossier de sortie",
+      "source_work": "Dossier de travail",
+      "hint": "Les disques externes apparaissent dès qu'ils sont montés. Le dossier est créé au démarrage de la série."
+    },
+    "dither": {
+      "what": "Qu'est-ce que le Dither ?",
+      "hide": "Masquer",
+      "headline": "Le dithering déplace le TÉLESCOPE de quelques pixels entre les poses. Il ne touche jamais vos images.",
+      "notProcessing": "Rien n'est traité, modifié ni rééchantillonné avant l'enregistrement — chaque pose est écrite telle que la caméra l'a produite. Il ne se passe qu'un petit décalage de la monture entre deux poses.",
+      "why": "Pourquoi c'est utile : les pixels chauds, les résidus de courant d'obscurité et les défauts de flat occupent des positions FIXES sur le capteur. Sans dithering ils tombent au même endroit du ciel sur chaque pose : l'empilement les moyenne en taches permanentes, et la dérive du suivi les étire en « walking noise ». Décalés de quelques pixels, ils tombent ailleurs à chaque fois et le rejet de l'empilement les élimine.",
+      "value": "Le nombre indique combien de poses entre deux décalages :",
+      "value0": "0 — jamais (à utiliser pour les darks, bias et flats, et sans monture connectée).",
+      "value1": "1 — décalage après chaque pose : meilleur rejet du bruit, plus de temps de stabilisation.",
+      "value5": "3 à 5 — le choix habituel en ciel profond : presque tout le bénéfice pour quelques secondes perdues.",
+      "valueBig": "10 ou plus — pour des poses courtes où la stabilisation coûterait trop cher.",
+      "cost": "Ce que ça coûte : environ deux secondes de stabilisation par décalage, et une zone commune à toutes les poses légèrement plus petite (quelques pixels : négligeable).",
+      "how": "Comment les décalages sont choisis : pas au hasard. Chacun est placé le plus loin possible de tous les précédents — en pixels entiers et en position sous-pixel — et le décalage réellement obtenu est mesuré sur la pose suivante, ce qui corrige le jeu de la monture au lieu de le supposer.",
+      "safety": "Si la monture refuse de bouger, le décalage est ignoré avec un message et la série continue. Un dither ne peut jamais vous faire perdre une pose.",
+      "needsMount": "Le dithering nécessite une monture connectée — il sera ignoré tant qu'il n'y en a pas.",
+      "needsScale": "Le dithering a besoin de l'échantillonnage (focale et taille de pixel) pour convertir des pixels en mouvement de monture — il sera ignoré."
+    },
+    "tile": {
+      "title": "Tuile {panel}",
+      "ready": "Prêt à pointer.",
+      "slewing": "Pointage en cours…",
+      "arrived": "Pointage lancé — vérifiez la visée avant de démarrer la série.",
+      "noMount": "Aucune monture connectée — connectez-en une, ou pointez à la raquette.",
+      "slew": "Pointer ici",
+      "slewAgain": "Pointer à nouveau",
+      "stop": "ARRÊT",
+      "now": "Position",
+      "center": "Centrer par astrométrie",
+      "centering": "Centrage…",
+      "centered": "Centré à {arcsec}″ en {n} passe(s).",
+      "centerFailed": "Arrêté à {arcsec}″ de la cible."
+    },
+    "mount": {
+      "title": "Monture",
+      "port": "Port série",
+      "noPorts": "Aucun port série — branchez le câble USB de la raquette, puis relancez la détection.",
+      "connect": "Connecter la monture",
+      "rescan": "Détecter",
+      "up": "de hauteur",
+      "notAligned": "non alignée — le GoTo est refusé tant que la monture n'est pas alignée",
+      "slewing": "pointage…",
+      "pier_east": "côté est",
+      "pier_west": "côté ouest",
+      "rate": "Vitesse",
+      "stop": "ARRÊT",
+      "trackingOn": "Activer le suivi",
+      "trackingOff": "Couper le suivi"
+    },
+    "tracking": {
+      "title": "Suivi de la monture",
+      "blurb": "Mesuré à partir des images de cette session — l'erreur périodique réelle de votre monture, et la pose qu'elle peut tenir.",
+      "none": "Aucune mesure pour l'instant. Activez « mesurer le suivi » au lancement d'une série.",
+      "unavailable": "Rapport de suivi indisponible.",
+      "measure": "Mesurer le suivi de la monture",
+      "measureHint": "Résout astrométriquement vos poses au fil de leur acquisition pour caractériser l'erreur périodique et la dérive. Consomme du CPU ; ne retarde jamais une pose.",
+      "pe": "Erreur périodique",
+      "period": "Période de la vis sans fin",
+      "drift": "Dérive AD / Déc",
+      "residual": "Dispersion imprévisible",
+      "samples": "Mesures",
+      "notDetected": "non détectée",
+      "maxSub": "Pose la plus longue sans autoguidage avant filé d'étoiles : environ {seconds} s.",
+      "gradeGood": "faible",
+      "gradeTypical": "typique",
+      "gradeHigh": "élevée",
+      "solveFailing": "Aucune image résolue pour l'instant ({attempts} tentatives) — le suivi ne peut être mesuré sans résolution astrométrique."
+    },
+    "calib": {
+      "blurb": "Les images de calibration ne corrigent que ce qu'elles correspondent. Ces réglages sont repris de vos poses, pour que darks, flats et bias soient appariés.",
+      "kind_bias": "Bias",
+      "kind_dark": "Darks",
+      "kind_flat": "Flats",
+      "kind_darkflat": "Dark flats",
+      "lightExposure": "Pose des images (s)",
+      "gain": "Gain",
+      "offset": "Offset",
+      "filters": "Filtres",
+      "measureFlat": "Mesurer la pose des flats",
+      "measuring": "Mesure en cours…",
+      "flatMeasured": "Mesuré : {seconds} s donne une médiane de {adu} ADU — environ la moitié de la capacité du puits.",
+      "flatNeeded": "Mesurez d'abord la pose des flats — elle dépend de votre panneau lumineux et ne peut être devinée.",
+      "build": "Construire le plan",
+      "run": "Lancer",
+      "summary": "{frames} images, environ {time}.",
+      "title": "Assistant de calibration"
+    },
+    "adv": {
+      "more": "{count} réglages caméra supplémentaires",
+      "range": "plage {min}–{max}",
+      "usb_bandwidth": "Bande passante USB",
+      "usb_bandwidth_hint": "À quel point la caméra sollicite le bus USB. Baissez-la si des images sont perdues ou si la caméra se déconnecte — un transfert plus lent qui arrive vaut mieux qu'un transfert rapide qui échoue.",
+      "high_speed": "Lecture rapide",
+      "high_speed_hint": "Téléchargement plus rapide au prix d'un peu plus de bruit de lecture. Utile en planétaire, pas en ciel profond.",
+      "fan_on": "Ventilateur",
+      "fan_on_hint": "Ventilateur de refroidissement. L'éteindre est plus silencieux mais le refroidisseur n'atteindra pas sa consigne.",
+      "anti_dew": "Résistance anti-buée",
+      "anti_dew_hint": "Réchauffe la fenêtre du capteur pour éviter la buée par nuit humide.",
+      "mono_bin": "Binning mono",
+      "mono_bin_hint": "Caméras couleur uniquement : binning sans la matrice de Bayer.",
+      "hardware_bin": "Binning matériel",
+      "hardware_bin_hint": "Binning sur le capteur plutôt qu'en logiciel — moins de bruit de lecture, mais les pixels sont combinés avant que vous ne les voyiez.",
+      "gamma": "Gamma",
+      "flip": "Miroir",
+      "flip_hint": "Retourne l'image dans la caméra. Laissez désactivé : le pipeline gère l'orientation et un miroir ici entrerait en conflit.",
+      "overclock": "Overclock",
+      "auto_max_gain": "Gain maximal en pose auto",
+      "auto_max_exp": "Temps de pose maximal en auto",
+      "auto_target_brightness": "Luminosité cible en pose auto",
+      "wb_red": "Balance des blancs rouge",
+      "wb_blue": "Balance des blancs bleue"
+    },
+    "slots": {
+      "title": "Emplacements de la roue à filtres",
+      "blurb": "Ce qui se trouve dans chaque emplacement. C'est ce qui écrit l'en-tête FILTER — ainsi que le filtre dans le nom du fichier et du dossier — utilisé par le pipeline pour les flats par filtre et la détection des couches : autant le renseigner correctement une bonne fois.",
+      "noWheel": "Connectez une roue à filtres pour configurer ses emplacements.",
+      "empty": "vide",
+      "custom": "Autre…",
+      "customName": "nom du filtre",
+      "slotLabel": "Filtre de l'emplacement {n}",
+      "goTo": "Amener la roue sur cet emplacement",
+      "save": "Enregistrer",
+      "saved": "Enregistré",
+      "moving": "en mouvement…"
+    },
+    "sessions": {
+      "title": "Séries automatiques",
+      "blurb": "Toutes les séries automatiques de ce montage, en cours et terminées. Conservées côté serveur : elles survivent à un rechargement.",
+      "none": "Aucune série automatique lancée pour l'instant.",
+      "untitled": "(sans objet)"
+    }
   },
   "mapping": {
     "title": "Affectation des couches",
@@ -725,16 +1435,52 @@
     "options": "Options",
     "started": "Début",
     "duration": "Durée",
-    "pointing": "Pointé"
+    "pointing": "Pointé",
+    "session": "Nuit",
+    "scale": "Échelle",
+    "residual": "Résidu",
+    "rotation": "Rotation",
+    "coverage": "Couverture",
+    "applied": "Appliqué"
   },
   "job": {
     "title": "Tâche",
+    "sessionsTitle": "Progression par nuit",
+    "sessionsHint": "Chaque nuit de capture est calibrée avec ses propres images et normalisée photométriquement sur la nuit de référence ; toutes les nuits sont ensuite alignées et empilées ensemble.",
+    "stageCalibrate": "Calibration",
+    "noDataNight": "Aucune image de ce canal n'a été capturée cette nuit-là.",
+    "stageNormalize": "Normalisation",
+    "stageRegister": "Alignement",
+    "stageStack": "Empilement",
+    "photomTitle": "Normalisation photométrique",
+    "photomHint": "Comment le signal de chaque nuit a été ramené sur la nuit de référence avant l'empilement : échelle mesurée ×, offset et résidu de l'ajustement.",
+    "photomApplied": "Appliquée",
+    "photomReference": "Référence",
+    "photomSkipped": "Non appliquée",
+    "photomStacked": "Empilées",
+    "photomReverted": "dégradée (aurait écrêté)",
+    "photomMethod": {
+      "measured": "mesurée",
+      "seeded": "depuis les en-têtes",
+      "bg-matched": "depuis les fonds de ciel",
+      "offset-only": "offset seul",
+      "identity": "non mise à l'échelle"
+    },
+    "combineCropApplied": "Combinaison couleur recadrée sur le champ couvert par tous les canaux : {w}×{h} px ({pct}% du canevas).",
+    "combineCropSkipped": "La couverture commune ne fait que {pct}% du canevas — champ complet conservé (artefacts de bord possibles).",
+    "photomClamped": "Échelle bornée",
+    "photomMetaSeeded": "Échelle depuis les en-têtes",
+    "photomMetaDisagree": "Diffère de la prédiction des en-têtes",
     "duration": "Durée",
     "progress": "Progression",
     "processing": "Traitement",
     "result": "Résultat",
     "finalImage": "Image finale",
     "finalView": "Finale",
+    "mono": {
+      "luminance": "Luminance (mono)",
+      "all_channels": "Mono (toutes couches)"
+    },
     "framesStacked": "{kept} poses empilées sur {total}",
     "livePreview": "Aperçu en direct",
     "channelsTitle": "Couches",
@@ -747,8 +1493,12 @@
     "download": "Télécharger",
     "logs": "Journal en direct",
     "cpu": "CPU",
+    "cores": "{used} / {total} cœurs",
+    "cpuHint": "Arbre moteur complet : le moteur plus chaque outil de traitement (Siril, GraXpert, StarNet, GIMP, ffmpeg)",
     "memory": "RAM",
+    "memoryHint": "Mémoire résidente en direct du moteur et de chaque outil de traitement",
     "peak": "Pic",
+    "peakHint": "Mémoire moteur maximale observée pendant cette tâche",
     "transferred": "Transféré",
     "throughput": "Débit",
     "remaining": "Temps restant",
@@ -799,7 +1549,7 @@
   },
   "stagePreviews": {
     "title": "Étapes de traitement",
-    "hint": "Un aperçu enregistré après chaque étape importante — cliquez sur une image pour l'agrandir.",
+    "hint": "Un aperçu enregistré après chaque étape importante — cliquez sur une image pour l'agrandir. Les aperçus sont auto-étirés : le pixel le plus brillant est toujours rendu blanc, un cœur brillant peut donc sembler brûlé ici alors que le rendu final (marge + adoucissement du cœur) le préserve.",
     "enlarge": "Cliquer pour agrandir",
     "close": "Fermer",
     "stages": {
@@ -807,9 +1557,12 @@
       "aligned": "Aligné",
       "combined": "Combiné",
       "colorcal": "Calibration des couleurs",
+      "prenorm": "Avant normalisation",
+      "normalized": "Normalisé",
       "deconv": "Déconvolué",
       "starless": "Réduction des étoiles",
-      "final": "Final"
+      "final": "Final",
+      "coverage": "Couverture"
     }
   },
   "rerun": {
@@ -845,6 +1598,7 @@
       "chroma_blur": "Flou chroma (px)",
       "crop_frac": "Rognage des bords",
       "ha_exclude_stars": "Hα sur la nébulosité seule",
+      "ha_continuum_sub": "Soustraction du continuum Hα",
       "color_calibration": "Calibration des couleurs (SPCC)",
       "linked_stretch": "Étirement lié",
       "background_level": "Niveau du fond de ciel",
@@ -852,6 +1606,8 @@
       "background_degree": "Degré du fond",
       "combined_background_ai": "Fond IA (combiné)",
       "color_denoise_ai": "Débruitage couleur IA",
+      "chroma_smooth_px": "Lissage chroma (fin)",
+      "chroma_bg_smooth_px": "Lissage chroma (ciel)",
       "star_reduce": "Réduction d’étoiles",
       "fwhm_sigma": "σ de rejet FWHM",
       "roundness_floor": "Rondeur minimale",
@@ -860,13 +1616,44 @@
       "trail_mask_k": "Masque de traînées k",
       "denoise_lum": "Débruitage luminance",
       "denoise_chroma": "Débruitage chroma",
-      "background_ai": "Fond IA (par canal)"
+      "background_ai": "Fond IA (par canal)",
+      "seam_offset_refit": "Recalage du fond (raccords)",
+      "seam_noise_eq": "Égalisation du bruit (raccords)",
+      "mosaic": "Canevas mosaïque",
+      "mosaic_fill": "Coins vides de la mosaïque",
+      "mosaic_fillOptions": {
+        "crop": "Rogner au champ couvert",
+        "fill": "Remplir par extrapolation du ciel"
+      },
+      "oiii_screen": "Opacité de la couche [OIII]",
+      "oiii_black_point": "Point noir [OIII]",
+      "sii_screen": "Opacité de la couche [SII]",
+      "sii_black_point": "Point noir [SII]",
+      "sii_tint": "Couleur du [SII]",
+      "sii_tintOptions": {
+        "deep_red": "Rouge profond (naturel)",
+        "gold": "Doré (accent Hubble)"
+      },
+      "sky_chroma_flatten_px": "Neutralisation couleur du ciel (post-étirement)",
+      "sky_lum_flatten_px": "Uniformisation luminosité du ciel (post-étirement)",
+      "lum_boost": "Rehaussement luminosité galaxie",
+      "emit_luminance_mono": "Sortie mono Luminance seule",
+      "emit_all_channel_mono": "Sortie mono toutes-couches",
+      "union_canvas": "Canevas union (multi-nuits)",
+      "union_canvas_fill": "Coins vides du canevas union"
     }
   },
   "paramDocs": {
     "title": "À quoi sert chaque paramètre",
-    "activeLegend": "Tous les réglages du mode sélectionné. Ceux définis dans le JSON ci-dessus sont surlignés avec leur valeur actuelle ; ajoutez les autres pour les régler.",
+    "activeLegend": "Tous les réglages du mode sélectionné. Ceux définis dans le JSON ci-dessus sont surlignés avec leur valeur actuelle. Cliquez sur un paramètre pour l'ajouter avec sa valeur par défaut, recliquez pour passer à la valeur opposée (booléens inversés, nombres à l'autre extrémité de leur plage), et une troisième fois pour le retirer. Sur un nombre sélectionné, ↑/↓ ajuste la valeur entre min et max. Chaque ligne indique sa valeur par défaut, min et max.",
     "set": "défini",
+    "add": "Ajouter avec sa valeur par défaut",
+    "flip": "Passer à la valeur opposée",
+    "arrows": "↑/↓ pour ajuster",
+    "remove": "Retirer du JSON",
+    "default": "défaut",
+    "min": "min",
+    "max": "max",
     "groups": {
       "composite": "Composite",
       "compositeHint": "Niveau A · recalcule l'image finale en quelques secondes",
@@ -883,7 +1670,9 @@
       "cometStack": "Sélection des poses & empilement",
       "cometStackHint": "ré-empile depuis les poses calibrées (plus lent)",
       "milkywayGrade": "Étalonnage",
-      "milkywayGradeHint": "recalcule le paysage nocturne en quelques secondes"
+      "milkywayGradeHint": "recalcule le paysage nocturne en quelques secondes",
+      "mosaicAssembly": "Assemblage des panneaux",
+      "mosaicAssemblyHint": "Comment les panneaux empilés sont placés, appariés photométriquement et fondus sur le canevas unique. Modifier ces réglages ré-assemble la mosaïque."
     },
     "saturation": "Saturation globale des couleurs de l'image finale. Plus élevé = plus vif ; trop élevé rend les étoiles criardes.",
     "star_desat": "Ramène le cœur des étoiles les plus brillantes vers le blanc. Corrige les disques de couleur pleins sur les amas denses et les étoiles magenta en SHO. 0 = désactivé.",
@@ -891,6 +1680,7 @@
     "ha_screen": "Opacité de la couche Hα rouge superposée (uniquement si un canal Hα est présent). Plus élevé = nébulosité rouge plus marquée.",
     "ha_black_point": "Écrête le fond de la couche Hα au noir pour que son rouge ne relève que les nœuds HII brillants, pas tout le ciel.",
     "ha_exclude_stars": "Applique le Hα à la seule nébulosité (étoiles retirées d'abord) pour que le rouge ne teinte pas les étoiles en orange/rose.",
+    "ha_continuum_sub": "Soustrait le continuum large bande mis à l'échelle (k·R) du master Hα linéaire avant l'étirement : l'écran rouge ne montre que la vraie émission Hα — étoiles et disque s'annulent, les filaments faibles survivent au point noir.",
     "chroma_blur": "Floute le bruit de couleur du composite LRVB (pixels) ; la couche L garde tout le détail. Plus élevé = couleur plus lisse, marbrures aplanies.",
     "core_highlight_knee": "Seuil où commence l'atténuation des hautes lumières du CŒUR de nébuleuse (sur la luminance). En dessous rien ne change — pour les cœurs de nébuleuse cramés, pas les amas.",
     "core_highlight_ceil": "Jusqu'où sous le blanc un cœur de nébuleuse cramé est plafonné (avec core_highlight_knee). Plus bas = cœur plus profond et structuré.",
@@ -905,6 +1695,8 @@
     "background_degree": "Degré du polynôme Siril utilisé pour modéliser et soustraire le fond de ciel / gradient.",
     "combined_background_ai": "Deuxième passe d'extraction de gradient sur le RVB combiné — retire le gradient à grande échelle / ciel brun que la passe par canal laisse.",
     "color_denoise_ai": "Débruitage IA de la couleur sur le RVB linéaire — réduit le bruit de chrominance sans flouter le détail (contrairement à un flou).",
+    "chroma_smooth_px": "Lissage couleur-seule du RVB linéaire, protégé des étoiles (px). Aplanit les taches de couleur résiduelles ; la luminance et la couleur des étoiles sont intactes. 0 désactive.",
+    "chroma_bg_smooth_px": "Lissage couleur supplémentaire restreint au fond de ciel (px). Retire les marbrures de couleur à grande échelle ; galaxies, nébuleuses et étoiles gardent leur couleur. 0 désactive.",
     "star_reduce": "Opacité de réduction d'étoiles StarNet++ à la finition : 1 = étoiles pleines, 0,5 = réduites de moitié, 0 = tout garder.",
     "fwhm_sigma": "Rejet de poses : écarte les poses dont la netteté d'étoile (FWHM) est plus mauvaise que ce nombre de σ. Plus bas = rejet plus sévère.",
     "roundness_floor": "Rejet de poses : rondeur d'étoile minimale pour garder une pose — écarte les poses filées / secouées par le vent. Plus haut = ne garde que les étoiles plus rondes.",
@@ -916,25 +1708,66 @@
     "background_ai": "Extraction de fond/gradient par IA GraXpert sur chaque master linéaire (au lieu du subsky polynomial de Siril).",
     "stretch": "Étirement global luminosité/contraste de la planète ou de la Lune. Plus élevé relève les tons moyens.",
     "highlight": "Point de protection des hautes lumières — plus élevé empêche les cratères brillants et le limbe de saturer au blanc.",
+    "shadow_lift": "Ouvre les ombres (fonds de cratères, côté terminateur) en déplaçant le point focal de l'étirement vers le noir (0–1). 0 = désactivé (courbe historique) ; plus élevé révèle plus de détails sombres sans toucher les hautes lumières protégées.",
     "sharpen": "Renforcement des détails par ondelettes. 1.0 par défaut ; augmentez pour plus de détails, baissez si ça sonne ou paraît craquelé.",
     "clahe": "Contraste local / relief de surface. Plus élevé = plus contrasté ; trop élevé paraît dur.",
     "headroom": "Réduit le disque brillant avant l'étirement pour éviter de brûler les hautes lumières. 0 ou 1 = aucune réduction ; entre les deux réserve plus de marge.",
+    "limb_balance": "Comprime l'illumination lisse du limbe brillant en préservant le contraste local des cratères (0–1) — le limbe brûlé retrouve ses détails sans assombrir le terminateur. 0 = désactivé.",
+    "earthshine_gain": "Intensité de la lumière cendrée révélée (face non éclairée de la Lune) : 0 = désactivé, 1 = naturel (~10 % de gris), jusqu'à 2. N'amplifie que le vrai signal empilé — ignoré avec une note si la face sombre est sous le bruit ou si le disque est entièrement éclairé.",
+    "earthshine_feather": "Marge de protection du terminateur pour le fondu de lumière cendrée, en fraction du rayon du disque (0,002–0,02, défaut 0,006) : plus grand éloigne le rehaussement du bord éclairé — la surface éclairée n'est jamais modifiée, quelle que soit la valeur.",
+    "true_lum": "Les rendus couleur réimposent la luminance exacte du L net (déconvolué) après la composition RVB (corrige la fuite de luminance de rgbcomp de Siril qui adoucit l'image finale). Activé par défaut ; à désactiver seulement en cas d'artefacts de couleur.",
     "best_percent": "Sélection « lucky imaging » : ne garde que ce % des poses les plus nettes avant l'empilement. Plus bas = plus strict.",
     "ap_align": "Alignement multi-points (planétaire) — corrige les distorsions locales de turbulence sur le disque, pas seulement un décalage global.",
+    "double_stack": "Seconde passe d'alignement sur le premier master empilé (référence peu bruitée, distorsion moyennée) avec une grille de points d'alignement bien plus dense — la « double stack reference » d'AutoStakkert. Plus net, ~1,7× plus lent.",
+    "calibrate": "Applique la calibration dark/flat aux poses (masters construits depuis les dossiers darks/flats/offsets de la capture, ou réutilisés depuis la bibliothèque). Supprime ombres de poussière, vignettage et taches de couleur ; ignorée automatiquement si rien ne correspond.",
     "deconv_fwhm": "Largeur de la PSF de déconvolution (pixels) — à régler près de la taille du flou pour récupérer du détail. 0 = désactivé.",
     "deconv_iters": "Itérations de déconvolution. Plus il y en a, plus c'est net, mais des halos peuvent apparaître autour des bords vifs.",
     "deconv_alpha": "Régularisation de la déconvolution — plus élevé supprime bruit/halos, plus bas est plus agressif.",
+    "drizzle_scale": "Grille de sortie super-résolution (1, 1,5 ou 2) : l'empilement accumule des centaines d'images décalées de façon sub-pixel sur une trame plus fine, gagnant réellement en résolution. Défaut 1,5 ; coûte ×échelle² en mémoire/temps (re-stack).",
+    "align_points": "Nombre total de points de référence utilisés pour corriger la distorsion atmosphérique (à la AutoStakkert). Arrondi à une grille N×N, N = √valeur borné à 10–48 par axe (100–2304 au total). 0 = automatique (cellules ~120 px, jusqu'à 32×32). Plus de points suivent des ondulations plus fines mais coûtent du CPU (re-stack) ; le bouton d'estimation du formulaire de lancement suggère une valeur adaptée à votre image.",
     "per_frame_starnet": "Lance StarNet++ sur chaque pose avant l'empilement de la comète (champs denses). Plus lent, mais retrait d'étoiles plus propre.",
     "look": "Style de rendu : natural (fidèle, doux), iphone (plus chaud, plus contrasté, ciel plus profond) ou deepsky (audacieux, dramatique, forte saturation).",
     "brightness": "Niveau cible du fond de ciel. Plus bas = ciel plus sombre ; plus haut relève le cœur de la Voie lactée.",
     "saturation_scale": "Module la saturation propre au style choisi. 1 = tel que conçu ; en dessous de 1 atténue les couleurs criardes ; jusqu'à 2 pour plus.",
-    "highlight_ceiling": "Plafond de luminosité du cœur de la Voie lactée. Plus bas = cœur plus sombre et mieux protégé ; 0 garde celui du style."
+    "highlight_ceiling": "Plafond de luminosité du cœur de la Voie lactée. Plus bas = cœur plus sombre et mieux protégé ; 0 garde celui du style.",
+    "seam_offset_refit": "Re-mesure le piédestal de ciel de chaque nuit dans sa zone de recouvrement avec la nuit d'ancrage et le corrige avant l'empilement — supprime les marches rectilignes de fond aux frontières des champs tournés des masters multi-nuits.",
+    "seam_noise_eq": "Estompe le changement de grain là où moins de nuits couvrent le ciel : un débruitage pondéré par la couverture, exactement nul dans le cœur profond et croissant dans les zones à une seule nuit — la composante bruit des lignes de raccord.",
+    "mosaic": "Conserve l'union du champ de toutes les nuits (canevas plus grand, aucun pixel perdu) au lieu de rogner au cadre de la nuit d'ancrage. Option de consentement : jamais réactivée d'elle-même par un relancement.",
+    "mosaic_fill": "Sort des zones jamais couvertes de la mosaïque : crop rogne le final au champ où chaque canal a des données (défaut) ; fill garde toute l'union avec un ciel extrapolé + grain assorti.",
+    "oiii_screen": "Opacité de la couche [OIII] (sarcelle) superposée à l'image (seulement si OIII a été capturé avec un vrai filtre B). 0 = désactivé ; augmentez pour faire ressortir les fronts de choc bleu-vert à côté du Hα rouge.",
+    "oiii_black_point": "Écrête le fond de la couche [OIII] en noir avant la superposition : le sarcelle ne révèle que la vraie émission, jamais le bruit du ciel.",
+    "sii_screen": "Opacité de la couche [SII] superposée à l'image (seulement si SII a été capturé). 0 = désactivé ; augmentez pour faire ressortir les structures de soufre à côté du Hα rouge et du [OIII] sarcelle.",
+    "sii_black_point": "Écrête le fond de la couche [SII] en noir avant la superposition : sa teinte ne révèle que la vraie émission, jamais le bruit du ciel.",
+    "sii_tint": "Couleur de la couche [SII]. À 672 nm, [SII] est un rouge PLUS PROFOND que le Hα, ce qu'un écran ne peut pas rendre : il faut donc choisir comment les distinguer. Le rouge profond donne un cramoisi naturel ; le doré est l'accent ambre de la palette Hubble, bien plus lisible face à la couche Hα.",
+    "sky_chroma_flatten_px": "Neutralise la couleur à grande échelle du ciel APRÈS l'étirement (px de grille). L'étirement amplifie des résidus de couleur inférieurs au pourcent en bandes gauche-droite ou disques colorés visibles ; ceci mesure la couleur du ciel par tuile et la soustrait — le ciel devient neutre, les objets gardent leur couleur. 0 désactive.",
+    "sky_lum_flatten_px": "Égalise la luminosité à grande échelle du ciel APRÈS l'étirement (px de grille). Ajuste une surface lisse au niveau du ciel et ramène tout le ciel à un seul niveau uniforme (le ciel sombre hors halo) — le halo résiduel descend, un coin au-delà du halo remonte ; les objets gardent leur contraste. 0 désactive (défaut pour nébuleuse, pour protéger les extensions faibles).",
+    "lum_boost": "Rehausse doucement les tons moyens de la luminance (valeur = rehaussement maximal au gris moyen ; niveau du ciel, point noir, cœurs brillants et couleurs épinglés) — une périphérie et des bras de galaxie plus lumineux sans toucher au ciel, aux étoiles ni au détail des cœurs. 0 désactive.",
+    "emit_luminance_mono": "Enregistre aussi une image monochrome traitée du seul canal L (final_luminance) à côté du rendu couleur — le même traitement calibré, fond extrait et étiré que L reçoit dans le composite.",
+    "emit_all_channel_mono": "Enregistre aussi une image monochrome intégrant tous les canaux (L/R/G/B/Hα…) en luminance synthétique pondérée par le nombre de poses (final_monostack) — la vue mono au signal maximal.",
+    "union_canvas": "Canevas union multi-nuits (même pointage) : conserve l'union du champ de toutes les nuits (canevas plus grand, aucun pixel perdu) au lieu de rogner au cadre de la nuit d'ancrage. Option de consentement : jamais réactivée d'elle-même par un relancement. Sans rapport avec le mode mosaïque à panneaux.",
+    "union_canvas_fill": "Sort des zones jamais couvertes du canevas union : crop rogne le final au champ où chaque canal a des données (défaut) ; fill garde toute l'union avec un ciel extrapolé + grain assorti.",
+    "overlap_expected": "Fraction de recouvrement entre panneaux voisins promise par le plan. Dimensionne le fondu et les contrôles de détection des panneaux.",
+    "feather_frac": "Largeur de la rampe de fondu pondérée vers le centre, en fraction du recouvrement. Plus large = raccords plus doux ; chaque étoile reste dominée par le panneau qui la voit au plus près de son axe optique.",
+    "photom_match": "Appariement photométrique des panneaux sur le canevas : gain_offset corrige fond de ciel ET transparence par panneau (défaut), offset ne corrige que le fond, off désactive.",
+    "canvas_crop": "Bords du canevas assemblé : common rogne au plus grand rectangle couvert par tous les canaux (défaut), union garde tout, plan rogne à l'emprise de la grille du plan.",
+    "min_panel_frames": "Les panneaux dont les canaux ont empilé moins d'images sont écartés — un pointage égaré ne doit pas devenir un pseudo-panneau troué.",
+    "panel_source": "Découpage des images en panneaux : auto essaie les dossiers p01/ puis le regroupement par coordonnées de pointage ; folders et coords forcent une méthode."
   },
   "denoiseFinal": {
     "title": "Débruiter l'image finale (GraXpert)",
     "hint": "Lance le débruitage IA GraXpert sur l'image finale à la demande — sur le service GraXpert natif de la machine hôte si configuré (plus rapide, non bloquant). Ouvre une nouvelle tâche avec le résultat débruité.",
     "run": "Débruiter la finale",
     "starting": "Démarrage…"
+  },
+  "stars": {
+    "count": "Compter les étoiles",
+    "counting": "Comptage…",
+    "solveHint": "Le premier comptage peut prendre jusqu'à une minute (résolution astrométrique du champ).",
+    "detected": "{n} étoiles détectées",
+    "noSolve": "Pas de solution astrométrique — étiquettes de noms indisponibles",
+    "overlayShow": "Afficher les noms d'étoiles",
+    "overlayHide": "Masquer les noms d'étoiles",
+    "failed": "Échec du comptage d'étoiles."
   },
   "refine": {
     "title": "Améliorer ce run avec l'IA",
@@ -1119,11 +1952,14 @@
       "cloudHigh": "Nuages élevés",
       "humidity": "Humidité",
       "precip": "Risque de pluie",
+      "fog": "Brouillard / buée",
       "radar": "Radar de pluie",
+      "satellite": "Satellite (nuages IR)",
       "live": "en direct",
       "radarLight": "faible",
       "radarHeavy": "forte",
-      "liveNoData": "Radar en direct : pas de données pour cet instant"
+      "liveNoData": "Radar en direct : pas de données pour cet instant",
+      "weatherDegraded": "Flux météo limité — affichage du cache, nouvel essai en cours"
     },
     "lp": {
       "uncovered": "Les données détaillées de pollution lumineuse ne sont pas téléchargées pour cette zone.",
@@ -1155,7 +1991,8 @@
         "play": "Lire / mettre en pause l'animation des nuages",
         "scrub": "Parcourir le temps",
         "now": "Maintenant",
-        "darkWindow": "Fenêtre sombre"
+        "darkWindow": "Fenêtre sombre",
+        "empty": "Pas encore de chronologie — données météo indisponibles, nouvel essai en cours."
       },
       "metrics": {
         "clouds": "Couverture nuageuse",
@@ -1179,7 +2016,9 @@
         "unlikely": "improbable",
         "possible": "possible",
         "likely": "probable"
-      }
+      },
+      "noForecastNight": "Pas encore de prévisions pour cette nuit (au-delà de l'horizon de prévision).",
+      "nightOf": "Nuit du {date}"
     },
     "site": {
       "label": "Bortle {bortle} · {sqm} mag/arcsec²",
@@ -1244,6 +2083,8 @@
       "minAlt": "Altitude min. (°)",
       "twilight": "Obscurité",
       "minScore": "Score min.",
+      "magLimit": "Magnitude limite",
+      "magAll": "toutes",
       "type": "Type",
       "allTypes": "Tous les types",
       "fitsFrame": "Tient dans le champ",
@@ -1294,7 +2135,8 @@
       "palette": "Palette",
       "bestEp": "Meilleur oculaire",
       "power": "Grossissement",
-      "trueField": "Champ réel"
+      "trueField": "Champ réel",
+      "scoreLive": "Score temps réel"
     },
     "types": {
       "galaxy": "Galaxie",
@@ -1324,7 +2166,9 @@
       "commonName": "Nom commun",
       "morphology": "Morphologie",
       "surfaceBrightness": "Brillance de surface",
-      "size": "Taille"
+      "size": "Taille",
+      "planMosaic": "Planifier une mosaïque",
+      "mosaicHint": "Plus grand que votre champ — faites-en une mosaïque."
     },
     "sub": {
       "max_alt": "Altitude",
@@ -1376,7 +2220,13 @@
     "map": {
       "title": "Carte du ciel",
       "hint": "Chaque point est une cible placée par altitude (centre = zénith) et azimut ; couleur = score.",
-      "belowHorizon": "Sous l'horizon actuellement"
+      "belowHorizon": "Sous l'horizon actuellement",
+      "playbar": {
+        "live": "En direct",
+        "play": "Lire la nuit",
+        "pause": "Pause",
+        "scrub": "Heure de la nuit"
+      }
     }
   },
   "calendar": {
@@ -1542,6 +2392,237 @@
       "penumbral_begin": "Début pénombre",
       "penumbral_end": "Fin pénombre",
       "maximum": "Maximum"
+    }
+  },
+  "storageClass": {
+    "needsThaw": "restauration requise",
+    "minDuration": "Durée min. {days} jours (frais de suppression anticipée)",
+    "family": {
+      "instant": "Instantané",
+      "archived": "Archivé"
+    },
+    "tiers": {
+      "Standard": "Standard (~3–5 h Flexible / ~12 h Deep Archive)",
+      "Bulk": "Bulk (le moins cher, jusqu'à 48 h)",
+      "Expedited": "Expedited (1–5 min, Flexible uniquement)"
+    },
+    "classes": {
+      "STANDARD": {
+        "label": "Standard",
+        "blurb": "Le palier chaud classique — accès instantané, sans frais de récupération. La destination lors d'une restauration."
+      },
+      "GLACIER_IR": {
+        "label": "Glacier Instant Retrieval",
+        "blurb": "Stockage d'archive économique mais lectures instantanées (sans dégel). Idéal pour des maîtres/résultats relus de temps en temps."
+      },
+      "GLACIER": {
+        "label": "Glacier Flexible Retrieval",
+        "blurb": "Archive à bas coût ; les objets doivent être restaurés (minutes–heures) avant téléchargement. La cible « archiver » principale."
+      },
+      "DEEP_ARCHIVE": {
+        "label": "Deep Archive",
+        "blurb": "Le palier le plus froid et le moins cher ; la restauration peut prendre jusqu'à ~48 h. Pour des sauvegardes long terme rarement consultées."
+      }
+    }
+  },
+  "mosaic": {
+    "title": "Mosaïque",
+    "subtitle": "Planifiez des tuiles qui se chevauchent sur un grand objet, capturez panneau par panneau, empilez en une seule grande image.",
+    "tabs": {
+      "plan": "Plan",
+      "capture": "Capture"
+    },
+    "preview": {
+      "title": "Empreintes des tuiles sur le ciel",
+      "computing": "calcul…"
+    },
+    "warnings": {
+      "grid_clamped": "Grille plafonnée à 8×8 — vérifiez taille et marge",
+      "size_unknown": "Taille inconnue au catalogue — plan à une seule tuile",
+      "tile_count_high": "Plus de 25 tuiles : plusieurs nuits de capture"
+    },
+    "table": {
+      "title": "Tuiles ({count})",
+      "order": "N°",
+      "tile": "Tuile",
+      "ra": "AD (J2000)",
+      "dec": "Déc (J2000)",
+      "alt": "Haut. actuelle",
+      "transit": "Transit",
+      "status": "État",
+      "east": "est",
+      "west": "ouest",
+      "capture": "Capturer →",
+      "captureHint": "Ouvrir cette tuile dans Capture (nouvel onglet) et y pointer la monture",
+      "savePlanFirst": "Enregistrez d'abord le plan — la capture a besoin d'une tuile enregistrée pour suivre l'avancement."
+    },
+    "status": {
+      "pending": "à faire",
+      "captured": "capturée",
+      "skipped": "passée"
+    },
+    "controls": {
+      "object": "Objet",
+      "customTarget": "Centre personnalisé",
+      "changeObject": "Changer d'objet (Ce soir)",
+      "customToggle": "centre personnalisé…",
+      "customRa": "AD (°)",
+      "customDec": "Déc (°)",
+      "customSize": "Taille (′)",
+      "customPa": "AP objet (°)",
+      "objectPa": "AP {pa}°",
+      "equipment": "Matériel",
+      "currentSetup": "Configuration actuelle (Ce soir)",
+      "overlap": "Recouvrement",
+      "cameraPa": "Angle caméra (° E du N)",
+      "northUp": "Nord en haut",
+      "alignToObject": "Aligner sur l'objet",
+      "noPa": "Cet objet n'a pas d'angle de position au catalogue",
+      "cols": "Colonnes",
+      "rows": "Lignes",
+      "margin": "Marge (′)",
+      "auto": "auto",
+      "autoHint": "0 = automatique d'après la taille de l'objet ; grille plafonnée à 8×8.",
+      "tiles": "Tuiles",
+      "footprint": "Emprise de la mosaïque",
+      "tileFov": "Champ d'une tuile",
+      "scale": "Échantillonnage",
+      "namePlaceholder": "Nom du plan (l'objet par défaut)",
+      "nameRequired": "Donnez un nom au plan",
+      "nameExists": "Un plan porte déjà ce nom",
+      "save": "Enregistrer le plan",
+      "update": "Mettre à jour « {name} »",
+      "saved": "Plan enregistré.",
+      "updated": "Plan mis à jour — progression conservée.",
+      "statusesReset": "Géométrie modifiée — la progression de capture a été remise à zéro.",
+      "customSizeMinor": "Petit axe ′"
+    },
+    "plans": {
+      "title": "Plans enregistrés",
+      "empty": "Aucun plan — réglez la grille puis enregistrez-la.",
+      "load": "Charger dans le planificateur",
+      "capture": "Capturer",
+      "duplicate": "Dupliquer",
+      "duplicateName": "Nom de la copie",
+      "rename": "Renommer",
+      "renamePrompt": "Nouveau nom",
+      "delete": "Supprimer",
+      "confirmDelete": "Vraiment supprimer ?"
+    },
+    "orientation": {
+      "title": "Régler l'angle caméra (une fois, en position repos)",
+      "paReadout": "{pa}° E du N",
+      "step1": "Mettez la monture en position repos, tube pointé vers le pôle céleste.",
+      "step2": "Prenez une pose courte (2–5 s).",
+      "step3": "Tournez la caméra dans le porte-oculaire jusqu'à ce que votre image corresponde à cette carte.",
+      "step4": "Bloquez la caméra et ne la tournez plus de toute la mosaïque.",
+      "mirror": "Miroir (renvoi coudé / train optique inversé)",
+      "confirm": "Angle caméra réglé",
+      "done": "Angle caméra réglé",
+      "redo": "Refaire"
+    },
+    "tile": {
+      "title": "Panneau {folder}",
+      "copy": "Copier pour la raquette",
+      "flipWarn": "retournement au méridien dans ~{min} min",
+      "justFlipped": "vient de passer le méridien",
+      "look": "Regardez vers {dir} · {alt}° de hauteur",
+      "folder": "Enregistrez les images de ce panneau dans",
+      "captured": "Capturé",
+      "skip": "Passer",
+      "undo": "Annuler",
+      "expectedField": "Voir le champ attendu",
+      "hideField": "Masquer le champ attendu"
+    },
+    "capture": {
+      "selectPlan": "Plan de mosaïque",
+      "selectPlaceholder": "Choisissez un plan…",
+      "noPlans": "Aucun plan — créez-en un dans l'onglet Plan.",
+      "progress": "{captured}/{total} panneaux capturés",
+      "window": "min/panneau",
+      "reset": "Réinitialiser la progression",
+      "confirmReset": "Vraiment tout réinitialiser ?",
+      "offlineHint": "Impossible d'enregistrer — vérifiez la connexion au moteur puis réessayez. ({error})",
+      "resume": "Reprendre →"
+    },
+    "goto": {
+      "continueCard": "Reprendre la mosaïque — {name} · {done}/{total} panneaux",
+      "continueDetail": "{done}/{total} tuiles · {pct}% des poses"
+    },
+    "import": {
+      "planLabel": "Plan de mosaïque",
+      "noPlan": "Sans plan (détection auto des panneaux)",
+      "folderHint": "Sélectionnez le dossier parent contenant les sous-dossiers p01/…pNN/ (ou laissez le moteur regrouper les images par leurs coordonnées de pointage)."
+    },
+    "job": {
+      "panels": "Panneaux de la mosaïque",
+      "panelsHint": "Chaque panneau est empilé comme un ciel profond, résolu astrométriquement, puis assemblé sur le canevas.",
+      "stage_stacked": "empilement",
+      "stage_solved": "résolution",
+      "stage_assembled": "assemblage"
+    },
+    "search": {
+      "placeholder": "Rechercher un objet (M31, NGC 7000, Andromède…)",
+      "searching": "Recherche…",
+      "noResults": "Aucun objet ne correspond"
+    },
+    "setup": {
+      "edit": "Modifier le matériel",
+      "unknownRig": "Matériel non défini",
+      "focal": "Focale mm",
+      "aperture": "Diamètre mm",
+      "reducer": "Réducteur/Barlow ×",
+      "pixel": "Pixel µm",
+      "sensorW": "Capteur L px",
+      "sensorH": "Capteur H px",
+      "hint": "La taille des tuiles vient de ces valeurs — un réducteur ou une autre caméra change toute la grille.",
+      "namePlaceholder": "Enregistrer ce matériel sous…",
+      "saveAs": "Enregistrer",
+      "revert": "Utiliser la sélection",
+      "nameRequired": "Nommez d'abord le matériel",
+      "nameExists": "Un matériel porte déjà ce nom"
+    },
+    "map": {
+      "dragHint": "Glissez la grille pour recadrer · Maj+glisser pour pivoter · glissez en dehors pour déplacer le ciel"
+    },
+    "framing": {
+      "title": "Cadrage",
+      "east": "Déplacer la grille vers l'est",
+      "west": "Déplacer la grille vers l'ouest",
+      "north": "Déplacer la grille vers le nord",
+      "south": "Déplacer la grille vers le sud",
+      "offset": "Décalage {east}′ E · {north}′ N par rapport à l'objet",
+      "recentre": "Recentrer sur l'objet",
+      "centred": "Centré sur l'objet",
+      "movedWarning": "Déplacer la grille repointe chaque tuile : {n} tuile(s) déjà capturée(s) repasseront en attente."
+    },
+    "targets": {
+      "title": "Plan de capture",
+      "edit": "Modifier les objectifs",
+      "close": "Terminé",
+      "overall": "Total capturé",
+      "noTargets": "Aucun objectif par filtre — ajoutez-en un pour que les tuiles se terminent seules.",
+      "filter": "Filtre",
+      "frames": "Poses",
+      "exposure": "Expo. s",
+      "gain": "Gain",
+      "remove": "Retirer",
+      "add": "Ajouter un filtre",
+      "save": "Enregistrer",
+      "saving": "Enregistrement…",
+      "perTile": "{n} poses par tuile",
+      "rootLabel": "Dossier de capture",
+      "rootPlaceholder": "input/M31/2026-07-20",
+      "rootHint": "Compte les poses de chaque dossier pNN/ — fonctionne aussi pour des panneaux capturés avant ce plan.",
+      "scan": "Analyser",
+      "scanning": "Analyse…",
+      "scanned": "Analysé · {n} tuile(s) désormais complètes",
+      "pathRequired": "Indiquez d'abord le dossier de capture",
+      "lastScan": "dernière analyse {at}"
+    },
+    "progress": {
+      "bar": "{got} poses sur {want}",
+      "fromDisk": "compté depuis les fichiers sur le disque"
     }
   }
 }
