@@ -40,6 +40,9 @@ type Server struct {
 	live     *liveView
 	video    *videoRecorder
 	pecTrain *pecSession
+	// link supervises the mount's serial link: an idle-timer heartbeat, the health the UI streams,
+	// and the one thing this process must remember across a restart — which port worked.
+	link *mountLink
 }
 
 // New builds a device server. It connects nothing: the UI (or the sequencer) picks devices
@@ -49,6 +52,10 @@ func New(cfg *config.Config) *Server {
 	s.live = newLiveView(s)
 	s.video = newVideoRecorder(s)
 	s.pecTrain = newPECSession(s)
+	s.link = newMountLink(s)
+	// Reconnect to the hand controller that worked last time, in the background. A mount that is not
+	// plugged in tonight must leave the server starting normally.
+	s.link.restore()
 	return s
 }
 
@@ -78,6 +85,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /mount/connect", s.connectMount)
 	mux.HandleFunc("POST /mount/disconnect", s.disconnectMount)
 	mux.HandleFunc("GET /mount", s.mountStatus)
+	mux.HandleFunc("GET /mount/events", s.mountEvents)
+	mux.HandleFunc("GET /mount/link", s.mountLinkStatus)
+	mux.HandleFunc("POST /mount/site", s.mountSite)
+	mux.HandleFunc("POST /mount/clock", s.mountClock)
+	mux.HandleFunc("GET /diagnose", s.mountDiagnose)
 	mux.HandleFunc("POST /mount/goto", s.mountGoto)
 	mux.HandleFunc("POST /mount/sync", s.mountSync)
 	mux.HandleFunc("POST /mount/abort", s.mountAbort)
@@ -118,6 +130,7 @@ func (s *Server) Handler() http.Handler {
 // Close disconnects everything — called on shutdown so a cooler is not left running.
 func (s *Server) Close() {
 	s.live.stop()
+	s.link.close()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.camera != nil {

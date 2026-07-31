@@ -129,8 +129,18 @@ func (s *Server) deviceRequest(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r2)
 }
 
+// isDeviceStream names the endpoints that must NOT be cut by the proxy's request timeout.
+//
+// Anything missing from this list is silently killed after deviceProxyTimeout, which for a stream is
+// indistinguishable from the device server dying — and for an overnight mount panel or a
+// periodic-error training run, sixty seconds in is the worst possible moment.
 func isDeviceStream(path string) bool {
-	return strings.HasPrefix(path, "/live/events") || strings.HasPrefix(path, "/live/frame")
+	for _, p := range []string{"/live/events", "/live/frame", "/mount/events", "/pec/train/events"} {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // deviceHealth is a short-timeout probe used by the environment report, so a stopped device server
