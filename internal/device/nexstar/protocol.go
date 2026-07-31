@@ -91,6 +91,26 @@ func foldDeclination(deg float64) float64 {
 	return deg
 }
 
+// DecodeAzAlt parses the reply to the precise horizontal-position query (`z`).
+//
+// Azimuth spans the whole circle and needs no folding; altitude does, for the same reason
+// declination does — the mount reports a plain fraction of a revolution, so anything below the
+// horizon comes back near 360 rather than negative.
+func DecodeAzAlt(reply string) (azDeg, altDeg float64, err error) {
+	parts := strings.Split(strings.TrimSuffix(strings.TrimSpace(reply), "#"), ",")
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("malformed horizontal position reply %q", reply)
+	}
+	if azDeg, err = decodeAngle(parts[0]); err != nil {
+		return 0, 0, err
+	}
+	raw, err := decodeAngle(parts[1])
+	if err != nil {
+		return 0, 0, err
+	}
+	return azDeg, foldDeclination(raw), nil
+}
+
 // Axis identifies which motor a pass-through command addresses.
 const (
 	axisAzmRA  = 16 // 0x10
