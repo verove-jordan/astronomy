@@ -1728,8 +1728,44 @@ export interface DeviceWheelState {
   };
 }
 
+// MountLinkHealth is what the serial link knows about itself. It is absent for the simulator, which
+// has no link — reporting invented latency there would make the panel lie in exactly the situation
+// where somebody is trying to tell simulation from hardware.
+export interface MountLinkHealth {
+  connected: boolean;
+  reconnecting: boolean;
+  path: string;
+  model?: string;
+  firmware?: string;
+  uptime_ms: number;
+  last_reply_ago_ms: number;
+  commands: number;
+  errors: number;
+  retries: number;
+  resyncs: number;
+  desyncs: number;
+  reconnects: number;
+  unrecovered: number;
+  latency_p50_ms: number;
+  latency_p99_ms: number;
+  latency_max_ms: number;
+  last_error?: string;
+}
+
+export interface MountDiagnosis {
+  verdict: string;
+  detail: string;
+  chip?: string;
+  ports: { path: string; label: string; likely: boolean }[];
+  scan_error?: string;
+}
+
 export interface DeviceMountState {
   connected: boolean;
+  reconnecting?: boolean;
+  cached?: boolean;
+  error?: string;
+  link?: MountLinkHealth;
   mount?: {
     id: string;
     name: string;

@@ -717,7 +717,8 @@
       "narrowband": "Narrowband",
       "solar": "Solar system",
       "comet": "Comet",
-      "milkyway": "Milky Way"
+      "milkyway": "Milky Way",
+      "sun": "The Sun"
     },
     "builtin": {
       "galaxy-lrgb": {
@@ -783,6 +784,26 @@
       "milkyway-deep": {
         "label": "Milky Way (dramatic)",
         "desc": "Brighter, deep-sky-style nightscape rendering."
+      },
+      "sun_ha_full": {
+        "label": "Sun — Hα full disc",
+        "desc": "Disc detail and prominences together — the standard Hα rendering."
+      },
+      "sun_ha_disk": {
+        "label": "Sun — Hα surface",
+        "desc": "Filaments and plage across the whole disc; prominences held back."
+      },
+      "sun_ha_prominence": {
+        "label": "Sun — prominences",
+        "desc": "Limb-forward: off-limb material stretched hard, disc left dark."
+      },
+      "sun_whitelight": {
+        "label": "Sun — white light",
+        "desc": "Photosphere through a solar film: sunspots and faculae, neutral tone."
+      },
+      "sun_iphone_video": {
+        "label": "Sun — iPhone clip",
+        "desc": "Phone video through the eyepiece; gentler sharpening, the camera already sharpened once."
       }
     }
   },
@@ -833,7 +854,8 @@
       "comet": "Comet",
       "transfer": "Transfer",
       "backup": "Backup",
-      "mosaic": "Mosaic (tiled panels)"
+      "mosaic": "Mosaic (tiled panels)",
+      "sun": "Sun (Hα / white light)"
     },
     "formats": {
       "image": "Image",
@@ -888,7 +910,8 @@
     "paramsReset": "Reset to defaults",
     "paramsCheckboxNote": "SPCC, noise reduction & Hα-on-nebulosity are controlled by the checkboxes above.",
     "mosaic": "Union canvas (multi-night, keep every night's full field)",
-    "mosaicHint": "Multi-night runs land on the UNION of all sessions' footprints instead of cropping to the anchor night's frame — a bigger image, no pixel lost. The final is trimmed to the area where every channel has real data (params: mosaic_fill)."
+    "mosaicHint": "Multi-night runs land on the UNION of all sessions' footprints instead of cropping to the anchor night's frame — a bigger image, no pixel lost. The final is trimmed to the area where every channel has real data (params: mosaic_fill).",
+    "sunHint": "Point this at the whole capture folder. The run measures the solar disc in every file and groups what can actually be stacked together — different zooms, resolutions and exposures are sorted out for you, and the grouping is saved as triage.json beside the result."
   },
   "reuse": {
     "title": "Reuse prior data",
@@ -1310,7 +1333,28 @@
       "rate": "Rate",
       "stop": "STOP",
       "trackingOn": "Tracking on",
-      "trackingOff": "Tracking off"
+      "trackingOff": "Tracking off",
+      "diagnose": "Diagnose link",
+      "diagnosing": "Diagnosing…",
+      "linkTitle": "Link health",
+      "reconnecting": "reconnecting…",
+      "uptime": "up",
+      "latency": "reply",
+      "resyncs": "resyncs",
+      "reconnects": "reconnects",
+      "commands": "commands",
+      "errors": "errors",
+      "siteTitle": "Site & clock",
+      "siteHint": "The hand controller computes every alt-azimuth from these. Prefilled from your observing site and this Mac's clock — edit before applying if either is wrong.",
+      "lat": "Latitude",
+      "lon": "Longitude",
+      "timezone": "Time zone",
+      "applySite": "Send site",
+      "applyClock": "Send clock",
+      "mountSite": "The mount now reports {lat}, {lon}",
+      "mountClock": "The mount's clock now reads {utc} (UTC)",
+      "padLabel": "Mount direction pad",
+      "padHint": "Click here, then hold the arrow keys — Esc stops."
     },
     "tracking": {
       "title": "Mount tracking",
@@ -1672,7 +1716,11 @@
       "milkywayGrade": "Grade",
       "milkywayGradeHint": "re-renders the nightscape in seconds",
       "mosaicAssembly": "Panel assembly",
-      "mosaicAssemblyHint": "How the stacked panels are placed, photometrically matched and blended onto the one canvas. Changing these re-assembles the mosaic."
+      "mosaicAssemblyHint": "How the stacked panels are placed, photometrically matched and blended onto the one canvas. Changing these re-assembles the mosaic.",
+      "sunFinish": "Finish & sharpening",
+      "sunFinishHint": "re-renders the image in seconds",
+      "sunStack": "Ingest, registration & stacking",
+      "sunStackHint": "re-reads the source frames (slower)"
     },
     "saturation": "Overall colour saturation of the final image. Higher is more vivid; too high turns stars garish.",
     "star_desat": "Pushes the brightest star cores toward white. Fixes solid colour discs on dense clusters and magenta SHO stars. 0 = off.",
@@ -1687,7 +1735,7 @@
     "highlight_knee": "Where the star-safe highlight cap begins on the final image — keeps bright star cores from clipping to white.",
     "highlight_ceil": "How far below white bright star cores are capped (with highlight_knee). Lower = cores stay more coloured, less burnt.",
     "crop_frac": "Fraction trimmed off each edge to drop the ragged dithered stacking-edge bands.",
-    "palette": "Channel→RGB colour mapping: natural, hargb, hoo, sho, hos, foraxx or mono. The narrowband palettes need OIII/SII data.",
+    "palette": "Colour rendering: gold (Hα), neutral (white light), mono, or inverted.",
     "color_calibration": "Photometric colour calibration (SPCC) for natural star/nebula hues; falls back to a neutral balance when offline.",
     "linked_stretch": "Stretches all channels together to preserve the calibrated colour balance (vs per-channel, which re-tints).",
     "background_level": "Target sky-background brightness for the auto-stretch. Lower = a darker sky.",
@@ -1706,7 +1754,7 @@
     "denoise_lum": "Denoise strength on the linear LUMINANCE master — gentle, to preserve galaxy/nebula detail.",
     "denoise_chroma": "Denoise strength on the linear COLOUR channels — usually higher, since thin R/G/B sub-stacks are noisy.",
     "background_ai": "GraXpert AI background/gradient extraction on each linear master (instead of Siril's polynomial subsky).",
-    "stretch": "Overall brightness/contrast stretch of the planet/Moon. Higher lifts the mid-tones.",
+    "stretch": "Midtone lift. Higher shows more faint surface detail.",
     "highlight": "Highlight-protection point — higher keeps bright craters and the limb from clipping to white.",
     "shadow_lift": "Opens up the shadows (crater floors, the terminator side) by sliding the stretch's focus point toward black (0–1). 0 = off (the historical curve); higher reveals more dark detail without touching the protected highlights.",
     "sharpen": "Wavelet detail boost. 1.0 is default; raise for more crater/band detail, lower if it rings or looks crunchy.",
@@ -1721,7 +1769,7 @@
     "double_stack": "Second alignment pass onto the first stacked master (a low-noise, distortion-averaged reference) with a much denser alignment-point grid — AutoStakkert's double-stack reference. Sharper, ~1.7× slower.",
     "calibrate": "Applies master dark/flat calibration to the frames (masters built from the capture's own dark/flat/offset folders, or reused from the library). Removes dust shadows, vignetting and colour blotches; skipped automatically when nothing matches.",
     "deconv_fwhm": "Deconvolution PSF width (pixels) — set near the blur size to recover detail. 0 = off.",
-    "deconv_iters": "Deconvolution iterations. More sharpens harder but can ring around bright edges.",
+    "deconv_iters": "Deconvolution iterations. More sharpens further and rings at the limb sooner.",
     "deconv_alpha": "Deconvolution regularisation — higher suppresses noise/ringing, lower is more aggressive.",
     "drizzle_scale": "Super-resolution output grid (1, 1.5 or 2): the stack accumulates hundreds of sub-pixel-dithered frames onto a finer raster, genuinely adding resolution. Default 1.5; costs ×scale² memory/time (re-stack).",
     "align_points": "Total number of stacking reference points used to correct atmospheric-wave distortion (AutoStakkert-style). Snapped to an N×N grid, N = √value clamped to 10–48 per axis (100–2304 total). 0 = automatic (~120 px cells, up to 32×32). More points track finer seeing waves but cost CPU (re-stack); the estimator button in the run form suggests a value from your image.",
@@ -1751,7 +1799,27 @@
     "photom_match": "How panel photometry is matched on the canvas: gain_offset corrects sky pedestal AND transparency per panel (default), offset corrects pedestal only, off disables matching.",
     "canvas_crop": "Edges of the assembled canvas: common crops to the largest rectangle every channel covers (default), union keeps everything, plan crops to the plan's grid bounding box.",
     "min_panel_frames": "Panels whose channels stacked fewer total frames are dropped — a stray mis-filed pointing must not become a hole-riddled pseudo-panel.",
-    "panel_source": "How frames are split into panels: auto tries p01/-style folders then pointing-header clustering, folders and coords force one method."
+    "panel_source": "How frames are split into panels: auto tries p01/-style folders then pointing-header clustering, folders and coords force one method.",
+    "flat_strength": "Removes the etalon's Newton's rings, dust and sweet-spot gradient. 0 leaves the frame alone.",
+    "deconv_sigma": "Gaussian PSF width, in pixels, used for deconvolution. 0 turns deconvolution off.",
+    "sharpen_small": "Fine-scale contrast (granulation, filament edges). Above ~1.5 it mostly amplifies noise.",
+    "sharpen_medium": "Mid-scale contrast (filaments, plage) — the main detail control.",
+    "sharpen_large": "Large-scale contrast (active regions). Leave near 1 unless the disc looks flat.",
+    "sharpen_denoise": "Suppresses noise at the finest scales before the gains are applied.",
+    "limb_flatten": "Removes limb darkening so detail reads all the way to the edge. 0 keeps the natural falloff.",
+    "prominence_boost": "Brightness of the off-limb prominences relative to the disc. 0 hides them.",
+    "prominence_feather": "How softly the disc and off-limb renderings blend across the limb, as a fraction of the radius.",
+    "contrast": "Overall contrast of the finished image.",
+    "band": "Which channel carries the signal: auto-detected, Hα (red only) or white light (all channels).",
+    "keep_percent": "Percentage of the sharpest frames kept from each source.",
+    "max_frames": "Hard cap on frames taken from one clip or still set.",
+    "drizzle": "Stacks onto a finer grid (1, 1.5 or 2). Only helps when the capture is undersampled.",
+    "clip_sigma": "How far a frame may differ from the stack before that pixel is rejected.",
+    "window_seconds": "Longest time span in one stack. Shorter keeps the chromosphere frozen and field rotation small.",
+    "window_frames": "Most frames in one stack.",
+    "min_frames": "Fewest frames a window needs to be stacked at all; shorter windows are dropped.",
+    "crop_margin": "How far past the limb the crop reaches, as a fraction of the radius — room for prominences.",
+    "scale_tolerance": "How closely two files' measured disc sizes must agree to be stacked together."
   },
   "denoiseFinal": {
     "title": "Denoise the final (GraXpert)",

@@ -717,7 +717,8 @@
       "narrowband": "Bande étroite",
       "solar": "Système solaire",
       "comet": "Comète",
-      "milkyway": "Voie lactée"
+      "milkyway": "Voie lactée",
+      "sun": "Le Soleil"
     },
     "builtin": {
       "galaxy-lrgb": {
@@ -783,6 +784,26 @@
       "milkyway-deep": {
         "label": "Voie lactée (spectaculaire)",
         "desc": "Rendu nocturne plus lumineux, style ciel profond."
+      },
+      "sun_ha_full": {
+        "label": "Soleil — disque Hα",
+        "desc": "Détail du disque et protubérances ensemble — le rendu Hα standard."
+      },
+      "sun_ha_disk": {
+        "label": "Soleil — surface Hα",
+        "desc": "Filaments et plages sur tout le disque ; protubérances atténuées."
+      },
+      "sun_ha_prominence": {
+        "label": "Soleil — protubérances",
+        "desc": "Priorité au limbe : matière hors disque très étirée, disque laissé sombre."
+      },
+      "sun_whitelight": {
+        "label": "Soleil — lumière blanche",
+        "desc": "Photosphère à travers un filtre solaire : taches et facules, rendu neutre."
+      },
+      "sun_iphone_video": {
+        "label": "Soleil — vidéo iPhone",
+        "desc": "Vidéo au téléphone derrière l'oculaire ; accentuation douce, le boîtier a déjà accentué."
       }
     }
   },
@@ -833,7 +854,8 @@
       "comet": "Comète",
       "transfer": "Transfert",
       "backup": "Sauvegarde",
-      "mosaic": "Mosaïque (panneaux)"
+      "mosaic": "Mosaïque (panneaux)",
+      "sun": "Soleil (Hα / lumière blanche)"
     },
     "formats": {
       "image": "Image",
@@ -888,7 +910,8 @@
     "paramsReset": "Réinitialiser",
     "paramsCheckboxNote": "Le SPCC, la réduction de bruit et « Hα sur la nébulosité » sont gérés par les cases à cocher ci-dessus.",
     "mosaic": "Canevas union (multi-nuits, garder tout le champ de chaque nuit)",
-    "mosaicHint": "Les traitements multi-nuits couvrent l'UNION des champs de toutes les sessions au lieu de rogner au cadre de la nuit d'ancrage — une image plus grande, aucun pixel perdu. Le final est rogné à la zone où chaque canal a de vraies données (params : mosaic_fill)."
+    "mosaicHint": "Les traitements multi-nuits couvrent l'UNION des champs de toutes les sessions au lieu de rogner au cadre de la nuit d'ancrage — une image plus grande, aucun pixel perdu. Le final est rogné à la zone où chaque canal a de vraies données (params : mosaic_fill).",
+    "sunHint": "Indiquez le dossier de capture complet. Le traitement mesure le disque solaire dans chaque fichier et regroupe ce qui peut réellement être empilé — zooms, résolutions et expositions différents sont triés automatiquement, et le regroupement est enregistré dans triage.json à côté du résultat."
   },
   "reuse": {
     "title": "Réutiliser des données antérieures",
@@ -1310,7 +1333,28 @@
       "rate": "Vitesse",
       "stop": "ARRÊT",
       "trackingOn": "Activer le suivi",
-      "trackingOff": "Couper le suivi"
+      "trackingOff": "Couper le suivi",
+      "diagnose": "Diagnostiquer",
+      "diagnosing": "Diagnostic…",
+      "linkTitle": "État de la liaison",
+      "reconnecting": "reconnexion…",
+      "uptime": "connectée depuis",
+      "latency": "réponse",
+      "resyncs": "resynchros",
+      "reconnects": "reconnexions",
+      "commands": "commandes",
+      "errors": "erreurs",
+      "siteTitle": "Site et horloge",
+      "siteHint": "La raquette calcule toutes les hauteurs et azimuts à partir de ces valeurs. Pré-remplies depuis votre site d'observation et l'horloge de ce Mac — corrigez avant d'envoyer si l'une des deux est fausse.",
+      "lat": "Latitude",
+      "lon": "Longitude",
+      "timezone": "Fuseau horaire",
+      "applySite": "Envoyer le site",
+      "applyClock": "Envoyer l'heure",
+      "mountSite": "La monture indique maintenant {lat}, {lon}",
+      "mountClock": "L'horloge de la monture indique {utc} (UTC)",
+      "padLabel": "Pavé directionnel de la monture",
+      "padHint": "Cliquez ici, puis maintenez les flèches — Échap arrête."
     },
     "tracking": {
       "title": "Suivi de la monture",
@@ -1672,7 +1716,11 @@
       "milkywayGrade": "Étalonnage",
       "milkywayGradeHint": "recalcule le paysage nocturne en quelques secondes",
       "mosaicAssembly": "Assemblage des panneaux",
-      "mosaicAssemblyHint": "Comment les panneaux empilés sont placés, appariés photométriquement et fondus sur le canevas unique. Modifier ces réglages ré-assemble la mosaïque."
+      "mosaicAssemblyHint": "Comment les panneaux empilés sont placés, appariés photométriquement et fondus sur le canevas unique. Modifier ces réglages ré-assemble la mosaïque.",
+      "sunFinish": "Finition et accentuation",
+      "sunFinishHint": "re-rend l'image en quelques secondes",
+      "sunStack": "Ingestion, recalage et empilement",
+      "sunStackHint": "relit les trames sources (plus lent)"
     },
     "saturation": "Saturation globale des couleurs de l'image finale. Plus élevé = plus vif ; trop élevé rend les étoiles criardes.",
     "star_desat": "Ramène le cœur des étoiles les plus brillantes vers le blanc. Corrige les disques de couleur pleins sur les amas denses et les étoiles magenta en SHO. 0 = désactivé.",
@@ -1687,7 +1735,7 @@
     "highlight_knee": "Seuil où commence le plafond d'étoiles sur l'image finale — empêche le cœur des étoiles brillantes de saturer au blanc.",
     "highlight_ceil": "Jusqu'où sous le blanc le cœur des étoiles brillantes est plafonné (avec highlight_knee). Plus bas = cœurs plus colorés, moins cramés.",
     "crop_frac": "Fraction rognée sur chaque bord pour retirer les bandes de bord d'empilement (dithering).",
-    "palette": "Correspondance canaux→RVB : natural, hargb, hoo, sho, hos, foraxx ou mono. Les palettes bande étroite nécessitent des données OIII/SII.",
+    "palette": "Rendu colorimétrique : gold (Hα), neutral (lumière blanche), mono ou inverted.",
     "color_calibration": "Calibration photométrique des couleurs (SPCC) pour des teintes d'étoiles/nébuleuses naturelles ; repli sur un équilibre neutre hors ligne.",
     "linked_stretch": "Étire tous les canaux ensemble pour préserver l'équilibre de couleur calibré (vs par canal, qui reteinte).",
     "background_level": "Luminosité cible du fond de ciel pour l'auto-étirement. Plus bas = ciel plus sombre.",
@@ -1706,7 +1754,7 @@
     "denoise_lum": "Force de débruitage sur le master de LUMINANCE linéaire — doux, pour préserver le détail galaxie/nébuleuse.",
     "denoise_chroma": "Force de débruitage sur les canaux de COULEUR linéaires — généralement plus élevée, car les sous-piles R/V/B fines sont bruitées.",
     "background_ai": "Extraction de fond/gradient par IA GraXpert sur chaque master linéaire (au lieu du subsky polynomial de Siril).",
-    "stretch": "Étirement global luminosité/contraste de la planète ou de la Lune. Plus élevé relève les tons moyens.",
+    "stretch": "Relevé des tons moyens. Plus élevé révèle davantage de détail faible.",
     "highlight": "Point de protection des hautes lumières — plus élevé empêche les cratères brillants et le limbe de saturer au blanc.",
     "shadow_lift": "Ouvre les ombres (fonds de cratères, côté terminateur) en déplaçant le point focal de l'étirement vers le noir (0–1). 0 = désactivé (courbe historique) ; plus élevé révèle plus de détails sombres sans toucher les hautes lumières protégées.",
     "sharpen": "Renforcement des détails par ondelettes. 1.0 par défaut ; augmentez pour plus de détails, baissez si ça sonne ou paraît craquelé.",
@@ -1721,7 +1769,7 @@
     "double_stack": "Seconde passe d'alignement sur le premier master empilé (référence peu bruitée, distorsion moyennée) avec une grille de points d'alignement bien plus dense — la « double stack reference » d'AutoStakkert. Plus net, ~1,7× plus lent.",
     "calibrate": "Applique la calibration dark/flat aux poses (masters construits depuis les dossiers darks/flats/offsets de la capture, ou réutilisés depuis la bibliothèque). Supprime ombres de poussière, vignettage et taches de couleur ; ignorée automatiquement si rien ne correspond.",
     "deconv_fwhm": "Largeur de la PSF de déconvolution (pixels) — à régler près de la taille du flou pour récupérer du détail. 0 = désactivé.",
-    "deconv_iters": "Itérations de déconvolution. Plus il y en a, plus c'est net, mais des halos peuvent apparaître autour des bords vifs.",
+    "deconv_iters": "Itérations de déconvolution. Plus élevé accentue davantage et fait sonner le limbe plus tôt.",
     "deconv_alpha": "Régularisation de la déconvolution — plus élevé supprime bruit/halos, plus bas est plus agressif.",
     "drizzle_scale": "Grille de sortie super-résolution (1, 1,5 ou 2) : l'empilement accumule des centaines d'images décalées de façon sub-pixel sur une trame plus fine, gagnant réellement en résolution. Défaut 1,5 ; coûte ×échelle² en mémoire/temps (re-stack).",
     "align_points": "Nombre total de points de référence utilisés pour corriger la distorsion atmosphérique (à la AutoStakkert). Arrondi à une grille N×N, N = √valeur borné à 10–48 par axe (100–2304 au total). 0 = automatique (cellules ~120 px, jusqu'à 32×32). Plus de points suivent des ondulations plus fines mais coûtent du CPU (re-stack) ; le bouton d'estimation du formulaire de lancement suggère une valeur adaptée à votre image.",
@@ -1751,7 +1799,27 @@
     "photom_match": "Appariement photométrique des panneaux sur le canevas : gain_offset corrige fond de ciel ET transparence par panneau (défaut), offset ne corrige que le fond, off désactive.",
     "canvas_crop": "Bords du canevas assemblé : common rogne au plus grand rectangle couvert par tous les canaux (défaut), union garde tout, plan rogne à l'emprise de la grille du plan.",
     "min_panel_frames": "Les panneaux dont les canaux ont empilé moins d'images sont écartés — un pointage égaré ne doit pas devenir un pseudo-panneau troué.",
-    "panel_source": "Découpage des images en panneaux : auto essaie les dossiers p01/ puis le regroupement par coordonnées de pointage ; folders et coords forcent une méthode."
+    "panel_source": "Découpage des images en panneaux : auto essaie les dossiers p01/ puis le regroupement par coordonnées de pointage ; folders et coords forcent une méthode.",
+    "flat_strength": "Retire les anneaux de Newton de l'étalon, les poussières et le gradient du point doux. 0 = inactif.",
+    "deconv_sigma": "Largeur de la PSF gaussienne, en pixels, pour la déconvolution. 0 désactive.",
+    "sharpen_small": "Contraste à fine échelle (granulation, bords de filaments). Au-delà de ~1,5 amplifie surtout le bruit.",
+    "sharpen_medium": "Contraste à moyenne échelle (filaments, plages) — le réglage principal du détail.",
+    "sharpen_large": "Contraste à grande échelle (régions actives). Laisser près de 1 sauf disque trop plat.",
+    "sharpen_denoise": "Atténue le bruit aux échelles les plus fines avant application des gains.",
+    "limb_flatten": "Retire l'assombrissement centre-bord pour lire le détail jusqu'au limbe. 0 conserve la chute naturelle.",
+    "prominence_boost": "Luminosité des protubérances hors limbe par rapport au disque. 0 les masque.",
+    "prominence_feather": "Douceur du fondu entre disque et hors-limbe, en fraction du rayon.",
+    "contrast": "Contraste global de l'image finie.",
+    "band": "Canal porteur du signal : détection auto, Hα (rouge seul) ou lumière blanche (tous canaux).",
+    "keep_percent": "Pourcentage des trames les plus nettes conservées par source.",
+    "max_frames": "Plafond de trames retenues sur une vidéo ou une série.",
+    "drizzle": "Empile sur une grille plus fine (1, 1,5 ou 2). Utile seulement si la capture est sous-échantillonnée.",
+    "clip_sigma": "Écart toléré d'une trame par rapport à la pile avant rejet du pixel.",
+    "window_seconds": "Durée maximale d'un empilement. Plus court fige la chromosphère et limite la rotation de champ.",
+    "window_frames": "Nombre maximal de trames par empilement.",
+    "min_frames": "Nombre minimal de trames pour empiler une fenêtre ; les fenêtres plus courtes sont écartées.",
+    "crop_margin": "Marge conservée au-delà du limbe, en fraction du rayon — la place des protubérances.",
+    "scale_tolerance": "Écart maximal entre les diamètres mesurés pour empiler deux fichiers ensemble."
   },
   "denoiseFinal": {
     "title": "Débruiter l'image finale (GraXpert)",

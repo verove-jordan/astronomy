@@ -8,6 +8,7 @@ import type {
   CaptureSessionRow,
   DeviceCameraState,
   DeviceMountState,
+  MountDiagnosis,
   DeviceStatus,
   DeviceWheelState,
   LiveStats,
@@ -370,6 +371,61 @@ export const useCaptureStore = defineStore("capture", () => {
     }, DEVICE_POLL_MS);
   }
 
+  // watchMount subscribes to the mount's own event stream.
+  //
+  // Until now the mount's state was refreshed ONLY as a side effect of pressing a button, so
+  // `slewing` never went back to false on its own and a link that died at two in the morning still
+  // looked healthy until somebody clicked something. The stream also carries the serial link's
+  // health, which is the whole point of watching it overnight.
+  let mountSource: EventSource | null = null;
+
+  function watchMount(): void {
+    if (mountSource) return;
+    mountSource = new EventSource("/api/device/mount/events");
+    mountSource.onmessage = (e) => {
+      try {
+        mount.value = JSON.parse(e.data) as DeviceMountState;
+      } catch {
+        // A malformed frame is not worth tearing the page down for; the next one is a second away.
+      }
+    };
+    mountSource.onerror = () => {
+      // EventSource reconnects on its own. Nothing is surfaced here because the device server being
+      // briefly unreachable is not the same as the MOUNT being unreachable, and conflating them
+      // would put a scary message on the screen for a hot reload.
+    };
+  }
+
+  function unwatchMount(): void {
+    mountSource?.close();
+    mountSource = null;
+  }
+
+  async function diagnoseMount(): Promise<MountDiagnosis> {
+    return apiGet<MountDiagnosis>("/api/device/diagnose?probe=1");
+  }
+
+  async function setMountSite(
+    latDeg: number,
+    lonDeg: number,
+  ): Promise<{ lat_deg: number; lon_deg: number }> {
+    const res = await apiPost<{ site: { lat_deg: number; lon_deg: number } }>(
+      "/api/device/mount/site",
+      { lat_deg: latDeg, lon_deg: lonDeg },
+    );
+    return res.site;
+  }
+
+  async function setMountClock(zone?: string): Promise<{ utc: string }> {
+    const res = await apiPost<{ clock: { utc: string } }>(
+      "/api/device/mount/clock",
+      {
+        zone: zone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+      },
+    );
+    return res.clock;
+  }
+
   async function loadSessions(): Promise<void> {
     sessions.value = (
       await apiGet<{ sessions: CaptureSessionRow[] }>("/api/capture/sessions")
@@ -435,6 +491,11 @@ export const useCaptureStore = defineStore("capture", () => {
     watchProgress,
     stopWatching,
     watchDevices,
+    watchMount,
+    unwatchMount,
+    diagnoseMount,
+    setMountSite,
+    setMountClock,
     loadSessions,
     loadSequences,
     saveSequence,
