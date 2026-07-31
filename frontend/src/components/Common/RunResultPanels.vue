@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { STAR_MODES } from "@/constants/modes";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { fileUrl, type ApiError } from "@/services/api";
@@ -161,7 +162,6 @@ function step(dir: number) {
 
 // --- Star count + name overlay (jobId-gated; see the prop comment) --------------------------------
 const jobsStore = useJobsStore();
-const STAR_MODES = ["deepsky", "nebula", "livestack", "comet", "milkyway"];
 const starsEnabled = computed(
   () =>
     !!props.jobId &&

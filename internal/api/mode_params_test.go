@@ -26,6 +26,9 @@ func TestServer_ModeParams(t *testing.T) {
 			[]string{"deconv_fwhm", "best_percent", "earthshine_gain", "earthshine_feather", "true_lum", "double_stack", "drizzle_scale", "shadow_lift", "align_points"},
 			[]string{"best_percent", "earthshine_gain", "earthshine_feather", "drizzle_scale", "shadow_lift", "align_points"}},
 		{"comet", "?mode=comet", "comet", []string{"per_frame_starnet", "trail_mask_k"}, []string{"trail_mask_k"}},
+		{"sun", "?mode=sun", "sun",
+			[]string{"limb_flatten", "deconv_sigma", "prominence_boost", "palette", "band", "drizzle", "window_seconds"},
+			[]string{"limb_flatten", "deconv_sigma", "prominence_boost", "drizzle", "window_seconds"}},
 		{"empty falls back to deepsky", "", "deepsky", []string{"color_calibration"}, []string{"saturation"}},
 		{"unknown falls back to deepsky", "?mode=bogus", "deepsky", []string{"color_calibration"}, []string{"saturation"}},
 	}

@@ -81,7 +81,7 @@ ligne**, téléchargez une fois les catalogues Gaia : `just download-catalogues`
 | `just` | Liste toutes les recettes. |
 | `just setup` / `just up` / `just migrate` | Installation initiale · Postgres · schéma. |
 | `just inspect DIR` | Affiche l'inventaire classifié d'un dossier (sans traiter). |
-| `just process MODE FORMAT PATH` | Pipeline automatique. MODE : `deepsky`·`nebula`·`milkyway`·`planetary`·`comet` ; FORMAT : `image`·`video`·`both`. Options après le chemin (ex. `-v --supervise`). |
+| `just process MODE FORMAT PATH` | Pipeline automatique. MODE : `deepsky`·`nebula`·`milkyway`·`planetary`·`comet`·`sun` ; FORMAT : `image`·`video`·`both`. Options après le chemin (ex. `-v --supervise`). |
 | `just video FILE` | Raccourci de `process planetary video` (lucky imaging). |
 | `just refine RUNDIR` | Rejoue **uniquement** la finition (superviseur IA) sur un run existant — sans ré-empiler. |
 | `just dev` / `just web` | API hôte avec rechargement à chaud · serveur de dev Vue. |

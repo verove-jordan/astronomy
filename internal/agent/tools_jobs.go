@@ -60,7 +60,7 @@ func registerJobTools(r *Registry, d Deps) {
 		Description: "Start a new processing run over a capture folder — optionally with CHOSEN fine parameters (get_mode_params lists each mode's tunable knobs) and a quality goal the supervisor pursues. Use browse_files/inspect_captures first to find and confirm the folder.",
 		Schema: objectSchema([]string{"path"}, map[string]any{
 			"path":      strProp("capture folder (inside the data directory)"),
-			"mode":      strProp("deepsky|nebula|milkyway|planetary|comet (default deepsky)"),
+			"mode":      strProp("deepsky|nebula|milkyway|planetary|comet|sun (default deepsky)"),
 			"format":    strProp("image|video|both (default image)"),
 			"supervise": boolProp("drive the local AI agent to auto-tune the finish"),
 			"params":    map[string]any{"type": "object", "description": "fine knob overrides for the mode (see get_mode_params); clamped to safe ranges"},

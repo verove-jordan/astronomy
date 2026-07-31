@@ -8,7 +8,7 @@ import (
 )
 
 func TestParseMode(t *testing.T) {
-	for _, s := range []string{"deepsky", "Nebula", "MILKYWAY", "planetary", "comet"} {
+	for _, s := range []string{"deepsky", "Nebula", "MILKYWAY", "planetary", "comet", "mosaic", "SUN"} {
 		_, err := ParseMode(s)
 		assert.NoError(t, err, s)
 	}

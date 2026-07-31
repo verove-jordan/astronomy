@@ -156,9 +156,9 @@ type Manager struct {
 	turns  TurnHub         // shared turn transport for supervised-job conversations; nil → conversations off
 
 	queue     chan int64
-	seqQueue  chan int64 // sequential lane: stacked "Add to queue" jobs run one-at-a-time, auto-advancing
-	xferQueue chan int64 // S3 transfer lane: uploads/downloads run in their own pool, never starving runs
-	thawQueue chan int64 // Glacier tier/thaw lane: only Restore/Stat + cheap server-side copies, never local I/O
+	seqQueue  chan int64   // sequential lane: stacked "Add to queue" jobs run one-at-a-time, auto-advancing
+	xferQueue chan int64   // S3 transfer lane: uploads/downloads run in their own pool, never starving runs
+	thawQueue chan int64   // Glacier tier/thaw lane: only Restore/Stat + cheap server-side copies, never local I/O
 	inFlight  atomic.Int64 // jobs currently executing across all lanes — the work sweep only runs at zero
 	mu        sync.Mutex
 	subs      map[int64][]chan Event
@@ -1587,6 +1587,23 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 			Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir, FilterMapping: p.FilterMap,
 			Catalog: m.store, CalibExclude: p.CalibExclude, ForceCalibration: p.ForceCalibration,
 			OnProgress: pipeProg, Steer: steer, Confirm: confirm,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if r.Final != nil {
+			r.Final.Outputs = m.appendVideo(ctx, id, format, r.Final.Outputs)
+		}
+		return r, nil
+
+	case mode.Sun:
+		// Solar: triage the folder into scale-compatible groups, ingest the best one, limb-register
+		// and stack it in windows, then finish in Go. No Siril, no plate solving and no calibration
+		// library — the Sun supplies its own registration reference in the limb.
+		r, err := pipeline.ProcessSun(ctx, pipeline.Options{
+			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir,
+			Preset: &preset, FfmpegBin: m.cfg.FfmpegBin, JobID: id,
+			ExcludeSets: p.ExcludeSets, OnProgress: pipeProg,
 		})
 		if err != nil {
 			return nil, err

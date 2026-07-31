@@ -47,6 +47,8 @@ func RefineExistingRun(ctx context.Context, opts Options, runDir string) (*postp
 		return refineComet(ctx, opts, outDir)
 	case mode.Planetary:
 		return refinePlanetary(ctx, opts, outDir)
+	case mode.Sun:
+		return refineSun(ctx, opts, outDir)
 	}
 
 	prior, err := readRunJSON(outDir)

@@ -193,7 +193,7 @@ run it inline — `astrostack process` / `just process …` / `go run ./cmd/astr
 Instead `POST /api/jobs` to the running engine (`astrostack serve`, started by **`just dev`**, host
 `:8080`) with a `job.RunRequest` JSON body — minimum `{"path","mode","format"}`; `path` must resolve
 **inside `ASTRO_DATA_DIR`** (the capture root, e.g. `input/M31/…`) or the API returns 400; `mode` ∈
-`deepsky|nebula|milkyway|planetary|comet|livestack|mosaic`, `format` ∈ `image|video|both`, fine-knob
+`deepsky|nebula|milkyway|planetary|comet|livestack|mosaic|sun`, `format` ∈ `image|video|both`, fine-knob
 overrides in `params`. Example: `curl -sS -XPOST localhost:8080/api/jobs -H 'content-type:
 application/json' -d '{"path":"input/M31/2024-01-01","mode":"deepsky","format":"image"}'` → `202
 {"id":N}`; then follow the run with `GET /api/jobs/{id}` (or stream `GET /api/jobs/{id}/events`) to

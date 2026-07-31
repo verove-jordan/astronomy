@@ -10,6 +10,7 @@ import (
 
 	"github.com/verove-jordan/astronomy/internal/grade"
 	"github.com/verove-jordan/astronomy/internal/planetary"
+	"github.com/verove-jordan/astronomy/internal/solar"
 )
 
 // BrightnessTarget maps the milkyway brightness control to an auto-levels target sky-background level
@@ -43,6 +44,7 @@ const (
 	Livestack Mode = "livestack" // watch a source + incrementally stack during a session; finalize = deepsky
 	Comet     Mode = "comet"     // moving comet: dual star/comet stack + star-layer recomposite
 	Mosaic    Mode = "mosaic"    // tiled panels of one large object: per-panel deepsky stacks + WCS assembly
+	Sun       Mode = "sun"       // the Sun in Hα or white light: limb-registered lucky imaging
 )
 
 // Format is the desired output artifact.
@@ -95,6 +97,7 @@ type Preset struct {
 	LumCurve         []float64         // galaxy-brightness curve applied to the L luminance layer (LRGB)
 	LumOpacity       float64           // opacity (0..1) of the L luminance layer in the LRGB composite (1 = full detail from L; lower = softer, more RGB-driven). 0/unset → full.
 	Planetary        planetary.Options // lucky-imaging settings (planetary only)
+	Sun              solar.Preset      // solar ingest/stack/finish settings (sun only)
 
 	// CoreHighlightKnee / CoreHighlightCeil roll off the L luminance highlights (after LumCurve, before the
 	// Ha screen) to tame a blown nebula core: identity below knee (outer nebula/stars/sky untouched),
@@ -432,10 +435,10 @@ func (f Format) WantsImage() bool { return f != FormatVideo }
 // ParseMode validates a mode string.
 func ParseMode(s string) (Mode, error) {
 	switch Mode(strings.ToLower(s)) {
-	case Deepsky, Nebula, Milkyway, Planetary, Livestack, Comet, Mosaic:
+	case Deepsky, Nebula, Milkyway, Planetary, Livestack, Comet, Mosaic, Sun:
 		return Mode(strings.ToLower(s)), nil
 	default:
-		return "", fmt.Errorf("unknown mode %q (want: deepsky, nebula, milkyway, planetary, livestack, comet, mosaic)", s)
+		return "", fmt.Errorf("unknown mode %q (want: deepsky, nebula, milkyway, planetary, livestack, comet, mosaic, sun)", s)
 	}
 }
 
@@ -566,6 +569,18 @@ func For(m Mode) Preset {
 			},
 			Curve:    []float64{0, 0, 0.5, 0.52, 1, 1},
 			Previews: true, // lucky-imaging sharpens; no denoise/color-cal
+		}
+	case Sun:
+		// Solar imaging shares lucky imaging's shape and almost none of its tuning. Registration is
+		// geometric — the fitted limb gives scale, centre and (with the annulus correlation) rotation
+		// — so none of the star- or feature-matching knobs apply. The frame keep rate is far higher
+		// than a planetary run's because a 40 mm aperture is diffraction-limited rather than
+		// seeing-limited: frame-to-frame variation is small and the stack is SNR-limited, so
+		// discarding most frames would cost more noise than it buys sharpness.
+		return Preset{
+			Mode:     Sun,
+			Sun:      solar.DefaultPreset(),
+			Previews: true,
 		}
 	case Livestack:
 		// Live stacking finalizes through the standard deep-sky path; the per-batch live preview reads

@@ -17,6 +17,10 @@ const (
 	CategorySolar      = "solar"
 	CategoryComet      = "comet"
 	CategoryMilkyway   = "milkyway"
+	// CategorySun is the Sun itself. It is separate from CategorySolar ("Solar system"), which holds
+	// the Moon and planets: those run the planetary lucky-imaging path, while the Sun has its own
+	// mode with entirely different registration and finishing.
+	CategorySun = "sun"
 )
 
 // Payload is the situation recipe: the subset of the /api/jobs body a preset carries. Every json tag

@@ -7,6 +7,7 @@ import { useJobsStore } from "@/stores/jobs";
 import { useS3Store, type TransferOp } from "@/stores/s3";
 import { usePresetsStore } from "@/stores/presets";
 import { useMosaicStore } from "@/stores/mosaic";
+import { MODES } from "@/constants/modes";
 import { useCaptureSummary } from "@/composables/useCaptureSummary";
 import { useChannelMapping } from "@/composables/useChannelMapping";
 import GenericTable, {
@@ -107,7 +108,7 @@ const alignPointsError = ref("");
 // Opt-in: drive the local AI agent to auto-tune the finish (every stacking mode). Off by default.
 const supervise = ref(false);
 
-const modes = ["deepsky", "nebula", "milkyway", "planetary", "comet", "mosaic"];
+const modes: string[] = [...MODES];
 const formats = ["image", "video", "both"];
 
 // Milky-Way nightscape render style (foreground composite + linear grade); only shown for milkyway.
@@ -155,6 +156,7 @@ const biasDir = ref("");
 const isMilkyway = computed(() => selectedMode.value === "milkyway");
 const isPlanetary = computed(() => selectedMode.value === "planetary");
 // Tiled-panel mosaic mode: offers the saved-plan selector (panel labeling/validation + solve hints).
+const isSun = computed(() => selectedMode.value === "sun");
 const isMosaicMode = computed(() => selectedMode.value === "mosaic");
 const mosaicStore = useMosaicStore();
 const mosaicPlanId = ref(0);
@@ -1732,6 +1734,9 @@ function histChip(exists: boolean): string {
         </label>
         <p v-if="isMosaicMode" class="basis-full text-xs text-slate-400">
           {{ t("mosaic.import.folderHint") }}
+        </p>
+        <p v-if="isSun" class="basis-full text-xs text-slate-400" data-demo="run-sun-note">
+          {{ t("run.sunHint") }}
         </p>
         <label v-if="s3.active" class="text-sm" :title="t('s3.storageHint')">
           <span class="mb-1 block text-xs font-medium text-slate-500">{{

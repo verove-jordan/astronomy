@@ -80,7 +80,7 @@ plate-solving + SPCC**, download the Gaia catalogues once: `just download-catalo
 | `just` | List every recipe. |
 | `just setup` / `just up` / `just migrate` | First-run setup · start Postgres · apply schema. |
 | `just inspect DIR` | Print the classified inventory of a capture folder (no processing). |
-| `just process MODE FORMAT PATH` | Full auto pipeline. MODE: `deepsky`·`nebula`·`milkyway`·`planetary`·`comet`; FORMAT: `image`·`video`·`both`. Pass-through flags after the path (e.g. `-v --supervise`). |
+| `just process MODE FORMAT PATH` | Full auto pipeline. MODE: `deepsky`·`nebula`·`milkyway`·`planetary`·`comet`·`sun`; FORMAT: `image`·`video`·`both`. Pass-through flags after the path (e.g. `-v --supervise`). |
 | `just video FILE` | Shortcut for `process planetary video` (lucky imaging). |
 | `just refine RUNDIR` | Re-run **only** the finish (AI supervisor) on an existing run — no re-stacking. |
 | `just dev` / `just web` | Host API with hot reload · Vue dev server. |
@@ -153,6 +153,7 @@ servers for Claude (`siril`, vendored `gimp`). The docs are topic-organized:
 | [pipeline.md](docs/pipeline.md) | how stacking is made, stage by stage |
 | [calibration.md](docs/calibration.md) | master library, cross-session pools, **dark defect maps**, matching rules |
 | [modes/](docs/modes/README.md) | per-mode deep dives (deepsky · nebula · milkyway · planetary · comet · livestack) |
+| [mount.md](docs/mount.md) | the Celestron hand-controller link: wiring, the macOS driver trap, recovery, the overnight soak |
 | [storage-s3.md](docs/storage-s3.md) | S3 mirror, connections & secrets, verified frees, backup/restore |
 | [configuration.md](docs/configuration.md) | every environment variable |
 | [api.md](docs/api.md) | the HTTP API reference |

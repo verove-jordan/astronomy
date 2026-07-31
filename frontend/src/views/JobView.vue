@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { PAUSABLE_MODES } from "@/constants/modes";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
@@ -253,7 +254,6 @@ const isPaused = computed(() => liveStatus.value === "paused");
 // Manual mid-run pause is honored by the multi-channel deep-sky path (deepsky/nebula) AND by any S3
 // copy — a full-S3 run or a standalone transfer/backup pauses between files. Other local modes have no
 // safe mid-run boundary, so we don't offer a Pause that would look like a no-op.
-const PAUSABLE_MODES = ["deepsky", "nebula"];
 const isS3Copy = computed(
   () =>
     job.value?.params?.storage_mode === "s3" ||

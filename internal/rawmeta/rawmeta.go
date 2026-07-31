@@ -20,13 +20,22 @@ import (
 
 // EXIF/TIFF tag numbers we read (see the TIFF 6.0 and Exif specs).
 const (
-	tagModel           = 0x0110 // ASCII camera model, in IFD0
-	tagOrientation     = 0x0112 // SHORT 1..8, in IFD0
-	tagExifIFD         = 0x8769 // LONG pointer to the Exif sub-IFD
-	tagISOSpeed        = 0x8827 // SHORT ISO speed rating(s), in the Exif IFD
-	tagExposureTime    = 0x829A // RATIONAL seconds, in the Exif IFD
-	tagPixelXDimension = 0xA002 // SHORT/LONG main-image width, in the Exif IFD
-	tagPixelYDimension = 0xA003 // SHORT/LONG main-image height, in the Exif IFD
+	tagModel            = 0x0110 // ASCII camera model, in IFD0
+	tagOrientation      = 0x0112 // SHORT 1..8, in IFD0
+	tagExifIFD          = 0x8769 // LONG pointer to the Exif sub-IFD
+	tagISOSpeed         = 0x8827 // SHORT ISO speed rating(s), in the Exif IFD
+	tagExposureTime     = 0x829A // RATIONAL seconds, in the Exif IFD
+	tagDateTimeOriginal = 0x9003 // ASCII "YYYY:MM:DD HH:MM:SS", in the Exif IFD
+	tagOffsetTimeOrig   = 0x9011 // ASCII "+HH:MM" UTC offset for tagDateTimeOriginal
+	tagPixelXDimension  = 0xA002 // SHORT/LONG main-image width, in the Exif IFD
+	tagPixelYDimension  = 0xA003 // SHORT/LONG main-image height, in the Exif IFD
+	tagFocalLength35mm  = 0xA405 // SHORT 35mm-equivalent focal length, in the Exif IFD
+)
+
+// exifDateTime is the Exif DateTimeOriginal layout; exifOffset is the OffsetTimeOriginal layout.
+const (
+	exifDateTime = "2006:01:02 15:04:05"
+	exifOffset   = "-07:00"
 )
 
 // TIFF field types we handle.
@@ -51,6 +60,15 @@ type Meta struct {
 	Orientation int // EXIF orientation code 1..8, 0 when absent
 	HasISO      bool
 	HasExposure bool
+	// FocalLength35mm is the 35mm-equivalent focal length (0 when absent). On a phone it encodes the
+	// digital-zoom factor, which together with Width is the metadata PRIOR for image scale — the
+	// solar triage uses it to label groups, never to key them (the measured disc radius does that).
+	FocalLength35mm int
+	// TakenAtMs is the capture instant in Unix milliseconds (0 when absent). Only set when the
+	// timezone is unambiguous — Exif DateTimeOriginal alone is local-time-without-offset, so it is
+	// used only alongside OffsetTimeOriginal; otherwise the mdls fallback (which carries an offset)
+	// fills it. Mixing the two conventions would silently mis-order a DNG against a HEIC.
+	TakenAtMs int64
 }
 
 // Read returns the metadata for path. It first parses the TIFF/EXIF IFDs directly (works for DNG and
@@ -77,7 +95,31 @@ func Read(path string) Meta {
 	if m.Height == 0 {
 		m.Height = int(mdlsFloat(path, "kMDItemPixelHeight"))
 	}
+	if m.FocalLength35mm == 0 {
+		m.FocalLength35mm = int(mdlsFloat(path, "kMDItemFocalLength35mm"))
+	}
+	if m.TakenAtMs == 0 {
+		m.TakenAtMs = mdlsTime(path, "kMDItemContentCreationDate")
+	}
 	return m
+}
+
+// mdlsTimeFormats are the layouts `mdls` prints dates in (it is locale-independent for these keys,
+// but the fractional-seconds form appears on some volumes).
+var mdlsTimeFormats = []string{"2006-01-02 15:04:05 -0700", "2006-01-02 15:04:05.999999 -0700"}
+
+// mdlsTime reads a Spotlight date attribute as Unix milliseconds (0 when absent or unparsable).
+func mdlsTime(path, attr string) int64 {
+	raw := strings.Trim(mdlsString(path, attr), `"`)
+	if raw == "" {
+		return 0
+	}
+	for _, layout := range mdlsTimeFormats {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t.UnixMilli()
+		}
+	}
+	return 0
 }
 
 // parseTIFF reads IFD0 (model, orientation) and follows the Exif sub-IFD pointer (ISO, exposure,
@@ -132,6 +174,33 @@ func readExif(f *os.File, bo binary.ByteOrder, offset int64, m *Meta) {
 	if e, ok := findTag(entries, tagPixelYDimension); ok {
 		m.Height = int(e.scalar(bo))
 	}
+	if e, ok := findTag(entries, tagFocalLength35mm); ok {
+		m.FocalLength35mm = int(e.scalar(bo))
+	}
+	m.TakenAtMs = exifTakenAt(entries, f, bo)
+}
+
+// exifTakenAt resolves DateTimeOriginal to Unix milliseconds, but ONLY when OffsetTimeOriginal is
+// present — DateTimeOriginal carries no timezone, so assuming one would mis-order files against the
+// mdls path (which is offset-aware). Returns 0 to let that fallback take over.
+func exifTakenAt(entries []ifdEntry, f *os.File, bo binary.ByteOrder) int64 {
+	dt, ok := findTag(entries, tagDateTimeOriginal)
+	if !ok {
+		return 0
+	}
+	off, ok := findTag(entries, tagOffsetTimeOrig)
+	if !ok {
+		return 0
+	}
+	loc, err := time.Parse(exifOffset, strings.TrimSpace(off.ascii(f, bo)))
+	if err != nil {
+		return 0
+	}
+	t, err := time.ParseInLocation(exifDateTime, strings.TrimSpace(dt.ascii(f, bo)), loc.Location())
+	if err != nil {
+		return 0
+	}
+	return t.UnixMilli()
 }
 
 // ifdEntry is one 12-byte IFD directory entry, with its 4-byte value/offset field kept verbatim.

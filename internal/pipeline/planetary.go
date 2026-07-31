@@ -301,8 +301,8 @@ func (c *planetaryRenderer) finalize(ctx context.Context, _ Options, best *super
 // planetaryPatch is the model's proposed change to the planetary run: the finish knobs (tierA
 // Refinish, seconds) plus the stack/deconvolution knobs (tierC — a full re-stack).
 type planetaryPatch struct {
-	Stretch    *float64 `json:"stretch,omitempty"`
-	Highlight  *float64 `json:"highlight,omitempty"`
+	Stretch   *float64 `json:"stretch,omitempty"`
+	Highlight *float64 `json:"highlight,omitempty"`
 	// ShadowLift slides the ght symmetry point 0.18→0.04 to open shadow tones; tierA (Refinish).
 	ShadowLift *float64 `json:"shadow_lift,omitempty"`
 	Sharpen    *float64 `json:"sharpen,omitempty"`
@@ -374,7 +374,7 @@ func finishState(f siril.PlanetaryFinish) map[string]any {
 		"stretch": f.Stretch, "highlight": f.Highlight, "shadow_lift": f.ShadowLift,
 		"limb_balance": f.LimbBalance,
 		"sharpen":      f.Sharpen,
-		"clahe":   f.Clahe, "saturation": f.Saturation, "headroom": f.Headroom,
+		"clahe":        f.Clahe, "saturation": f.Saturation, "headroom": f.Headroom,
 		"earthshine_gain": f.EarthshineGain, "earthshine_feather": f.EarthshineFeather,
 		"true_lum": f.TrueLum,
 	}

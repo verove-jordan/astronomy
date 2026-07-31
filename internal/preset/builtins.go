@@ -12,6 +12,7 @@ func Builtins() []Item {
 	out = append(out, nebulaBuiltins()...)
 	out = append(out, narrowbandBuiltins()...)
 	out = append(out, solarBuiltins()...)
+	out = append(out, sunBuiltins()...)
 	out = append(out, cometBuiltins()...)
 	out = append(out, milkywayBuiltins()...)
 	return out
@@ -185,6 +186,57 @@ func milkywayBuiltins() []Item {
 		}),
 		builtin("milkyway-deep", CategoryMilkyway, Payload{
 			Mode: "milkyway", Format: "image", Look: "deepsky", Brightness: "brighter",
+		}),
+	}
+}
+
+// sunBuiltins — the Sun in Hα or white light: mode sun.
+func sunBuiltins() []Item {
+	return []Item{
+		builtin("sun_ha_full", CategorySun, Payload{
+			Mode: "sun", Format: "both",
+			// The default: disc detail and prominences in one frame, which is what an Hα scope is for.
+			Params: mustParams(map[string]any{
+				"limb_flatten": 0.85, "prominence_boost": 1.0, "deconv_sigma": 1.4, "deconv_iters": 12,
+				"sharpen_medium": 1.35, "palette": "gold",
+			}),
+		}),
+		builtin("sun_ha_disk", CategorySun, Payload{
+			Mode: "sun", Format: "image",
+			// Chromosphere detail only: the limb is flattened hard and the prominences are pulled back
+			// so nothing competes with filaments and plage across the surface.
+			Params: mustParams(map[string]any{
+				"limb_flatten": 1.0, "prominence_boost": 0.2, "deconv_sigma": 1.5, "deconv_iters": 16,
+				"sharpen_small": 1.3, "sharpen_medium": 1.6, "palette": "gold", "contrast": 1.15,
+			}),
+		}),
+		builtin("sun_ha_prominence", CategorySun, Payload{
+			Mode: "sun", Format: "image",
+			// Limb-forward: the off-limb material is stretched hard and the disc is left dark, the way
+			// a prominence close-up is normally presented.
+			Params: mustParams(map[string]any{
+				"limb_flatten": 0.3, "prominence_boost": 2.5, "prominence_feather": 0.012,
+				"stretch": 0.7, "palette": "gold",
+			}),
+		}),
+		builtin("sun_whitelight", CategorySun, Payload{
+			Mode: "sun", Format: "image",
+			// Photosphere through a solar film: sunspots and faculae, neutral rendering, no prominences
+			// to show (a white-light filter passes none).
+			Params: mustParams(map[string]any{
+				"band": "white_light", "limb_flatten": 0.6, "prominence_boost": 0,
+				"deconv_sigma": 1.2, "deconv_iters": 10, "palette": "neutral", "saturation": 0.6,
+			}),
+		}),
+		builtin("sun_iphone_video", CategorySun, Payload{
+			Mode: "sun", Format: "both",
+			// A phone clip through the eyepiece. The gains are pulled back because the camera pipeline
+			// has already sharpened once, and double-sharpening haloes every limb and filament.
+			Params: mustParams(map[string]any{
+				"keep_percent": 50, "max_frames": 400, "window_seconds": 30,
+				"deconv_sigma": 1.2, "deconv_iters": 8,
+				"sharpen_small": 0.9, "sharpen_medium": 1.15, "sharpen_denoise": 0.5, "palette": "gold",
+			}),
 		}),
 	}
 }

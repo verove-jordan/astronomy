@@ -69,6 +69,8 @@ func applyModeParamPatch(working mode.Preset, raw json.RawMessage) (mode.Preset,
 		return applyPlanetaryParamPatch(working, raw)
 	case mode.Mosaic:
 		return applyMosaicParamPatch(working, raw)
+	case mode.Sun:
+		return applySunParamPatch(working, raw)
 	default: // deepsky / nebula / livestack share the full tiered whitelist
 		return applyDeepskyParamPatch(working, raw)
 	}
@@ -246,6 +248,21 @@ func ParamsFor(p mode.Preset) map[string]any {
 			"drizzle_scale": p.Planetary.DrizzleScale,
 			"align_points":  p.Planetary.AlignPoints,
 		}
+	case mode.Sun:
+		s, f := p.Sun, p.Sun.Finish
+		return map[string]any{
+			"flat_strength": f.FlatStrength, "deconv_sigma": f.DeconvSigma, "deconv_iters": f.DeconvIters,
+			"sharpen_small": sharpenGroup(f.Sharpen.Gains, 0), "sharpen_medium": sharpenGroup(f.Sharpen.Gains, 1),
+			"sharpen_large": sharpenGroup(f.Sharpen.Gains, 2), "sharpen_denoise": sharpenDenoise(f.Sharpen.Thresholds),
+			"limb_flatten": f.LimbFlatten, "prominence_boost": f.ProminenceBoost,
+			"prominence_feather": f.ProminenceFeather, "palette": f.Palette,
+			"stretch": f.Stretch, "contrast": f.Contrast, "saturation": f.Saturation,
+			"keep_percent": s.KeepPercent, "max_frames": s.MaxFrames, "drizzle": s.Drizzle,
+			"clip_sigma": s.ClipSigma, "window_seconds": s.WindowSeconds, "window_frames": s.WindowFrames,
+			"min_frames": s.MinFrames, "crop_margin": s.CropMargin,
+			"scale_tolerance": s.ScaleTolerance, "band": string(s.Band),
+			"rescale_groups": s.RescaleGroups,
+		}
 	case mode.Mosaic:
 		m := deepskyParams(p)
 		m["overlap_expected"] = p.MosaicOverlapExpected
@@ -315,6 +332,8 @@ func knownParamKeys(m mode.Mode) map[string]bool {
 		types = []reflect.Type{reflect.TypeOf(nightscapePatch{})}
 	case mode.Planetary:
 		types = []reflect.Type{reflect.TypeOf(planetaryPatch{})}
+	case mode.Sun:
+		types = []reflect.Type{reflect.TypeOf(sunPatch{})}
 	case mode.Mosaic: // the full deepsky surface plus the assembler keys
 		types = []reflect.Type{reflect.TypeOf(supervisePatch{}), reflect.TypeOf(mosaicPatch{})}
 	default:
@@ -342,6 +361,8 @@ func KnobMenuFor(m mode.Mode) string {
 		return nightscapeKnobMenu
 	case mode.Planetary:
 		return planetaryKnobMenu
+	case mode.Sun:
+		return sunKnobMenu
 	default:
 		return tierKnobMenu
 	}
@@ -373,6 +394,31 @@ func KnobRangesFor(m mode.Mode) map[string]KnobRange {
 			"background_sigma":  {Min: 1, Max: 5},
 			"star_count_frac":   {Min: 0.1, Max: 1},
 			"trail_mask_k":      {Min: 0, Max: 6},
+		}
+	case mode.Sun:
+		return map[string]KnobRange{
+			"flat_strength":      {Min: 0, Max: 1},
+			"deconv_sigma":       {Min: 0, Max: 4},
+			"deconv_iters":       {Min: 0, Max: 30, Int: true},
+			"sharpen_small":      {Min: 0, Max: 4},
+			"sharpen_medium":     {Min: 0, Max: 4},
+			"sharpen_large":      {Min: 0, Max: 4},
+			"sharpen_denoise":    {Min: 0, Max: 1},
+			"limb_flatten":       {Min: 0, Max: 1},
+			"prominence_boost":   {Min: 0, Max: 4},
+			"prominence_feather": {Min: 0, Max: 0.05},
+			"stretch":            {Min: 0, Max: 1},
+			"contrast":           {Min: 0.2, Max: 3},
+			"saturation":         {Min: 0, Max: 2},
+			"keep_percent":       {Min: 5, Max: 100, Int: true},
+			"max_frames":         {Min: 8, Max: 2000, Int: true},
+			"drizzle":            {Min: 1, Max: 2},
+			"clip_sigma":         {Min: 1, Max: 6},
+			"window_seconds":     {Min: 5, Max: 3600},
+			"window_frames":      {Min: 8, Max: 2000, Int: true},
+			"min_frames":         {Min: 2, Max: 500, Int: true},
+			"crop_margin":        {Min: 0.02, Max: 1},
+			"scale_tolerance":    {Min: 0.002, Max: 0.2},
 		}
 	case mode.Milkyway:
 		return map[string]KnobRange{

@@ -168,6 +168,46 @@ const MILKYWAY_GROUPS: ParamGroup[] = [
   },
 ];
 
+// Solar (sunPatch): a fast finish tier and an expensive re-ingest/re-stack tier.
+const SUN_GROUPS: ParamGroup[] = [
+  {
+    titleKey: "paramDocs.groups.sunFinish",
+    hintKey: "paramDocs.groups.sunFinishHint",
+    keys: [
+      "flat_strength",
+      "deconv_sigma",
+      "deconv_iters",
+      "sharpen_small",
+      "sharpen_medium",
+      "sharpen_large",
+      "sharpen_denoise",
+      "limb_flatten",
+      "prominence_boost",
+      "prominence_feather",
+      "palette",
+      "stretch",
+      "contrast",
+      "saturation",
+    ],
+  },
+  {
+    titleKey: "paramDocs.groups.sunStack",
+    hintKey: "paramDocs.groups.sunStackHint",
+    keys: [
+      "band",
+      "keep_percent",
+      "max_frames",
+      "drizzle",
+      "clip_sigma",
+      "window_seconds",
+      "window_frames",
+      "min_frames",
+      "crop_margin",
+      "scale_tolerance",
+    ],
+  },
+];
+
 const GROUPS_BY_MODE: Record<string, ParamGroup[]> = {
   deepsky: DEEPSKY_GROUPS,
   nebula: DEEPSKY_GROUPS,
@@ -176,6 +216,7 @@ const GROUPS_BY_MODE: Record<string, ParamGroup[]> = {
   comet: COMET_GROUPS,
   milkyway: MILKYWAY_GROUPS,
   mosaic: MOSAIC_GROUPS,
+  sun: SUN_GROUPS,
 };
 
 // groupsForMode returns the knob groups for a stacking mode (deep-sky is the fallback for any unknown).
