@@ -286,8 +286,24 @@ func (r *Runner) run(ctx context.Context, req Request, plan []Step) {
 				r.finish(ctx, StatusAborted, nil)
 				return
 			}
-			r.finish(ctx, StatusFailed, err)
-			return
+			// A cable nudged at 2am used to end the night. The driver reconnects on its own within
+			// seconds, so a DEVICE error is now waited out and the plan carries on from the next
+			// frame; anything else — a read-only output directory, a full disk — still fails at once,
+			// because retrying those forever is worse than stopping. See recover.go.
+			if !isRecoverable(err) {
+				r.finish(ctx, StatusFailed, err)
+				return
+			}
+			if rerr := r.recoverFromDeviceError(ctx, err); rerr != nil {
+				if ctx.Err() != nil {
+					r.finish(ctx, StatusAborted, nil)
+					return
+				}
+				r.finish(ctx, StatusFailed, rerr)
+				return
+			}
+			// The frame that failed is not retried: the exposure is gone either way, and re-taking it
+			// would double the time on this step for no gain. The plan simply continues.
 		}
 	}
 	r.finish(ctx, StatusCompleted, nil)
