@@ -1,10 +1,12 @@
 package nexstar
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"go.bug.st/serial"
@@ -12,6 +14,22 @@ import (
 
 // The real serial link. Only the core go.bug.st/serial package is used — its `enumerator`
 // sub-package needs cgo on macOS, and this whole engine is deliberately cgo-free.
+
+// The two conditions the rest of the driver has to tell apart, named here because this is the only
+// file that knows which library produced them. Everything above this line deals in these sentinels,
+// so the recovery logic can be exercised by a test fake that never imports go.bug.st/serial.
+var (
+	// ErrLinkGone means the file descriptor is finished — the adapter was unplugged, the port
+	// re-enumerated under a new name, or the port was closed underneath us. It is deliberately
+	// distinct from "the mount is slow" and from "the reply was malformed": only this one is worth
+	// reconnecting for.
+	ErrLinkGone = errors.New("the serial link to the hand controller is gone")
+	// ErrPortBusy means another program holds the port. macOS serial opens take TIOCEXCL, so the
+	// second opener is refused outright — usually a second astrostack, CPWI, or a planetarium app
+	// left connected. Saying "no mount found" here sends the user hunting for a hardware fault that
+	// does not exist.
+	ErrPortBusy = errors.New("the serial port is held by another program")
+)
 
 // openSerial opens a hand-controller port at the protocol's fixed 9600 8N1.
 func openSerial(path string) (Port, error) {
@@ -22,7 +40,7 @@ func openSerial(path string) (Port, error) {
 		StopBits: serial.OneStopBit,
 	})
 	if err != nil {
-		return nil, err
+		return nil, translateSerialError(err)
 	}
 	if err := port.SetReadTimeout(replyTimeout); err != nil {
 		_ = port.Close()
@@ -31,10 +49,56 @@ func openSerial(path string) (Port, error) {
 	return serialPort{port}, nil
 }
 
-// serialPort adapts the library's port to the narrow Port interface.
+// translateSerialError maps the library's (and the kernel's) errors onto this package's sentinels.
+//
+// Two traps are baked in here. The library returns *PortError, not PortError, and its methods hang
+// off the value receiver — so `errors.As(err, &serial.PortError{})` compiles, reads correctly, and
+// silently never matches. And not every failure arrives as a PortError at all: a write to a
+// vanished adapter surfaces as a bare syscall.EIO and reopening its path as ENOENT, because by then
+// the device node itself is gone.
+func translateSerialError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var pe *serial.PortError
+	if errors.As(err, &pe) {
+		switch pe.Code() {
+		case serial.PortBusy:
+			return fmt.Errorf("%w: %v", ErrPortBusy, err)
+		case serial.PortClosed, serial.PortNotFound:
+			return fmt.Errorf("%w: %v", ErrLinkGone, err)
+		case serial.PermissionDenied:
+			return fmt.Errorf("%w: %v", os.ErrPermission, err)
+		}
+		return err
+	}
+	switch {
+	case errors.Is(err, syscall.EBUSY):
+		return fmt.Errorf("%w: %v", ErrPortBusy, err)
+	case errors.Is(err, syscall.EACCES):
+		return fmt.Errorf("%w: %v", os.ErrPermission, err)
+	case errors.Is(err, syscall.ENOENT), errors.Is(err, syscall.ENXIO),
+		errors.Is(err, syscall.EIO), errors.Is(err, syscall.EBADF):
+		return fmt.Errorf("%w: %v", ErrLinkGone, err)
+	}
+	return err
+}
+
+// serialPort adapts the library's port to the narrow Port interface, translating on the way so no
+// library error type escapes this file.
 type serialPort struct{ serial.Port }
 
 func (s serialPort) SetReadTimeout(d time.Duration) error { return s.Port.SetReadTimeout(d) }
+
+func (s serialPort) Read(p []byte) (int, error) {
+	n, err := s.Port.Read(p)
+	return n, translateSerialError(err)
+}
+
+func (s serialPort) Write(p []byte) (int, error) {
+	n, err := s.Port.Write(p)
+	return n, translateSerialError(err)
+}
 
 // PortInfo is one candidate serial device offered to the UI.
 type PortInfo struct {
@@ -137,10 +201,4 @@ func DefaultPort() string {
 		}
 	}
 	return ""
-}
-
-// portExists is a small helper for validation before opening.
-func portExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }

@@ -1,0 +1,52 @@
++-o USB-Serial Controller@01100000  <class IOUSBHostDevice, id 0x100061a2b, registered, matched, active, busy 0 (31 ms), retain 58>
+  | {
+  |   "sessionID" = 23501747573037
+  |   "USBSpeed" = 1
+  |   "idProduct" = 8963
+  |   "iManufacturer" = 1
+  |   "bDeviceClass" = 0
+  |   "bcdDevice" = 1024
+  |   "bMaxPacketSize0" = 64
+  |   "iProduct" = 2
+  |   "iSerialNumber" = 0
+  |   "bNumConfigurations" = 1
+  |   "USB Product Name" = "USB-Serial Controller"
+  |   "locationID" = 17825792
+  |   "bDeviceSubClass" = 0
+  |   "bcdUSB" = 272
+  |   "USB Address" = 1
+  |   "bDeviceProtocol" = 0
+  |   "USB Vendor Name" = "Prolific Technology Inc."
+  |   "Device Speed" = 1
+  |   "idVendor" = 1659
+  |   "kUSBProductString" = "USB-Serial Controller"
+  |   "kUSBVendorString" = "Prolific Technology Inc."
+  | }
+  |
+  +-o IOUSBHostInterface@0  <class IOUSBHostInterface, id 0x100061a2c, registered, matched, active, busy 0 (12 ms), retain 11>
+  | | {
+  | |   "idProduct" = 8963
+  | |   "bInterfaceNumber" = 0
+  | |   "bcdDevice" = 1024
+  | |   "USB Product Name" = "USB-Serial Controller"
+  | |   "idVendor" = 1659
+  | |   "bInterfaceClass" = 255
+  | | }
+  | |
+  | +-o PL2303 Serial@0  <class ProlificSerialDriver, id 0x100061a2d, registered, matched, active, busy 0 (5 ms), retain 8>
+  | | | {
+  | | |   "IOProviderClass" = "IOUSBHostInterface"
+  | | |   "CFBundleIdentifier" = "com.prolific.driver.PL2303"
+  | | | }
+  | | |
+  | | +-o IOSerialBSDClient  <class IOSerialBSDClient, id 0x100061a2e, registered, matched, active, busy 0 (0 ms), retain 5>
+  | | |   {
+  | | |     "IOClass" = "IOSerialBSDClient"
+  | | |     "IOTTYBaseName" = "usbserial-"
+  | | |     "IOSerialBSDClientType" = "IOSerialStream"
+  | | |     "IOTTYDevice" = "usbserial-1420"
+  | | |     "IOCalloutDevice" = "/dev/cu.usbserial-1420"
+  | | |     "IODialinDevice" = "/dev/tty.usbserial-1420"
+  | | |     "IOTTYSuffix" = "1420"
+  | | |   }
+  | | |

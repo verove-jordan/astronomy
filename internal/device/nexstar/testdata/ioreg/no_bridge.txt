@@ -1,0 +1,20 @@
++-o YubiKey OTP+FIDO+CCID@01100000  <class IOUSBHostDevice, id 0x1005a259e, registered, matched, active, busy 0 (35 ms), retain 61>
+  | {
+  |   "sessionID" = 23501747573037
+  |   "USBSpeed" = 1
+  |   "idProduct" = 1031
+  |   "bDeviceClass" = 0
+  |   "bcdDevice" = 1347
+  |   "iSerialNumber" = 0
+  |   "USB Product Name" = "YubiKey OTP+FIDO+CCID"
+  |   "bcdUSB" = 512
+  |   "USB Vendor Name" = "Yubico"
+  |   "idVendor" = 4176
+  | }
+  |
+  +-o AppleUSBHostCompositeDevice  <class AppleUSBHostCompositeDevice, id 0x1005a25a2, !registered, !matched, active, busy 0, retain 4>
+  |   {
+  |     "IOProbeScore" = 50000
+  |     "IOProviderClass" = "IOUSBHostDevice"
+  |   }
+  |

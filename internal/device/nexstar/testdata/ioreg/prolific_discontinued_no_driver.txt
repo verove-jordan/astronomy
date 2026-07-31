@@ -1,0 +1,31 @@
++-o USB-Serial Controller@01100000  <class IOUSBHostDevice, id 0x100061a2b, registered, !matched, active, busy 0 (18 ms), retain 41>
+  | {
+  |   "sessionID" = 23501747573037
+  |   "USBSpeed" = 1
+  |   "idProduct" = 8963
+  |   "iManufacturer" = 1
+  |   "bDeviceClass" = 0
+  |   "bcdDevice" = 768
+  |   "bMaxPacketSize0" = 64
+  |   "iProduct" = 2
+  |   "iSerialNumber" = 0
+  |   "bNumConfigurations" = 1
+  |   "USB Product Name" = "USB-Serial Controller"
+  |   "locationID" = 17825792
+  |   "bDeviceSubClass" = 0
+  |   "bcdUSB" = 272
+  |   "USB Address" = 1
+  |   "bDeviceProtocol" = 0
+  |   "USB Vendor Name" = "Prolific Technology Inc."
+  |   "Device Speed" = 1
+  |   "idVendor" = 1659
+  | }
+  |
+  +-o IOUSBHostInterface@0  <class IOUSBHostInterface, id 0x100061a2c, registered, !matched, active, busy 0 (0 ms), retain 7>
+  |   {
+  |     "idProduct" = 8963
+  |     "bInterfaceNumber" = 0
+  |     "idVendor" = 1659
+  |     "bInterfaceClass" = 255
+  |   }
+  |
