@@ -8,6 +8,7 @@
 //	astrostack video   <file> [flags] process a lunar/planetary video
 //	astrostack serve                  run the HTTP API server
 //	astrostack device                 run the device server (camera / filter wheel / mount)
+//	astrostack mount <sub>            diagnose, probe or soak-test the hand-controller link
 //	astrostack migrate                apply database migrations
 package main
 
@@ -40,6 +41,8 @@ func main() {
 		err = runServe(os.Args[2:])
 	case "device":
 		err = runDevice(os.Args[2:])
+	case "mount":
+		err = runMount(os.Args[2:])
 	case "migrate":
 		err = runMigrate(os.Args[2:])
 	case "lightpollution-atlas":
@@ -74,6 +77,7 @@ Usage:
   astrostack video   <file> [flags]  process a lunar/planetary video
   astrostack serve                   run the HTTP API server
   astrostack device                  run the device server (camera / filter wheel / mount)
+  astrostack mount <sub>             hand-controller link: doctor | probe | soak
   astrostack migrate                 apply database migrations
   astrostack lightpollution-atlas    build the offline light-pollution atlas (djlorenz model)
   astrostack skymap-data             build the frontend star + constellation dataset (skymap.json)
