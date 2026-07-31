@@ -34,12 +34,18 @@ const props = defineProps<{
   decDeg?: number;
 }>();
 
+// defaultStep is what a new filter row starts as.
+//
+// Gain 0, not the ASI1600's unity gain of 139: gain is analogue amplification applied before the
+// converter, so anything above zero trades full-well depth — and therefore bright-star headroom —
+// for read noise that longer exposures make irrelevant anyway. At 60 s subs the sky background
+// already swamps the read noise, so the amplification buys nothing and costs highlights.
 function defaultStep(): CaptureStep {
   return {
     filter: "L",
     count: 20,
-    exposure_us: 120_000_000,
-    gain: 139,
+    exposure_us: 60_000_000,
+    gain: 0,
     offset: 50,
     bin: 1,
     type: "light",

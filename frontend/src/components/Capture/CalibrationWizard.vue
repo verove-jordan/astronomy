@@ -33,8 +33,11 @@ const kinds = ref<Record<Kind, boolean>>({
   flat: true,
   darkflat: false,
 });
-const exposureSec = ref(300);
-const gain = ref(139);
+// These describe the LIGHTS the calibration is being planned for, so they track the sequence
+// defaults. A dark library shot at a different gain does not calibrate frames shot at gain 0 — the
+// matcher would simply refuse it, which reads as "no masters found" rather than as a mismatch.
+const exposureSec = ref(60);
+const gain = ref(0);
 const offset = ref(21);
 const flatExposureUs = ref(0);
 

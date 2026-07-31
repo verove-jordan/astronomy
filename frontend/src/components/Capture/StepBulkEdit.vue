@@ -21,8 +21,10 @@ const useCount = ref(false);
 const useExposure = ref(false);
 const useGain = ref(false);
 const countValue = ref(20);
-const exposureSec = ref(120);
-const gainValue = ref(139);
+// Seeded with the same values a new row starts with (SequenceRunner.defaultStep). If these drifted
+// apart, "apply to every row" would quietly put the old gain back across the whole sequence.
+const exposureSec = ref(60);
+const gainValue = ref(0);
 
 const anything = () => useCount.value || useExposure.value || useGain.value;
 
