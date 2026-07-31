@@ -307,7 +307,15 @@ func TestConnect_HandshakesAndReadsIdentity(t *testing.T) {
 	assert.True(t, m.Connected())
 	cmds := hc.commands()
 	require.NotEmpty(t, cmds)
-	assert.Equal(t, "Kx", cmds[0], "the echo handshake proves a mount is really there")
+	// The handshake used to be the literal "Kx". It is now "K" plus a RANDOM byte, and the change is
+	// the point rather than an incidental refactor: an echo of a fixed byte always asks for the same
+	// answer, so a stale "x#" left in the buffer by a process that died mid-command passes the
+	// handshake and leaves the stream one reply behind for the rest of the session. This assertion
+	// therefore pins the shape and the safety of the byte, not its value. See link.go.
+	require.Len(t, cmds[0], 2)
+	assert.Equal(t, byte('K'), cmds[0][0], "the echo handshake proves a mount is really there")
+	assert.NotContains(t, []byte{'#', 0x00, 0x11, 0x13}, cmds[0][1],
+		"the echo byte must never be the terminator or a flow-control character")
 
 	st, err := m.State(context.Background())
 	require.NoError(t, err)

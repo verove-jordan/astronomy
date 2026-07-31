@@ -59,6 +59,10 @@ func (m *Mount) PulseGuide(ctx context.Context, axis device.GuideAxis, arcsecPer
 		m.mu.Unlock()
 		return device.ErrNotConnected
 	}
+	// The deadman is armed before the motor is asked to turn, and stays armed if the start reports an
+	// error — the frame may have landed anyway. Guiding is by far the most frequent thing this driver
+	// does over a night, so it is also the likeliest command to be in flight when a cable is nudged.
+	m.armStopLocked(motor, slewRateCommand(motor, 0), d+stopGrace)
 	_, err := m.rawLocked(slewRateCommand(motor, arcsecPerSec))
 	m.mu.Unlock()
 	if err != nil {
@@ -76,11 +80,15 @@ func (m *Mount) PulseGuide(ctx context.Context, axis device.GuideAxis, arcsecPer
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.port == nil {
-		return nil
+		// Not nil, as this used to return: the axis is still turning and the motor controller has no
+		// idea the link died. The armed stop is flushed by the reconnect before the port is usable
+		// again, and the caller hears that the pulse did not complete.
+		return fmt.Errorf("%w: the link went during a %s guide pulse; the stop is queued for the reconnect", device.ErrNotConnected, axis)
 	}
 	if _, err := m.rawLocked(slewRateCommand(motor, 0)); err != nil {
 		return fmt.Errorf("stop %s guide pulse: %w", axis, err)
 	}
+	m.disarmStopLocked(motor)
 	return nil
 }
 
