@@ -406,5 +406,25 @@ func (c *Camera) renderLocked(start time.Time, dur time.Duration) *device.Frame 
 		ExposureUs: dur.Microseconds(), Gain: gain, Offset: offset,
 		TempMilliC: tempMilliC, HasTemp: true,
 		StartedAt: start, Duration: dur,
+		ExtraCards: truthCards(raDeg, decDeg, paDeg, scale),
+	}
+}
+
+// truthCards record what this frame was actually drawn from.
+//
+// Simulated frames cannot be plate-solved — the bundled catalogue stops near magnitude 9, far too
+// sparse for Siril to match, and adding invented stars makes it worse rather than better because they
+// are in no reference catalogue. So every feature built on plate solving would be undevelopable and
+// undemonstrable without a real clear night.
+//
+// These cards are the way out: the simulator writes down the answer, and platesolve's simulated solver
+// reads it back. They are scaffolding and they are labelled as such — the prefix is unmistakable, real
+// drivers never write them, and nothing outside that solver looks for them.
+func truthCards(raDeg, decDeg, paDeg, scaleArcsecPx float64) []string {
+	return []string{
+		device.FloatCard("SIMRA", raDeg, "simulated truth: pointing RA, J2000 degrees"),
+		device.FloatCard("SIMDEC", decDeg, "simulated truth: pointing Dec, J2000 degrees"),
+		device.FloatCard("SIMPA", paDeg, "simulated truth: camera position angle, degrees"),
+		device.FloatCard("SIMSCALE", scaleArcsecPx, "simulated truth: plate scale, arcsec/pixel"),
 	}
 }

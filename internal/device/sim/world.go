@@ -16,6 +16,7 @@ import (
 
 	"github.com/verove-jordan/astronomy/internal/device"
 	"github.com/verove-jordan/astronomy/internal/filters"
+	"github.com/verove-jordan/astronomy/internal/polaralign"
 )
 
 // Config are the simulated observing conditions. The zero value is a reasonable clear night.
@@ -99,6 +100,17 @@ type Config struct {
 	// test that needs a guaranteed bright star in the field (focus metrics, centroiding) plants one
 	// here instead of hoping the sky cooperates at the chosen pointing.
 	SyntheticStars []SyntheticStar
+
+	// PolarErrorAltArcmin and PolarErrorAzArcmin put the simulated mount's polar axis off the pole:
+	// too high by the first, east of the pole's meridian by the second (as the azimuth adjuster's own
+	// angle). Both default to zero, which is EXACTLY a no-op — a simulated observatory that was not
+	// asked for a misalignment behaves precisely as it always did.
+	//
+	// This is what lets polar alignment from the camera be developed and demonstrated indoors. The
+	// error is applied where the telescope's actual pointing is decided, so the mount reports it, the
+	// camera draws it, and a measurement run against it recovers the numbers dialled in.
+	PolarErrorAltArcmin float64
+	PolarErrorAzArcmin  float64
 
 	// DecBacklashArcsec is how far the declination axis turns, on REVERSING, before the load follows.
 	// <0 → none, 0 → 4.
@@ -410,7 +422,38 @@ func (w *World) pointingAt(t time.Time) (raDeg, decDeg float64) {
 		// Untracked, the sky slides west at the sidereal rate.
 		ra += device.SiderealArcsecPerSec * t.Sub(w.driftFrom).Seconds() / 3600
 	}
-	return normRA(ra), dec
+	return w.misalignLocked(normRA(ra), dec, t)
+}
+
+// misalignLocked bends the pointing by the configured polar-alignment error.
+//
+// Everything above this line describes a mount whose axis is exactly on the pole; this is where that
+// stops being assumed. It is applied at the very end, to the single place the telescope's real pointing
+// is decided, so the mount readout, the rendered star field and any plate solve of it all agree — one
+// consistently misaligned telescope rather than three views of different ones.
+//
+// The drift a badly aligned mount suffers falls out of this rather than being modelled: the error is a
+// rotation fixed to the GROUND, so applying it to a pointing that is fixed in the SKY (which is what
+// tracking maintains) makes the result creep, at the rate and in the direction it really would.
+//
+// Caller holds w.mu.
+func (w *World) misalignLocked(raDeg, decDeg float64, t time.Time) (float64, float64) {
+	if w.cfg.PolarErrorAltArcmin == 0 && w.cfg.PolarErrorAzArcmin == 0 {
+		return raDeg, decDeg
+	}
+	return polaralign.MisalignPointing(raDeg, decDeg,
+		polaralign.Site{LatDeg: w.cfg.LatDeg, LonDeg: w.cfg.LonDeg}, t,
+		w.cfg.PolarErrorAltArcmin/60, w.cfg.PolarErrorAzArcmin/60)
+}
+
+// SetPolarError knocks the simulated mount's polar axis off the pole while it runs, in arcminutes:
+// altArcmin too high, azArcmin east of the pole's meridian. This is the knob a developer turns to watch
+// the alignment panel find it again, and then to watch the marker converge as it is dialled back out.
+func (w *World) SetPolarError(altArcmin, azArcmin float64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.cfg.PolarErrorAltArcmin = altArcmin
+	w.cfg.PolarErrorAzArcmin = azArcmin
 }
 
 // wormElapsedLocked is how long the worm has been turning: accumulated TRACKED time, not wall time.

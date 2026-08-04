@@ -233,6 +233,11 @@ func (s *Server) liveSimulate(w http.ResponseWriter, r *http.Request) {
 		FaintStarsPerDeg2 *float64 `json:"faint_stars_per_deg2"`
 		// FlatPanelADUPerSec puts a flat panel over the aperture; 0 takes it away.
 		FlatPanelADUPerSec *float64 `json:"flat_panel_adu_per_sec"`
+		// PolarErrorAltArcmin/AzArcmin knock the simulated mount's polar axis off the pole, so the
+		// camera-based alignment can be exercised without a sky. Both must be sent together: leaving
+		// one out would silently keep whatever the other run left behind.
+		PolarErrorAltArcmin *float64 `json:"polar_error_alt_arcmin"`
+		PolarErrorAzArcmin  *float64 `json:"polar_error_az_arcmin"`
 	}
 	if !decodeBody(w, r, &body) {
 		return
@@ -261,6 +266,9 @@ func (s *Server) liveSimulate(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.FaintStarsPerDeg2 != nil {
 		world.SetFaintStars(*body.FaintStarsPerDeg2)
+	}
+	if body.PolarErrorAltArcmin != nil || body.PolarErrorAzArcmin != nil {
+		world.SetPolarError(floatOrZero(body.PolarErrorAltArcmin), floatOrZero(body.PolarErrorAzArcmin))
 	}
 	if body.FlatPanelADUPerSec != nil {
 		world.SetFlatPanel(*body.FlatPanelADUPerSec)
@@ -408,4 +416,12 @@ func starGrid(world *sim.World, n int, mag, spreadDeg float64) []sim.SyntheticSt
 		}
 	}
 	return out
+}
+
+// floatOrZero reads an optional number, treating absent as zero.
+func floatOrZero(v *float64) float64 {
+	if v == nil {
+		return 0
+	}
+	return *v
 }

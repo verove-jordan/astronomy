@@ -268,3 +268,14 @@ func pad80(s string) string {
 	}
 	return s + strings.Repeat(" ", 80-len(s))
 }
+
+// FloatCard builds a numeric FITS card with a comment, for header values a DRIVER knows and the
+// standard capture metadata has no field for. It is exported because those values are written by the
+// driver packages, not by this one — see Frame.ExtraCards.
+func FloatCard(key string, v float64, comment string) string {
+	card := fmt.Sprintf("%-8s= %20s", key, strconv.FormatFloat(v, 'f', -1, 64))
+	if comment != "" {
+		card += " / " + comment
+	}
+	return pad80(card)
+}

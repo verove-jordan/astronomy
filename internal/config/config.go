@@ -81,9 +81,22 @@ type Config struct {
 	// on. 478 s is Celestron's figure for the Advanced VX; other mounts differ, and the fit searches
 	// around this value rather than trusting it.
 	MountWormPeriodSec float64
+	// SimSolver answers plate solves from the simulator's own truth cards instead of running Siril.
+	//
+	// It exists because simulated frames CANNOT be plate-solved — the bundled catalogue is far too
+	// sparse for Siril to match — so without it every feature built on solving (centring, tracking
+	// measurement, polar alignment from the camera) can only ever be exercised on a real clear night.
+	// Development scaffolding, off by default, and it refuses any frame the simulator did not draw.
+	SimSolver bool
+
 	// TrackingSolveEveryNth solves one light in N to measure tracking. 1 is affordable at minute-long
 	// subs; raise it for short subs so the solves cannot fall behind the capture cadence.
 	TrackingSolveEveryNth int
+	// ConditionsIntervalMin is how often a running capture session records the sky it is shooting
+	// under (internal/skylog). Hourly by default because the weather feeds are themselves hourly —
+	// sampling faster repeats the same numbers while spending a free-tier request budget a long night
+	// can exhaust. Lower it to watch the recording work without waiting an hour; 0 restores hourly.
+	ConditionsIntervalMin int
 	SpccMonoSensor        string
 	SpccRFilter           string
 	SpccGFilter           string
@@ -111,6 +124,12 @@ type Config struct {
 	LocalAsnet    bool
 	SpccCatalog   string
 
+	// DeepStarCat is the deep star catalogue (ATHYG v3.2, ~2.5 million stars) the run annotation
+	// names field stars from, downloaded once via `just download-deepstars`. OPTIONAL: when the file
+	// is absent the annotation falls back to the embedded magnitude-9 extract, which names the
+	// bright stars and leaves the rest anonymous.
+	DeepStarCat string
+
 	// Observing site + rig for the "tonight" visibility planner. Latitude/longitude default to Paris
 	// so the page works out of the box; the web UI overrides them per-session (and persists locally).
 	// ApertureMM and the sensor dimensions complete the optical setup; FocalLenMM/PixelSizeUm above are
@@ -129,6 +148,10 @@ type Config struct {
 	// BarlowX is the default Barlow/amplifier factor applied to the focal length for the tonight planner
 	// (image scale, FOV, f-ratio and eyepiece magnification). 1 means no Barlow.
 	BarlowX float64
+	// ReducerX is the default focal-reducer factor (e.g. 0.66), applied to the same derived values and
+	// independently of BarlowX — a reducer usually stays in the train while a Barlow comes and goes.
+	// 1 means no reducer.
+	ReducerX float64
 
 	// Cross-session reuse. Reuse pools prior light frames of the same target (to grow integration)
 	// and prior raw bias/darks (for deeper, lower-noise masters). ReuseEnabled gates the whole
@@ -223,11 +246,18 @@ type Config struct {
 	// Dark-site score weights. The place score blends darkness and horizon openness. DarkSkyDarkWeight is
 	// the darkness share (openness gets the remainder). DarkSkySouthWeight blends a south-weighted openness
 	// into the openness term (the low southern horizon matters most for N-hemisphere deep-sky).
-	// DarkSkyMaxSouthBlockDeg (0 = disabled) is a hard gate on southern obstruction. Defaults reproduce
-	// today's 0.6 darkness / 0.4 openness score.
+	// DarkSkyMaxSouthBlockDeg (0 = disabled) is a hard gate on southern obstruction.
+	// DarkSkyWeatherWeight is the share of the score taken by the selected night's forecast (0 =
+	// weather off, reproducing the historical 0.6 darkness / 0.4 openness blend); the terrain terms
+	// share the remainder in their usual proportion. DarkSkyWeatherProbes caps how many points one
+	// area forecast samples — Open-Meteo weights a call by its location count, so this is the quota
+	// budget for a search. DarkSkyNights is how many nights ahead the finder offers.
 	DarkSkyDarkWeight       float64
 	DarkSkySouthWeight      float64
 	DarkSkyMaxSouthBlockDeg float64
+	DarkSkyWeatherWeight    float64
+	DarkSkyWeatherProbes    int
+	DarkSkyNights           int
 
 	// Driving distance for the dark-site finder. Road distance + time from the observer to each candidate,
 	// via an OSRM routing server (keyless public demo by default — rate-limited, best-effort). It is
@@ -238,22 +268,33 @@ type Config struct {
 
 	// Astronomy weather. Free + key-less by default: Open-Meteo (forecast + air quality), 7Timer! ASTRO
 	// (seeing/transparency) and NOAA SWPC (Kp/aurora) feed the /tonight weather overlays + forecast
-	// panel. Weather is a forecast timeline, so it does NOT change visibility scores — it is shown as map
-	// layers + a panel + a badge. The grid is one Open-Meteo multi-point call over ±GridRadiusDeg around
-	// the site (GridSize×GridSize cells), cached per bbox/site+hour. A meteoblue key is optional (server
-	// env ONLY, never UI/logged) for a future paid satellite-map upgrade.
+	// panel. Weather stays out of the clear-sky visibility scores — it is shown as map layers + a panel
+	// + a badge — with ONE deliberate exception: the dark-sky finder ranks spots for a chosen night, a
+	// question that is meaningless without it (see DarkSkyWeatherWeight). The grid is one Open-Meteo
+	// multi-point call over ±GridRadiusDeg around the site (GridSize×GridSize cells), cached per
+	// bbox/site+hour. A meteoblue key is optional (server env ONLY, never UI/logged) for a future paid
+	// satellite-map upgrade.
 	WeatherOpenMeteoURL  string
 	WeatherAirQualityURL string
 	WeatherSevenTimerURL string
 	WeatherSWPCURL       string
-	// WeatherOpenMeteoModels is Open-Meteo's optional `models=` selector: empty = best_match (the API
-	// auto-picks the finest regional model, e.g. AROME over France). Set EXACTLY ONE model to pin it
-	// (a comma list multiplies the per-location call weight against the free-tier quota).
+	// WeatherOpenMeteoModels is Open-Meteo's optional `models=` selector: empty = best_match, which
+	// already resolves to the finest regional model available (measured: identical to icon_d2 at 2.2 km
+	// over the French Alps). Pinning one costs variables — arome_france_hd returns no total cloud cover
+	// at all — so leave it empty unless you have verified the model serves everything the panel reads.
+	// Set EXACTLY ONE model (a comma list multiplies the per-location call weight).
 	WeatherOpenMeteoModels string
-	WeatherGridRadiusDeg   float64
-	WeatherGridSize        int
-	WeatherCacheTTLMin     int
-	WeatherMeteoblueKey    string
+	// WeatherEnsembleURL/Model drive the forecast-confidence figure: how many members of an ensemble
+	// agree the night is clear. Blank URL disables it; the feature is optional everywhere.
+	WeatherEnsembleURL   string
+	WeatherEnsembleModel string
+	// WeatherForecastDays is how far ahead the per-site timeline reaches, which sets how many nights the
+	// dark-sky finder can offer. Open-Meteo weights a call by its day span, so this is a real cost knob.
+	WeatherForecastDays  int
+	WeatherGridRadiusDeg float64
+	WeatherGridSize      int
+	WeatherCacheTTLMin   int
+	WeatherMeteoblueKey  string
 }
 
 // Load reads configuration from the environment, applying sensible defaults.
@@ -307,6 +348,9 @@ func Load() *Config {
 
 		MountWormPeriodSec:    envFloat("ASTRO_WORM_PERIOD_SEC", 478), // Celestron Advanced VX
 		TrackingSolveEveryNth: envInt("ASTRO_TRACKING_SOLVE_EVERY", 1),
+		SimSolver:             envBool("ASTRO_SIM_SOLVER", false),
+
+		ConditionsIntervalMin: envInt("ASTRO_CAPTURE_CONDITIONS_INTERVAL_MIN", 60),
 		// SPCC names MUST match Siril's spcc-database exactly (case/spacing). The ASI1600MM Pro's
 		// sensor entry is "ZWO ASI1600MM" (no " Pro" — that name does not exist in the DB and makes
 		// SPCC abort, silently falling back to green-only neutralization → a brown sky). For a mono
@@ -322,6 +366,7 @@ func Load() *Config {
 		DeviceAddr:          env("ASTRO_DEVICE_ADDR", "127.0.0.1:8084"),
 		GaiaAstroCat:        env("ASTRO_GAIA_ASTRO_CAT", filepath.Join(libraryDir, "catalogues", "siril_cat_healpix8_astro.dat")),
 		GaiaXpsampDir:       env("ASTRO_GAIA_XPSAMP_DIR", filepath.Join(libraryDir, "catalogues")),
+		DeepStarCat:         env("ASTRO_DEEPSTAR_CAT", filepath.Join(libraryDir, "catalogues", "athyg_v32.bin")),
 		LocalAsnet:          envBool("ASTRO_LOCAL_ASNET", false),
 		SpccCatalog:         env("ASTRO_SPCC_CATALOG", ""),
 
@@ -335,6 +380,7 @@ func Load() *Config {
 		// A sane visual kit for the 740 mm f/7.4 FC-100 (exit pupils 4.1 → 0.8 mm).
 		EyepieceKit: env("ASTRO_EYEPIECES", "30:68:30mm,18:65:18mm,10:60:10mm,6:60:6mm"),
 		BarlowX:     envFloat("ASTRO_BARLOW", 1),
+		ReducerX:    envFloat("ASTRO_REDUCER", 1),
 
 		ReuseEnabled:         envBool("ASTRO_REUSE_ENABLED", true),
 		ReuseConeDeg:         envFloat("ASTRO_REUSE_CONE_DEG", 0.5),
@@ -393,6 +439,9 @@ func Load() *Config {
 		DarkSkyDarkWeight:       envFloat("ASTRO_DARKSKY_DARK_WEIGHT", 0.6),
 		DarkSkySouthWeight:      envFloat("ASTRO_DARKSKY_SOUTH_WEIGHT", 0),
 		DarkSkyMaxSouthBlockDeg: envFloat("ASTRO_DARKSKY_MAX_SOUTH_BLOCK", 0),
+		DarkSkyWeatherWeight:    envFloat("ASTRO_DARKSKY_WEATHER_WEIGHT", 0.3),
+		DarkSkyWeatherProbes:    envInt("ASTRO_DARKSKY_WEATHER_PROBES", 160),
+		DarkSkyNights:           envInt("ASTRO_DARKSKY_NIGHTS", 7),
 
 		RoutingURL:           env("ASTRO_ROUTING_URL", "https://router.project-osrm.org"),
 		RoutingCacheTTLHours: envInt("ASTRO_ROUTING_CACHE_TTL", 720),
@@ -402,6 +451,9 @@ func Load() *Config {
 		WeatherAirQualityURL:   env("ASTRO_WEATHER_AIRQUALITY_URL", "https://air-quality-api.open-meteo.com/v1/air-quality"),
 		WeatherSevenTimerURL:   env("ASTRO_WEATHER_SEVENTIMER_URL", "https://www.7timer.info/bin/api.pl"),
 		WeatherSWPCURL:         env("ASTRO_WEATHER_SWPC_URL", "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"),
+		WeatherEnsembleURL:     env("ASTRO_WEATHER_ENSEMBLE_URL", "https://ensemble-api.open-meteo.com/v1/ensemble"),
+		WeatherEnsembleModel:   env("ASTRO_WEATHER_ENSEMBLE_MODEL", "icon_eu"),
+		WeatherForecastDays:    envInt("ASTRO_WEATHER_FORECAST_DAYS", 7),
 		WeatherGridRadiusDeg:   envFloat("ASTRO_WEATHER_GRID_RADIUS_DEG", 4),
 		// 32×32 = 1024 pts over the default 8° box ≈ 0.25°/cell ≈ 27 km — about the forecast model's own
 		// resolution, so the overlay is as sharp as the data allows (was 22). Fetched as 3 chunked
