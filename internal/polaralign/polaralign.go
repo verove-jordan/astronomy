@@ -1,6 +1,20 @@
-// Package polaralign computes where the pole star sits on an equatorial-mount polar-scope reticle for
-// a given site and time: its hour angle and the "clock position" the observer rotates the RA axis to
-// before dropping the star into the reticle bubble. The math is pure (no I/O), mirroring internal/astro.
+// Package polaralign is the geometry of getting a mount's right-ascension axis onto the celestial pole,
+// by either of the two routes an observer has.
+//
+// The first is open loop, and lives in this file: given a site and a time, work out where the pole star
+// ought to sit on a polar-scope reticle — its hour angle, and the clock position to turn the reticle to
+// before dropping the star into the bubble. It tells you where to put the star; it cannot tell you how
+// far off you ended up.
+//
+// The second closes the loop with the camera, and lives in the other files here. Turning the telescope
+// about its right-ascension axis sweeps the optical axis around a circle centred on that axis, so a
+// handful of plate-solved frames along the sweep locate the axis itself (axis.go), which reduces to two
+// numbers and two directions for the two adjusting bolts (correct.go), which becomes a marker to drive
+// into the crosshairs on the live image (target.go, adjust.go). It needs no pointing model, no
+// encoders, and no connection to the mount at all — which is what lets the rotation between frames be
+// done by hand, on any mount ever made.
+//
+// Everything here is pure: no I/O, no clock of its own, nothing but internal/astro and a WCS.
 package polaralign
 
 import (
