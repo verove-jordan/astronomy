@@ -272,7 +272,7 @@ func (r *Runner) saveRequestFor(state *runState, step Step, startedAt time.Time)
 	if sub := frameFolder(step); sub != "" {
 		dir = filepath.Join(dir, sub)
 	}
-	return SaveRequest{
+	req := SaveRequest{
 		Path:      filepath.Join(dir, meta.FileName(state.sequence)),
 		Type:      step.Type,
 		Filter:    step.Filter,
@@ -282,6 +282,14 @@ func (r *Runner) saveRequestFor(state *runState, step Step, startedAt time.Time)
 		Panel:     state.req.Panel,
 		SessionID: fmt.Sprintf("%d", r.Progress().SessionID),
 	}
+	// Where the run points, so OBJCTRA/OBJCTDEC land in the header. Without them a later plate solve
+	// has no hint and falls back to a blind all-sky search — minutes per frame instead of seconds.
+	// Gated on non-zero coordinates: a bogus "0h00m +00°00'" would be worse than an absent card,
+	// because the solver would trust it and search the wrong patch of sky.
+	if state.req.RADeg != 0 || state.req.DecDeg != 0 {
+		req.RADeg, req.DecDeg, req.HasCoord = state.req.RADeg, state.req.DecDeg, true
+	}
+	return req
 }
 
 // recordFrame updates the live progress and persists the frame.

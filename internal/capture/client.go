@@ -134,6 +134,45 @@ func (c *Client) Save(ctx context.Context, req SaveRequest) (SavedFrame, error) 
 	return out, err
 }
 
+// LiveFrame is a frame taken from the live view rather than from a dedicated exposure. Seq identifies
+// which frame of the stream it was, which is how a caller refuses one taken before the telescope
+// stopped moving.
+type LiveFrame struct {
+	SavedFrame
+	Seq int64 `json:"seq"`
+}
+
+// StartLive runs the live view at the given cadence, or just re-applies the cadence if it is already
+// running. intervalMs <= 0 leaves the device server's default.
+func (c *Client) StartLive(ctx context.Context, intervalMs int) error {
+	return c.do(ctx, http.MethodPost, "/live/start",
+		map[string]any{"interval_ms": intervalMs}, nil)
+}
+
+func (c *Client) StopLive(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/live/stop", nil, nil)
+}
+
+// LiveStatus is the live loop's own view of itself.
+type LiveStatus struct {
+	Running bool  `json:"running"`
+	Seq     int64 `json:"seq"`
+}
+
+func (c *Client) LiveStatus(ctx context.Context) (LiveStatus, error) {
+	var out LiveStatus
+	err := c.do(ctx, http.MethodGet, "/live/stats", nil, &out)
+	return out, err
+}
+
+// SaveLiveFrame writes the live view's newest frame where the engine can plate-solve it. The user goes
+// on watching that same frame, which is the point: the picture being measured is the picture on screen.
+func (c *Client) SaveLiveFrame(ctx context.Context, req SaveRequest) (LiveFrame, error) {
+	var out LiveFrame
+	err := c.do(ctx, http.MethodPost, "/live/save", req, &out)
+	return out, err
+}
+
 // WheelState is the device server's wheel snapshot.
 type WheelState struct {
 	Connected bool              `json:"connected"`

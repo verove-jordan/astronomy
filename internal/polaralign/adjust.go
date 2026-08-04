@@ -32,10 +32,23 @@ import (
 // fits; TestLive_SiderealRateMatchesTheHardwareLayer holds it equal to device.SiderealArcsecPerSec.
 const siderealDegPerSec = 15.0410686 / 3600
 
-// suspectFactor is how much further from the target the frame centre may drift before the session
-// stops trusting its own measurement. Turning a bolt the wrong way moves it further out, so a little
-// slack is normal; doubling the initial distance is not.
-const suspectFactor = 2.0
+// suspectFactor and suspectFloorDeg together decide when the frame centre has run so far from the
+// target that the measurement behind it must be stale.
+//
+// The factor alone is not enough, in both directions. A session that began already aligned has no
+// journey to be a multiple of, so any twitch is infinitely many times it; and turning a bolt the wrong
+// way legitimately doubles the distance, which is a mistake to be shown on screen, not a reason to
+// throw the measurement away. The floor makes the test mean "further than any hand on a bolt would
+// plausibly have moved it".
+const (
+	suspectFactor   = 2.0
+	suspectFloorDeg = 1.0
+)
+
+// minScalableGapDeg is the smallest starting gap the remaining-error scaling can be built on. Below it
+// the mount was already aligned when the adjustment began, and there is no journey to measure progress
+// along.
+const minScalableGapDeg = 1.0 / 60
 
 // suspectJumpDeg is how far the frame centre may move between two consecutive frames. Bolts move the
 // sky slowly and by hand; a jump this size is a slew, a meridian flip, or a kicked tripod.
@@ -112,7 +125,7 @@ func (l *Live) Update(f Frame) (LiveState, error) {
 	if l.haveLast && angleBetween(centre, l.lastCentre) > suspectJumpDeg {
 		state.Suspect = true
 	}
-	if l.initialGapDeg > 0 && gap > l.initialGapDeg*suspectFactor {
+	if gap > l.initialGapDeg*suspectFactor+suspectFloorDeg {
 		state.Suspect = true
 	}
 	l.lastCentre, l.haveLast = centre, true
@@ -146,9 +159,15 @@ func (l *Live) targetAt(t time.Time) hVec3 {
 // is the fraction of the correction still outstanding. It is exact at the start by construction and
 // exact at the end because both go to zero together; in between it is a good enough guide to whether
 // the last quarter turn helped.
+//
+// Unless the session began already aligned, in which case both ends of that ratio are zero and it says
+// nothing at all — dividing by the sliver of a gap that rounding left behind turns a nudge of the
+// tripod into a reading of hundreds of degrees. There is nothing to scale then, so the distance the
+// field has moved is reported directly: it is what the marker on screen is showing anyway, and it is
+// the right answer to "how far have I just knocked this out".
 func (l *Live) remaining(gapDeg float64) float64 {
-	if l.initialGapDeg <= 0 {
-		return l.initialArcmin
+	if l.initialGapDeg < minScalableGapDeg {
+		return gapDeg * 60
 	}
 	return l.initialArcmin * gapDeg / l.initialGapDeg
 }

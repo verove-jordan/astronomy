@@ -238,6 +238,33 @@ func TestLive_RemainingErrorTracksTheTurn(t *testing.T) {
 	assert.Less(t, prev, 0.5, "it ends at zero")
 }
 
+// Starting the adjustment on a mount that is ALREADY aligned is a normal thing to do — it is how you
+// check your work. There is no journey to measure progress along then, and scaling by one would divide
+// by whatever sliver of a gap rounding left behind, turning a nudge into a reading of hundreds of
+// degrees and a spurious "the mount has moved".
+func TestLive_StartingAlignedDoesNotDivideByNothing(t *testing.T) {
+	b := newBench(Site{48.8566, 2.3522}, 0, 0, 65, true)
+	c := b.measure(t)
+	require.Less(t, c.TotalArcmin, 0.01, "the bench really is aligned")
+
+	live, err := NewLive(c, b.frame(t), true, FitOptions{})
+	require.NoError(t, err)
+
+	at, err := live.Update(b.frame(t))
+	require.NoError(t, err)
+	assert.Less(t, at.RemainingArcmin, 1.0)
+	assert.Equal(t, QualityExcellent, at.Quality)
+	assert.False(t, at.Suspect)
+
+	// Knock it out by a known amount: the reading has to follow, not explode.
+	b.turnBolts(rot{tiltDeg: 0.25})
+	knocked, err := live.Update(b.frame(t))
+	require.NoError(t, err)
+	assert.InDelta(t, 15, knocked.RemainingArcmin, 5,
+		"a quarter degree of tilt should read as roughly fifteen arcminutes, got %.1f", knocked.RemainingArcmin)
+	assert.False(t, knocked.Suspect, "a quarter of a degree is a bolt, not a bump")
+}
+
 // The local copy of the sidereal rate must not drift from the one the hardware layer uses.
 func TestLive_SiderealRateMatchesTheHardwareLayer(t *testing.T) {
 	assert.Equal(t, device.SiderealArcsecPerSec/3600, siderealDegPerSec)

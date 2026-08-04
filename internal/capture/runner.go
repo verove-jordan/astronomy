@@ -57,6 +57,13 @@ type Request struct {
 	RADeg  float64 `json:"ra_deg,omitempty"`
 	DecDeg float64 `json:"dec_deg,omitempty"`
 
+	// LatDeg/LonDeg/ElevationM is where the telescope stands. The sequencer never uses it — it is
+	// recorded with the session so the night's conditions (weather, Moon, sky brightness) are
+	// attributable to a place afterwards, when the observer may well have moved on.
+	LatDeg     float64 `json:"lat_deg,omitempty"`
+	LonDeg     float64 `json:"lon_deg,omitempty"`
+	ElevationM float64 `json:"elevation_m,omitempty"`
+
 	MosaicPlanID int64 `json:"mosaic_plan_id,omitempty"`
 	TileIndex    *int  `json:"tile_index,omitempty"`
 
