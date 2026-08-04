@@ -85,10 +85,14 @@ func classifyPassthrough(frame []byte) retrySafety {
 			return retryAlways
 		}
 		return retryNever
-	case mcPECReadData, mcPECBin, mcAtIndex, mcGetAutoguideRate:
+	case mcPECReadData, mcPECBin, mcAtIndex, mcGetAutoguideRate, mcGetPosition, mcSlewDone:
 		// Reads of motor-controller state.
 		return retryAfterResync
 	}
+	// mcGotoFast and mcGotoSlow drive a shaft across the sky, and mcSetPosition redefines where that
+	// shaft believes it is — a duplicate of the latter is the worst kind, because it corrupts the
+	// pointing model silently and every later slew inherits the error.
+	//
 	// mcPECWriteData writes a table that survives a power cycle, and pec.go already retries it PAIRED
 	// with a read-back — a transport retry underneath would break that pairing and could report a
 	// verified write that was verified against a different bin. mcSeekIndex moves RA by up to two

@@ -193,8 +193,18 @@ func (s *Server) saveExposure(w http.ResponseWriter, r *http.Request) {
 		deviceError(w, err)
 		return
 	}
-	caps := cam.Caps()
+	if out, err := writeFrame(frame, cam.Caps(), body); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	} else {
+		writeJSON(w, http.StatusOK, out)
+	}
+}
 
+// writeFrame writes one downloaded frame as a 16-bit FITS with the full capture header, and describes
+// what it wrote. Nothing else in the system writes capture files, so the header contract lives in
+// exactly one place (internal/device.FrameMeta) — and the live-view saver shares this function rather
+// than growing a second, quietly diverging copy of it.
+func writeFrame(frame *device.Frame, caps device.CameraCaps, body saveRequest) (map[string]any, error) {
 	meta := device.FrameMeta{
 		Type: body.Type, Filter: body.Filter,
 		ExposureUs: frame.ExposureUs, Gain: frame.Gain, Offset: frame.Offset,
@@ -207,14 +217,13 @@ func (s *Server) saveExposure(w http.ResponseWriter, r *http.Request) {
 		StartedAt: frame.StartedAt,
 	}
 	if err := os.MkdirAll(filepath.Dir(body.Path), 0o755); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+		return nil, err
 	}
-	if err := fits.Write16(body.Path, frame.Width, frame.Height, frame.Pix, meta.Cards()); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+	cards := append(meta.Cards(), frame.ExtraCards...)
+	if err := fits.Write16(body.Path, frame.Width, frame.Height, frame.Pix, cards); err != nil {
+		return nil, err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	return map[string]any{
 		"path":         body.Path,
 		"width":        frame.Width,
 		"height":       frame.Height,
@@ -222,5 +231,5 @@ func (s *Server) saveExposure(w http.ResponseWriter, r *http.Request) {
 		"gain":         frame.Gain,
 		"temp_milli_c": frame.TempMilliC,
 		"started_at":   frame.StartedAt.Format(time.RFC3339Nano),
-	})
+	}, nil
 }

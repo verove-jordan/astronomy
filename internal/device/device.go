@@ -147,6 +147,10 @@ type Frame struct {
 	HasTemp    bool
 	StartedAt  time.Time // exposure START (DATE-OBS is the start of integration by convention)
 	Duration   time.Duration
+	// ExtraCards are FITS header cards only the driver could know, appended after the standard capture
+	// header. Real cameras leave this nil; the simulator uses it to record the truth about a frame it
+	// invented, which is what lets the plate-solve-driven features be exercised without a sky.
+	ExtraCards []string
 }
 
 // ExposureState is the lifecycle of one still exposure.

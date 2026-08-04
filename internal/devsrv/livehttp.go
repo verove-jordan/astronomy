@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/verove-jordan/astronomy/internal/astro"
@@ -85,6 +86,49 @@ func (s *Server) liveFrame(w http.ResponseWriter, r *http.Request) {
 	if err := p.Encode(w); err != nil {
 		return // the client went away mid-stream; nothing useful to report
 	}
+}
+
+// liveSave writes the newest live frame to disk as a FITS the engine can plate-solve.
+//
+// Polar alignment needs frames that are both SOLVABLE and VISIBLE: the engine has to measure where the
+// telescope is really pointing, and the user has to watch the same image while turning a bolt. Driving
+// separate exposures for the engine would take the camera away from the live loop and blank the screen
+// at exactly the wrong moment, so the two share one stream of frames instead — the engine solves the
+// picture the user is looking at.
+//
+// The response carries the frame's sequence number so a caller can insist on a frame taken AFTER it
+// asked for one. Without that, the frame already in memory when the user finishes turning the mount
+// would be solved as though it came afterwards, and the measurement would be silently wrong.
+func (s *Server) liveSave(w http.ResponseWriter, r *http.Request) {
+	var body saveRequest
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.Path) == "" {
+		badRequest(w, "path is required")
+		return
+	}
+	frame, _, seq := s.live.latest()
+	if frame == nil {
+		writeJSON(w, http.StatusServiceUnavailable,
+			map[string]string{"error": "no live frame yet", "code": "no_frame"})
+		return
+	}
+	s.mu.Lock()
+	cam := s.camera
+	s.mu.Unlock()
+	var caps device.CameraCaps
+	if cam != nil {
+		caps = cam.Caps()
+	}
+
+	out, err := writeFrame(frame, caps, body)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	out["seq"] = seq
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) liveStats(w http.ResponseWriter, _ *http.Request) {
