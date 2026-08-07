@@ -273,7 +273,70 @@ const PREP_KNOBS: KnobDef[] = [
 ];
 
 // Tier C — re-stack from the raw frames (min–hours): the per-channel Stacked milestones.
+// The stacking ALGORITHM itself lives here too: re-stacking is the only re-entry that can change how
+// pixels were combined. The enum values mirror internal/stackalg's catalogue; the launch form builds
+// its dropdowns from the engine instead (GET /api/mode-params), but this editor is a fixed catalog by
+// design — it must render without a live fetch on a run reopened from disk.
 const STACK_KNOBS: KnobDef[] = [
+  {
+    key: "stack_reject",
+    labelKey: "rerun.knobs.stack_reject",
+    kind: "select",
+    def: "auto",
+    options: [
+      "auto",
+      "none",
+      "percentile",
+      "sigma",
+      "median_sigma",
+      "winsorized",
+      "linear_fit",
+      "gesd",
+      "mad",
+      "rcr",
+      "adaptive_weighted",
+      "entropy_weighted",
+    ],
+  },
+  {
+    key: "stack_reject_low",
+    labelKey: "rerun.knobs.stack_reject_low",
+    kind: "number",
+    def: 0,
+    min: 0,
+    max: 10,
+    step: 0.1,
+  },
+  {
+    key: "stack_reject_high",
+    labelKey: "rerun.knobs.stack_reject_high",
+    kind: "number",
+    def: 0,
+    min: 0,
+    max: 10,
+    step: 0.1,
+  },
+  {
+    key: "stack_combine",
+    labelKey: "rerun.knobs.stack_combine",
+    kind: "select",
+    def: "mean",
+    options: ["mean", "median", "sum", "max", "min", "trimmed_mean"],
+  },
+  {
+    key: "stack_norm",
+    labelKey: "rerun.knobs.stack_norm",
+    kind: "select",
+    def: "addscale",
+    options: ["none", "add", "addscale", "mul", "mulscale"],
+  },
+  {
+    key: "stack_weight",
+    labelKey: "rerun.knobs.stack_weight",
+    kind: "select",
+    def: "wfwhm",
+    options: ["none", "noise", "wfwhm", "nbstars", "nbstack"],
+  },
   {
     key: "fwhm_sigma",
     labelKey: "rerun.knobs.fwhm_sigma",

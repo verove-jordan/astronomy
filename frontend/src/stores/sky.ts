@@ -25,6 +25,7 @@ export interface SkyQuery {
   sensor_w?: number;
   sensor_h?: number;
   barlow?: number; // Barlow factor; omitted = no Barlow (×1)
+  reducer?: number; // focal reducer (e.g. 0.66); omitted = no reducer (×1). Multiplies WITH the Barlow.
   min_alt?: number;
   twilight?: "astro" | "nautical";
   limit?: number;

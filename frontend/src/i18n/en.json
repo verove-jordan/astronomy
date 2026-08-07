@@ -21,7 +21,8 @@
     "collapse": "Collapse",
     "expand": "Expand",
     "mosaic": "Mosaic",
-    "capture": "Capture"
+    "capture": "Capture",
+    "logbook": "Logbook"
   },
   "astroAgent": {
     "title": "AstroAgent",
@@ -804,6 +805,18 @@
       "sun_iphone_video": {
         "label": "Sun — iPhone clip",
         "desc": "Phone video through the eyepiece; gentler sharpening, the camera already sharpened once."
+      },
+      "stack-moonlit-gradient": {
+        "label": "Moonlit / moving gradient",
+        "desc": "For a sky that changed during the session — a rising moon or drifting light pollution. Linear-fit clipping models the changing level per pixel instead of treating it as noise."
+      },
+      "stack-deep-session": {
+        "label": "Deep session (50+ subs)",
+        "desc": "For a long run where the leftovers matter more than raw depth: GESD rejection at a tighter significance, plus noise weighting so the cleanest subs dominate."
+      },
+      "stack-few-frames": {
+        "label": "Only a few subs",
+        "desc": "For a handful of dissimilar frames, where no measured sigma is trustworthy: percentile clipping and no weighting, so nothing is thrown away twice."
       }
     }
   },
@@ -1155,7 +1168,8 @@
       "disconnect": "Disconnect",
       "notRunning": "The device server is not running. Start it with",
       "drivers": "Drivers: {list}",
-      "wheelDetail": "{slots} slots · on slot {position}"
+      "wheelDetail": "{slots} slots · on slot {position}",
+      "driverFor": "Driver for {device}"
     },
     "live": {
       "title": "Live view",
@@ -1317,7 +1331,9 @@
       "center": "Centre with plate solve",
       "centering": "Centring…",
       "centered": "Centred to {arcsec}″ in {n} pass(es).",
-      "centerFailed": "Stopped at {arcsec}″ from the target."
+      "centerFailed": "Stopped at {arcsec}″ from the target.",
+      "belowHorizon": "Below the horizon right now ({alt}°, floor {floor}°) — it has to rise before the mount will slew there.",
+      "backToMosaic": "Back to the mosaic"
     },
     "mount": {
       "title": "Mount",
@@ -1354,7 +1370,8 @@
       "mountSite": "The mount now reports {lat}, {lon}",
       "mountClock": "The mount's clock now reads {utc} (UTC)",
       "padLabel": "Mount direction pad",
-      "padHint": "Click here, then hold the arrow keys — Esc stops."
+      "padHint": "Click here, then hold the arrow keys — two at once for a diagonal. Esc stops.",
+      "simulatedHint": "Connected to the simulator, which has no site or clock. Pick the hand controller's port below to switch to the real mount."
     },
     "tracking": {
       "title": "Mount tracking",
@@ -1436,7 +1453,181 @@
       "title": "Auto-run sessions",
       "blurb": "Every auto-run this rig has shot, live and finished. Kept server-side, so it survives a reload.",
       "none": "No auto-run has been started yet.",
-      "untitled": "(no object)"
+      "untitled": "(no object)",
+      "openLogbook": "View logbook →"
+    },
+    "polar": {
+      "title": "Polar alignment (camera)",
+      "subtitle": "Measure where the mount's polar axis really points, from frames the telescope takes.",
+      "busy": "Exposing and solving…",
+      "steps": {
+        "prepare": "Point the telescope and start",
+        "measure": "Take frames along a turn of the RA axis",
+        "result": "Read the correction",
+        "adjust": "Turn the bolts until the marker is centred",
+        "find": "Find the pole (optional, ten seconds)"
+      },
+      "prepare": {
+        "camera": "Connect the camera and switch the live view on.",
+        "focus": "Focus well enough that stars are points — the frames have to plate-solve.",
+        "field": "Point anywhere with stars, ideally near the meridian at declination 0–40° and away from the zenith. Polaris does not need to be visible.",
+        "clutch": "Be ready to turn the right-ascension axis by hand between frames: release the clutch, or use the hand controller.",
+        "needCamera": "Connect a camera first.",
+        "orPole": "In a hurry? Set declination to its 90° index so the tube looks straight down the right-ascension axis, point roughly at the pole, and press Find the pole. One frame, no turning."
+      },
+      "measure": {
+        "progress": "Frame {step} of {total} captured.",
+        "turn": "Now turn the RIGHT-ASCENSION axis about {degrees}° — either way, the exact amount does not matter — leave declination alone, then take the next frame."
+      },
+      "result": {
+        "alreadyGood": "Nothing to do — the axis is already within an arcminute of the pole."
+      },
+      "adjust": {
+        "instruction": "Turn the altitude and azimuth bolts until the ring on the image sits on the centre crosshairs. Do not touch the right-ascension or declination axes.",
+        "offFrame": "The marker is off the edge of the frame — keep turning in the direction of the arrow until it comes into view.",
+        "suspect": "The field has moved further than the bolts can account for. The mount was probably knocked or slewed; measure again."
+      },
+      "actions": {
+        "start": "Start measuring",
+        "next": "I have turned the axis — next frame",
+        "adjust": "Adjust with the on-screen marker",
+        "remeasure": "Measure again",
+        "cancel": "Cancel",
+        "done": "Finish",
+        "rough": "Find the pole"
+      },
+      "move": {
+        "raise": "Raise the polar axis by {angle}.",
+        "lower": "Lower the polar axis by {angle}.",
+        "east": "Move the polar axis EAST by {angle}.",
+        "west": "Move the polar axis WEST by {angle}."
+      },
+      "stats": {
+        "total": "Total error",
+        "altitude": "Altitude",
+        "azimuth": "Azimuth (knob)",
+        "precision": "Precision",
+        "precisionHint": "One-sigma uncertainty of the measurement, in its worst-constrained direction.",
+        "arc": "Arc turned",
+        "frames": "Frames",
+        "remaining": "Remaining",
+        "markerOffset": "Marker distance"
+      },
+      "quality": {
+        "excellent": "Excellent",
+        "good": "Good",
+        "fair": "Fair",
+        "poor": "Poor"
+      },
+      "warnings": {
+        "weak_arc": "The axis was turned only a little, so this answer is rough. Turning it about 60° in total makes the measurement roughly four times more precise.",
+        "near_pole": "The telescope is pointing close to the mount's own axis, which leaves a small circle to fit. Point further from the pole for a firmer answer.",
+        "no_residual": "Three frames always fit a circle exactly, so nothing could be cross-checked. A fourth frame would catch a knocked tripod.",
+        "low_altitude": "A frame was taken low in the sky, where the refraction model is least reliable.",
+        "assumed_on_axis": "This assumed the telescope is looking straight down the right-ascension axis. Any cone error, or a declination axis off its index, is added to the answer unmeasured."
+      },
+      "rough": {
+        "caveat": "Measured from a single frame, assuming the tube is looking down the right-ascension axis. That is what a polar scope assumes too, so expect the same accuracy — around half a degree, set by your cone error. Run the four-frame measurement for arcminutes.",
+        "badge": "One frame"
+      },
+      "finder": {
+        "distance": "The pole is {angle} from the middle of the frame.",
+        "offFrame": "The pole is outside this field — move the mount toward the marker's side and try again.",
+        "star": "{name} is marked too, so you can tell which way you are looking."
+      },
+      "poleMark": "Pole"
+    }
+  },
+  "logbook": {
+    "title": "Logbook",
+    "subtitle": "Every capture session, past and current — what you shot, in what order, and under what sky.",
+    "empty": "No capture sessions yet — start an auto-run from the Capture page and it will appear here.",
+    "untitled": "Untitled session",
+    "notFound": "That session no longer exists.",
+    "searchObject": "Search object…",
+    "count": "{n} of {total}",
+    "notRecorded": "not recorded",
+    "nightOf": "Night of {night}",
+    "cols": {
+      "night": "Night",
+      "object": "Object",
+      "status": "Status",
+      "frames": "Frames",
+      "filters": "Filters",
+      "integration": "Integration",
+      "duration": "Duration",
+      "sky": "Sky",
+      "moon": "Moon"
+    },
+    "detail": {
+      "started": "Started",
+      "running": "still running",
+      "duration": "Duration",
+      "lights": "Light frames",
+      "integration": "Integration"
+    },
+    "tally": {
+      "title": "What was shot",
+      "empty": "No frames were recorded for this session.",
+      "filter": "Filter",
+      "type": "Type",
+      "frames": "Frames",
+      "integration": "Integration",
+      "exposure": "Exposure",
+      "gain": "Gain",
+      "bin": "Bin",
+      "temp": "Sensor temp"
+    },
+    "timeline": {
+      "title": "Capture order",
+      "blurb": "Each mark is one sub, placed at the time it was taken — line it up with the conditions below to see which filter caught the bad hour.",
+      "empty": "No light frames with a recorded time."
+    },
+    "conditions": {
+      "title": "Conditions",
+      "none": "No conditions were recorded for this session. The sky is sampled while a session runs and cannot be reconstructed afterwards.",
+      "notSupplied": "not supplied",
+      "showForecast": "Show the forecast made at the start",
+      "verdict": "Sky verdict",
+      "samples": "{n} hourly samples",
+      "feedsDown": "{n} with no weather data",
+      "groups": {
+        "weather": "Weather",
+        "moon": "Moon",
+        "target": "Target",
+        "site": "Site"
+      },
+      "cloud": "Cloud",
+      "seeing": "Seeing",
+      "transparency": "Transparency",
+      "humidity": "Humidity",
+      "temp": "Temperature",
+      "wind": "Wind",
+      "moonPhase": "Phase",
+      "moonAlt": "Moon altitude",
+      "moonDown": "below horizon",
+      "moonSep": "Moon distance",
+      "highest": "highest",
+      "closest": "closest",
+      "targetAlt": "Target altitude",
+      "airmass": "Airmass",
+      "best": "best",
+      "skyBrightness": "Sky brightness",
+      "dewRisk": "Dew risk",
+      "aurora": "Geomagnetic"
+    },
+    "chart": {
+      "cloud": "Cloud %",
+      "cloudForecast": "Cloud % (forecast)",
+      "humidity": "Humidity %",
+      "transparency": "Transparency %",
+      "temp": "Temp °C",
+      "seeing": "Seeing ″",
+      "targetAlt": "Target alt °",
+      "moonAlt": "Moon alt °",
+      "axisPercent": "% / °",
+      "axisValue": "°C / ″",
+      "tooShort": "Too few samples to chart — a session shorter than an hour records only its start and end."
     }
   },
   "mapping": {
@@ -1567,7 +1758,9 @@
     "freeLocalHint": "Delete the local copies of this run's files — safe, since each is verified on S3 first.",
     "freeLocalConfirm": "Remove the local copies of this run's files? They stay on S3 (each is verified before deletion) and can be pulled back when you re-run.",
     "remove": "Remove",
-    "queueBadge": "{n} queued"
+    "queueBadge": "{n} queued",
+    "prevTask": "Previous task (#{id}) — left arrow",
+    "nextTask": "Next task (#{id}) — right arrow"
   },
   "supervisor": {
     "title": "Local AI agent — finish iterations",
@@ -1684,7 +1877,49 @@
       "emit_luminance_mono": "Luminance-only mono output",
       "emit_all_channel_mono": "All-channel mono output",
       "union_canvas": "Union canvas (multi-night)",
-      "union_canvas_fill": "Union-canvas empty-corner policy"
+      "union_canvas_fill": "Union-canvas empty-corner policy",
+      "stack_reject": "Pixel rejection",
+      "stack_rejectOptions": {
+        "auto": "Automatic (by frame count)",
+        "none": "No rejection",
+        "percentile": "Percentile clipping",
+        "sigma": "Sigma clipping",
+        "median_sigma": "Median sigma clipping",
+        "winsorized": "Winsorized sigma clipping",
+        "linear_fit": "Linear fit clipping",
+        "gesd": "GESD",
+        "mad": "MAD clipping",
+        "rcr": "Robust Chauvenet (Go)",
+        "adaptive_weighted": "Auto-adaptive weighted (Go)",
+        "entropy_weighted": "Entropy-weighted (Go)"
+      },
+      "stack_reject_low": "Rejection low parameter",
+      "stack_reject_high": "Rejection high parameter",
+      "stack_combine": "Combination method",
+      "stack_combineOptions": {
+        "mean": "Average (with rejection)",
+        "median": "Median",
+        "sum": "Sum",
+        "max": "Maximum",
+        "min": "Minimum",
+        "trimmed_mean": "Trimmed mean (Go)"
+      },
+      "stack_norm": "Input normalization",
+      "stack_normOptions": {
+        "none": "None",
+        "add": "Additive",
+        "addscale": "Additive + scaling",
+        "mul": "Multiplicative",
+        "mulscale": "Multiplicative + scaling"
+      },
+      "stack_weight": "Frame weighting",
+      "stack_weightOptions": {
+        "none": "Equal weight",
+        "noise": "By noise",
+        "wfwhm": "By sharpness (wFWHM)",
+        "nbstars": "By star count",
+        "nbstack": "By sub-count"
+      }
     }
   },
   "paramDocs": {
@@ -1720,7 +1955,11 @@
       "sunFinish": "Finish & sharpening",
       "sunFinishHint": "re-renders the image in seconds",
       "sunStack": "Ingest, registration & stacking",
-      "sunStackHint": "re-reads the source frames (slower)"
+      "sunStackHint": "re-reads the source frames (slower)",
+      "stackAlgo": "Stacking algorithm",
+      "stackAlgoHint": "Tier C · re-stacks from the raw frames (minutes)",
+      "cometStackAlgo": "Comet-aligned stack",
+      "masterStack": "Calibration masters"
     },
     "saturation": "Overall colour saturation of the final image. Higher is more vivid; too high turns stars garish.",
     "star_desat": "Pushes the brightest star cores toward white. Fixes solid colour discs on dense clusters and magenta SHO stars. 0 = off.",
@@ -1769,6 +2008,12 @@
     "double_stack": "Second alignment pass onto the first stacked master (a low-noise, distortion-averaged reference) with a much denser alignment-point grid — AutoStakkert's double-stack reference. Sharper, ~1.7× slower.",
     "calibrate": "Applies master dark/flat calibration to the frames (masters built from the capture's own dark/flat/offset folders, or reused from the library). Removes dust shadows, vignetting and colour blotches; skipped automatically when nothing matches.",
     "deconv_fwhm": "Deconvolution PSF width (pixels) — set near the blur size to recover detail. 0 = off.",
+    "deconv_auto": "Measure the deconvolution width from the limb instead of naming it. The limb is a step, so what smears it is the system's own blur — optics, seeing and the camera's processing together. On, the run deconvolves at that measured width and backs off when it detects the camera already sharpened the frames. Setting a width by hand turns this off.",
+    "bracket_merge": "Stack exposures shot a stop or more apart separately, then composite them into one high-dynamic-range master — disc detail from the exposure that holds it, prominences from the one that recorded them. Off, a bracketed session is normalised onto one level and only its brightest exposure is rendered.",
+    "bracket_stops": "How far apart two captures' disc brightness must be, in stops, before they count as separate exposures. Below this they are one exposure drifting; above it they are a deliberate bracket.",
+    "transparency_floor": "Drop frames a cloud passed in front of, below this fraction of the clip's clearest transmission. A cloud is not a sharpness problem: it adds a veil that averaging cannot remove, and normalisation afterwards scales that veil up with the signal so it reaches the stack looking correctly exposed. 0 turns the gate off.",
+    "ap_align": "Correct atmospheric distortion with a grid of alignment points instead of one rigid transform. The atmosphere does not displace the disc as a rigid object, so without this the stack averages every feature against slightly shifted copies of itself.",
+    "ap_scale": "How much the frame is reduced before the distortion field is measured. 1 measures at full resolution, which is what the field's amplitude requires — after the limb fit only a few pixels are left to measure, so a reduced raster cannot represent the answer and returns noise instead. Larger values are faster and progressively soften the outer disc.",
     "deconv_iters": "Deconvolution iterations. More sharpens further and rings at the limb sooner.",
     "deconv_alpha": "Deconvolution regularisation — higher suppresses noise/ringing, lower is more aggressive.",
     "drizzle_scale": "Super-resolution output grid (1, 1.5 or 2): the stack accumulates hundreds of sub-pixel-dithered frames onto a finer raster, genuinely adding resolution. Default 1.5; costs ×scale² memory/time (re-stack).",
@@ -1809,6 +2054,10 @@
     "limb_flatten": "Removes limb darkening so detail reads all the way to the edge. 0 keeps the natural falloff.",
     "prominence_boost": "Brightness of the off-limb prominences relative to the disc. 0 hides them.",
     "prominence_feather": "How softly the disc and off-limb renderings blend across the limb, as a fraction of the radius.",
+    "background_level": "How bright the sky renders. 0 is pure black; around 0.05 gives the warm pedestal most published solar images have.",
+    "background_tint": "How much of the palette's own colour the sky carries: 0 neutral grey, 1 full amber.",
+    "glow_strength": "Brightness of the halo around the disc, as a fraction of what the limb itself renders at. 0 turns it off.",
+    "glow_radius": "How far that halo reaches beyond the limb, as a fraction of the disc radius.",
     "contrast": "Overall contrast of the finished image.",
     "band": "Which channel carries the signal: auto-detected, Hα (red only) or white light (all channels).",
     "keep_percent": "Percentage of the sharpest frames kept from each source.",
@@ -1819,7 +2068,39 @@
     "window_frames": "Most frames in one stack.",
     "min_frames": "Fewest frames a window needs to be stacked at all; shorter windows are dropped.",
     "crop_margin": "How far past the limb the crop reaches, as a fraction of the radius — room for prominences.",
-    "scale_tolerance": "How closely two files' measured disc sizes must agree to be stacked together."
+    "scale_tolerance": "How closely two files' measured disc sizes must agree to be stacked together.",
+    "stack_engine": "Which engine combines the pixels: automatic (Siril, unless the chosen algorithm is Go-only), siril, or native (the Go combiner).",
+    "stack_combine": "How each pixel's surviving samples become one value: mean (optimal), median (robust), sum, max or min.",
+    "stack_reject": "The outlier test applied before averaging. \"auto\" adapts to the frame count: percentile ≤7, winsorized 8–49, GESD ≥50.",
+    "stack_reject_low": "The rejection algorithm's LOW parameter — a σ multiplier, a kept fraction, or GESD's outlier fraction, depending on the algorithm. 0 = its own default.",
+    "stack_reject_high": "The rejection algorithm's HIGH parameter, in the same units as the low one. 0 = its own default.",
+    "stack_trim_frac": "Fraction discarded at EACH end by the trimmed mean. Go engine only.",
+    "stack_norm": "How frames are brought onto one photometric footing: addscale (default), add, mul, mulscale, or none.",
+    "stack_fast_norm": "Use faster location/scale estimators than the default IKSS. Slightly less robust.",
+    "stack_weight": "How much each frame counts in the average: none, noise, wfwhm (default), nbstars or nbstack.",
+    "stack_rejection_maps": "Also write low/high rejection maps — a diagnostic image of where pixels were dropped.",
+    "stack_feather": "Blend each frame's borders over this many pixels, hiding the hard dithered edges of a drifting sequence. 0 = off.",
+    "stack_local_norm": "Fit a per-frame polynomial background/transparency surface before rejection (local normalization). Go engine only.",
+    "stack_local_norm_degree": "Polynomial degree of that local-normalization surface, 1–4. 0 = the engine default.",
+    "comet_stack_reject": "The rejection used for the COMET-aligned stack of a comet run (the star-aligned half uses stack_reject).",
+    "comet_stack_low": "σ low for the comet-aligned stack. Loose by default (4) so the faint tail's noisy samples survive.",
+    "comet_stack_high": "σ high for the comet-aligned stack. Tight by default (1.8) so the marching star trails are erased.",
+    "master_bias_combine": "Combination method for the bias/offset master — the sensor read-out pedestal; stacked un-normalized because that pedestal IS the signal.",
+    "master_bias_reject": "Pixel rejection for the bias/offset master. \"auto\" adapts to THAT pool's own depth, which is usually very different from the light count.",
+    "master_bias_low": "The bias/offset master's rejection LOW parameter, in its algorithm's own units. 0 = the algorithm's default.",
+    "master_bias_high": "The bias/offset master's rejection HIGH parameter, same units as the low one. 0 = the algorithm's default.",
+    "master_dark_combine": "Combination method for the dark master — thermal signal and hot pixels; stacked un-normalized, and the rejection decides which flickering (RTS) pixels reach the defect map.",
+    "master_dark_reject": "Pixel rejection for the dark master. \"auto\" adapts to THAT pool's own depth, which is usually very different from the light count.",
+    "master_dark_low": "The dark master's rejection LOW parameter, in its algorithm's own units. 0 = the algorithm's default.",
+    "master_dark_high": "The dark master's rejection HIGH parameter, same units as the low one. 0 = the algorithm's default.",
+    "master_flat_combine": "Combination method for the flat master — vignetting and dust; stacked multiplicatively because only the relative shape matters.",
+    "master_flat_reject": "Pixel rejection for the flat master. \"auto\" adapts to THAT pool's own depth, which is usually very different from the light count.",
+    "master_flat_low": "The flat master's rejection LOW parameter, in its algorithm's own units. 0 = the algorithm's default.",
+    "master_flat_high": "The flat master's rejection HIGH parameter, same units as the low one. 0 = the algorithm's default.",
+    "master_dark_flat_combine": "Combination method for the dark-flat master — the flats' own dark; it calibrates the flats, so it stacks like a dark.",
+    "master_dark_flat_reject": "Pixel rejection for the dark-flat master. \"auto\" adapts to THAT pool's own depth, which is usually very different from the light count.",
+    "master_dark_flat_low": "The dark-flat master's rejection LOW parameter, in its algorithm's own units. 0 = the algorithm's default.",
+    "master_dark_flat_high": "The dark-flat master's rejection HIGH parameter, same units as the low one. 0 = the algorithm's default."
   },
   "denoiseFinal": {
     "title": "Denoise the final (GraXpert)",
@@ -1835,7 +2116,135 @@
     "noSolve": "No astrometric solution — name labels unavailable",
     "overlayShow": "Show star names",
     "overlayHide": "Hide star names",
-    "failed": "Star count failed."
+    "failed": "Star count failed.",
+    "shown": "Stars shown",
+    "plottedCapHint": "Only the {n} brightest stars are plotted (the count itself is complete).",
+    "identified": "{n} named from the catalogue",
+    "shallowCatalogue": "Only bright stars can be named — run `just download-deepstars` for the 2.5-million-star catalogue.",
+    "spectral": {
+      "O": "blue, very hot",
+      "B": "blue-white, hot",
+      "A": "white",
+      "F": "yellow-white",
+      "G": "yellow, sun-like",
+      "K": "orange, cool",
+      "M": "red, cool"
+    },
+    "info": {
+      "type": "Type",
+      "mag": "Magnitude",
+      "magEst": "Estimated magnitude",
+      "size": "Size",
+      "fwhm": "Diameter (FWHM)",
+      "pos": "Position",
+      "colour": "Colour",
+      "distance": "Distance",
+      "distanceValue": "{ly} light years ({pc} pc)",
+      "spectral": "Spectral type",
+      "temperature": "Temperature",
+      "approxK": "≈ {k} K",
+      "luminosity": "Luminosity",
+      "luminosityValue": "abs. mag {abs} (≈ {sun} × Sun)",
+      "velocity": "Radial velocity",
+      "receding": "moving away",
+      "approaching": "coming closer",
+      "coords": "Coordinates",
+      "constellation": "Constellation",
+      "unnamed": "Detected star (not in the catalogue)"
+    }
+  },
+  "scene3d": {
+    "chip": "3D",
+    "chipHint": "Fly through this field: every star at its own distance",
+    "depth": "Depth",
+    "depthHint": "0 % is the photograph itself. Open it, then drag the view off Earth to see the volume.",
+    "starSize": "Star size",
+    "starSizeHint": "How big the star sprites are drawn",
+    "openView": "Fly out",
+    "openViewHint": "Swing the camera off the line of sight — from Earth the scene looks like the photo at any depth",
+    "resetView": "Back to Earth",
+    "layerStars": "Stars",
+    "layerObjects": "Objects",
+    "layerField": "Field of view",
+    "showEstimated": "Show estimated distances",
+    "estimatedHint": "Distances derived from each star's colour and brightness rather than a measured parallax. Roughly a factor of 3 either way, and a red giant lands far too close.",
+    "measured": "Measured parallax",
+    "estimated": "Estimated from colour",
+    "depthSource": "Distance",
+    "measuredCount": "measured",
+    "estimatedCount": "estimated",
+    "unknownCount": "{n} with no distance (not shown)",
+    "holdout": "estimates recover measured distances ×{ratio} over {n} stars",
+    "holdoutPoor": "The estimated distances land ×{ratio} off with {scatter} dex of scatter on this frame — treat them as decoration, not data.",
+    "noEstimates": "No estimated distances on this run: only stars with a catalogued parallax are placed.",
+    "mag": "Magnitude",
+    "absMag": "Absolute mag",
+    "ly": "light-years",
+    "anonymousStar": "Unnamed star",
+    "clusterMember": "Cluster member",
+    "measuredFromFrame": "measured from {n} member stars",
+    "measuredFromFrameHint": "Distance taken from this image's own stars rather than a catalogue lookup",
+    "noWebgl": "This browser has no WebGL2, so the 3D field map cannot be drawn.",
+    "loadFailed": "The star field could not be loaded.",
+    "navHint": "Drag to orbit · shift-drag or two fingers to pan · scroll to zoom",
+    "motion": "Motion of {n} stars",
+    "motionHint": "Where each star with a measured proper motion and radial velocity will be after the chosen time. Red is receding, blue approaching.",
+    "motionKyr": "{n} 000 yr",
+    "motionMyr": "{n} Myr",
+    "speed": "Space velocity",
+    "angularSize": "True angular size",
+    "angularSizeValue": "{r} R☉ · {mas} mas",
+    "physicalColour": "{n} at their blackbody colour",
+    "shapeLegend": "Object shapes: green is derived from catalogued measurements, blue is a standard form at a measured size, amber has no measurement of its third dimension at all.",
+    "shape": {
+      "disc": "inclined disc",
+      "shell": "expanding shell",
+      "volume": "emission volume",
+      "plane": "flat plane"
+    },
+    "tier": {
+      "measured": "measured",
+      "assumed": "assumed form",
+      "modelled": "modelled"
+    },
+    "fullscreen": "Fullscreen",
+    "exitFullscreen": "Leave fullscreen",
+    "hovering": "Hovering",
+    "pinned": "Pinned",
+    "unpin": "Clear the pinned star",
+    "panelEmpty": "Point at a star to read it here, or click one to keep it up.",
+    "unavailable": "This run has no 3D scene.",
+    "rebuild": "Build the 3D map",
+    "rebuilding": "Building…",
+    "rebuildHint": "This run's star annotation was computed before the 3D map existed, so it is missing the geometry the scene is built from. Recomputing the stars adds it — the plate solution is cached, so it takes a few seconds.",
+    "explore": "Explore",
+    "exploreOn": "Exploring",
+    "exploreHint": "Fly through the field: arrow keys move, the mouse looks around.",
+    "keys": {
+      "forward": "forward / back",
+      "strafe": "left / right",
+      "updown": "up / down",
+      "boost": "go faster",
+      "drag": "drag",
+      "mouse": "mouse",
+      "look": "look around",
+      "exit": "leave exploring",
+      "lock": "Capture the mouse",
+      "locked": "Mouse captured — Esc releases",
+      "rightDrag": "right-drag · Alt",
+      "orbit": "turn the field around (see it from the side)",
+      "shiftDrag": "Shift-drag",
+      "pan": "slide sideways",
+      "wheel": "wheel",
+      "zoom": "closer / further"
+    },
+    "galaxy": "Milky Way",
+    "galaxyHint": "Draw the Galaxy around this field, at true scale and orientation. Needs the image's sky anchors, which older runs do not carry.",
+    "galaxyZoom": "Zoom out",
+    "galaxyZoomHint": "Fly from inside your own field out to the whole Galaxy. Nothing is exaggerated — at the far end your field really is a thin ray.",
+    "galaxyUnavailable": "This run has no recorded sky orientation, so the Galaxy cannot be placed around it.",
+    "galaxyModelled": "Disc, bulge and arms are a MODEL (Reid et al. 2019); your stars' distances are measured.",
+    "galaxyMirrored": "This field was shot through a star diagonal, so the picture — and the Galaxy drawn in it — is mirrored."
   },
   "refine": {
     "title": "Improve this run with AI",
@@ -1975,6 +2384,39 @@
         "custom": "Drawn area"
       },
       "hint": "Downloads the David Lorenz light-pollution model once for the chosen area; all values are then computed offline. © David Lorenz."
+    },
+    "night": {
+      "label": "Night",
+      "tonight": "Tonight",
+      "tomorrow": "Tomorrow",
+      "inDays": "+{n} d",
+      "darkWindow": "Dark {from} → {to} ({hours} h)",
+      "moon": "Moon {phase}, {pct}% lit, up {hours} h",
+      "lowConfidenceHint": "Beyond ~4 days a cloud forecast is closer to a guess than a plan."
+    },
+    "weather": {
+      "use": "Use the forecast",
+      "useHint": "Rank spots by the selected night's cloud, seeing and dew as well as by darkness and horizon. Turn off to rank on terrain alone.",
+      "weightHint": "How much the forecast counts against darkness and horizon openness.",
+      "darkest": "Darkest",
+      "clearest": "Clearest",
+      "sky": "Sky",
+      "clouds": "Cloud",
+      "clearHours": "Clear",
+      "hours": "{n} h",
+      "seeing": "Seeing",
+      "dewHigh": "High dew risk — expect the optics to fog",
+      "nightSummary": "{hours} h of darkness · Moon {moon}% lit",
+      "moonUp": "Moon up {hours} h of it",
+      "agreement": "{pct}% model agreement ({clear}/{total} members clear)",
+      "agreementHint": "Share of the forecast ensemble's members that call this night clear. Low agreement means the forecast could still go either way.",
+      "degraded": "No forecast available — ranked on darkness and horizon only",
+      "attribution": "Weather data by Open-Meteo.com (CC BY 4.0)",
+      "flags": {
+        "above_inversion": "Above the low-cloud deck — the valley below is likely fogged in",
+        "fog_risk": "Fog forming: still, saturated air at the dew point",
+        "frost": "Below freezing — expect frost on the optics"
+      }
     }
   },
   "tonight": {
@@ -2103,6 +2545,10 @@
       "aperture": "Aperture (mm)",
       "barlow": "Barlow (×)",
       "barlowNone": "None",
+      "reducer": "Reducer (×)",
+      "reducerNone": "None",
+      "reducerShort": "reducer",
+      "effectiveFocal": "Effective focal length",
       "pixelSize": "Pixel size (µm)",
       "sensorWidth": "Sensor width (px)",
       "sensorHeight": "Sensor height (px)",
@@ -2128,7 +2574,10 @@
       "add": "Add eyepiece",
       "remove": "Remove",
       "empty": "Add at least one eyepiece.",
-      "hint": "focal mm · apparent field ° · label"
+      "effective": "· {eff} mm effective",
+      "magnification": "Power",
+      "trueField": "True field",
+      "exitPupil": "Exit pupil"
     },
     "visual": {
       "title": "Visual / eyepiece",
@@ -2639,7 +3088,8 @@
       "unknownRig": "Rig not set",
       "focal": "Focal mm",
       "aperture": "Aperture mm",
-      "reducer": "Reducer/Barlow ×",
+      "barlow": "Barlow (×)",
+      "reducer": "Reducer (×)",
       "pixel": "Pixel µm",
       "sensorW": "Sensor W px",
       "sensorH": "Sensor H px",
@@ -2691,6 +3141,198 @@
     "progress": {
       "bar": "{got} of {want} frames",
       "fromDisk": "counted from the frames on disk"
+    }
+  },
+  "stacking": {
+    "section": "Stacking & rejection",
+    "sectionHint": "How the frames are combined into one master, and which pixels are thrown away first.",
+    "combine": "Combination method",
+    "reject": "Pixel rejection",
+    "norm": "Input normalization",
+    "weight": "Frame weighting",
+    "auto": "Automatic",
+    "recommended": "(recommended)",
+    "nativeSuffix": "(Go engine)",
+    "autoChose": "Your deepest channel has {n} frames, so the engine picks this on its own. Choose an algorithm explicitly to override it.",
+    "noRejection": "This method combines every sample, so no outlier test applies.",
+    "cometReject": "Comet-aligned stack rejection",
+    "cometRejectHint": "The comet half of the run is clipped asymmetrically by default: the coma sits still while the stars march through it, so the high side is tight and the low side loose. Leave it on automatic unless star trails survive.",
+    "fastNorm": "Fast normalization estimators",
+    "fastNormHint": "Quicker, very slightly less robust than the default IKSS.",
+    "rejectionMaps": "Save rejection maps",
+    "rejectionMapsHint": "An extra diagnostic image showing where pixels were dropped.",
+    "engineOverride": "Stacking is pinned to the {engine} engine for this run.",
+    "param": {
+      "sigma": {
+        "low": "σ low",
+        "high": "σ high"
+      },
+      "fraction": {
+        "low": "Low fraction",
+        "high": "High fraction"
+      },
+      "alpha": {
+        "low": "Outlier fraction",
+        "high": "Significance"
+      }
+    },
+    "trimFrac": "Trimmed fraction",
+    "trimFracHint": "Discarded at EACH end before averaging. 0.1 drops the highest and lowest 10 %.",
+    "localNorm": "Local normalization",
+    "localNormHint": "Fits a background/transparency surface per frame before rejection. Go engine only.",
+    "localNormDegree": "Surface polynomial degree",
+    "feather": "Edge feathering",
+    "featherHint": "Blends each frame's borders over this many pixels, hiding the hard edges of a drifting sequence. 0 = off.",
+    "masters": "Calibration masters (darks, flats, bias)",
+    "mastersHint": "Each frame type is stacked separately, and their pools differ by an order of magnitude — 200 bias frames and 5 flats want opposite algorithms — so each carries its own recipe.",
+    "mastersVariantNote": "A non-default recipe builds its master under its own filename, so it can never overwrite the shared library master your other runs depend on.",
+    "frameCount": "{n} frames",
+    "frameType": {
+      "master_bias": "Bias / offset",
+      "master_dark": "Darks",
+      "master_flat": "Flats",
+      "master_dark_flat": "Dark-flats"
+    },
+    "frameTypeHint": {
+      "master_bias": "The sensor's read-out pedestal. Usually the deepest pool you have, so GESD often beats the default — and it is stacked un-normalized, because that pedestal IS the signal.",
+      "master_dark": "Thermal signal and hot pixels. Also un-normalized. Rejection here decides which flickering (RTS) pixels end up in the defect map.",
+      "master_flat": "Vignetting and dust. Stacked multiplicatively — only the relative shape matters. Flat sets are usually small, so a gentle test beats an aggressive one.",
+      "master_dark_flat": "The flats' own dark. It calibrates the flats, so it stacks like a dark."
+    }
+  },
+  "stackAlgo": {
+    "combine": {
+      "mean": {
+        "label": "Average (with rejection)",
+        "desc": "Adds the frames and divides. With Gaussian noise this is the mathematically optimal combination — nothing else extracts more signal-to-noise from the same subs.",
+        "expect": "The deepest, smoothest result. This is the right default for essentially every deep-sky stack."
+      },
+      "median": {
+        "label": "Median",
+        "desc": "Takes the middle value of each pixel. Immune to outliers without any tuning, but it throws away information: the noise only falls as if you had about 64% of your frames.",
+        "expect": "A visibly noisier master than the average for the same subs. Worth it only for a handful of very dissimilar frames, or as a sanity check."
+      },
+      "sum": {
+        "label": "Sum",
+        "desc": "Pure addition, with no rejection and no normalization. Keeps every photon and the original linear scale.",
+        "expect": "Maximum faint signal, but every satellite trail, cosmic ray and plane stays in the image. Mostly useful for very short planetary or ultra-faint sequences."
+      },
+      "max": {
+        "label": "Maximum",
+        "desc": "Keeps the brightest sample of each pixel across the sequence.",
+        "expect": "Not a noise-reduction tool: it builds star-trail and meteor composites, where you WANT every transient kept."
+      },
+      "min": {
+        "label": "Minimum",
+        "desc": "Keeps the darkest sample of each pixel.",
+        "expect": "A diagnostic rather than a picture — it shows what is present in every single frame, which makes it good for spotting a persistent artefact."
+      },
+      "trimmed_mean": {
+        "label": "Trimmed mean",
+        "desc": "Sorts each pixel's samples, discards a fixed fraction at both ends, and averages what remains. A blunt but completely predictable robust average.",
+        "expect": "Close to the average's depth with the median's tolerance for outliers. Useful when the noise is not Gaussian and a sigma-based test misbehaves."
+      }
+    },
+    "reject": {
+      "none": {
+        "label": "No rejection",
+        "desc": "Every sample is kept. Nothing is tested and nothing is discarded.",
+        "expect": "Maximum signal and maximum contamination: any trail, cosmic ray or aircraft in a single sub survives into the master."
+      },
+      "percentile": {
+        "label": "Percentile clipping",
+        "desc": "Drops a fixed fraction of the highest and lowest samples instead of measuring a spread. On a handful of frames a measured sigma is meaningless, so this is the only honest test available.",
+        "expect": "Reliable cleaning of small stacks. On a deep stack it wastes good data — it always drops the same share, however clean the pixel is."
+      },
+      "sigma": {
+        "label": "Sigma clipping (kappa-sigma)",
+        "desc": "Iteratively measures each pixel's mean and spread and drops the samples further than κ·σ from it. The classic, well-understood outlier test.",
+        "expect": "Solid general cleaning. A very bright outlier inflates the sigma it is measured against, so a few strong trail pixels can slip through — that is what Winsorized clipping fixes."
+      },
+      "median_sigma": {
+        "label": "Median sigma clipping",
+        "desc": "Sigma clipping centred on the median instead of the mean, so the outliers being hunted do not drag the centre toward themselves.",
+        "expect": "Slightly more robust than plain sigma clipping on asymmetric contamination, at essentially no cost."
+      },
+      "winsorized": {
+        "label": "Winsorized sigma clipping",
+        "desc": "Before measuring the spread, extreme samples are pulled in to the edge of the distribution (Huber winsorization) rather than deleted. The sigma is then estimated from data the outliers cannot inflate.",
+        "expect": "The best all-round compromise, and the reason it is the default for 8–50 frames: it removes trails and cosmic rays without eating faint real signal."
+      },
+      "linear_fit": {
+        "label": "Linear fit clipping",
+        "desc": "Fits a robust straight line through each pixel's samples and rejects the ones that fall off it, so a smoothly CHANGING level is modelled instead of being treated as noise.",
+        "expect": "The right choice when the sky itself moved during the session — a rising moon, drifting light pollution, a gradient that walks across the frame. On a stable sky it is no better than Winsorized."
+      },
+      "gesd": {
+        "label": "GESD (extreme studentized deviate)",
+        "desc": "A formal statistical test that repeatedly asks whether the most extreme remaining sample is a genuine outlier, up to a maximum fraction, at a chosen significance level.",
+        "expect": "The most rigorous option on large stacks, and the reason it is the default past 50 frames: it catches the correlated leftovers — walking noise, faint trail remnants — that a fixed 3σ clip leaves behind."
+      },
+      "mad": {
+        "label": "MAD clipping",
+        "desc": "Clips at k times the median absolute deviation, a spread estimate that ignores the outliers entirely rather than being computed from them.",
+        "expect": "Very robust on ugly data. It is a blunter instrument than Winsorized clipping — expect it to reject a little more than strictly necessary."
+      },
+      "rcr": {
+        "label": "Robust Chauvenet rejection",
+        "desc": "Applies Chauvenet's criterion with robust statistics, deciding how many samples a stack of this size should contain by chance rather than using a fixed threshold.",
+        "expect": "Adapts its aggressiveness to the stack depth on its own. Strong on heavily contaminated data; runs in the Go engine, so it is slower than Siril's own tests."
+      },
+      "adaptive_weighted": {
+        "label": "Auto-adaptive weighted average",
+        "desc": "Instead of a hard keep-or-drop decision, it iterates a weight per sample until the weights converge, so a marginal sample fades out rather than disappearing at a threshold.",
+        "expect": "Smoother than a hard clip, with no threshold artefacts — DeepSkyStacker's signature mode. Runs in the Go engine and costs several passes over the data."
+      },
+      "entropy_weighted": {
+        "label": "Entropy-weighted average",
+        "desc": "Weights each frame's contribution by the local information content around the pixel, favouring the frames that actually resolve detail there.",
+        "expect": "Can preserve fine structure better than a plain average on variable seeing. Runs in the Go engine, and it is a look as much as a noise tool — compare before committing."
+      }
+    },
+    "norm": {
+      "none": {
+        "label": "None",
+        "desc": "Frames are combined exactly as they are. Correct for calibration masters, where the pedestal IS the signal."
+      },
+      "add": {
+        "label": "Additive",
+        "desc": "Levels the sky background between frames by an offset only. Use when transparency held steady and only the sky level drifted."
+      },
+      "addscale": {
+        "label": "Additive + scaling",
+        "desc": "Levels both the background AND the contrast between frames. The deep-sky default: it lets subs shot through different transparency stack together fairly."
+      },
+      "mul": {
+        "label": "Multiplicative",
+        "desc": "Scales frames by a ratio rather than shifting them. The physically correct choice for flat fields, where only the relative shape matters."
+      },
+      "mulscale": {
+        "label": "Multiplicative + scaling",
+        "desc": "Multiplicative levelling with a spread correction as well. Rarely needed on lights."
+      }
+    },
+    "weight": {
+      "none": {
+        "label": "Equal weight",
+        "desc": "Every frame counts the same, however good or bad it is."
+      },
+      "noise": {
+        "label": "By noise",
+        "desc": "The quietest frames count most. The best purely statistical choice when depth matters more than sharpness."
+      },
+      "wfwhm": {
+        "label": "By sharpness (wFWHM)",
+        "desc": "The sharpest frames count most, measured by star width weighted by star count. The default: it keeps a soft sub from blurring the master."
+      },
+      "nbstars": {
+        "label": "By star count",
+        "desc": "Frames that detected more stars count most — a good proxy for transparency, so thin cloud is demoted."
+      },
+      "nbstack": {
+        "label": "By sub-count",
+        "desc": "For stacking already-stacked images: each input counts in proportion to how many subs went into it."
+      }
     }
   }
 }

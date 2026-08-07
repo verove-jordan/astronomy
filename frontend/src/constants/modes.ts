@@ -18,7 +18,13 @@ export type Mode = (typeof MODES)[number];
 
 // STAR_MODES are the modes whose results carry a star analysis. Solar and planetary subjects have
 // no stars to count, so their result panels omit it.
-export const STAR_MODES: readonly string[] = ["deepsky", "nebula", "livestack", "comet", "milkyway"];
+export const STAR_MODES: readonly string[] = [
+  "deepsky",
+  "nebula",
+  "livestack",
+  "comet",
+  "milkyway",
+];
 
 // PAUSABLE_MODES are the modes with a safe mid-run boundary to pause at.
 export const PAUSABLE_MODES: readonly string[] = ["deepsky", "nebula"];

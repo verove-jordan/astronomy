@@ -21,7 +21,8 @@
     "collapse": "Réduire",
     "expand": "Agrandir",
     "mosaic": "Mosaïque",
-    "capture": "Capture"
+    "capture": "Capture",
+    "logbook": "Journal"
   },
   "astroAgent": {
     "title": "AstroAgent",
@@ -804,6 +805,18 @@
       "sun_iphone_video": {
         "label": "Soleil — vidéo iPhone",
         "desc": "Vidéo au téléphone derrière l'oculaire ; accentuation douce, le boîtier a déjà accentué."
+      },
+      "stack-moonlit-gradient": {
+        "label": "Lune / gradient mouvant",
+        "desc": "Pour un ciel qui a changé pendant la séance — lune montante ou pollution lumineuse dérivante. L'ajustement linéaire modélise le niveau qui évolue au lieu de le prendre pour du bruit."
+      },
+      "stack-deep-session": {
+        "label": "Séance profonde (50+ poses)",
+        "desc": "Pour une longue séance où les résidus comptent plus que la profondeur brute : rejet GESD à significativité resserrée, et pondération par le bruit pour que les poses les plus propres dominent."
+      },
+      "stack-few-frames": {
+        "label": "Seulement quelques poses",
+        "desc": "Pour une poignée de poses dissemblables, où aucun sigma mesuré n'est fiable : écrêtage par percentile et aucune pondération, pour ne rien écarter deux fois."
       }
     }
   },
@@ -1155,7 +1168,8 @@
       "disconnect": "Déconnecter",
       "notRunning": "Le serveur de périphériques n'est pas démarré. Lancez-le avec",
       "drivers": "Pilotes : {list}",
-      "wheelDetail": "{slots} positions · emplacement {position}"
+      "wheelDetail": "{slots} positions · emplacement {position}",
+      "driverFor": "Pilote pour {device}"
     },
     "live": {
       "title": "Visée en direct",
@@ -1317,7 +1331,9 @@
       "center": "Centrer par astrométrie",
       "centering": "Centrage…",
       "centered": "Centré à {arcsec}″ en {n} passe(s).",
-      "centerFailed": "Arrêté à {arcsec}″ de la cible."
+      "centerFailed": "Arrêté à {arcsec}″ de la cible.",
+      "belowHorizon": "Sous l'horizon en ce moment ({alt}°, plancher {floor}°) — il doit se lever avant que la monture accepte de pointer.",
+      "backToMosaic": "Retour à la mosaïque"
     },
     "mount": {
       "title": "Monture",
@@ -1354,7 +1370,8 @@
       "mountSite": "La monture indique maintenant {lat}, {lon}",
       "mountClock": "L'horloge de la monture indique {utc} (UTC)",
       "padLabel": "Pavé directionnel de la monture",
-      "padHint": "Cliquez ici, puis maintenez les flèches — Échap arrête."
+      "padHint": "Cliquez ici, puis maintenez les flèches — deux à la fois pour un déplacement en diagonale. Échap arrête.",
+      "simulatedHint": "Connecté au simulateur, qui n'a ni site ni horloge. Choisissez ci-dessous le port de la raquette pour passer à la vraie monture."
     },
     "tracking": {
       "title": "Suivi de la monture",
@@ -1436,7 +1453,181 @@
       "title": "Séries automatiques",
       "blurb": "Toutes les séries automatiques de ce montage, en cours et terminées. Conservées côté serveur : elles survivent à un rechargement.",
       "none": "Aucune série automatique lancée pour l'instant.",
-      "untitled": "(sans objet)"
+      "untitled": "(sans objet)",
+      "openLogbook": "Voir le journal →"
+    },
+    "polar": {
+      "title": "Mise en station (caméra)",
+      "subtitle": "Mesurez où pointe réellement l'axe polaire de la monture, à partir d'images prises par le télescope.",
+      "busy": "Pose et résolution astrométrique…",
+      "steps": {
+        "prepare": "Pointez le télescope et démarrez",
+        "measure": "Prenez des images le long d'une rotation de l'axe AD",
+        "result": "Lisez la correction",
+        "adjust": "Tournez les vis jusqu'à centrer le repère",
+        "find": "Trouver le pôle (facultatif, dix secondes)"
+      },
+      "prepare": {
+        "camera": "Connectez la caméra et activez la vue en direct.",
+        "focus": "Faites une mise au point suffisante pour que les étoiles soient ponctuelles : les images doivent être résolues astrométriquement.",
+        "field": "Pointez n'importe quel champ étoilé, idéalement près du méridien entre 0 et 40° de déclinaison et loin du zénith. L'étoile polaire n'a pas besoin d'être visible.",
+        "clutch": "Préparez-vous à tourner l'axe d'ascension droite à la main entre les images : desserrez le frein, ou utilisez la raquette.",
+        "needCamera": "Connectez d'abord une caméra.",
+        "orPole": "Pressé ? Placez la déclinaison sur son index 90°, pour que le tube regarde dans l'axe d'ascension droite, pointez approximativement le pôle et appuyez sur Trouver le pôle. Une seule image, aucune rotation."
+      },
+      "measure": {
+        "progress": "Image {step} sur {total} capturée.",
+        "turn": "Tournez maintenant l'axe d'ASCENSION DROITE d'environ {degrees}° — dans le sens que vous voulez, la valeur exacte n'a pas d'importance — sans toucher à la déclinaison, puis prenez l'image suivante."
+      },
+      "result": {
+        "alreadyGood": "Rien à faire — l'axe est déjà à moins d'une minute d'arc du pôle."
+      },
+      "adjust": {
+        "instruction": "Tournez les vis d'altitude et d'azimut jusqu'à amener le cercle affiché sur la croix centrale. Ne touchez ni à l'ascension droite ni à la déclinaison.",
+        "offFrame": "Le repère est hors du champ — continuez dans la direction de la flèche jusqu'à le voir apparaître.",
+        "suspect": "Le champ a bougé plus que les vis ne peuvent l'expliquer. La monture a sans doute été heurtée ou déplacée : refaites la mesure."
+      },
+      "actions": {
+        "start": "Lancer la mesure",
+        "next": "J'ai tourné l'axe — image suivante",
+        "adjust": "Régler avec le repère à l'écran",
+        "remeasure": "Refaire la mesure",
+        "cancel": "Annuler",
+        "done": "Terminer",
+        "rough": "Trouver le pôle"
+      },
+      "move": {
+        "raise": "Montez l'axe polaire de {angle}.",
+        "lower": "Descendez l'axe polaire de {angle}.",
+        "east": "Déplacez l'axe polaire vers l'EST de {angle}.",
+        "west": "Déplacez l'axe polaire vers l'OUEST de {angle}."
+      },
+      "stats": {
+        "total": "Erreur totale",
+        "altitude": "Altitude",
+        "azimuth": "Azimut (vis)",
+        "precision": "Précision",
+        "precisionHint": "Incertitude à un sigma de la mesure, dans sa direction la moins bien contrainte.",
+        "arc": "Arc parcouru",
+        "frames": "Images",
+        "remaining": "Restant",
+        "markerOffset": "Distance du repère"
+      },
+      "quality": {
+        "excellent": "Excellente",
+        "good": "Bonne",
+        "fair": "Moyenne",
+        "poor": "Mauvaise"
+      },
+      "warnings": {
+        "weak_arc": "L'axe n'a été tourné que faiblement : la réponse reste approximative. Le tourner d'environ 60° au total rend la mesure environ quatre fois plus précise.",
+        "near_pole": "Le télescope pointe près de l'axe de la monture, ce qui ne laisse qu'un petit cercle à ajuster. Pointez plus loin du pôle pour une réponse plus ferme.",
+        "no_residual": "Trois images passent toujours exactement par un cercle : rien n'a pu être recoupé. Une quatrième image détecterait un trépied heurté.",
+        "low_altitude": "Une image a été prise bas sur l'horizon, là où le modèle de réfraction est le moins fiable.",
+        "assumed_on_axis": "Ceci suppose que le télescope regarde exactement dans l'axe d'ascension droite. Toute erreur de cône, ou une déclinaison hors de son index, s'ajoute au résultat sans être mesurée."
+      },
+      "rough": {
+        "caveat": "Mesuré sur une seule image, en supposant que le tube regarde dans l'axe d'ascension droite. C'est aussi ce que suppose un viseur polaire : attendez-vous à la même précision, environ un demi-degré, fixée par votre erreur de cône. Lancez la mesure en quatre images pour descendre à la minute d'arc.",
+        "badge": "Une image"
+      },
+      "finder": {
+        "distance": "Le pôle est à {angle} du centre du champ.",
+        "offFrame": "Le pôle est hors de ce champ — déplacez la monture du côté du repère et réessayez.",
+        "star": "{name} est également repérée, pour vous orienter."
+      },
+      "poleMark": "Pôle"
+    }
+  },
+  "logbook": {
+    "title": "Journal d'observation",
+    "subtitle": "Toutes les sessions de capture, passées et en cours — ce que vous avez photographié, dans quel ordre, et sous quel ciel.",
+    "empty": "Aucune session de capture pour l'instant — lancez une séquence depuis la page Capture et elle apparaîtra ici.",
+    "untitled": "Session sans nom",
+    "notFound": "Cette session n'existe plus.",
+    "searchObject": "Rechercher un objet…",
+    "count": "{n} sur {total}",
+    "notRecorded": "non enregistré",
+    "nightOf": "Nuit du {night}",
+    "cols": {
+      "night": "Nuit",
+      "object": "Objet",
+      "status": "Statut",
+      "frames": "Poses",
+      "filters": "Filtres",
+      "integration": "Intégration",
+      "duration": "Durée",
+      "sky": "Ciel",
+      "moon": "Lune"
+    },
+    "detail": {
+      "started": "Début",
+      "running": "en cours",
+      "duration": "Durée",
+      "lights": "Poses (lights)",
+      "integration": "Intégration"
+    },
+    "tally": {
+      "title": "Ce qui a été capturé",
+      "empty": "Aucune pose enregistrée pour cette session.",
+      "filter": "Filtre",
+      "type": "Type",
+      "frames": "Poses",
+      "integration": "Intégration",
+      "exposure": "Exposition",
+      "gain": "Gain",
+      "bin": "Binning",
+      "temp": "Temp. capteur"
+    },
+    "timeline": {
+      "title": "Ordre de capture",
+      "blurb": "Chaque marque est une pose, placée à l'heure où elle a été prise — alignez-la avec les conditions ci-dessous pour voir quel filtre a pris la mauvaise heure.",
+      "empty": "Aucune pose avec une heure enregistrée."
+    },
+    "conditions": {
+      "title": "Conditions",
+      "none": "Aucune condition n'a été enregistrée pour cette session. Le ciel est échantillonné pendant la session et ne peut pas être reconstitué après coup.",
+      "notSupplied": "non fourni",
+      "showForecast": "Afficher la prévision faite au démarrage",
+      "verdict": "Verdict du ciel",
+      "samples": "{n} relevés horaires",
+      "feedsDown": "{n} sans données météo",
+      "groups": {
+        "weather": "Météo",
+        "moon": "Lune",
+        "target": "Cible",
+        "site": "Site"
+      },
+      "cloud": "Nuages",
+      "seeing": "Seeing",
+      "transparency": "Transparence",
+      "humidity": "Humidité",
+      "temp": "Température",
+      "wind": "Vent",
+      "moonPhase": "Phase",
+      "moonAlt": "Hauteur de la Lune",
+      "moonDown": "sous l'horizon",
+      "moonSep": "Distance à la Lune",
+      "highest": "maximum",
+      "closest": "minimum",
+      "targetAlt": "Hauteur de la cible",
+      "airmass": "Masse d'air",
+      "best": "meilleure",
+      "skyBrightness": "Luminosité du ciel",
+      "dewRisk": "Risque de rosée",
+      "aurora": "Géomagnétisme"
+    },
+    "chart": {
+      "cloud": "Nuages %",
+      "cloudForecast": "Nuages % (prévu)",
+      "humidity": "Humidité %",
+      "transparency": "Transparence %",
+      "temp": "Temp. °C",
+      "seeing": "Seeing ″",
+      "targetAlt": "Hauteur cible °",
+      "moonAlt": "Hauteur Lune °",
+      "axisPercent": "% / °",
+      "axisValue": "°C / ″",
+      "tooShort": "Trop peu de relevés pour un graphique — une session de moins d'une heure n'enregistre que son début et sa fin."
     }
   },
   "mapping": {
@@ -1567,7 +1758,9 @@
     "freeLocalHint": "Supprime les copies locales des fichiers de ce traitement — sans risque, chaque fichier est d'abord vérifié sur S3.",
     "freeLocalConfirm": "Supprimer les copies locales des fichiers de ce traitement ? Ils restent sur S3 (chacun est vérifié avant suppression) et pourront être récupérés lors d'une relance.",
     "remove": "Retirer",
-    "queueBadge": "{n} en attente"
+    "queueBadge": "{n} en attente",
+    "prevTask": "Tâche précédente (#{id}) — flèche gauche",
+    "nextTask": "Tâche suivante (#{id}) — flèche droite"
   },
   "supervisor": {
     "title": "Agent IA local — itérations de finition",
@@ -1684,7 +1877,49 @@
       "emit_luminance_mono": "Sortie mono Luminance seule",
       "emit_all_channel_mono": "Sortie mono toutes-couches",
       "union_canvas": "Canevas union (multi-nuits)",
-      "union_canvas_fill": "Coins vides du canevas union"
+      "union_canvas_fill": "Coins vides du canevas union",
+      "stack_reject": "Rejet des pixels",
+      "stack_rejectOptions": {
+        "auto": "Automatique (selon le nombre de poses)",
+        "none": "Aucun rejet",
+        "percentile": "Écrêtage par percentile",
+        "sigma": "Écrêtage sigma",
+        "median_sigma": "Écrêtage sigma médian",
+        "winsorized": "Écrêtage sigma winsorisé",
+        "linear_fit": "Écrêtage par ajustement linéaire",
+        "gesd": "GESD",
+        "mad": "Écrêtage MAD",
+        "rcr": "Chauvenet robuste (Go)",
+        "adaptive_weighted": "Pondérée auto-adaptative (Go)",
+        "entropy_weighted": "Pondérée par entropie (Go)"
+      },
+      "stack_reject_low": "Paramètre bas du rejet",
+      "stack_reject_high": "Paramètre haut du rejet",
+      "stack_combine": "Méthode de combinaison",
+      "stack_combineOptions": {
+        "mean": "Moyenne (avec rejet)",
+        "median": "Médiane",
+        "sum": "Somme",
+        "max": "Maximum",
+        "min": "Minimum",
+        "trimmed_mean": "Moyenne tronquée (Go)"
+      },
+      "stack_norm": "Normalisation d'entrée",
+      "stack_normOptions": {
+        "none": "Aucune",
+        "add": "Additive",
+        "addscale": "Additive + mise à l'échelle",
+        "mul": "Multiplicative",
+        "mulscale": "Multiplicative + mise à l'échelle"
+      },
+      "stack_weight": "Pondération des poses",
+      "stack_weightOptions": {
+        "none": "Poids égal",
+        "noise": "Par le bruit",
+        "wfwhm": "Par la finesse (wFWHM)",
+        "nbstars": "Par le nombre d'étoiles",
+        "nbstack": "Par le nombre de sous-poses"
+      }
     }
   },
   "paramDocs": {
@@ -1720,7 +1955,11 @@
       "sunFinish": "Finition et accentuation",
       "sunFinishHint": "re-rend l'image en quelques secondes",
       "sunStack": "Ingestion, recalage et empilement",
-      "sunStackHint": "relit les trames sources (plus lent)"
+      "sunStackHint": "relit les trames sources (plus lent)",
+      "stackAlgo": "Algorithme d'empilement",
+      "stackAlgoHint": "Palier C · réempile depuis les poses brutes (minutes)",
+      "cometStackAlgo": "Empilement centré comète",
+      "masterStack": "Images maîtresses de calibration"
     },
     "saturation": "Saturation globale des couleurs de l'image finale. Plus élevé = plus vif ; trop élevé rend les étoiles criardes.",
     "star_desat": "Ramène le cœur des étoiles les plus brillantes vers le blanc. Corrige les disques de couleur pleins sur les amas denses et les étoiles magenta en SHO. 0 = désactivé.",
@@ -1769,6 +2008,12 @@
     "double_stack": "Seconde passe d'alignement sur le premier master empilé (référence peu bruitée, distorsion moyennée) avec une grille de points d'alignement bien plus dense — la « double stack reference » d'AutoStakkert. Plus net, ~1,7× plus lent.",
     "calibrate": "Applique la calibration dark/flat aux poses (masters construits depuis les dossiers darks/flats/offsets de la capture, ou réutilisés depuis la bibliothèque). Supprime ombres de poussière, vignettage et taches de couleur ; ignorée automatiquement si rien ne correspond.",
     "deconv_fwhm": "Largeur de la PSF de déconvolution (pixels) — à régler près de la taille du flou pour récupérer du détail. 0 = désactivé.",
+    "deconv_auto": "Mesurer la largeur de déconvolution sur le limbe plutôt que de la fixer. Le limbe est une marche : ce qui l'étale est le flou du système lui-même — optique, turbulence et traitement de l'appareil réunis. Activé, la passe déconvolue à cette largeur mesurée et se retient lorsqu'elle détecte que l'appareil a déjà accentué les images. Saisir une largeur à la main désactive l'option.",
+    "bracket_merge": "Empiler séparément les expositions distantes d'au moins un diaphragme, puis les composer en un maître à grande dynamique — les détails du disque de l'exposition qui les tient, les protubérances de celle qui les a enregistrées. Désactivé, une séance en fourchette est ramenée à un seul niveau et seule l'exposition la plus claire est rendue.",
+    "bracket_stops": "Écart minimal de luminosité du disque, en diaphragmes, à partir duquel deux captures comptent comme des expositions distinctes. En deçà, c'est une même exposition qui dérive ; au-delà, c'est une fourchette délibérée.",
+    "transparency_floor": "Écarter les images derrière lesquelles un nuage est passé, sous cette fraction de la meilleure transmission du plan. Un nuage n'est pas un problème de netteté : il ajoute un voile que la moyenne n'enlève pas, et la normalisation qui suit amplifie ce voile avec le signal, si bien qu'il arrive à l'empilement en paraissant correctement exposé. 0 désactive le filtre.",
+    "ap_align": "Corriger la distorsion atmosphérique par une grille de points d'alignement plutôt que par une seule transformation rigide. L'atmosphère ne déplace pas le disque comme un objet rigide : sans cela, l'empilement moyenne chaque détail avec des copies légèrement décalées de lui-même.",
+    "ap_scale": "Réduction appliquée à l'image avant de MESURER le champ de distorsion. 1 mesure à pleine résolution, ce qu'exige l'amplitude du champ — après l'ajustement du limbe il ne reste que quelques pixels à mesurer, et une trame réduite ne peut pas représenter cette réponse : elle renvoie du bruit. Les valeurs plus grandes sont plus rapides et adoucissent progressivement le bord du disque.",
     "deconv_iters": "Itérations de déconvolution. Plus élevé accentue davantage et fait sonner le limbe plus tôt.",
     "deconv_alpha": "Régularisation de la déconvolution — plus élevé supprime bruit/halos, plus bas est plus agressif.",
     "drizzle_scale": "Grille de sortie super-résolution (1, 1,5 ou 2) : l'empilement accumule des centaines d'images décalées de façon sub-pixel sur une trame plus fine, gagnant réellement en résolution. Défaut 1,5 ; coûte ×échelle² en mémoire/temps (re-stack).",
@@ -1809,6 +2054,10 @@
     "limb_flatten": "Retire l'assombrissement centre-bord pour lire le détail jusqu'au limbe. 0 conserve la chute naturelle.",
     "prominence_boost": "Luminosité des protubérances hors limbe par rapport au disque. 0 les masque.",
     "prominence_feather": "Douceur du fondu entre disque et hors-limbe, en fraction du rayon.",
+    "background_level": "Luminosité du ciel. 0 = noir pur ; vers 0,05 on retrouve le socle chaud de la plupart des images solaires publiées.",
+    "background_tint": "Part de la couleur de la palette portée par le ciel : 0 gris neutre, 1 ambre pleine.",
+    "glow_strength": "Luminosité du halo autour du disque, en fraction de ce que rend le limbe lui-même. 0 le désactive.",
+    "glow_radius": "Portée de ce halo au-delà du limbe, en fraction du rayon du disque.",
     "contrast": "Contraste global de l'image finie.",
     "band": "Canal porteur du signal : détection auto, Hα (rouge seul) ou lumière blanche (tous canaux).",
     "keep_percent": "Pourcentage des trames les plus nettes conservées par source.",
@@ -1819,7 +2068,39 @@
     "window_frames": "Nombre maximal de trames par empilement.",
     "min_frames": "Nombre minimal de trames pour empiler une fenêtre ; les fenêtres plus courtes sont écartées.",
     "crop_margin": "Marge conservée au-delà du limbe, en fraction du rayon — la place des protubérances.",
-    "scale_tolerance": "Écart maximal entre les diamètres mesurés pour empiler deux fichiers ensemble."
+    "scale_tolerance": "Écart maximal entre les diamètres mesurés pour empiler deux fichiers ensemble.",
+    "stack_engine": "Quel moteur combine les pixels : automatique (Siril, sauf si l'algorithme choisi n'existe qu'en Go), siril, ou native (le combineur Go).",
+    "stack_combine": "Comment les échantillons survivants de chaque pixel donnent une valeur : moyenne (optimale), médiane (robuste), somme, max ou min.",
+    "stack_reject": "Le test d'aberration appliqué avant la moyenne. « auto » s'adapte au nombre de poses : percentile ≤7, winsorisé 8–49, GESD ≥50.",
+    "stack_reject_low": "Paramètre BAS de l'algorithme de rejet — multiplicateur σ, fraction conservée, ou fraction d'aberrants du GESD selon l'algorithme. 0 = sa propre valeur par défaut.",
+    "stack_reject_high": "Paramètre HAUT de l'algorithme de rejet, dans les mêmes unités que le bas. 0 = sa propre valeur par défaut.",
+    "stack_trim_frac": "Fraction écartée à CHAQUE extrémité par la moyenne tronquée. Moteur Go uniquement.",
+    "stack_norm": "Comment les poses sont mises sur un même pied photométrique : addscale (défaut), add, mul, mulscale ou none.",
+    "stack_fast_norm": "Utilise des estimateurs de position/dispersion plus rapides que l'IKSS par défaut. Légèrement moins robustes.",
+    "stack_weight": "Le poids de chaque pose dans la moyenne : none, noise, wfwhm (défaut), nbstars ou nbstack.",
+    "stack_rejection_maps": "Écrit aussi les cartes de rejet haute/basse — une image de diagnostic des pixels écartés.",
+    "stack_feather": "Fond les bords de chaque pose sur ce nombre de pixels, masquant les bordures franches d'une séquence qui dérive. 0 = désactivé.",
+    "stack_local_norm": "Ajuste par pose une surface polynomiale de fond/transparence avant le rejet (normalisation locale). Moteur Go uniquement.",
+    "stack_local_norm_degree": "Degré polynomial de cette surface de normalisation locale, 1–4. 0 = valeur par défaut du moteur.",
+    "comet_stack_reject": "Le rejet utilisé pour l'empilement centré COMÈTE (la moitié centrée étoiles utilise stack_reject).",
+    "comet_stack_low": "σ bas de l'empilement centré comète. Large par défaut (4) pour préserver les échantillons bruités de la queue.",
+    "comet_stack_high": "σ haut de l'empilement centré comète. Serré par défaut (1,8) pour effacer les filés d'étoiles.",
+    "master_bias_combine": "Méthode de combinaison de l'image maîtresse offset/bias — le piédestal de lecture du capteur ; empilé sans normalisation car ce piédestal EST le signal.",
+    "master_bias_reject": "Rejet des pixels de l'image maîtresse offset/bias. « auto » s'adapte à la profondeur de CE lot, en général très différente du nombre de poses.",
+    "master_bias_low": "Paramètre BAS du rejet de l'image maîtresse offset/bias, dans les unités de son algorithme. 0 = valeur par défaut de l'algorithme.",
+    "master_bias_high": "Paramètre HAUT du rejet de l'image maîtresse offset/bias, mêmes unités que le bas. 0 = valeur par défaut de l'algorithme.",
+    "master_dark_combine": "Méthode de combinaison de l'image maîtresse dark — signal thermique et pixels chauds ; empilé sans normalisation, et le rejet décide quels pixels instables (RTS) atteignent la carte de défauts.",
+    "master_dark_reject": "Rejet des pixels de l'image maîtresse dark. « auto » s'adapte à la profondeur de CE lot, en général très différente du nombre de poses.",
+    "master_dark_low": "Paramètre BAS du rejet de l'image maîtresse dark, dans les unités de son algorithme. 0 = valeur par défaut de l'algorithme.",
+    "master_dark_high": "Paramètre HAUT du rejet de l'image maîtresse dark, mêmes unités que le bas. 0 = valeur par défaut de l'algorithme.",
+    "master_flat_combine": "Méthode de combinaison de l'image maîtresse flat — vignettage et poussières ; empilé multiplicativement car seule la forme relative compte.",
+    "master_flat_reject": "Rejet des pixels de l'image maîtresse flat. « auto » s'adapte à la profondeur de CE lot, en général très différente du nombre de poses.",
+    "master_flat_low": "Paramètre BAS du rejet de l'image maîtresse flat, dans les unités de son algorithme. 0 = valeur par défaut de l'algorithme.",
+    "master_flat_high": "Paramètre HAUT du rejet de l'image maîtresse flat, mêmes unités que le bas. 0 = valeur par défaut de l'algorithme.",
+    "master_dark_flat_combine": "Méthode de combinaison de l'image maîtresse dark-flat — le dark propre aux flats ; il calibre les flats, donc il s'empile comme un dark.",
+    "master_dark_flat_reject": "Rejet des pixels de l'image maîtresse dark-flat. « auto » s'adapte à la profondeur de CE lot, en général très différente du nombre de poses.",
+    "master_dark_flat_low": "Paramètre BAS du rejet de l'image maîtresse dark-flat, dans les unités de son algorithme. 0 = valeur par défaut de l'algorithme.",
+    "master_dark_flat_high": "Paramètre HAUT du rejet de l'image maîtresse dark-flat, mêmes unités que le bas. 0 = valeur par défaut de l'algorithme."
   },
   "denoiseFinal": {
     "title": "Débruiter l'image finale (GraXpert)",
@@ -1835,7 +2116,135 @@
     "noSolve": "Pas de solution astrométrique — étiquettes de noms indisponibles",
     "overlayShow": "Afficher les noms d'étoiles",
     "overlayHide": "Masquer les noms d'étoiles",
-    "failed": "Échec du comptage d'étoiles."
+    "failed": "Échec du comptage d'étoiles.",
+    "shown": "Étoiles affichées",
+    "plottedCapHint": "Seules les {n} étoiles les plus brillantes sont tracées (le comptage, lui, est complet).",
+    "identified": "{n} nommées grâce au catalogue",
+    "shallowCatalogue": "Seules les étoiles brillantes peuvent être nommées — lancez `just download-deepstars` pour le catalogue de 2,5 millions d'étoiles.",
+    "spectral": {
+      "O": "bleue, très chaude",
+      "B": "bleu-blanc, chaude",
+      "A": "blanche",
+      "F": "blanc-jaune",
+      "G": "jaune, comme le Soleil",
+      "K": "orange, froide",
+      "M": "rouge, froide"
+    },
+    "info": {
+      "type": "Type",
+      "mag": "Magnitude",
+      "magEst": "Magnitude estimée",
+      "size": "Taille",
+      "fwhm": "Diamètre (FWHM)",
+      "pos": "Position",
+      "colour": "Couleur",
+      "distance": "Distance",
+      "distanceValue": "{ly} années-lumière ({pc} pc)",
+      "spectral": "Type spectral",
+      "temperature": "Température",
+      "approxK": "≈ {k} K",
+      "luminosity": "Luminosité",
+      "luminosityValue": "magn. abs. {abs} (≈ {sun} × Soleil)",
+      "velocity": "Vitesse radiale",
+      "receding": "s'éloigne",
+      "approaching": "se rapproche",
+      "coords": "Coordonnées",
+      "constellation": "Constellation",
+      "unnamed": "Étoile détectée (sans nom au catalogue)"
+    }
+  },
+  "scene3d": {
+    "chip": "3D",
+    "chipHint": "Traversez ce champ : chaque étoile à sa distance réelle",
+    "depth": "Profondeur",
+    "depthHint": "À 0 %, c'est la photo elle-même. Ouvrez-la, puis écartez la vue de la Terre pour voir le volume.",
+    "starSize": "Taille des étoiles",
+    "starSizeHint": "Taille de tracé des étoiles",
+    "openView": "Prendre du recul",
+    "openViewHint": "Écarte la caméra de l'axe de visée — depuis la Terre, la scène ressemble à la photo quelle que soit la profondeur",
+    "resetView": "Retour sur Terre",
+    "layerStars": "Étoiles",
+    "layerObjects": "Objets",
+    "layerField": "Champ de vision",
+    "showEstimated": "Afficher les distances estimées",
+    "estimatedHint": "Distances déduites de la couleur et de l'éclat de chaque étoile, faute de parallaxe mesurée. À un facteur 3 près, et une géante rouge se retrouve bien trop proche.",
+    "measured": "Parallaxe mesurée",
+    "estimated": "Estimée d'après la couleur",
+    "depthSource": "Distance",
+    "measuredCount": "mesurées",
+    "estimatedCount": "estimées",
+    "unknownCount": "{n} sans distance (non affichées)",
+    "holdout": "les estimations retrouvent les distances mesurées à ×{ratio} près sur {n} étoiles",
+    "holdoutPoor": "Sur cette image, les distances estimées tombent à ×{ratio} avec {scatter} dex de dispersion — à prendre comme un décor, pas comme une mesure.",
+    "noEstimates": "Aucune distance estimée sur ce traitement : seules les étoiles à parallaxe cataloguée sont placées.",
+    "mag": "Magnitude",
+    "absMag": "Magnitude absolue",
+    "ly": "années-lumière",
+    "anonymousStar": "Étoile sans nom",
+    "clusterMember": "Membre de l'amas",
+    "measuredFromFrame": "mesurée sur {n} étoiles membres",
+    "measuredFromFrameHint": "Distance déduite des étoiles de cette image plutôt que d'un catalogue",
+    "noWebgl": "Ce navigateur ne gère pas WebGL2 : la carte 3D ne peut pas être tracée.",
+    "loadFailed": "Le champ d'étoiles n'a pas pu être chargé.",
+    "navHint": "Glisser pour orbiter · maj+glisser ou deux doigts pour déplacer · molette pour zoomer",
+    "motion": "Mouvement de {n} étoiles",
+    "motionHint": "Où chaque étoile dont le mouvement propre et la vitesse radiale sont mesurés se trouvera après la durée choisie. Rouge : elle s'éloigne ; bleu : elle se rapproche.",
+    "motionKyr": "{n} 000 ans",
+    "motionMyr": "{n} Ma",
+    "speed": "Vitesse spatiale",
+    "angularSize": "Taille angulaire réelle",
+    "angularSizeValue": "{r} R☉ · {mas} mas",
+    "physicalColour": "{n} à leur couleur de corps noir",
+    "shapeLegend": "Formes des objets : en vert celles déduites de mesures cataloguées, en bleu une forme standard à une taille mesurée, en ambre celles dont la troisième dimension n'est pas mesurée du tout.",
+    "shape": {
+      "disc": "disque incliné",
+      "shell": "coquille en expansion",
+      "volume": "volume d'émission",
+      "plane": "plan"
+    },
+    "tier": {
+      "measured": "mesurée",
+      "assumed": "forme supposée",
+      "modelled": "modélisée"
+    },
+    "fullscreen": "Plein écran",
+    "exitFullscreen": "Quitter le plein écran",
+    "hovering": "Survol",
+    "pinned": "Épinglée",
+    "unpin": "Retirer l'étoile épinglée",
+    "panelEmpty": "Survolez une étoile pour la lire ici, ou cliquez-la pour la garder affichée.",
+    "unavailable": "Ce traitement n'a pas de scène 3D.",
+    "rebuild": "Construire la carte 3D",
+    "rebuilding": "Construction…",
+    "rebuildHint": "L'annotation d'étoiles de ce traitement a été calculée avant l'existence de la carte 3D : il lui manque la géométrie sur laquelle la scène repose. Recalculer les étoiles l'ajoute — la solution astrométrique est en cache, cela prend quelques secondes.",
+    "explore": "Explorer",
+    "exploreOn": "Exploration",
+    "exploreHint": "Volez dans le champ : les flèches déplacent, la souris oriente.",
+    "keys": {
+      "forward": "avancer / reculer",
+      "strafe": "gauche / droite",
+      "updown": "monter / descendre",
+      "boost": "accélérer",
+      "drag": "glisser",
+      "mouse": "souris",
+      "look": "regarder autour",
+      "exit": "quitter l'exploration",
+      "lock": "Capturer la souris",
+      "locked": "Souris capturée — Échap libère",
+      "rightDrag": "clic droit · Alt",
+      "orbit": "tourner autour du champ (le voir de côté)",
+      "shiftDrag": "Maj + glisser",
+      "pan": "déplacer latéralement",
+      "wheel": "molette",
+      "zoom": "plus près / plus loin"
+    },
+    "galaxy": "Voie lactée",
+    "galaxyHint": "Dessine la Galaxie autour de ce champ, à l'échelle et à l'orientation réelles. Nécessite les repères célestes de l'image, absents des anciens traitements.",
+    "galaxyZoom": "Reculer",
+    "galaxyZoomHint": "Volez depuis votre propre champ jusqu'à la Galaxie entière. Rien n'est exagéré — à l'autre bout, votre champ n'est vraiment qu'un mince rayon.",
+    "galaxyUnavailable": "Ce traitement n'a pas enregistré l'orientation du ciel : impossible de placer la Galaxie autour.",
+    "galaxyModelled": "Le disque, le bulbe et les bras sont un MODÈLE (Reid et al. 2019) ; les distances de vos étoiles sont mesurées.",
+    "galaxyMirrored": "Ce champ a été photographié à travers un renvoi coudé : l'image — et la Galaxie qui y est dessinée — est en miroir."
   },
   "refine": {
     "title": "Améliorer ce run avec l'IA",
@@ -1975,6 +2384,39 @@
         "custom": "Zone dessinée"
       },
       "hint": "Télécharge une fois le modèle de pollution lumineuse de David Lorenz pour la zone choisie ; toutes les valeurs sont ensuite calculées hors-ligne. © David Lorenz."
+    },
+    "night": {
+      "label": "Nuit",
+      "tonight": "Ce soir",
+      "tomorrow": "Demain",
+      "inDays": "+{n} j",
+      "darkWindow": "Nuit noire {from} → {to} ({hours} h)",
+      "moon": "Lune {phase}, {pct}% éclairée, levée {hours} h",
+      "lowConfidenceHint": "Au-delà de ~4 jours, une prévision de nuages tient plus du pari que du plan."
+    },
+    "weather": {
+      "use": "Tenir compte de la météo",
+      "useHint": "Classe les spots selon les nuages, le seeing et la rosée de la nuit choisie, en plus de l'obscurité et de l'horizon. Décochez pour ne classer que sur le terrain.",
+      "weightHint": "Poids de la météo face à l'obscurité et à l'ouverture de l'horizon.",
+      "darkest": "Le plus noir",
+      "clearest": "Le plus dégagé",
+      "sky": "Ciel",
+      "clouds": "Nuages",
+      "clearHours": "Dégagé",
+      "hours": "{n} h",
+      "seeing": "Seeing",
+      "dewHigh": "Risque de rosée élevé — l'optique va s'embuer",
+      "nightSummary": "{hours} h de nuit noire · Lune éclairée à {moon}%",
+      "moonUp": "Lune levée {hours} h",
+      "agreement": "{pct}% d'accord entre modèles ({clear}/{total} membres dégagés)",
+      "agreementHint": "Part des membres de l'ensemble qui annoncent une nuit dégagée. Un accord faible signifie que la prévision peut encore basculer.",
+      "degraded": "Aucune prévision disponible — classement sur l'obscurité et l'horizon seuls",
+      "attribution": "Données météo Open-Meteo.com (CC BY 4.0)",
+      "flags": {
+        "above_inversion": "Au-dessus de la couche de nuages bas — la vallée en dessous est sans doute bouchée",
+        "fog_risk": "Brouillard en formation : air calme et saturé au point de rosée",
+        "frost": "Températures négatives — gel probable sur l'optique"
+      }
     }
   },
   "tonight": {
@@ -2103,6 +2545,10 @@
       "aperture": "Ouverture (mm)",
       "barlow": "Barlow (×)",
       "barlowNone": "Aucun",
+      "reducer": "Réducteur (×)",
+      "reducerNone": "Aucun",
+      "reducerShort": "réducteur",
+      "effectiveFocal": "Focale effective",
       "pixelSize": "Taille de pixel (µm)",
       "sensorWidth": "Largeur capteur (px)",
       "sensorHeight": "Hauteur capteur (px)",
@@ -2128,7 +2574,10 @@
       "add": "Ajouter un oculaire",
       "remove": "Retirer",
       "empty": "Ajoutez au moins un oculaire.",
-      "hint": "focale mm · champ apparent ° · étiquette"
+      "effective": "· {eff} mm effectifs",
+      "magnification": "Gross.",
+      "trueField": "Champ réel",
+      "exitPupil": "Pupille"
     },
     "visual": {
       "title": "Visuel / oculaire",
@@ -2639,7 +3088,8 @@
       "unknownRig": "Matériel non défini",
       "focal": "Focale mm",
       "aperture": "Diamètre mm",
-      "reducer": "Réducteur/Barlow ×",
+      "barlow": "Barlow (×)",
+      "reducer": "Réducteur (×)",
       "pixel": "Pixel µm",
       "sensorW": "Capteur L px",
       "sensorH": "Capteur H px",
@@ -2691,6 +3141,198 @@
     "progress": {
       "bar": "{got} poses sur {want}",
       "fromDisk": "compté depuis les fichiers sur le disque"
+    }
+  },
+  "stacking": {
+    "section": "Empilement et rejet",
+    "sectionHint": "Comment les poses sont combinées en une image maîtresse, et quels pixels sont écartés avant.",
+    "combine": "Méthode de combinaison",
+    "reject": "Rejet des pixels",
+    "norm": "Normalisation d'entrée",
+    "weight": "Pondération des poses",
+    "auto": "Automatique",
+    "recommended": "(recommandé)",
+    "nativeSuffix": "(moteur Go)",
+    "autoChose": "Votre canal le plus profond compte {n} poses : le moteur choisit donc celui-ci de lui-même. Sélectionnez un algorithme pour passer outre.",
+    "noRejection": "Cette méthode combine tous les échantillons : aucun test d'aberration ne s'applique.",
+    "cometReject": "Rejet de l'empilement centré comète",
+    "cometRejectHint": "La moitié « comète » est écrêtée de façon asymétrique par défaut : la chevelure reste immobile pendant que les étoiles défilent, donc le côté haut est serré et le côté bas large. Laissez sur automatique sauf si des filés d'étoiles subsistent.",
+    "fastNorm": "Estimateurs de normalisation rapides",
+    "fastNormHint": "Plus rapides, très légèrement moins robustes que l'IKSS par défaut.",
+    "rejectionMaps": "Enregistrer les cartes de rejet",
+    "rejectionMapsHint": "Une image de diagnostic supplémentaire montrant où des pixels ont été écartés.",
+    "engineOverride": "L'empilement est forcé sur le moteur {engine} pour ce traitement.",
+    "param": {
+      "sigma": {
+        "low": "σ bas",
+        "high": "σ haut"
+      },
+      "fraction": {
+        "low": "Fraction basse",
+        "high": "Fraction haute"
+      },
+      "alpha": {
+        "low": "Fraction d'aberrants",
+        "high": "Significativité"
+      }
+    },
+    "trimFrac": "Fraction tronquée",
+    "trimFracHint": "Écartée à CHAQUE extrémité avant la moyenne. 0,1 retire les 10 % les plus hauts et les plus bas.",
+    "localNorm": "Normalisation locale",
+    "localNormHint": "Ajuste une surface de fond/transparence par pose avant le rejet. Moteur Go uniquement.",
+    "localNormDegree": "Degré polynomial de la surface",
+    "feather": "Adoucissement des bords",
+    "featherHint": "Fond les bords de chaque pose sur ce nombre de pixels, masquant les bordures franches d'une séquence qui dérive. 0 = désactivé.",
+    "masters": "Images maîtresses de calibration (darks, flats, offsets)",
+    "mastersHint": "Chaque type de pose est empilé séparément, et les lots diffèrent d'un ordre de grandeur — 200 offsets et 5 flats appellent des algorithmes opposés — donc chacun a sa propre recette.",
+    "mastersVariantNote": "Une recette non par défaut construit son image maîtresse sous son propre nom de fichier : elle ne peut jamais écraser celle de la bibliothèque partagée dont dépendent vos autres traitements.",
+    "frameCount": "{n} poses",
+    "frameType": {
+      "master_bias": "Offset / bias",
+      "master_dark": "Darks",
+      "master_flat": "Flats",
+      "master_dark_flat": "Dark-flats"
+    },
+    "frameTypeHint": {
+      "master_bias": "Le piédestal de lecture du capteur. C'est en général le lot le plus profond, donc le GESD dépasse souvent le défaut — et il s'empile sans normalisation, car ce piédestal EST le signal.",
+      "master_dark": "Signal thermique et pixels chauds. Également sans normalisation. Le rejet décide ici quels pixels instables (RTS) finissent dans la carte de défauts.",
+      "master_flat": "Vignettage et poussières. Empilé multiplicativement — seule la forme relative compte. Les lots de flats sont petits : un test doux vaut mieux qu'un test agressif.",
+      "master_dark_flat": "Le dark propre aux flats. Il calibre les flats, donc il s'empile comme un dark."
+    }
+  },
+  "stackAlgo": {
+    "combine": {
+      "mean": {
+        "label": "Moyenne (avec rejet)",
+        "desc": "Additionne les poses et divise. Avec un bruit gaussien, c'est la combinaison mathématiquement optimale : rien n'extrait plus de rapport signal/bruit des mêmes poses.",
+        "expect": "Le résultat le plus profond et le plus lisse. C'est le bon choix par défaut pour pratiquement tout empilement du ciel profond."
+      },
+      "median": {
+        "label": "Médiane",
+        "desc": "Prend la valeur centrale de chaque pixel. Insensible aux aberrations sans réglage, mais elle jette de l'information : le bruit ne baisse que comme si vous aviez environ 64 % de vos poses.",
+        "expect": "Une image maîtresse visiblement plus bruitée que la moyenne, à poses égales. À réserver à quelques poses très dissemblables, ou à une vérification."
+      },
+      "sum": {
+        "label": "Somme",
+        "desc": "Addition pure, sans rejet ni normalisation. Conserve tous les photons et l'échelle linéaire d'origine.",
+        "expect": "Signal faible maximal, mais chaque filé de satellite, rayon cosmique et avion reste dans l'image. Surtout utile pour des séquences planétaires très courtes ou extrêmement faibles."
+      },
+      "max": {
+        "label": "Maximum",
+        "desc": "Conserve l'échantillon le plus lumineux de chaque pixel sur la séquence.",
+        "expect": "Ce n'est pas un outil de réduction du bruit : il construit les composites de filés d'étoiles et de météores, où l'on VEUT garder chaque transitoire."
+      },
+      "min": {
+        "label": "Minimum",
+        "desc": "Conserve l'échantillon le plus sombre de chaque pixel.",
+        "expect": "Un diagnostic plutôt qu'une image : il montre ce qui est présent dans absolument toutes les poses, ce qui aide à repérer un artefact persistant."
+      },
+      "trimmed_mean": {
+        "label": "Moyenne tronquée",
+        "desc": "Trie les échantillons de chaque pixel, écarte une fraction fixe aux deux extrémités et moyenne le reste. Une moyenne robuste brutale mais parfaitement prévisible.",
+        "expect": "Proche de la profondeur de la moyenne avec la tolérance de la médiane. Utile quand le bruit n'est pas gaussien et qu'un test sur sigma se comporte mal."
+      }
+    },
+    "reject": {
+      "none": {
+        "label": "Aucun rejet",
+        "desc": "Tous les échantillons sont conservés. Rien n'est testé ni écarté.",
+        "expect": "Signal maximal et contamination maximale : le moindre filé, rayon cosmique ou avion présent dans une seule pose survit dans l'image maîtresse."
+      },
+      "percentile": {
+        "label": "Écrêtage par percentile",
+        "desc": "Écarte une fraction fixe des échantillons les plus hauts et les plus bas au lieu de mesurer une dispersion. Sur une poignée de poses, un sigma mesuré n'a aucun sens : c'est le seul test honnête disponible.",
+        "expect": "Un nettoyage fiable des petites piles. Sur une pile profonde il gaspille de bonnes données — il écarte toujours la même part, aussi propre soit le pixel."
+      },
+      "sigma": {
+        "label": "Écrêtage sigma (kappa-sigma)",
+        "desc": "Mesure itérativement la moyenne et la dispersion de chaque pixel et écarte les échantillons au-delà de κ·σ. Le test d'aberration classique et bien compris.",
+        "expect": "Un nettoyage solide. Une aberration très lumineuse gonfle le sigma auquel on la compare, donc quelques pixels de filé intenses peuvent passer — c'est précisément ce que corrige l'écrêtage winsorisé."
+      },
+      "median_sigma": {
+        "label": "Écrêtage sigma médian",
+        "desc": "Écrêtage sigma centré sur la médiane plutôt que sur la moyenne, pour que les aberrations recherchées ne tirent pas le centre vers elles.",
+        "expect": "Un peu plus robuste que le sigma simple sur une contamination asymétrique, pour un coût quasi nul."
+      },
+      "winsorized": {
+        "label": "Écrêtage sigma winsorisé",
+        "desc": "Avant de mesurer la dispersion, les échantillons extrêmes sont ramenés au bord de la distribution (winsorisation de Huber) plutôt que supprimés. Le sigma est alors estimé sur des données que les aberrations ne peuvent pas gonfler.",
+        "expect": "Le meilleur compromis général, et la raison pour laquelle c'est le défaut de 8 à 50 poses : il enlève les filés et les rayons cosmiques sans manger le signal faible réel."
+      },
+      "linear_fit": {
+        "label": "Écrêtage par ajustement linéaire",
+        "desc": "Ajuste une droite robuste sur les échantillons de chaque pixel et rejette ceux qui s'en écartent : un niveau qui ÉVOLUE régulièrement est ainsi modélisé au lieu d'être pris pour du bruit.",
+        "expect": "Le bon choix quand le ciel lui-même a bougé pendant la séance — lune montante, pollution lumineuse changeante, gradient qui traverse le champ. Sur un ciel stable il n'apporte rien de plus que le winsorisé."
+      },
+      "gesd": {
+        "label": "GESD (test de l'écart studentisé extrême)",
+        "desc": "Un test statistique formel qui demande de façon répétée si l'échantillon le plus extrême restant est une véritable aberration, jusqu'à une fraction maximale et à un seuil de significativité choisi.",
+        "expect": "L'option la plus rigoureuse sur les grandes piles, et la raison pour laquelle c'est le défaut au-delà de 50 poses : il attrape les résidus corrélés — bruit de marche, restes de filés — qu'un écrêtage fixe à 3σ laisse passer."
+      },
+      "mad": {
+        "label": "Écrêtage MAD",
+        "desc": "Écrête à k fois l'écart absolu médian, une estimation de dispersion qui ignore complètement les aberrations au lieu d'être calculée à partir d'elles.",
+        "expect": "Très robuste sur des données difficiles. C'est un instrument plus grossier que le winsorisé : attendez-vous à ce qu'il rejette un peu plus que strictement nécessaire."
+      },
+      "rcr": {
+        "label": "Rejet de Chauvenet robuste",
+        "desc": "Applique le critère de Chauvenet avec des statistiques robustes, en déduisant combien d'échantillons une pile de cette taille devrait contenir par hasard plutôt qu'en utilisant un seuil fixe.",
+        "expect": "Adapte seul son agressivité à la profondeur de la pile. Efficace sur des données très contaminées ; il tourne dans le moteur Go, donc plus lentement que les tests natifs de Siril."
+      },
+      "adaptive_weighted": {
+        "label": "Moyenne pondérée auto-adaptative",
+        "desc": "Au lieu d'une décision binaire garder/écarter, elle itère un poids par échantillon jusqu'à convergence : un échantillon limite s'efface progressivement au lieu de disparaître à un seuil.",
+        "expect": "Plus doux qu'un écrêtage franc, sans artefact de seuil — le mode emblématique de DeepSkyStacker. Tourne dans le moteur Go et coûte plusieurs passes sur les données."
+      },
+      "entropy_weighted": {
+        "label": "Moyenne pondérée par entropie",
+        "desc": "Pondère la contribution de chaque pose par la quantité d'information locale autour du pixel, en favorisant les poses qui y résolvent réellement du détail.",
+        "expect": "Peut mieux préserver les structures fines quand le seeing varie. Tourne dans le moteur Go, et c'est autant un rendu qu'un outil de bruit — comparez avant de l'adopter."
+      }
+    },
+    "norm": {
+      "none": {
+        "label": "Aucune",
+        "desc": "Les poses sont combinées telles quelles. Correct pour les images maîtresses de calibration, où le piédestal EST le signal."
+      },
+      "add": {
+        "label": "Additive",
+        "desc": "Aligne le fond de ciel entre les poses par un simple décalage. À utiliser quand la transparence est restée stable et que seul le niveau du ciel a dérivé."
+      },
+      "addscale": {
+        "label": "Additive + mise à l'échelle",
+        "desc": "Aligne à la fois le fond ET le contraste entre les poses. Le défaut du ciel profond : des poses prises sous des transparences différentes s'empilent équitablement."
+      },
+      "mul": {
+        "label": "Multiplicative",
+        "desc": "Met les poses à l'échelle par un rapport au lieu de les décaler. Le choix physiquement correct pour les flats, où seule la forme relative compte."
+      },
+      "mulscale": {
+        "label": "Multiplicative + mise à l'échelle",
+        "desc": "Mise à niveau multiplicative avec correction de dispersion. Rarement nécessaire sur les poses."
+      }
+    },
+    "weight": {
+      "none": {
+        "label": "Poids égal",
+        "desc": "Chaque pose compte autant, bonne ou mauvaise."
+      },
+      "noise": {
+        "label": "Par le bruit",
+        "desc": "Les poses les plus silencieuses comptent le plus. Le meilleur choix purement statistique quand la profondeur prime sur la finesse."
+      },
+      "wfwhm": {
+        "label": "Par la finesse (wFWHM)",
+        "desc": "Les poses les plus fines comptent le plus, mesurées par la largeur des étoiles pondérée par leur nombre. Le défaut : il empêche une pose molle de flouter l'image maîtresse."
+      },
+      "nbstars": {
+        "label": "Par le nombre d'étoiles",
+        "desc": "Les poses qui ont détecté le plus d'étoiles comptent le plus — un bon indicateur de transparence, qui déclasse les voiles nuageux."
+      },
+      "nbstack": {
+        "label": "Par le nombre de sous-poses",
+        "desc": "Pour empiler des images déjà empilées : chaque entrée compte proportionnellement au nombre de poses qui la composent."
+      }
     }
   }
 }

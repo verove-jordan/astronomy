@@ -7,6 +7,7 @@ import { useAgentStore } from "@/stores/agent";
 import AppLogo from "@/components/Common/AppLogo.vue";
 import IconMoon from "@/components/Icons/IconMoon.vue";
 import IconCompassArrow from "@/components/Icons/IconCompassArrow.vue";
+import IconLogbook from "@/components/Icons/IconLogbook.vue";
 import IconMosaic from "@/components/Icons/IconMosaic.vue";
 import IconTelescope from "@/components/Icons/IconTelescope.vue";
 import IconCalendar from "@/components/Icons/IconCalendar.vue";
@@ -32,6 +33,12 @@ const links = computed<NavLink[]>(() => {
     { to: "/tonight", key: "nav.tonight", icon: IconMoon },
     { to: "/goto", key: "nav.goto", icon: IconCompassArrow },
     { to: "/capture", key: "nav.capture", icon: IconTelescope },
+    {
+      to: "/logbook",
+      key: "nav.logbook",
+      prefix: "/logbook",
+      icon: IconLogbook,
+    },
     { to: "/mosaic", key: "nav.mosaic", icon: IconMosaic },
     { to: "/calendar", key: "nav.calendar", icon: IconCalendar },
     {

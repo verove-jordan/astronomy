@@ -20,6 +20,7 @@ function setupOfRow(row: EquipmentSetupRow): EquipmentSetup {
     focal_mm: row.focal_mm || undefined,
     aperture_mm: row.aperture_mm || undefined,
     barlow: row.barlow_x || undefined,
+    reducer: row.reducer_x || undefined,
     pixel_um: row.pixel_um || undefined,
     sensor_w: row.sensor_w_px || undefined,
     sensor_h: row.sensor_h_px || undefined,
@@ -37,6 +38,7 @@ function bodyOfSetup(setup: Omit<EquipmentSetup, "id">) {
     sensor_w_px: setup.sensor_w ?? 0,
     sensor_h_px: setup.sensor_h ?? 0,
     barlow_x: setup.barlow ?? 0,
+    reducer_x: setup.reducer ?? 0,
     camera_name: setup.camera_name ?? "",
     eyepieces: setup.eyepieces ?? [],
   };

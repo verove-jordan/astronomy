@@ -431,6 +431,17 @@ export interface RunResult {
   iterations?: IterationRecord[];
   // Saved processing-milestone previews (stacked/aligned/combined/finish…), for the stage timeline.
   stage_previews?: StagePreview[];
+  // The run's resolved options block (run.json `options`) — the PROCESSING mode plus every fine knob,
+  // persisted for provenance. `mode` here is deepsky/nebula/planetary/…; do NOT confuse it with
+  // `final.mode`, which is the channel COMPOSITION (LRGB/HaLRGB/SHO/mono) and never a processing mode.
+  options?: RunOptions;
+}
+
+// RunOptions is run.json's `options` block: the processing mode plus the fine knobs the run resolved.
+// Open-ended because the knob set grows with the pipeline; only `mode` is relied on by name.
+export interface RunOptions {
+  mode?: string;
+  [key: string]: unknown;
 }
 
 // StarLabel is one named object on the final image (stars.json): x/y in final-image pixel coords.
@@ -443,6 +454,54 @@ export interface StarLabel {
   type?: string; // DSO display type (galaxy, emission_nebula, …)
   mag: number; // 99 = unknown (sorts last)
   diameter_arcmin?: number;
+  // The object's catalogued footprint, pre-projected by the engine into final-image pixels (see
+  // internal/annotate.Extent). Absent for stars and for DSOs with no catalogued size.
+  extent?: StarLabelExtent;
+  // What the star catalogue knows about this star (nil for DSOs, and for stars the shallow embedded
+  // catalogue could only name).
+  star?: StarCatalogInfo;
+}
+
+// StarCatalogInfo is the catalogue's record of one identified star, straight from
+// internal/annotate.StarInfo. It rides on both the text labels and the plotted detections, so the
+// hover card renders one block either way.
+//
+// absmag / ci / rv_km_s are `number | null | undefined` on purpose: zero is a real measurement for
+// all three (an A0 star has B−V = 0), so "absent" cannot be encoded as 0 without inventing data.
+export interface StarCatalogInfo {
+  name?: string;
+  secondary?: string;
+  mag?: number; // catalogue V magnitude — MEASURED, unlike DetectedStar.mag
+  ra_deg?: number;
+  dec_deg?: number;
+  dist_pc?: number; // 0/absent = unknown; no star sits at 0 pc
+  absmag?: number | null; // absolute magnitude — intrinsic brightness
+  ci?: number | null; // B−V colour index — the star's colour, so its temperature
+  rv_km_s?: number | null; // radial velocity, km/s; positive = receding
+  spect?: string; // MK spectral type, e.g. "G2 V"
+  con?: string; // 3-letter IAU constellation
+}
+
+// StarLabelExtent is a DSO's elliptical footprint in FINAL-IMAGE pixels: semi-axes plus the major
+// axis's angle in image space (radians, +x toward +y — the argument canvas `ellipse()` wants). The
+// engine resolves sky orientation, so the overlay only has to apply the viewer's zoom.
+export interface StarLabelExtent {
+  rx_px: number;
+  ry_px: number;
+  angle_rad: number;
+}
+
+// SkyFrame anchors the final image on the sky: its centre plus the midpoints of its far x and y
+// edges. Three points fix orientation, field of view AND parity — it mirrors annotate.Frame, which
+// is what internal/scene3d feeds newBasis. The engine has always served it inside `solve`; this type
+// simply never declared it, so TypeScript dropped it on the floor.
+export interface SkyFrame {
+  center_ra: number;
+  center_dec: number;
+  x_edge_ra: number;
+  x_edge_dec: number;
+  y_edge_ra: number;
+  y_edge_dec: number;
 }
 
 // StarAnnotations is GET/POST /api/jobs/{id}/stars — the run's persisted stars.json: the star
@@ -452,9 +511,164 @@ export interface StarAnnotations {
   count: number;
   image: { width: number; height: number };
   solved: boolean;
-  solve?: { method?: string; reason?: string };
+  solve?: {
+    method?: string;
+    reason?: string;
+    scale_arcsec_px?: number;
+    mag_zero_point?: number;
+    row_order?: string;
+    // The image's three sky anchors — the only record of the field's ROLL, and so the only way to
+    // place anything external (a galactic direction, the Milky Way) into the 3D scene correctly.
+    frame?: SkyFrame;
+    // Which catalogue named the stars: "athyg" (the downloaded 2.5-million-star one) or "embedded"
+    // (the built-in magnitude-9 extract), plus how many plotted stars it actually resolved.
+    star_catalog?: string;
+    identified?: number;
+  };
   labels: StarLabel[];
+  // Detected star positions in final-image pixels, brightest first — the individuals behind `count`.
+  // Capped engine-side, so `stars.length < count` means this is the brightest slice. Present even
+  // when `solved` is false: counting needs no astrometric solution.
+  stars?: DetectedStar[];
   computed_at?: string;
+}
+
+// Scene3DManifest is GET /api/jobs/{id}/scene3d — the run's 3D field map, minus the star field
+// itself (that rides in `points`, 24 bytes per star, so it can go straight into a GPU buffer).
+// `available` false is a normal answer, not an error: `reason` then says why the run has no scene.
+export interface Scene3DManifest {
+  version: number;
+  available: boolean;
+  reason?: string;
+  // True when the run's annotation is simply too old to build a scene from — recomputing the stars
+  // fixes it, as opposed to a run that can never have one.
+  needs_recompute?: boolean;
+  image: { width: number; height: number };
+  camera: Scene3DCamera;
+  depth: Scene3DDepth;
+  stars: Scene3DCounts;
+  photometric: Scene3DPhotometric;
+  billboards?: Scene3DBillboard[];
+  // Full paths for /api/file — the binary star field and the billboard texture.
+  points?: string;
+  backdrop?: string;
+  computed_at?: string;
+}
+
+// Scene3DCamera is the pinhole that reproduces the photograph: a camera at the origin looking down
+// +Z with these half-field tangents renders the star field back into the picture it came from.
+export interface Scene3DCamera {
+  tan_half_w: number;
+  tan_half_h: number;
+  fov_y_deg: number;
+  center_ra: number;
+  center_dec: number;
+  // False on a mirrored field (a session shot through a star diagonal).
+  right_handed: boolean;
+}
+
+// Scene3DDepth is the field's distance structure in parsec. near/far are the 5th/95th percentiles
+// and are what the logarithmic depth warp spans — the raw extremes are one foreground dwarf and one
+// background giant, and letting either set the scale flattens everything between them.
+export interface Scene3DDepth {
+  near_pc: number;
+  far_pc: number;
+  min_pc: number;
+  max_pc: number;
+  median_pc: number;
+}
+
+export interface Scene3DCounts {
+  plotted: number;
+  placed: number;
+  measured: number;
+  estimated: number;
+  unknown: number;
+  identified: number;
+  named: number;
+  // Stars drawn at their blackbody hue rather than at the sampled pixel colour, and those with a
+  // real measured space velocity.
+  physical_colour: number;
+  moving: number;
+}
+
+// Scene3DPhotometric grades the estimated distances. holdout_median_ratio near 1 means estimates
+// land where the measured parallaxes say they should; holdout_scatter_dex is how far a single one
+// may be trusted, in decades of distance.
+export interface Scene3DPhotometric {
+  calibrated: boolean;
+  reason?: string;
+  pairs: number;
+  rms?: number;
+  holdout_n?: number;
+  holdout_median_ratio?: number;
+  holdout_scatter_dex?: number;
+}
+
+// Scene3DBillboard is one catalogued object placed at its distance. The footprint is in
+// final-image pixels, already projected by the engine; the object's line of sight follows from that
+// centre and the camera, so it is not shipped separately (and cannot disagree with the footprint).
+export interface Scene3DBillboard {
+  name: string;
+  secondary?: string;
+  type?: string;
+  dist_pc: number;
+  // "measured" = derived from this frame's own member stars; "table" = the catalogued value.
+  dist_source: string;
+  table_dist_pc?: number;
+  members?: number;
+  sigma_dex?: number;
+  x: number;
+  y: number;
+  rx_px: number;
+  ry_px: number;
+  angle_rad: number;
+  // How the object occupies space, when enough is known to say. Absent = the flat plane.
+  shape?: Scene3DShape;
+}
+
+// Scene3DShape is the engine's decision about an object's three-dimensional form. `source` is the
+// honesty tier and is always shown: "measured" means the geometry follows from catalogued numbers,
+// "assumed" that the form is a standard assumption at a measured size, "modelled" that no
+// measurement of the third dimension exists at all. `note` says so in words, `cite` names the
+// published structure a curated shape follows.
+export interface Scene3DShape {
+  kind: "plane" | "disc" | "shell" | "volume";
+  source: "measured" | "assumed" | "modelled";
+  note: string;
+  cite?: string;
+  inclination_deg?: number;
+  position_angle_deg?: number;
+  // True whenever the near and far edges cannot be told apart — which, from an ellipse alone, always.
+  flip_ambiguous?: boolean;
+  radius_pc?: number;
+  thickness_pc?: number;
+  profile?: Scene3DVolumeProfile;
+}
+
+export interface Scene3DVolumeProfile {
+  depth_pc: number;
+  exponent: number;
+  bowl?: number;
+  hollow?: number;
+}
+
+export interface DetectedStar {
+  x: number;
+  y: number;
+  // Half-max radius in final-image px — markers scale to this so a bloated bright star reads big and
+  // a faint pinprick small, instead of every star wearing the same ring.
+  r_px?: number;
+  // The star's own colour, sampled from the linear master and lifted toward white so an outline in
+  // it stays legible ("#a8c8ff" hot, "#ffcc99" cool). Absent for mono masters.
+  hex?: string;
+  // Estimated apparent magnitude (99 = the frame could not be photometrically anchored). Derived
+  // from solve.mag_zero_point, itself fitted on the catalogue stars identified in this frame.
+  mag?: number;
+  // The catalogue entry this detection was identified as, when one projects onto it. Far more
+  // detections carry this than carry a text label: labels are capped and spaced so the image stays
+  // readable, but hovering any marker should still answer "what is this?".
+  star?: StarCatalogInfo;
 }
 
 // PlanetaryFrame is one lucky-imaging frame's quality record (kept/rejected + sharpness score).
@@ -1010,6 +1224,7 @@ export interface SkyEquipment {
   fov_h_deg: number;
   f_ratio: number;
   barlow_x: number; // Barlow/amplifier factor folded into scale, FOV, f-ratio & magnification (1 = none)
+  reducer_x: number; // focal reducer folded into the same values, independently of the Barlow (1 = none)
   mode?: "camera" | "visual"; // present only in eyepiece (visual) mode
   eyepieces?: SkyEyepiece[]; // the configured visual kit (visual mode)
 }
@@ -1096,6 +1311,7 @@ export interface EquipmentSetup {
   focal_mm?: number;
   aperture_mm?: number;
   barlow?: number;
+  reducer?: number;
   pixel_um?: number;
   sensor_w?: number;
   sensor_h?: number;
@@ -1114,6 +1330,7 @@ export interface EquipmentSetupRow {
   sensor_w_px: number;
   sensor_h_px: number;
   barlow_x: number;
+  reducer_x: number;
   camera_name: string;
   eyepieces: SkyEyepiece[];
   favorite: boolean;
@@ -1134,6 +1351,35 @@ export interface DarkSiteHorizon {
   canopy_m: number; // tree/forest canopy height at the site (0 = clearing / no data)
   octants: number[]; // max obstruction angle per 45° sector (N, NE, … NW)
 }
+// The selected night's forecast at one candidate. sample_hours 0 means "no forecast" — which must
+// never be read as "a bad night".
+export interface DarkSiteWeather {
+  start_ms: number;
+  end_ms: number;
+  sample_hours: number;
+  score: number; // 0..100, moonlight-weighted
+  cloud_pct: number;
+  cloud_low_pct: number;
+  cloud_high_pct: number;
+  clear_hours: number;
+  best?: { start_ms: number; end_ms: number; verdict: number };
+  seeing_arcsec: number; // 0 = unknown
+  seeing_source?: "derived" | "7timer";
+  transparency: number; // 0..1; 0 = unknown
+  dew_risk: "low" | "moderate" | "high" | "";
+  min_temp_c: number;
+  wind_kmh: number;
+  elevation_m: number;
+  deck_top_m?: number;
+  flags?: string[]; // fog_risk | frost | above_inversion | beyond_horizon
+}
+// The normalised terms behind score, so the UI can re-blend as the slider moves without re-searching.
+export interface DarkSiteSub {
+  darkness: number;
+  openness: number;
+  weather: number;
+  weather_known: boolean;
+}
 export interface DarkSite {
   lat: number;
   lon: number;
@@ -1143,14 +1389,56 @@ export interface DarkSite {
   drive_km?: number; // road distance from the observer (absent = not computed)
   drive_min?: number; // estimated driving time, minutes (absent = not computed)
   score: number;
+  sub: DarkSiteSub;
   elevation_m?: number;
   horizon?: DarkSiteHorizon;
+  weather?: DarkSiteWeather;
+}
+export interface DarkSkyConfidence {
+  model: string;
+  members: number;
+  clear_members: number;
+  agreement: number; // 0..1
+  mean_cloud_pct: number;
+  spread_pct: number;
+}
+export interface DarkSkyNight {
+  index: number; // 0 = tonight
+  start_ms: number;
+  end_ms: number;
+  kind: string; // astronomical | nautical | civil | best_effort
+  dark_hours: number;
+  moon_illum: number;
+  moon_up_hours: number;
+  confidence?: DarkSkyConfidence;
 }
 export interface DarkSitesResult {
   count: number;
   cells_scanned: number;
+  night?: DarkSkyNight;
+  weather_weight: number;
   candidates: DarkSite[];
   warnings: string[];
+}
+
+// Upcoming observing nights (GET /api/sky/nights) — the night picker's data.
+export interface SkyNight {
+  index: number;
+  start_ms: number;
+  end_ms: number;
+  start_local: string;
+  end_local: string;
+  date_local: string;
+  kind: string;
+  dark_hours: number;
+  moon_illum: number;
+  moon_up_hours: number;
+  moon_phase: string; // i18n key under tonight.moonPhase.*
+  low_confidence: boolean;
+}
+export interface SkyNightsResult {
+  nights: SkyNight[];
+  timezone: string;
 }
 
 // --- Offline light-pollution atlas (GET/POST /api/sky/lightpollution/atlas) ---
@@ -1550,6 +1838,7 @@ export interface MosaicRequestBody {
     sensor_w_px?: number;
     sensor_h_px?: number;
     barlow_x?: number;
+    reducer_x?: number;
   };
   overlap_frac?: number;
   margin_arcmin?: number;
@@ -1579,6 +1868,7 @@ export interface MosaicPlanRequest {
     sensor_w_px: number;
     sensor_h_px: number;
     barlow_x: number;
+    reducer_x: number;
   };
   overlap_frac: number;
   margin_arcmin: number;
@@ -1642,6 +1932,16 @@ export interface StarfieldStar {
 }
 
 // --- Capture subsystem (camera / filter wheel / mount + the auto-run sequencer) --------------------
+
+// DeviceInfo is one entry of GET /api/device/devices: a device a driver can actually see. The
+// simulator contributes one of each unconditionally; a real device appears only once its driver
+// found it, which is what makes "is anything actually plugged in?" answerable from the UI.
+export interface DeviceInfo {
+  id: string;
+  name: string;
+  driver: string;
+  kind: string;
+}
 
 // DeviceStatus is GET /api/device/status: whether the separate device-server process is up.
 export interface DeviceStatus {
@@ -1769,6 +2069,9 @@ export interface DeviceMountState {
   mount?: {
     id: string;
     name: string;
+    // Which driver is answering — "sim" or "nexstar". The panels branch on it: the simulator has no
+    // site or clock to set, so being connected is not the same as being connected to a telescope.
+    driver?: string;
     ra_deg: number;
     dec_deg: number;
     alt_deg: number;
@@ -1858,6 +2161,144 @@ export interface CaptureProgress {
   captured?: Record<string, number>;
 }
 
+// ConditionStat is the spread of one weather metric over a session. n is how many samples actually
+// carried a value, so a median drawn from two readings out of twelve is not shown as a solid one.
+export interface ConditionStat {
+  min: number;
+  median: number;
+  max: number;
+  n: number;
+}
+
+// ConditionsSummary is the rolled-up sky record stored on the session (Go: skylog.Summary).
+export interface ConditionsSummary {
+  samples: number;
+  first_ms: number;
+  last_ms: number;
+  cloud_pct: ConditionStat;
+  cloud_low: ConditionStat;
+  cloud_mid: ConditionStat;
+  cloud_high: ConditionStat;
+  seeing_arcsec: ConditionStat;
+  transparency: ConditionStat;
+  humidity_pct: ConditionStat;
+  dew_spread_c: ConditionStat;
+  temp_c: ConditionStat;
+  wind_kmh: ConditionStat;
+  gust_kmh: ConditionStat;
+  precip_pct: ConditionStat;
+  aod: ConditionStat;
+  verdict: ConditionStat;
+  moon_illum_max: number;
+  moon_alt_max_deg: number;
+  moon_up: boolean;
+  moon_sep_min_deg: number;
+  moon_phase_angle_deg: number;
+  target_valid: boolean;
+  target_alt_min_deg: number;
+  target_alt_max_deg: number;
+  target_airmass_min: number;
+  sqm: number;
+  bortle: number;
+  dew_risk_worst: string;
+  kp_max: number;
+  aurora_max: string;
+  source_counts: Record<string, number>;
+}
+
+// CaptureConditionRow is one hourly observation of the sky over a running session. Zero means "the
+// feed did not supply it" — the same contract the weather API uses — except for `source`, which says
+// whether there was any weather at all.
+export interface CaptureConditionRow {
+  id: number;
+  session_id: number;
+  at_ms: number;
+  session_status: string;
+  cloud_pct: number;
+  cloud_low: number;
+  cloud_mid: number;
+  cloud_high: number;
+  seeing_arcsec: number;
+  transparency: number;
+  humidity_pct: number;
+  dew_point_c: number;
+  temp_c: number;
+  dew_spread_c: number;
+  dew_risk: string;
+  wind_kmh: number;
+  gust_kmh: number;
+  jet300_kmh: number;
+  cape: number;
+  lifted_index: number;
+  visibility_m: number;
+  precip_pct: number;
+  aod: number;
+  verdict: number;
+  kp_now: number;
+  kp_max: number;
+  aurora: string;
+  moon_illum: number;
+  moon_alt_deg: number;
+  moon_az_deg: number;
+  moon_phase_angle_deg: number;
+  moon_sep_deg: number;
+  target_alt_deg: number;
+  target_az_deg: number;
+  target_airmass: number;
+  target_valid: boolean;
+  sqm: number;
+  bortle: number;
+  forecast_age_ms: number;
+  source: "live" | "cached" | "unavailable" | string;
+  created_at: number;
+}
+
+// CaptureForecastRow is the whole hourly forecast as it stood at one end of the session, kept so
+// "what was forecast vs what actually happened" stays answerable.
+export interface CaptureForecastRow {
+  kind: "start" | "end" | string;
+  at_ms: number;
+  payload: SiteForecast;
+}
+
+// CaptureFrame is one written exposure, as recorded by the sequencer. sequence_no is the order it
+// was taken in — which is what makes "did the L set finish before the cloud came in?" answerable.
+export interface CaptureFrame {
+  id: number;
+  session_id: number;
+  path: string;
+  filter: string;
+  frame_type: string;
+  exposure_us: number;
+  gain: number;
+  frame_offset: number;
+  bin: number;
+  temp_milli_c: number;
+  panel: string;
+  sequence_no: number;
+  started_at: number;
+  created_at: number;
+}
+
+// CaptureFrameStat is one filter/type bucket of a session's frames, aggregated by the engine.
+export interface CaptureFrameStat {
+  filter: string;
+  frame_type: string;
+  frames: number;
+  total_exposure_us: number;
+  min_exposure_us: number;
+  max_exposure_us: number;
+  min_gain: number;
+  max_gain: number;
+  min_bin: number;
+  max_bin: number;
+  min_temp_milli_c: number;
+  max_temp_milli_c: number;
+  avg_temp_milli_c: number;
+  first_ms: number;
+  last_ms: number;
+}
+
 export interface CaptureSessionRow {
   id: number;
   object: string;
@@ -1872,4 +2313,109 @@ export interface CaptureSessionRow {
   frames_done: number;
   started_at: number;
   ended_at: number;
+  // Where the telescope stood, and the sky it stood under. Both are 0 / empty for sessions captured
+  // before the logbook shipped — they cannot be backfilled, because the weather feeds have no archive.
+  site_lat: number;
+  site_lon: number;
+  site_elevation_m: number;
+  conditions_summary: ConditionsSummary | Record<string, never>;
+}
+
+// --- Polar alignment from the live camera (/api/capture/polar) ---------------------------------
+//
+// Mirrors internal/capture.PolarState. The reticle types above (PolarResult) are the OPEN-LOOP
+// calculation for a polar scope; these are the measured ones, from frames the telescope actually took.
+
+export type PolarCamPhase =
+  | "idle"
+  | "measuring"
+  | "solved"
+  | "adjusting"
+  | "failed";
+
+export interface PolarCamSample {
+  index: number;
+  ra_deg: number;
+  dec_deg: number;
+  at: string;
+  scale_arcsec_px: number;
+}
+
+export interface PolarCamAxis {
+  alt_deg: number;
+  az_deg: number;
+  radius_deg: number;
+  arc_deg: number;
+  residual_arcsec: number;
+  /** One-sigma uncertainty in the axis's worst-constrained direction. */
+  sigma_arcsec: number;
+  samples: number;
+  warnings?: string[];
+}
+
+export interface PolarCamCorrection {
+  /** Positive means the polar axis points too HIGH. */
+  alt_error_deg: number;
+  /** Positive means it lies EAST of the pole's meridian, as a true angle on the sky. */
+  az_error_deg: number;
+  /** The same error as the AZIMUTH the adjuster turns through — bigger by 1/cos(altitude). */
+  az_knob_deg: number;
+  total_arcmin: number;
+  /** "raise" | "lower" | "ok" — which way to turn the altitude adjuster. */
+  alt_move: string;
+  /** "east" | "west" | "ok" — which way to move the axis. */
+  az_move: string;
+  /** "excellent" | "good" | "fair" | "poor" */
+  quality: string;
+}
+
+export interface PolarCamTarget {
+  ra_deg: number;
+  dec_deg: number;
+  /** Sensor pixels, in the FITS axis frame. */
+  x: number;
+  y: number;
+  /** The same point as a fraction of the frame, which is what an overlay needs. */
+  nx: number;
+  ny: number;
+  offset_px: number;
+  /** True when the marker falls outside the image — normal on a first measurement. */
+  off_frame: boolean;
+  offset_arcmin: number;
+}
+
+export interface PolarCamLive {
+  target: PolarCamTarget;
+  remaining_arcmin: number;
+  quality: string;
+  /** The mount appears to have been moved, so the measurement behind the marker is stale. */
+  suspect?: boolean;
+}
+
+export interface PolarCamPoleView {
+  /** Where the celestial pole falls on the frame — where the telescope has to be aimed. */
+  pole: PolarCamTarget;
+  /** Polaris, or σ Octantis below the equator: what the eye is looking for. */
+  star: PolarCamTarget;
+  star_name: string;
+  star_visible: boolean;
+}
+
+export interface PolarCamState {
+  phase: PolarCamPhase;
+  step: number;
+  points: number;
+  step_arc_deg: number;
+  samples: PolarCamSample[];
+  axis?: PolarCamAxis;
+  correction?: PolarCamCorrection;
+  live?: PolarCamLive;
+  pole?: PolarCamPoleView;
+  /** "measured" from a rotation (arcminute class) or "rough" from one frame (polar-scope class). */
+  mode?: "measured" | "rough";
+  /** Codes the UI translates, never English. */
+  warnings?: string[];
+  error?: string;
+  busy: boolean;
+  tracking: boolean;
 }

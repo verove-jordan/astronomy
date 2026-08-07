@@ -21,7 +21,10 @@ describe("canonical mode set", () => {
 
   it("every mode has a display name in en.json", () => {
     for (const m of MODES) {
-      expect((en as Record<string, any>).run.modes[m], `run.modes.${m}`).toBeTruthy();
+      expect(
+        (en as Record<string, any>).run.modes[m],
+        `run.modes.${m}`,
+      ).toBeTruthy();
     }
   });
 

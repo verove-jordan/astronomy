@@ -10,6 +10,7 @@ import GenericTable, {
 import MetricsChart from "@/components/Dataviz/MetricsChart.vue";
 import ImageViewer from "@/components/Common/ImageViewer.vue";
 import StarLabelOverlay from "@/components/Common/StarLabelOverlay.vue";
+import StarField3D from "@/components/Common/StarField3D.vue";
 import FilePreviewButton from "@/components/Common/FilePreviewButton.vue";
 import FilterChip from "@/components/Common/FilterChip.vue";
 import EngineChip from "@/components/Common/EngineChip.vue";
@@ -156,18 +157,25 @@ const views = computed(() => [
 function step(dir: number) {
   const list = views.value;
   if (list.length < 2) return;
+  // "3d" is deliberately not in `views`: the arrows step through IMAGES, and indexOf returning -1
+  // lands the next press on "final", which is the sensible way back out of the 3D view.
   const i = list.indexOf(activeView.value);
   activeView.value = list[(i + dir + list.length) % list.length];
 }
 
 // --- Star count + name overlay (jobId-gated; see the prop comment) --------------------------------
 const jobsStore = useJobsStore();
+// The PROCESSING mode comes from run.json's options block. It is emphatically NOT `final.mode`,
+// which is the channel COMPOSITION ("LRGB" / "HaLRGB" / "SHO" / "mono") — gating on that compared a
+// composition against processing-mode names, never matched, and silently hid the whole star feature
+// on every run. The backend has always read the mode from the job params (internal/api/stars.go).
+const runMode = computed(() => props.result.options?.mode ?? "");
 const starsEnabled = computed(
   () =>
     !!props.jobId &&
     !!finalImage.value &&
     !!props.result.final &&
-    STAR_MODES.includes(props.result.final.mode ?? ""),
+    STAR_MODES.includes(runMode.value),
 );
 const stars = computed(() =>
   props.jobId ? jobsStore.starsFor(props.jobId) : null,
@@ -177,9 +185,27 @@ const counting = computed(
 );
 const starsError = ref("");
 const overlayOn = ref(false);
+// The overlay is worth showing as soon as there is ANYTHING to draw. Detected-star markers need no
+// astrometric solution, so a run whose plate-solve failed still gets its stars plotted even though
+// it can never have name labels.
 const overlayAvailable = computed(
-  () => !!stars.value?.solved && (stars.value?.labels.length ?? 0) > 0,
+  () =>
+    (!!stars.value?.solved && (stars.value?.labels.length ?? 0) > 0) ||
+    (stars.value?.stars?.length ?? 0) > 0,
 );
+
+// How many detected stars to plot. Starts at a readable density rather than 0 (an overlay that
+// draws nothing reads as broken) or everything (a grey wash over the image).
+const plottedStars = computed(() => stars.value?.stars?.length ?? 0);
+// Count the identifications on the plotted list rather than trusting solve.identified: an older
+// stars.json predates that field, and the markers are what the user can actually hover.
+const identifiedStars = computed(
+  () => stars.value?.stars?.filter((s) => s.star?.name).length ?? 0,
+);
+const starLimit = ref(250);
+watch(plottedStars, (n) => {
+  if (n && starLimit.value > n) starLimit.value = n;
+});
 const overlayVisible = computed(
   () =>
     overlayOn.value && overlayAvailable.value && activeView.value === "final",
@@ -188,15 +214,29 @@ const formattedCount = computed(() =>
   (stars.value?.count ?? 0).toLocaleString(locale.value),
 );
 
-// Load the cached annotation as soon as the feature applies (silent when never computed).
+// Load the cached annotation as soon as the feature applies (silent when never computed). The 3D
+// scene rides along: it is built by the same annotation pass, so if there is one there is the other.
 watch(
   () => [props.jobId, starsEnabled.value] as const,
   ([id, enabled]) => {
     starsError.value = "";
-    if (id && enabled) void jobsStore.fetchStars(id);
+    if (id && enabled) {
+      void jobsStore.fetchStars(id);
+      void jobsStore.fetchScene3D(id);
+    }
   },
   { immediate: true },
 );
+
+// --- 3D field map --------------------------------------------------------------------------------
+const scene = computed(() =>
+  props.jobId ? jobsStore.sceneFor(props.jobId) : null,
+);
+// The chip appears whenever the engine answered at all — including with available:false. Hiding it
+// then is what made a run with 957 detected stars look as though the 3D view simply did not exist;
+// opening it and being told why (and offered the fix) is the honest version.
+const scene3dAvailable = computed(() => !!scene.value);
+const is3D = computed(() => activeView.value === "3d");
 
 async function countStarsAction() {
   if (!props.jobId || counting.value) return;
@@ -473,9 +513,10 @@ const rejectedClass = (r: Row) =>
           }}</span>
         </span>
       </div>
-      <!-- Channel switcher: flip the preview between the final composite, each channel, and any mono output -->
+      <!-- Channel switcher: flip the preview between the final composite, each channel, any mono
+           output, and the 3D field map -->
       <div
-        v-if="channelViews.length || monoViews.length"
+        v-if="channelViews.length || monoViews.length || scene3dAvailable"
         class="mb-2 flex flex-wrap items-center gap-1.5"
       >
         <button
@@ -519,8 +560,30 @@ const rejectedClass = (r: Row) =>
         >
           {{ v.label }}
         </button>
+        <button
+          v-if="scene3dAvailable"
+          type="button"
+          class="rounded-md border px-2.5 py-1 text-xs font-medium transition-colors"
+          :class="
+            is3D
+              ? 'border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-900/30 dark:text-brand-200'
+              : 'border-slate-200 text-slate-600 hover:border-brand-400 dark:border-slate-700 dark:text-slate-300'
+          "
+          :title="t('scene3d.chipHint')"
+          data-demo="scene3d-chip"
+          @click="activeView = '3d'"
+        >
+          {{ t("scene3d.chip") }}
+        </button>
       </div>
-      <div class="relative">
+      <StarField3D
+        v-if="is3D && scene"
+        :manifest="scene"
+        :stars="stars"
+        :rebuilding="counting"
+        @recompute="countStarsAction"
+      />
+      <div v-else class="relative">
         <ImageViewer
           :src="activeSrc"
           :alt="activeView"
@@ -529,6 +592,9 @@ const rejectedClass = (r: Row) =>
           <template v-if="overlayVisible && stars" #overlay="frame">
             <StarLabelOverlay
               :labels="stars.labels"
+              :stars="stars.stars"
+              :starLimit="starLimit"
+              :scaleArcsecPx="stars.solve?.scale_arcsec_px"
               :image-w="stars.image?.width || frame.natW"
               :image-h="stars.image?.height || frame.natH"
               :nat-w="frame.natW"
@@ -605,6 +671,21 @@ const rejectedClass = (r: Row) =>
         >
           ★ {{ t("stars.detected", { n: formattedCount }) }}
         </Pill>
+        <!-- How many of those the catalogue could actually name. Worth stating plainly: it is the
+             difference between a field of anonymous dots and one you can read, and when it is low
+             because the deep catalogue was never downloaded, the hint says so. -->
+        <span
+          v-if="identifiedStars"
+          class="text-xs text-slate-500 dark:text-slate-400"
+          :title="
+            stars?.solve?.star_catalog === 'embedded'
+              ? t('stars.shallowCatalogue')
+              : undefined
+          "
+        >
+          {{ t("stars.identified", { n: identifiedStars }) }}
+          <template v-if="stars?.solve?.star_catalog === 'embedded'"> ⚠</template>
+        </span>
         <span
           v-if="stars && !stars.solved"
           class="text-xs text-slate-500 dark:text-slate-400"
@@ -614,6 +695,30 @@ const rejectedClass = (r: Row) =>
             ({{ stars.solve.reason }})</template
           >
         </span>
+        <!-- How many detected stars to plot. Zooming in reveals fainter ones for free: the same
+             budget covers a smaller patch of sky, so it reaches deeper into the brightest-first list. -->
+        <label
+          v-if="plottedStars"
+          class="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400"
+        >
+          {{ t("stars.shown") }}
+          <input
+            v-model.number="starLimit"
+            type="range"
+            min="0"
+            :max="plottedStars"
+            step="10"
+            class="w-32 accent-brand-600"
+            :aria-label="t('stars.shown')"
+          />
+          <span class="w-10 tabular-nums">{{ starLimit }}</span>
+          <span
+            v-if="stars && stars.count > plottedStars"
+            :title="t('stars.plottedCapHint', { n: plottedStars })"
+            class="text-slate-400"
+            >⚠</span
+          >
+        </label>
       </div>
       <p
         v-if="starsError"
