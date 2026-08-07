@@ -17,6 +17,7 @@ import (
 
 	"github.com/verove-jordan/astronomy/internal/deepstars"
 	"github.com/verove-jordan/astronomy/internal/fits"
+	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/skycat"
 )
 
@@ -207,6 +208,40 @@ func TestMapping_ToFinalAndWindow(t *testing.T) {
 	assert.True(t, m.inWindow(50, 50), "the centered window is flip-invariant")
 }
 
+// TestMapping_RoundTrip pins the inverses the 3D field map runs the projection chain backwards
+// through to give an ANONYMOUS detection a line of sight. A sign slipped here would not fail
+// loudly — it would quietly mirror the star cloud, exactly the class of bug that made the label
+// overlay ship upside down for its whole life (see chooseRowFlip).
+func TestMapping_RoundTrip(t *testing.T) {
+	for _, tt := range []struct {
+		name              string
+		fileFlip, wcsFlip bool
+	}{
+		{"no flips", false, false},
+		{"file flip", true, false},
+		{"wcs flip", false, true},
+		{"both flips", true, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m, err := newMapping(1000, 800, 900, 700, tt.fileFlip)
+			require.NoError(t, err)
+			m.wcsFlip = tt.wcsFlip
+
+			for _, p := range [][2]float64{{0, 0}, {123.5, 456.25}, {899, 699}} {
+				fx, fy := m.fromFinal(p[0], p[1])
+				x, y, in := m.toFinal(fx, fy)
+				assert.True(t, in, "a point inside the final image must map back inside the crop")
+				assert.InDelta(t, p[0], x, 1e-9)
+				assert.InDelta(t, p[1], y, 1e-9)
+
+				wx, wy := m.fileToWcs(m.wcsToFile(fx, fy))
+				assert.InDelta(t, fx, wx, 1e-9)
+				assert.InDelta(t, fy, wy, 1e-9)
+			}
+		})
+	}
+}
+
 // --- end-to-end ------------------------------------------------------------------------------------
 
 // setupRun builds a run dir with a painted master (M42 field) + final PNG. Returns the dir, the
@@ -385,4 +420,209 @@ func TestFlipProbeThreshold(t *testing.T) {
 			t.Fatalf("flipProbeThreshold(%d) = %d, want %d", tt.n, got, tt.want)
 		}
 	}
+}
+
+// --- DSO extent ------------------------------------------------------------------------------------
+
+// extentWCS builds a north-up/east-left TAN solution (the usual astronomical convention: CD1_1
+// negative so RA increases leftwards) at the given plate scale, on a w×h master.
+func extentWCS(t *testing.T, ra, dec, degPerPx float64, w, h int) fits.WCS {
+	t.Helper()
+	wcs, ok := fits.ParseWCS(hdrFromCards(t, wcsCards(ra, dec, degPerPx, w, h)))
+	require.True(t, ok)
+	return wcs
+}
+
+func TestExtentOf(t *testing.T) {
+	const degPerPx = 1.0 / 3600 // 1″/px — 1 arcmin is exactly 60 px
+	const ra, dec = 83.8, -5.4
+	wcs := extentWCS(t, ra, dec, degPerPx, 2000, 2000)
+	m, err := newMapping(2000, 2000, 2000, 2000, false)
+	require.NoError(t, err)
+
+	base := skycat.Record{Name: "X", RADeg: ra, DecDeg: dec}
+
+	t.Run("no catalogued size means no outline", func(t *testing.T) {
+		_, ok := extentOf(wcs, m, base)
+		assert.False(t, ok)
+	})
+
+	t.Run("diameter alone yields a circle in pixels", func(t *testing.T) {
+		rec := base
+		rec.DiameterArcmin, rec.HasDiameter = 10, true // 10′ across → semi-axis 5′ → 300 px
+		e, ok := extentOf(wcs, m, rec)
+		require.True(t, ok)
+		assert.InDelta(t, 300, e.RXpx, 1)
+		assert.InDelta(t, 300, e.RYpx, 1, "no minor axis → circular")
+	})
+
+	t.Run("minor axis and position angle yield an oriented ellipse", func(t *testing.T) {
+		rec := base
+		rec.DiameterArcmin, rec.HasDiameter = 10, true
+		rec.MinorAxisArcmin, rec.HasMinorAxis = 4, true // semi-minor 2′ → 120 px
+		rec.PositionAngleDeg, rec.HasPositionAngle = 0, true
+		e, ok := extentOf(wcs, m, rec)
+		require.True(t, ok)
+		assert.InDelta(t, 300, e.RXpx, 1)
+		assert.InDelta(t, 120, e.RYpx, 1)
+		// PA 0 is due North, which is the y axis in this north-up grid. An ellipse axis is a
+		// direction without a sign, so assert the axis itself: no x component.
+		assert.InDelta(t, 0, math.Cos(e.AngleRad), 1e-3, "major axis lies along y")
+	})
+
+	t.Run("a missing position angle falls back to a circle, never a guessed orientation", func(t *testing.T) {
+		rec := base
+		rec.DiameterArcmin, rec.HasDiameter = 10, true
+		rec.MinorAxisArcmin, rec.HasMinorAxis = 4, true // known, but unusable without a PA
+		e, ok := extentOf(wcs, m, rec)
+		require.True(t, ok)
+		assert.InDelta(t, e.RXpx, e.RYpx, 1e-9)
+	})
+
+	t.Run("position angle rotates the ellipse with the sky", func(t *testing.T) {
+		rec := base
+		rec.DiameterArcmin, rec.HasDiameter = 10, true
+		rec.MinorAxisArcmin, rec.HasMinorAxis = 4, true
+		rec.PositionAngleDeg, rec.HasPositionAngle = 90, true // major axis now East-West
+		e, ok := extentOf(wcs, m, rec)
+		require.True(t, ok)
+		assert.InDelta(t, 300, e.RXpx, 1)
+		assert.InDelta(t, 120, e.RYpx, 1)
+		// A quarter turn on the sky is a quarter turn in the image: the axis now lies along x.
+		assert.InDelta(t, 0, math.Sin(e.AngleRad), 1e-3, "major axis lies along x")
+	})
+
+	t.Run("the crop offset does not change the size", func(t *testing.T) {
+		cropped, err := newMapping(2000, 2000, 1600, 1600, false)
+		require.NoError(t, err)
+		rec := base
+		rec.DiameterArcmin, rec.HasDiameter = 10, true
+		full, _ := extentOf(wcs, m, rec)
+		crop, ok := extentOf(wcs, cropped, rec)
+		require.True(t, ok)
+		assert.InDelta(t, full.RXpx, crop.RXpx, 1e-9, "a center crop translates, it does not rescale")
+	})
+
+	t.Run("a row-order flip mirrors the angle but keeps the axes", func(t *testing.T) {
+		flipped := m
+		flipped.fileFlip = true
+		rec := base
+		rec.DiameterArcmin, rec.HasDiameter = 10, true
+		rec.MinorAxisArcmin, rec.HasMinorAxis = 4, true
+		rec.PositionAngleDeg, rec.HasPositionAngle = 30, true
+		up, _ := extentOf(wcs, m, rec)
+		down, ok := extentOf(wcs, flipped, rec)
+		require.True(t, ok)
+		assert.InDelta(t, up.RXpx, down.RXpx, 1e-6)
+		assert.InDelta(t, up.RYpx, down.RYpx, 1e-6)
+		assert.InDelta(t, -up.AngleRad, down.AngleRad, 1e-6, "flipping rows mirrors the orientation")
+	})
+}
+
+// --- master → PNG row order --------------------------------------------------------------------
+
+// starPNG renders a star field into a PNG the way a finish would deliver it: the master's peaks,
+// centre-cropped, optionally mirrored top-to-bottom.
+func starPNG(t *testing.T, path string, w, h int, pts [][2]int, mirror bool) {
+	t.Helper()
+	img := image.NewGray(image.Rect(0, 0, w, h))
+	for i := range img.Pix {
+		img.Pix[i] = 8 // faint background so the detector has a noise floor to beat
+	}
+	for _, p := range pts {
+		x, y := p[0], p[1]
+		if mirror {
+			y = h - 1 - y
+		}
+		for dy := -2; dy <= 2; dy++ {
+			for dx := -2; dx <= 2; dx++ {
+				px, py := x+dx, y+dy
+				if px < 0 || py < 0 || px >= w || py >= h {
+					continue
+				}
+				v := 255 - 40*(abs(dx)+abs(dy))
+				if v > int(img.Pix[py*w+px]) {
+					img.Pix[py*w+px] = uint8(v)
+				}
+			}
+		}
+	}
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	defer f.Close()
+	require.NoError(t, png.Encode(f, img))
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+func TestChooseRowFlip(t *testing.T) {
+	// A master whose peaks sit at known places, and a final PNG of the same size (no crop) rendered
+	// either the same way up or mirrored.
+	const w, h = 300, 240
+	im := fits.NewImage(w, h, 1)
+	for i := range im.Pix[0] {
+		im.Pix[0][i] = 0.02
+	}
+	var pts [][2]int
+	for _, p := range [][2]int{{40, 30}, {120, 60}, {200, 45}, {80, 150}, {250, 190}, {160, 200},
+		{60, 90}, {230, 110}, {100, 20}, {270, 70}, {30, 200}, {190, 130}, {140, 95}, {210, 165}} {
+		paintStar(im, p[0], p[1], 0.9)
+		pts = append(pts, p)
+	}
+	peaks := postprocess.DetectStarPeaks(im, countDetect)
+	require.GreaterOrEqual(t, len(peaks), 12, "fixture must give the probe enough stars")
+
+	run := func(mirror bool, cardSaysFlip bool) (bool, int, int, bool) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "final.png")
+		starPNG(t, p, w, h, pts, mirror)
+		m, err := newMapping(w, h, w, h, cardSaysFlip)
+		require.NoError(t, err)
+		return chooseRowFlip(m, peaks, p)
+	}
+
+	t.Run("agrees with a correct ROWORDER card", func(t *testing.T) {
+		flip, matched, _, ok := run(false, false)
+		require.True(t, ok, "an unambiguous field must be decidable")
+		assert.False(t, flip)
+		assert.Greater(t, matched, 10)
+	})
+
+	t.Run("OVERRIDES a card that disagrees with the delivered pixels", func(t *testing.T) {
+		// The regression this exists for: the master claimed TOP-DOWN, the PNG was mirrored, and
+		// every label landed reflected because the card was trusted blindly.
+		flip, matched, _, ok := run(true, false)
+		require.True(t, ok)
+		assert.True(t, flip, "the pixels say mirrored, so the card must lose")
+		assert.Greater(t, matched, 10)
+	})
+
+	t.Run("also corrects the card in the other direction", func(t *testing.T) {
+		flip, _, _, ok := run(false, true)
+		require.True(t, ok)
+		assert.False(t, flip)
+	})
+
+	t.Run("falls back to the card when the final image cannot decide", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "final.png")
+		starPNG(t, p, w, h, nil, false) // featureless: no evidence either way
+		m, err := newMapping(w, h, w, h, true)
+		require.NoError(t, err)
+		flip, _, _, ok := chooseRowFlip(m, peaks, p)
+		assert.False(t, ok, "no stars in the final image is not a verdict")
+		assert.True(t, flip, "and the card's answer is kept")
+	})
+
+	t.Run("a missing final image is not fatal", func(t *testing.T) {
+		m, err := newMapping(w, h, w, h, false)
+		require.NoError(t, err)
+		_, _, _, ok := chooseRowFlip(m, peaks, filepath.Join(t.TempDir(), "nope.png"))
+		assert.False(t, ok)
+	})
 }

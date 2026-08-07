@@ -37,7 +37,11 @@ type Options struct {
 	Runner     *siril.Runner      // nil → no re-solve (count-only when no stored WCS)
 	Solve      siril.SolveOptions // focal/pixel/local-Gaia hints (Coords is filled per run)
 	CatalogDir string             // Siril DSO catalogue dir (skycat name→coords + DSO labels)
-	Now        func() time.Time   // test seam; nil → time.Now
+	// StarCatalog is the DEEP star catalogue file (ATHYG, `just download-deepstars`). Optional:
+	// empty or missing falls back to the embedded magnitude-9 extract, which names the bright stars
+	// and leaves the field stars anonymous.
+	StarCatalog string
+	Now         func() time.Time // test seam; nil → time.Now
 }
 
 // Run counts stars on the run's persisted linear master, projects catalogue names into
@@ -78,16 +82,45 @@ func Run(ctx context.Context, o Options) (*Result, error) {
 		return nil, err
 	}
 
-	peaks, count := detectAndCount(im, m)
+	peaks, visible := detectAndCount(im, m)
+
+	// Settle the master→PNG row order against the delivered pixels before ANY position is derived
+	// from the mapping. The count is orientation-independent (the crop window is centred, so
+	// inWindow is flip-invariant), but every label, footprint and plotted star is not.
+	rowOrder := "roworder_card"
+	flip, rowMatched, rowTried, ok := chooseRowFlip(m, peaks, in.finalAbs)
+	if ok {
+		rowOrder = "measured"
+		if flip != m.fileFlip {
+			rowOrder = "measured_overrode_card"
+		}
+		m.fileFlip = flip
+	}
+
+	cat, deep := deepstars.Load(o.StarCatalog)
+	defer cat.Close()
+	catName := "embedded"
+	if deep {
+		catName = "athyg"
+	}
+
 	res := &Result{
 		Version:    1,
 		Engine:     buildinfo.String(),
 		ComputedAt: o.Now().UTC().Format(time.RFC3339),
 		SourceFits: filepath.ToSlash(in.masterRel),
-		Count:      count,
+		Count:      len(visible),
 		Image:      Dims{Width: wf, Height: hf},
-		Solve:      Solve{Method: "none"},
-		Labels:     []Label{},
+		Solve: Solve{
+			Method:      "none",
+			RowOrder:    rowOrder,
+			RowFlip:     m.fileFlip,
+			RowMatched:  rowMatched,
+			RowTried:    rowTried,
+			StarCatalog: catName,
+		},
+		Labels: []Label{},
+		Stars:  plotPoints(im, m, visible, nil),
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -104,9 +137,16 @@ func Run(ctx context.Context, o Options) (*Result, error) {
 	res.Solve.RadiusDeg = radius
 	res.Solve.ScaleArcsec = wcs.ScaleArcsecPerPix()
 
+	// One cone query serves all three consumers below — the flip probe, the text labels and the
+	// per-star identification — so they can never disagree about what is in this field.
+	field := cat.InField(ra, dec, radius, maxFieldStars, o.Now()) // magnitude-ascending
+
 	grid := newPeakGrid(peaks)
 	var probes []probeStar
-	for _, s := range deepstars.InField(ra, dec, radius, flipProbeStars, o.Now()) {
+	for _, s := range field {
+		if len(probes) >= flipProbeStars {
+			break
+		}
 		if x, y, ok := wcs.SkyToPix(s.RADeg, s.DecDeg); ok {
 			probes = append(probes, probeStar{x, y})
 		}
@@ -120,7 +160,17 @@ func Run(ctx context.Context, o Options) (*Result, error) {
 
 	res.Solved = true
 	res.Solve.Flip = m.wcsFlip
-	labels := append(starLabels(wcs, m, grid, o.Now()), dsoLabels(wcs, m, o.CatalogDir)...)
+	res.Solve.Frame = frameOf(wcs, m)
+	stars, zpSamples := starLabels(field, wcs, m, grid)
+	// Now that the field is solved the plotted list is rebuilt: catalogue stars pair a known V
+	// magnitude with this frame's instrumental brightness (which anchors an estimated magnitude for
+	// every OTHER detection), and each identified star is attached to the marker it landed on so
+	// hovering it says what it is. Unsolved runs keep the anonymous list built above.
+	ident := identifyPeaks(field, wcs, m, visible)
+	res.Solve.Identified = len(ident)
+	res.Solve.MagZeroPoint = magnitudeZeroPoint(zpSamples)
+	res.Stars = plotPoints(im, m, visible, &solved{wcs: wcs, zp: res.Solve.MagZeroPoint, ident: ident})
+	labels := append(stars, dsoLabels(wcs, m, o.CatalogDir)...)
 	sort.SliceStable(labels, func(i, j int) bool { return labels[i].Mag < labels[j].Mag })
 	res.Labels = labels
 	return res, res.write(o.RunDir)
