@@ -34,6 +34,7 @@ const effective = computed(() => {
       sensor_w_px: setup.sensor_w,
       sensor_h_px: setup.sensor_h,
       barlow_x: setup.barlow,
+      reducer_x: setup.reducer,
     };
   const eq = sky.query?.equipment;
   return {
@@ -43,6 +44,7 @@ const effective = computed(() => {
     sensor_w_px: eq?.sensor_w_px,
     sensor_h_px: eq?.sensor_h_px,
     barlow_x: eq?.barlow_x,
+    reducer_x: eq?.reducer_x,
   };
 });
 
@@ -51,6 +53,7 @@ const summary = computed(() => {
   const parts: string[] = [];
   if (o.focal_mm) parts.push(`${o.focal_mm} mm`);
   if (o.barlow_x && o.barlow_x !== 1) parts.push(`×${o.barlow_x}`);
+  if (o.reducer_x && o.reducer_x !== 1) parts.push(`×${o.reducer_x}`);
   if (o.sensor_w_px && o.sensor_h_px)
     parts.push(`${o.sensor_w_px}×${o.sensor_h_px}`);
   if (o.pixel_um) parts.push(`${o.pixel_um} µm`);
@@ -86,6 +89,7 @@ async function saveAsSetup() {
       sensor_w: o.sensor_w_px,
       sensor_h: o.sensor_h_px,
       barlow: o.barlow_x,
+      reducer: o.reducer_x,
       eyepieces: [],
     });
     store.draft.setupId = id;
@@ -152,9 +156,18 @@ async function saveAsSetup() {
             :class="input"
         /></label>
         <label class="text-xs text-slate-500 dark:text-slate-400"
-          >{{ t("mosaic.setup.reducer") }}
+          >{{ t("mosaic.setup.barlow") }}
           <input
             v-model.number="store.draft.optics!.barlow_x"
+            type="number"
+            min="0"
+            step="0.01"
+            :class="input"
+        /></label>
+        <label class="text-xs text-slate-500 dark:text-slate-400"
+          >{{ t("mosaic.setup.reducer") }}
+          <input
+            v-model.number="store.draft.optics!.reducer_x"
             type="number"
             min="0"
             step="0.01"

@@ -83,6 +83,7 @@ See [agent.md](agent.md). The model server is never started implicitly.
 | `ASTRO_GAIA_XPSAMP_DIR` | `<library>/catalogues` | Offline SPCC xp_sampled chunks (`just download-catalogues-spcc`) |
 | `ASTRO_LOCAL_ASNET` | `false` | Solve via a local astrometry.net instead |
 | `ASTRO_SPCC_CATALOG` | — | `gaia` \| `localgaia`; empty prefers local when installed |
+| `ASTRO_DEEPSTAR_CAT` | `<library>/catalogues/athyg_v32.bin` | Deep star-name catalogue (`just download-deepstars`); absent → the embedded mag-9 extract |
 
 ## Observing site + rig (planner)
 
@@ -94,10 +95,12 @@ See [agent.md](agent.md). The model server is never started implicitly.
 | `ASTRO_SENSOR_W` / `ASTRO_SENSOR_H` | `4656` / `3520` | Sensor size (px) |
 | `ASTRO_EYEPIECES` | `30:68:30mm,…` | Eyepiece kit `focalMM:aFOV[:label]` |
 | `ASTRO_BARLOW` | `1` | Barlow factor |
+| `ASTRO_REDUCER` | `1` | Focal reducer (e.g. `0.66`); multiplies on top of the Barlow |
 
 The planner's data-provider variables (weather, light pollution, canopy, dark-sky scoring,
 routing, elevation) are documented in [planner.md](planner.md) and, exhaustively commented, in
-`.env.example`; they all soft-fail to sensible defaults when unset or offline.
+`.env.example`; they all soft-fail to sensible defaults when unset or offline. What each default URL
+actually points at, and under what licence, is in [third-party.md](third-party.md).
 
 ## Cross-session reuse
 

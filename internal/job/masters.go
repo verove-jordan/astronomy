@@ -2,6 +2,7 @@ package job
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,7 +10,10 @@ import (
 
 	"github.com/verove-jordan/astronomy/internal/calib"
 	"github.com/verove-jordan/astronomy/internal/inspect"
+	"github.com/verove-jordan/astronomy/internal/mode"
+	"github.com/verove-jordan/astronomy/internal/pipeline"
 	"github.com/verove-jordan/astronomy/internal/siril"
+	"github.com/verove-jordan/astronomy/internal/stackalg"
 	"github.com/verove-jordan/astronomy/internal/store"
 )
 
@@ -53,8 +57,15 @@ func (m *Manager) runBuildMasters(ctx context.Context, id int64, p RunRequest) (
 
 	step := fmt.Sprintf("building %d master calibration set(s)", sets)
 	m.publish(Event{JobID: id, Status: store.JobRunning, Progress: 1, Step: step})
+	// A masters-only job is exactly where the per-frame-type stacking recipes matter most, so it
+	// honours the request's knobs. A non-default recipe builds under its own filename, so it can
+	// never overwrite the shared library master other runs depend on (see calib.masterName).
+	stacks, warn := masterStacksFrom(p.Params)
+	if warn != "" {
+		m.publish(Event{JobID: id, Line: warn})
+	}
 	masters, warnings, err := calib.BuildOrReuseMasters(ctx, m.runner, inv, m.store, m.cfg.LibraryDir,
-		workRun, m.mastersProgress(ctx, id, step))
+		workRun, stacks, m.mastersProgress(ctx, id, step))
 	if err != nil {
 		return nil, err
 	}
@@ -96,4 +107,18 @@ func (m *Manager) mastersProgress(ctx context.Context, id int64, step string) fu
 		ev.Progress = last
 		m.publish(ev)
 	}
+}
+
+// masterStacksFrom reads the per-frame-type stacking recipes out of a masters job's knob patch. The
+// patch is applied through the SAME pipeline.ApplyParamPatch a real run uses, so the two can never
+// disagree on what a knob means; an unusable value is reported and the defaults stand.
+func masterStacksFrom(params json.RawMessage) (stackalg.MasterOptions, string) {
+	if len(params) == 0 {
+		return stackalg.DefaultMasters(), ""
+	}
+	scratch := mode.For(mode.Deepsky)
+	if _, err := pipeline.ApplyParamPatch(&scratch, params); err != nil {
+		return stackalg.DefaultMasters(), "calibration knobs ignored: " + err.Error()
+	}
+	return scratch.Masters, ""
 }

@@ -1,5 +1,13 @@
 # Embedded deep star catalogue
 
+> This is the **floor**, not the whole story. `internal/deepstars` also reads an optional, much
+> deeper catalogue (ATHYG v3.2, ~2.5 M stars to about mag 13) from
+> `<library>/catalogues/athyg_v32.bin`, installed with `just download-deepstars` and never
+> committed. When it is present it supersedes this file for star naming and adds distance, spectral
+> type, colour index, absolute magnitude and radial velocity; when it is absent everything below is
+> what the annotation uses. See `docs/architecture.md` → "Naming the stars".
+
+
 `hyg_mag9.csv.gz` — 83,479 stars at magnitude ≤ 9.0, gzipped CSV, `go:embed`-ed by
 `internal/deepstars`. It powers the star-name annotation (`stars.json` labels): J2000 positions,
 V magnitude, proper motion, and the designation chain (proper name → Bayer → Flamsteed → HD).

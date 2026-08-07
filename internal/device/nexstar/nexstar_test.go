@@ -145,10 +145,17 @@ type fakeHC struct {
 	// pecCorrupt forces one bin to read back as something other than what was written, to exercise
 	// the write verification.
 	pecCorrupt map[int]int8
+
+	// guideRate is the motor controller's autoguide-rate byte, in 1/256ths of sidereal.
+	guideRate byte
 }
 
 func newFakeHC() *fakeHC {
-	return &fakeHC{aligned: true, raNow: 10, decNow: 41, pecTable: make([]int8, 88), pecIndexed: true}
+	return &fakeHC{
+		aligned: true, raNow: 10, decNow: 41,
+		pecTable: make([]int8, 88), pecIndexed: true,
+		guideRate: 128, // half sidereal, as mounts tend to ship
+	}
 }
 
 func (f *fakeHC) Write(p []byte) (int, error) {
@@ -194,6 +201,9 @@ func (f *fakeHC) replyTo(p []byte) []byte {
 		return []byte("#")
 	case p[0] == 'P' && len(p) >= 8:
 		if reply, ok := f.replyPEC(p); ok {
+			return reply
+		}
+		if reply, ok := f.replyGuide(p); ok {
 			return reply
 		}
 		// Jog and Nudge also send pass-through frames; they get the bare acknowledgement they
@@ -297,7 +307,15 @@ func TestConnect_HandshakesAndReadsIdentity(t *testing.T) {
 	assert.True(t, m.Connected())
 	cmds := hc.commands()
 	require.NotEmpty(t, cmds)
-	assert.Equal(t, "Kx", cmds[0], "the echo handshake proves a mount is really there")
+	// The handshake used to be the literal "Kx". It is now "K" plus a RANDOM byte, and the change is
+	// the point rather than an incidental refactor: an echo of a fixed byte always asks for the same
+	// answer, so a stale "x#" left in the buffer by a process that died mid-command passes the
+	// handshake and leaves the stream one reply behind for the rest of the session. This assertion
+	// therefore pins the shape and the safety of the byte, not its value. See link.go.
+	require.Len(t, cmds[0], 2)
+	assert.Equal(t, byte('K'), cmds[0][0], "the echo handshake proves a mount is really there")
+	assert.NotContains(t, []byte{'#', 0x00, 0x11, 0x13}, cmds[0][1],
+		"the echo byte must never be the terminator or a flow-control character")
 
 	st, err := m.State(context.Background())
 	require.NoError(t, err)

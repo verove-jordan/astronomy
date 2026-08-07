@@ -28,13 +28,13 @@ type starChromaCfg struct {
 }
 
 const (
-	fixStarAmp   = 0.95
-	galaxyLum    = 0.06
-	galaxyTint   = 0.01
-	fixSpeckle   = float32(0.004)
-	fixSigmaC    = 1.4826 * 0.004 // MAD-based sigma of the ±fixSpeckle checker residuals
-	fixLumNoise  = float32(0.002)
-	fixPedestal  = float32(0.05)
+	fixStarAmp                             = 0.95
+	galaxyLum                              = 0.06
+	galaxyTint                             = 0.01
+	fixSpeckle                             = float32(0.004)
+	fixSigmaC                              = 1.4826 * 0.004 // MAD-based sigma of the ±fixSpeckle checker residuals
+	fixLumNoise                            = float32(0.002)
+	fixPedestal                            = float32(0.05)
 	galaxyCX, galaxyCY, galaxyRX, galaxyRY = 32, 32, 24, 16
 )
 

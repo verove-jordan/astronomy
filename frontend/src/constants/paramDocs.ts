@@ -12,6 +12,55 @@ export interface ParamGroup {
   keys: string[]; // the JSON keys in this tier (each has a paramDocs.<key> description)
 }
 
+// The stacking algorithm itself (internal/stackalg): how pixels are combined and which outlier test
+// rejects them. Edited through the StackingPanel rather than by hand, but documented here too so the
+// glossary stays a complete reference for every key the JSON box accepts.
+const STACK_ALGO_GROUP: ParamGroup = {
+  titleKey: "paramDocs.groups.stackAlgo",
+  hintKey: "paramDocs.groups.stackAlgoHint",
+  keys: [
+    "stack_engine",
+    "stack_combine",
+    "stack_reject",
+    "stack_reject_low",
+    "stack_reject_high",
+    "stack_trim_frac",
+    "stack_norm",
+    "stack_fast_norm",
+    "stack_weight",
+    "stack_rejection_maps",
+    "stack_feather",
+    "stack_local_norm",
+    "stack_local_norm_degree",
+  ],
+};
+
+// The calibration masters' per-frame-type recipes: each type is stacked separately and their pools
+// differ by an order of magnitude, so each carries its own algorithm. Edited through the
+// StackingPanel's "Calibration masters" sub-section.
+const MASTER_STACK_GROUP: ParamGroup = {
+  titleKey: "paramDocs.groups.masterStack",
+  hintKey: "paramDocs.groups.stackAlgoHint",
+  keys: [
+    "master_bias_combine",
+    "master_bias_reject",
+    "master_bias_low",
+    "master_bias_high",
+    "master_dark_combine",
+    "master_dark_reject",
+    "master_dark_low",
+    "master_dark_high",
+    "master_flat_combine",
+    "master_flat_reject",
+    "master_flat_low",
+    "master_flat_high",
+    "master_dark_flat_combine",
+    "master_dark_flat_reject",
+    "master_dark_flat_low",
+    "master_dark_flat_high",
+  ],
+};
+
 // Deep-sky / nebula / livestack share the full tiered surface (supervisePatch).
 const DEEPSKY_GROUPS: ParamGroup[] = [
   {
@@ -78,6 +127,8 @@ const DEEPSKY_GROUPS: ParamGroup[] = [
       "background_ai",
     ],
   },
+  STACK_ALGO_GROUP,
+  MASTER_STACK_GROUP,
 ];
 
 // Tiled-panel mosaic (mosaicPatch on top of the deepsky surface): the assembler's own knobs, then
@@ -157,6 +208,12 @@ const COMET_GROUPS: ParamGroup[] = [
       "per_frame_starnet",
     ],
   },
+  STACK_ALGO_GROUP,
+  {
+    titleKey: "paramDocs.groups.cometStackAlgo",
+    hintKey: "paramDocs.groups.stackAlgoHint",
+    keys: ["comet_stack_reject", "comet_stack_low", "comet_stack_high"],
+  },
 ];
 
 // Milky-Way nightscape (nightscapePatch): a single grade tier, all re-render in seconds.
@@ -168,6 +225,56 @@ const MILKYWAY_GROUPS: ParamGroup[] = [
   },
 ];
 
+// Solar (sunPatch): a fast finish tier and an expensive re-ingest/re-stack tier.
+const SUN_GROUPS: ParamGroup[] = [
+  {
+    titleKey: "paramDocs.groups.sunFinish",
+    hintKey: "paramDocs.groups.sunFinishHint",
+    keys: [
+      "flat_strength",
+      "deconv_auto",
+      "deconv_sigma",
+      "deconv_iters",
+      "sharpen_small",
+      "sharpen_medium",
+      "sharpen_large",
+      "sharpen_denoise",
+      "limb_flatten",
+      "prominence_boost",
+      "prominence_feather",
+      "palette",
+      "stretch",
+      "contrast",
+      "saturation",
+      "background_level",
+      "background_tint",
+      "glow_strength",
+      "glow_radius",
+    ],
+  },
+  {
+    titleKey: "paramDocs.groups.sunStack",
+    hintKey: "paramDocs.groups.sunStackHint",
+    keys: [
+      "band",
+      "keep_percent",
+      "max_frames",
+      "drizzle",
+      "clip_sigma",
+      "window_seconds",
+      "window_frames",
+      "min_frames",
+      "crop_margin",
+      "scale_tolerance",
+      "bracket_merge",
+      "bracket_stops",
+      "transparency_floor",
+      "ap_align",
+      "ap_scale",
+    ],
+  },
+];
+
 const GROUPS_BY_MODE: Record<string, ParamGroup[]> = {
   deepsky: DEEPSKY_GROUPS,
   nebula: DEEPSKY_GROUPS,
@@ -176,6 +283,7 @@ const GROUPS_BY_MODE: Record<string, ParamGroup[]> = {
   comet: COMET_GROUPS,
   milkyway: MILKYWAY_GROUPS,
   mosaic: MOSAIC_GROUPS,
+  sun: SUN_GROUPS,
 };
 
 // groupsForMode returns the knob groups for a stacking mode (deep-sky is the fallback for any unknown).

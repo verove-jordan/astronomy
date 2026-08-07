@@ -104,3 +104,36 @@ func tail(s string, n int) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// RenderSequence encodes an image sequence into an MP4, for outputs that are genuinely a time
+// series rather than one still — a solar session's windows, for instance, where the motion in the
+// prominences is the subject rather than a pan across a fixed frame.
+//
+// fps is derived from the frame count so a short session still yields a watchable clip instead of a
+// half-second flicker.
+func RenderSequence(ctx context.Context, ffmpegBin, pattern, out string, frames int) error {
+	if ffmpegBin == "" {
+		ffmpegBin = "ffmpeg"
+	}
+	cmd := exec.CommandContext(ctx, ffmpegBin, SequenceArgs(pattern, out, frames)...)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("ffmpeg sequence: %w\n%s", err, tail(string(b), 5))
+	}
+	return nil
+}
+
+// SequenceArgs builds the ffmpeg argument list for an image sequence (pure, for testing).
+func SequenceArgs(pattern, out string, frames int) []string {
+	fps := 8
+	if frames > 0 && frames < 24 {
+		// Below a couple of dozen frames a normal frame rate is over before the eye settles; slow it
+		// down so every window is actually seen.
+		fps = 4
+	}
+	return []string{
+		"-y", "-framerate", strconv.Itoa(fps), "-i", pattern,
+		// Even dimensions: yuv420p requires them and a solar crop is rarely even by luck.
+		"-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+		"-c:v", "libx264", "-preset", "medium", "-crf", "18", out,
+	}
+}

@@ -3,6 +3,8 @@ package siril
 import (
 	"fmt"
 	"strings"
+
+	"github.com/verove-jordan/astronomy/internal/stackalg"
 )
 
 // scriptHeader requires a modern Siril, fixes the output extension so produced masters and stacks
@@ -12,27 +14,23 @@ import (
 // Siril's outputs to be BITPIX -32.
 const scriptHeader = "requires 1.2.0\nsetext fits\nset32bits\n"
 
-// Frame-count bounds for Rejection. Verified against Siril 1.4.3 (see live syntax test): percentile
-// logs "percentile clipping low/high", generalized logs "GESDT clipping outliers/significance".
-const (
-	rejPercentileMax = 7  // ≤7 frames: sigma estimates are too unstable to clip on
-	rejGESDMin       = 50 // ≥50 frames: GESD markedly outperforms winsorized on outlier tails
-)
-
 // Rejection returns the stack rejection clause best suited to the number of frames being stacked:
 // percentile clipping for tiny stacks, Winsorized sigma clipping for the common mid range, and the
 // Generalized Extreme Studentized Deviate test for large stacks — where it removes the correlated
 // outliers (walking noise from drifting fixed-pattern residuals, trail remnants) that a 3σ
 // winsorized clip leaves behind. n <= 0 (count unknown) keeps the long-proven winsorized default.
+//
+// The decision itself lives in stackalg.AutoReject (shared with the native combiner and the UI's
+// "recommended for N frames" badge); this renders it as the Siril clause.
 func Rejection(n int) string {
-	switch {
-	case n > 0 && n <= rejPercentileMax:
-		return "rej percentile 0.2 0.1"
-	case n >= rejGESDMin:
-		return "rej generalized 0.3 0.05"
-	default:
-		return "rej winsorized 3 3"
-	}
+	return rejectionClause(mustCombine(stackalg.CombineMean), stackalg.Resolve(stackalg.Options{}, n))
+}
+
+// mustCombine looks up a combination method the package itself names — a miss is a programming
+// error, not a runtime condition.
+func mustCombine(c stackalg.Combine) stackalg.CombineInfo {
+	info, _ := stackalg.CombineOf(c)
+	return info
 }
 
 // CalibMasters holds absolute paths to the master calibration frames to apply (any may be empty).
@@ -57,23 +55,23 @@ type CalibMasters struct {
 }
 
 // StackMasterScript converts the frames already in the work dir into sequence `seq` and stacks
-// them into outName (extension added by Siril) with count-adaptive rejection (see Rejection;
-// frames is the frame count). `convert` — not `link` — so a calibration set captured as 16-bit
-// TIFF (SharpCap lunar darks/flats) stacks exactly like FITS; for FITS inputs convert symlinks,
-// which is what link did.
-func StackMasterScript(seq, outName string, frames int) string {
+// them into outName (extension added by Siril). o carries the combination/rejection recipe —
+// stackalg.DefaultMasters().Bias/.Dark reproduces the historical un-normalized, count-adaptive
+// stack. `convert` — not `link` — so a calibration set captured as 16-bit TIFF (SharpCap lunar
+// darks/flats) stacks exactly like FITS; for FITS inputs convert symlinks, which is what link did.
+func StackMasterScript(seq, outName string, frames int, o stackalg.Options) string {
 	var b strings.Builder
 	b.WriteString(scriptHeader)
 	fmt.Fprintf(&b, "convert %s -out=.\n", seq)
-	fmt.Fprintf(&b, "stack %s %s -nonorm -out=%s\n", seq, Rejection(frames), outName)
+	fmt.Fprintf(&b, "stack %s %s -out=%s\n", seq, StackClause(o, frames), outName)
 	return b.String()
 }
 
-// StackFlatScript builds a master flat: optionally bias-calibrate the flats, then stack with
-// multiplicative normalization (the correct normalization for flat fields) and count-adaptive
-// rejection (frames is the flat count). Uses `convert` for the same TIFF-tolerance as
-// StackMasterScript.
-func StackFlatScript(seq, outName, biasPath string, frames int) string {
+// StackFlatScript builds a master flat: optionally bias-calibrate the flats, then stack them.
+// o defaults to stackalg.DefaultMasters().Flat — multiplicative normalization (the correct
+// normalization for flat fields, where only the relative shape matters) with count-adaptive
+// rejection. Uses `convert` for the same TIFF-tolerance as StackMasterScript.
+func StackFlatScript(seq, outName, biasPath string, frames int, o stackalg.Options) string {
 	var b strings.Builder
 	b.WriteString(scriptHeader)
 	fmt.Fprintf(&b, "convert %s -out=.\n", seq)
@@ -82,7 +80,7 @@ func StackFlatScript(seq, outName, biasPath string, frames int) string {
 		fmt.Fprintf(&b, "calibrate %s -bias=%s -prefix=pp_\n", seq, biasPath)
 		target = "pp_" + seq
 	}
-	fmt.Fprintf(&b, "stack %s %s -norm=mul -out=%s\n", target, Rejection(frames), outName)
+	fmt.Fprintf(&b, "stack %s %s -out=%s\n", target, StackClause(o, frames), outName)
 	return b.String()
 }
 
@@ -305,12 +303,12 @@ func CalibrateStarAlignToRefScript(seq string, m CalibMasters, refIndex int) str
 // count-adaptive rejection + light (addscale) normalization into outName — no calibration or
 // registration. Used for the comet-mode per-channel stacks (the frames are already globally star-aligned,
 // or comet-translated): the rejection clips the *moving* feature (stars in the comet stack, the comet in
-// the star stack), leaving the fixed one sharp.
-func StackAlignedScript(seq, outName string, frames int) string {
+// the star stack), leaving the fixed one sharp. o defaults to stackalg.DefaultLights().
+func StackAlignedScript(seq, outName string, frames int, o stackalg.Options) string {
 	var b strings.Builder
 	b.WriteString(scriptHeader)
 	fmt.Fprintf(&b, "link %s -out=.\n", seq)
-	fmt.Fprintf(&b, "stack %s %s -norm=addscale -output_norm -out=%s\n", seq, Rejection(frames), outName)
+	fmt.Fprintf(&b, "stack %s %s -out=%s\n", seq, StackClause(o, frames), outName)
 	return b.String()
 }
 
@@ -318,12 +316,13 @@ func StackAlignedScript(seq, outName string, frames int) string {
 // consistent frame-to-frame (a tight high clip never touches it), while the star trails marching
 // through are bright one-or-two-frame HIGH outliers at any given pixel — σ-high 1.8 rejects them
 // where the symmetric 3/3 left residual streaks. σ-low stays loose (4) so the faint tail's noisy
-// low samples are never clipped away.
-func StackCometScript(seq, outName string) string {
+// low samples are never clipped away. o defaults to stackalg.DefaultComet(), which encodes exactly
+// that asymmetry; frames only matters if the user switches the rejection back to auto.
+func StackCometScript(seq, outName string, frames int, o stackalg.Options) string {
 	var b strings.Builder
 	b.WriteString(scriptHeader)
 	fmt.Fprintf(&b, "link %s -out=.\n", seq)
-	fmt.Fprintf(&b, "stack %s rej winsorized 4 1.8 -norm=addscale -output_norm -out=%s\n", seq, outName)
+	fmt.Fprintf(&b, "stack %s %s -out=%s\n", seq, StackClause(o, frames), outName)
 	return b.String()
 }
 
@@ -357,9 +356,9 @@ func RegisteredSeq(seq string, m CalibMasters) string {
 // frames (1-based registered indices), then stacks only the survivors with count-adaptive rejection
 // (sized to the frames actually stacked), which additionally clips residual satellite/plane trail
 // pixels and — on large stacks (GESD) — the walking-noise outliers of drifting sequences.
-// weight (if non-empty) is a Siril stack weighting mode (noise|wfwhm|nbstars|nbstack); it favors the
-// sharper/deeper subs and is used for the cross-session merge. Empty leaves the stack unweighted.
-func StackSelectedScript(regSeq string, regCount int, rejected []int, outName, weight string) string {
+// o carries the user's stacking recipe (stackalg.DefaultLights() = the historical clause); its
+// Weight, when set, favours the sharper/deeper subs and is what the cross-session merge uses.
+func StackSelectedScript(regSeq string, regCount int, rejected []int, outName string, o stackalg.Options) string {
 	// Siril names a registered sequence after its frame prefix, trailing separator included
 	// (frames r_pp_light_00001.fits → sequence file "r_pp_light_.seq"). Addressing it exactly
 	// avoids the noisy-but-benign name-lookup recovery ("Reading sequence failed: r_pp_light.seq")
@@ -374,18 +373,9 @@ func StackSelectedScript(regSeq string, regCount int, rejected []int, outName, w
 	for _, idx := range rejected {
 		fmt.Fprintf(&b, "unselect %s %d %d\n", seqName, idx, idx)
 	}
-	fmt.Fprintf(&b, "stack %s %s -norm=addscale -output_norm%s -filter-incl -out=%s\n",
-		seqName, Rejection(regCount-len(rejected)), weightArg(weight), outName)
+	fmt.Fprintf(&b, "stack %s %s -filter-incl -out=%s\n",
+		seqName, StackClause(o, regCount-len(rejected)), outName)
 	return b.String()
-}
-
-// weightArg renders the optional stack weighting flag (empty string when unweighted, keeping the
-// command byte-identical to the unweighted path).
-func weightArg(weight string) string {
-	if weight == "" {
-		return ""
-	}
-	return " -weight=" + weight
 }
 
 // ConvertScript converts the files in the work dir into a FITS sequence named `seq`.
@@ -405,14 +395,17 @@ func ConvertScript(seq string) string {
 // frames — it only trims a gross per-channel artifact). `addscale` normalization brings the very
 // different broadband/narrowband channels onto one footing so none swamps the others, and weight (e.g.
 // "nbstack") favours the deeper channels by their STACKCNT sub-count (empty → unweighted).
-func IntegrateChannelsScript(seq, outName, weight string) string {
+func IntegrateChannelsScript(seq, outName string, weight stackalg.Weight) string {
 	var b strings.Builder
 	b.WriteString(scriptHeader)
 	fmt.Fprintf(&b, "link %s -out=.\n", seq)
-	// `rej none` (live-pinned grammar): the "frames" here are DIFFERENT CHANNELS, not repeated
-	// samples — outlier rejection treats a channel's real morphology (an Ha-bright starburst core)
-	// as per-pixel outliers and clips it patchily, posterizing the monostack's bright cores.
-	fmt.Fprintf(&b, "stack %s_ rej none -norm=addscale -output_norm%s -out=%s\n", seq, weightArg(weight), outName)
+	// `rej none` (live-pinned grammar, and NOT user-configurable here): the "frames" are DIFFERENT
+	// CHANNELS, not repeated samples — outlier rejection treats a channel's real morphology (an
+	// Ha-bright starburst core) as per-pixel outliers and clips it patchily, posterizing the
+	// monostack's bright cores.
+	o := stackalg.DefaultChannelIntegration()
+	o.Weight = weight
+	fmt.Fprintf(&b, "stack %s_ %s -out=%s\n", seq, StackClause(o, 0), outName)
 	return b.String()
 }
 

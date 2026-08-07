@@ -134,6 +134,45 @@ func (c *Client) Save(ctx context.Context, req SaveRequest) (SavedFrame, error) 
 	return out, err
 }
 
+// LiveFrame is a frame taken from the live view rather than from a dedicated exposure. Seq identifies
+// which frame of the stream it was, which is how a caller refuses one taken before the telescope
+// stopped moving.
+type LiveFrame struct {
+	SavedFrame
+	Seq int64 `json:"seq"`
+}
+
+// StartLive runs the live view at the given cadence, or just re-applies the cadence if it is already
+// running. intervalMs <= 0 leaves the device server's default.
+func (c *Client) StartLive(ctx context.Context, intervalMs int) error {
+	return c.do(ctx, http.MethodPost, "/live/start",
+		map[string]any{"interval_ms": intervalMs}, nil)
+}
+
+func (c *Client) StopLive(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/live/stop", nil, nil)
+}
+
+// LiveStatus is the live loop's own view of itself.
+type LiveStatus struct {
+	Running bool  `json:"running"`
+	Seq     int64 `json:"seq"`
+}
+
+func (c *Client) LiveStatus(ctx context.Context) (LiveStatus, error) {
+	var out LiveStatus
+	err := c.do(ctx, http.MethodGet, "/live/stats", nil, &out)
+	return out, err
+}
+
+// SaveLiveFrame writes the live view's newest frame where the engine can plate-solve it. The user goes
+// on watching that same frame, which is the point: the picture being measured is the picture on screen.
+func (c *Client) SaveLiveFrame(ctx context.Context, req SaveRequest) (LiveFrame, error) {
+	var out LiveFrame
+	err := c.do(ctx, http.MethodPost, "/live/save", req, &out)
+	return out, err
+}
+
 // WheelState is the device server's wheel snapshot.
 type WheelState struct {
 	Connected bool              `json:"connected"`
@@ -213,6 +252,48 @@ func (c *Client) NudgeMeasured(ctx context.Context, raArcsec, decArcsec, exposur
 		"ra_arcsec": raArcsec, "dec_arcsec": decArcsec,
 		"measure": true, "measure_exposure_sec": exposureSec,
 	}, &out)
+	return out, err
+}
+
+// GuideCaps is what the mount can do about guiding.
+type GuideCaps struct {
+	Supported bool `json:"supported"`
+	// RateFraction is the mount's own configured autoguide rate, as a fraction of sidereal.
+	RateFraction     float64 `json:"rate_fraction"`
+	RateArcsecPerSec float64 `json:"rate_arcsec_per_sec"`
+}
+
+// GuideCaps asks whether the connected mount can be guided, and how fast. A guide session calls this
+// once and then passes the rate back with every pulse: the link is 9600 baud, and re-reading one byte
+// hundreds of times a night competes with the corrections themselves.
+func (c *Client) GuideCaps(ctx context.Context) (GuideCaps, error) {
+	var out GuideCaps
+	err := c.do(ctx, http.MethodGet, "/mount/guide", nil, &out)
+	return out, err
+}
+
+// GuidePulse applies one correction to each axis, in AXIS arcseconds.
+//
+// Not Nudge: Nudge is the dither primitive, runs at a fixed speed chosen for dithering, and takes
+// tangent-plane offsets. Guide corrections are axis rotations, so the cos(dec) factor stays in exactly
+// one place — the guider's calibration — and never gets applied twice or not at all.
+func (c *Client) GuidePulse(ctx context.Context, raArcsec, decArcsec, rateArcsecPerSec float64) error {
+	if raArcsec == 0 && decArcsec == 0 {
+		return nil
+	}
+	return c.do(ctx, http.MethodPost, "/mount/guide", map[string]any{
+		"ra_arcsec": raArcsec, "dec_arcsec": decArcsec,
+		"rate_arcsec_per_sec": rateArcsecPerSec,
+	}, nil)
+}
+
+// SetGuideRate configures the mount's own autoguide rate and reports what it actually accepted, which
+// the driver clamps and quantises to what the wire can carry.
+func (c *Client) SetGuideRate(ctx context.Context, fraction float64) (GuideCaps, error) {
+	var out GuideCaps
+	err := c.do(ctx, http.MethodPost, "/mount/guide-rate",
+		map[string]any{"fraction": fraction}, &out)
+	out.Supported = err == nil
 	return out, err
 }
 

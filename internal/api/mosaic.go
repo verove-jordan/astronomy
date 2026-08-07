@@ -55,6 +55,7 @@ type mosaicOpticsBody struct {
 	SensorWpx  int     `json:"sensor_w_px"`
 	SensorHpx  int     `json:"sensor_h_px"`
 	BarlowX    float64 `json:"barlow_x"`
+	ReducerX   float64 `json:"reducer_x"`
 }
 
 // mosaicQueryEcho echoes the fully-resolved inputs so the UI can display what was actually planned.
@@ -119,7 +120,10 @@ func (s *Server) resolveMosaicRequest(b mosaicRequestBody) (mosaicplan.Request, 
 			PixelUm:    orFloat(b.Optics.PixelUm, s.cfg.PixelSizeUm),
 			SensorWpx:  orInt(b.Optics.SensorWpx, s.cfg.SensorWpx),
 			SensorHpx:  orInt(b.Optics.SensorHpx, s.cfg.SensorHpx),
-			BarlowX:    b.Optics.BarlowX,
+			// Like every other optics field, an unsent multiplier falls back to the configured rig —
+			// without this a body that omits them silently plans the grid at the bare focal length.
+			BarlowX:  orFloat(b.Optics.BarlowX, s.cfg.BarlowX),
+			ReducerX: orFloat(b.Optics.ReducerX, s.cfg.ReducerX),
 		},
 	}
 	if b.MarginArcmin != nil {

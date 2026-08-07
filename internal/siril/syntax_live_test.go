@@ -14,6 +14,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -21,6 +23,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/grade"
 	"github.com/verove-jordan/astronomy/internal/siril"
+	"github.com/verove-jordan/astronomy/internal/stackalg"
 	"golang.org/x/image/tiff"
 )
 
@@ -123,7 +126,7 @@ func TestSirilLive_ConvertStacksTIFF(t *testing.T) {
 		require.NoError(t, tiff.Encode(f, img, nil))
 		require.NoError(t, f.Close())
 	}
-	_, err := r.Run(context.Background(), dir, siril.StackMasterScript("cal", filepath.Join(dir, "m"), 10), nil)
+	_, err := r.Run(context.Background(), dir, siril.StackMasterScript("cal", filepath.Join(dir, "m"), 10, stackalg.DefaultMasters().Dark), nil)
 	require.NoError(t, err, "a pure-TIFF master pool must stack")
 	require.FileExists(t, filepath.Join(dir, "m.fits"))
 }
@@ -520,7 +523,7 @@ func TestSirilLive_StackSelectedSeqNameAndFloor(t *testing.T) {
 	// (live Siril emits no "Error in line" locator for this runtime failure, only the cause line
 	// and a progress status — the hint must be the cause, not the noise).
 	_, err = r.Run(context.Background(), dir,
-		siril.StackSelectedScript("r_light", nFrames, []int{1, 2, 3}, filepath.Join(dir, "master_fail"), ""), nil)
+		siril.StackSelectedScript("r_light", nFrames, []int{1, 2, 3}, filepath.Join(dir, "master_fail"), liveLights(stackalg.WeightNone)), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "do not allow at least two images")
 	assert.NotContains(t, err.Error(), "Reading sequence failed")
@@ -528,7 +531,7 @@ func TestSirilLive_StackSelectedSeqNameAndFloor(t *testing.T) {
 
 	// (1) a valid selection stacks cleanly, addressed by its real "r_light_" name.
 	res, err := r.Run(context.Background(), dir,
-		siril.StackSelectedScript("r_light", nFrames, []int{1}, filepath.Join(dir, "master_ok"), ""), nil)
+		siril.StackSelectedScript("r_light", nFrames, []int{1}, filepath.Join(dir, "master_ok"), liveLights(stackalg.WeightNone)), nil)
 	require.NoError(t, err)
 	assert.NotContains(t, res.Log, "Reading sequence failed")
 	assert.FileExists(t, filepath.Join(dir, "master_ok.fits"))
@@ -537,7 +540,7 @@ func TestSirilLive_StackSelectedSeqNameAndFloor(t *testing.T) {
 	// (photomStackWeight) — is accepted by the same stack grammar (house rule: every new .ssf
 	// shape is smoke-tested live before the pipeline may emit it).
 	_, err = r.Run(context.Background(), dir,
-		siril.StackSelectedScript("r_light", nFrames, nil, filepath.Join(dir, "master_noise"), "noise"), nil)
+		siril.StackSelectedScript("r_light", nFrames, nil, filepath.Join(dir, "master_noise"), liveLights(stackalg.WeightNoise)), nil)
 	require.NoError(t, err)
 	assert.FileExists(t, filepath.Join(dir, "master_noise.fits"))
 }
@@ -574,5 +577,119 @@ func TestSirilLive_SeqSubskyPrefixAndLevel(t *testing.T) {
 		// grading backgrounds; -norm=addscale) can rely on skies keeping their pedestal.
 		mean := 0.10 + float64(i)*0.02/2
 		assert.InDelta(t, mean, float64(left), 0.012, "frame %d: sky stays at the frame's mean level", i)
+	}
+}
+
+// liveLights is the historical light-stack recipe with a weighting — what these live tests exercised
+// before stacking became configurable.
+func liveLights(w stackalg.Weight) stackalg.Options {
+	o := stackalg.DefaultLights()
+	o.Weight = w
+	return o
+}
+
+// sirilSummary extracts one line of Siril's end-of-stack summary block ("Pixel combination",
+// "Input normalization", "Pixel rejection", …), where the value follows a run of dots. Asserting on
+// this instead of the raw log keeps a failure readable — and it is the only place Siril states what
+// it ACTUALLY did, as opposed to what the command asked for.
+func sirilSummary(log, field string) string {
+	re := regexp.MustCompile(`(?m)^log: ` + regexp.QuoteMeta(field) + ` \.+ (.+)$`)
+	m := re.FindStringSubmatch(log)
+	if m == nil {
+		return ""
+	}
+	return strings.TrimSpace(m[1])
+}
+
+// TestSirilLive_StackClauseGrammar is the trap-catcher for the user-selectable stacking panel: every
+// clause StackClause can emit is run against the real siril-cli, and Siril's own summary must PROVE
+// the option took effect. "No error" is not enough — Siril accepts several wrong-but-plausible
+// spellings and then silently ignores them (`-norm=additive` is the classic, logging "none"), so
+// each case pins the algorithm/normalization Siril reports back.
+func TestSirilLive_StackClauseGrammar(t *testing.T) {
+	r := sirilRunner(t)
+	lights := func(f func(*stackalg.Options)) stackalg.Options {
+		o := stackalg.DefaultLights()
+		f(&o)
+		return o
+	}
+	cases := []struct {
+		name              string
+		opts              stackalg.Options
+		combination       string // Siril's "Pixel combination" summary value
+		rejection         string // Siril's "Pixel rejection" summary value ("" = not applicable)
+		normalization     string // Siril's "Input normalization" summary value
+		wantWeighting     string
+		wantRejectionMaps string
+	}{
+		{name: "none", opts: lights(func(o *stackalg.Options) { o.Reject = stackalg.RejectNone }),
+			combination: "average", rejection: "none", normalization: "additive + scaling"},
+		{name: "percentile", opts: lights(func(o *stackalg.Options) { o.Reject = stackalg.RejectPercentile }),
+			combination: "average", rejection: "percentile clipping", normalization: "additive + scaling"},
+		{name: "sigma", opts: lights(func(o *stackalg.Options) { o.Reject = stackalg.RejectSigma }),
+			combination: "average", rejection: "sigma clipping", normalization: "additive + scaling"},
+		{name: "median_sigma", opts: lights(func(o *stackalg.Options) { o.Reject = stackalg.RejectMedianSigma }),
+			combination: "average", rejection: "median sigma clipping", normalization: "additive + scaling"},
+		{name: "winsorized", opts: lights(func(o *stackalg.Options) { o.Reject = stackalg.RejectWinsorized }),
+			combination: "average", rejection: "winsorized sigma clipping", normalization: "additive + scaling"},
+		{name: "linear_fit", opts: lights(func(o *stackalg.Options) { o.Reject = stackalg.RejectLinearFit }),
+			combination: "average", rejection: "linear fit clipping", normalization: "additive + scaling"},
+		{name: "gesd", opts: lights(func(o *stackalg.Options) { o.Reject = stackalg.RejectGESD }),
+			combination: "average", rejection: "GESDT clipping", normalization: "additive + scaling"},
+		{name: "mad", opts: lights(func(o *stackalg.Options) { o.Reject = stackalg.RejectMAD }),
+			combination: "average", rejection: "MAD clipping", normalization: "additive + scaling"},
+		{name: "median combine", opts: lights(func(o *stackalg.Options) { o.Combine = stackalg.CombineMedian }),
+			combination: "median", normalization: "additive + scaling"},
+		{name: "sum combine", opts: lights(func(o *stackalg.Options) { o.Combine = stackalg.CombineSum })},
+		{name: "max combine", opts: lights(func(o *stackalg.Options) { o.Combine = stackalg.CombineMax })},
+		{name: "min combine", opts: lights(func(o *stackalg.Options) { o.Combine = stackalg.CombineMin })},
+		{name: "norm add", opts: lights(func(o *stackalg.Options) { o.Norm = stackalg.NormAdd }),
+			combination: "average", rejection: "winsorized sigma clipping", normalization: "additive"},
+		{name: "norm mul", opts: lights(func(o *stackalg.Options) { o.Norm = stackalg.NormMul }),
+			combination: "average", rejection: "winsorized sigma clipping", normalization: "multiplicative"},
+		{name: "norm mulscale", opts: lights(func(o *stackalg.Options) { o.Norm = stackalg.NormMulScale }),
+			combination: "average", rejection: "winsorized sigma clipping", normalization: "multiplicative + scaling"},
+		{name: "nonorm", opts: lights(func(o *stackalg.Options) { o.Norm = stackalg.NormNone }),
+			combination: "average", rejection: "winsorized sigma clipping", normalization: "none"},
+		// "(fast)" is Siril confirming it swapped IKSS for the cheap estimators — the flag really lands.
+		{name: "fastnorm", opts: lights(func(o *stackalg.Options) { o.FastNorm = true }),
+			combination: "average", rejection: "winsorized sigma clipping", normalization: "additive + scaling (fast)"},
+		{name: "weight noise", opts: lights(func(o *stackalg.Options) { o.Weight = stackalg.WeightNoise }),
+			combination: "average", rejection: "winsorized sigma clipping", normalization: "additive + scaling",
+			wantWeighting: "noise"},
+		{name: "rejection maps", opts: lights(func(o *stackalg.Options) { o.RejMaps = true }),
+			combination: "average", rejection: "winsorized sigma clipping", normalization: "additive + scaling",
+			wantRejectionMaps: "yes"},
+		{name: "feather", opts: lights(func(o *stackalg.Options) { o.Feather = 4 }),
+			combination: "average", rejection: "winsorized sigma clipping", normalization: "additive + scaling"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "s")
+			writeNoiseSeq(t, dir, 12)
+			clause := siril.StackClause(tc.opts, 12)
+			script := "requires 1.2.0\nsetext fits\nset32bits\nlink cal -out=.\n" +
+				fmt.Sprintf("stack cal %s -out=m\n", clause)
+			res, err := r.Run(context.Background(), dir, script, nil)
+			require.NoError(t, err, "Siril rejected the clause %q", clause)
+			require.FileExists(t, filepath.Join(dir, "m.fits"), "the stack produced no master")
+
+			if tc.combination != "" {
+				assert.Equal(t, tc.combination, sirilSummary(res.Log, "Pixel combination"), "clause %q", clause)
+			}
+			if tc.rejection != "" {
+				assert.Equal(t, tc.rejection, sirilSummary(res.Log, "Pixel rejection"), "clause %q", clause)
+			}
+			if tc.normalization != "" {
+				assert.Equal(t, tc.normalization, sirilSummary(res.Log, "Input normalization"),
+					"the normalization was accepted and then silently ignored — clause %q", clause)
+			}
+			if tc.wantWeighting != "" {
+				assert.Contains(t, sirilSummary(res.Log, "Image weighting"), tc.wantWeighting, "clause %q", clause)
+			}
+			if tc.wantRejectionMaps != "" {
+				assert.Equal(t, tc.wantRejectionMaps, sirilSummary(res.Log, "Creating rejection maps"), "clause %q", clause)
+			}
+		})
 	}
 }

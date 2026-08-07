@@ -20,7 +20,7 @@ func registerParamTools(r *Registry, d Deps) {
 	r.Add(Tool{
 		Name: "get_mode_params", Category: "tasks",
 		Description: "Get a processing mode's tunable parameter surface: every knob, its safe range and its current default — the vocabulary for start_run/retry_run_tuned params.",
-		Schema:      objectSchema([]string{"mode"}, map[string]any{"mode": strProp("deepsky|nebula|milkyway|planetary|comet")}),
+		Schema:      objectSchema([]string{"mode"}, map[string]any{"mode": strProp("deepsky|nebula|milkyway|planetary|comet|sun")}),
 		Handler:     func(ctx context.Context, args json.RawMessage) (string, error) { return getModeParams(args) },
 	})
 	r.Add(Tool{

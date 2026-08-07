@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { PAUSABLE_MODES } from "@/constants/modes";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
@@ -58,6 +59,55 @@ function isTerminal(s?: string): boolean {
 }
 
 const jobId = Number(props.id);
+
+// Step to the task either side of this one, in the order the Tasks table shows them.
+//
+// The list is newest-first, so LEFT is the row above (newer) and RIGHT the row below (older) —
+// matching what the eye did in the table rather than the direction time runs, which is what people
+// reach for after clicking a row.
+//
+// Safe against a stale store: the ids come from whatever the list currently holds, and the arrows
+// simply do not render at the ends. ProcessingView keys its router-view on the path, so navigating
+// remounts this view and every `Number(props.id)` derivation below stays correct.
+const siblingIds = computed(() => jobsStore.jobs.map((j) => j.id));
+const siblingIndex = computed(() => siblingIds.value.indexOf(jobId));
+const prevJobId = computed(() => {
+  const i = siblingIndex.value;
+  return i > 0 ? siblingIds.value[i - 1] : null;
+});
+const nextJobId = computed(() => {
+  const i = siblingIndex.value;
+  return i >= 0 && i < siblingIds.value.length - 1
+    ? siblingIds.value[i + 1]
+    : null;
+});
+
+function goToJob(id: number | null) {
+  if (id === null) return;
+  void router.push({ name: "job", params: { id: String(id) } });
+}
+
+// The arrow keys move between tasks. They are only bound while nothing is being typed into — a
+// shortcut that hijacks the caret keys inside a text field is worse than no shortcut.
+function onArrowKey(e: KeyboardEvent) {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const el = document.activeElement as HTMLElement | null;
+  if (
+    el &&
+    (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))
+  ) {
+    return;
+  }
+  if (e.key === "ArrowLeft") goToJob(prevJobId.value);
+  else if (e.key === "ArrowRight") goToJob(nextJobId.value);
+}
+
+onMounted(() => {
+  // The neighbours come from the Tasks list; landing here from a deep link means it was never loaded.
+  if (!jobsStore.jobs.length) void jobsStore.list();
+  window.addEventListener("keydown", onArrowKey);
+});
+onBeforeUnmount(() => window.removeEventListener("keydown", onArrowKey));
 const {
   progress,
   step,
@@ -253,7 +303,6 @@ const isPaused = computed(() => liveStatus.value === "paused");
 // Manual mid-run pause is honored by the multi-channel deep-sky path (deepsky/nebula) AND by any S3
 // copy — a full-S3 run or a standalone transfer/backup pauses between files. Other local modes have no
 // safe mid-run boundary, so we don't offer a Pause that would look like a no-op.
-const PAUSABLE_MODES = ["deepsky", "nebula"];
 const isS3Copy = computed(
   () =>
     job.value?.params?.storage_mode === "s3" ||
@@ -605,6 +654,52 @@ async function savePresetFromRun() {
 
 <template>
   <div class="space-y-6">
+    <!-- Step to the neighbouring task. Fixed and vertically centred so they stay put while the page
+         scrolls, and outside the content column so they never sit on top of an image. -->
+    <button
+      v-if="prevJobId !== null"
+      type="button"
+      class="fixed left-2 top-1/2 z-30 -translate-y-1/2 rounded-full bg-slate-800/70 p-3 text-slate-300 backdrop-blur transition-colors hover:bg-slate-700 hover:text-white"
+      :title="t('job.prevTask', { id: prevJobId })"
+      :aria-label="t('job.prevTask', { id: prevJobId })"
+      @click="goToJob(prevJobId)"
+    >
+      <svg
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M15 18l-6-6 6-6" />
+      </svg>
+    </button>
+    <button
+      v-if="nextJobId !== null"
+      type="button"
+      class="fixed right-2 top-1/2 z-30 -translate-y-1/2 rounded-full bg-slate-800/70 p-3 text-slate-300 backdrop-blur transition-colors hover:bg-slate-700 hover:text-white"
+      :title="t('job.nextTask', { id: nextJobId })"
+      :aria-label="t('job.nextTask', { id: nextJobId })"
+      @click="goToJob(nextJobId)"
+    >
+      <svg
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M9 18l6-6-6-6" />
+      </svg>
+    </button>
     <div class="flex flex-wrap items-center gap-3">
       <h1 class="text-2xl font-semibold">{{ t("job.title") }} #{{ jobId }}</h1>
       <StatusPill :status="String(liveStatus)" />

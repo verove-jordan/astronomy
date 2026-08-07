@@ -55,7 +55,7 @@ func selectInputs(mode string, locate func(string) (string, bool)) (inputs, erro
 
 	var masters, finals []string
 	switch mode {
-	case "planetary":
+	case "planetary", "sun":
 		return in, ErrUnsupportedMode
 	case "comet":
 		base := finalBase(in.info)

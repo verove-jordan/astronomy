@@ -30,14 +30,18 @@ type Provider struct {
 	airQualityURL   string
 	sevenTimerURL   string
 	swpcURL         string
+	ensembleURL     string
+	ensembleModel   string
+	forecastDays    int
 	gridRadius      float64
 	gridSize        int
 	ttl             time.Duration
 	cacheDir        string
 
-	mu       sync.Mutex
-	memoFc   map[string]cachedForecast
-	memoGrid map[string]cachedGrid
+	mu        sync.Mutex
+	memoFc    map[string]cachedForecast
+	memoGrid  map[string]cachedGrid
+	memoNight map[string]cachedNight
 	// rlUntil is the upstream-429 circuit breaker: until this instant no Open-Meteo fetch is attempted
 	// (each would fail and burn more of the minutely/daily quota). gridFail is a short per-cube negative
 	// memo so a just-failed cube isn't retried by every tile request in a Leaflet burst.
@@ -69,6 +73,7 @@ func New(cfg *config.Config) *Provider {
 	if radius <= 0 {
 		radius = 4
 	}
+	days := clampInt(cfg.WeatherForecastDays, 1, maxForecastDays)
 	return &Provider{
 		http:            &http.Client{Timeout: 12 * time.Second},
 		openMeteoURL:    cfg.WeatherOpenMeteoURL,
@@ -76,14 +81,32 @@ func New(cfg *config.Config) *Provider {
 		airQualityURL:   cfg.WeatherAirQualityURL,
 		sevenTimerURL:   cfg.WeatherSevenTimerURL,
 		swpcURL:         cfg.WeatherSWPCURL,
+		ensembleURL:     cfg.WeatherEnsembleURL,
+		ensembleModel:   cfg.WeatherEnsembleModel,
+		forecastDays:    days,
 		gridRadius:      radius,
 		gridSize:        size,
 		ttl:             ttl,
 		cacheDir:        cache,
 		memoFc:          map[string]cachedForecast{},
 		memoGrid:        map[string]cachedGrid{},
+		memoNight:       map[string]cachedNight{},
 		gridFail:        map[string]time.Time{},
 	}
+}
+
+// ForecastDays is how many days ahead the per-site timeline reaches — the number of nights the planner
+// may offer.
+func (p *Provider) ForecastDays() int { return p.forecastDays }
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 // Forecast assembles the per-site hourly astronomy-weather timeline. It never hard-errors: the feeds
@@ -140,8 +163,8 @@ func (p *Provider) Forecast(ctx context.Context, lat, lon float64) (SiteForecast
 	wg.Wait()
 
 	if !omOK {
-		// Open-Meteo is the backbone (the hourly timeline). Without it, serve any stale cache, else warn.
-		if f, ok := p.anyForecast(key); ok {
+		// Open-Meteo is the backbone (the hourly timeline). Without it, serve a recent-enough cache, else warn.
+		if f, ok := p.staleForecast(key); ok {
 			return f, "live weather unavailable — showing the last cached forecast"
 		}
 		return SiteForecast{Lat: lat, Lon: lon, IssuedMs: nowMs(), Sources: []string{}}, "weather data is currently unavailable"
@@ -349,10 +372,12 @@ const (
 // Upstream-failure handling knobs (see Grid): the breaker window after a 429, the per-cube negative
 // memo, how far past TTL a stale cube may still be served, and the detached shared-fetch budget.
 const (
-	rateLimitCooldown = 70 * time.Second // Open-Meteo's minutely quota resets each minute; +10 s slack
-	gridFailMemo      = 30 * time.Second // don't re-attempt a just-failed cube on every tile request
-	staleGrace        = 6 * time.Hour    // stale cubes older than TTL+grace read as empty, not as live data
-	gridFetchTimeout  = 60 * time.Second // sequential chunks × 12 s HTTP timeout fits comfortably
+	rateLimitCooldown  = 70 * time.Second // Open-Meteo's minutely quota resets each minute; +10 s slack
+	gridFailMemo       = 30 * time.Second // don't re-attempt a just-failed cube on every tile request
+	staleGrace         = 6 * time.Hour    // stale cubes older than TTL+grace read as empty, not as live data
+	forecastStaleGrace = 12 * time.Hour   // same bound for the per-site timeline (it spans several days, so it ages slower)
+	gridFetchTimeout   = 60 * time.Second // sequential chunks × 12 s HTTP timeout fits comfortably
+	nightFetchTimeout  = 60 * time.Second // night scans are chunked the same way as cubes
 )
 
 // ErrRateLimited marks an upstream HTTP 429 — callers open the fetch breaker (tripRateLimit) so the
@@ -395,7 +420,19 @@ func (p *Provider) getJSON(ctx context.Context, url string, v any) error {
 	return json.NewDecoder(resp.Body).Decode(v)
 }
 
-func siteKey(lat, lon float64) string { return fmt.Sprintf("%+.2f_%+.2f", lat, lon) }
+// forecastCacheVersion namespaces the per-site forecast cache, exactly as gridCacheVersion does for
+// cubes. The point forecast had NO version until v1, so a change to its variable list or horizon
+// silently reinterpreted every cached file. v1 = derived seeing inputs + boundary-layer height + a
+// multi-night horizon.
+const forecastCacheVersion = 1
+
+// maxForecastDays is Open-Meteo's ceiling for the forecast endpoint. Skill collapses long before it;
+// the knob exists so the horizon can be widened without touching code, not because 16 days is useful.
+const maxForecastDays = 16
+
+func siteKey(lat, lon float64) string {
+	return fmt.Sprintf("v%d_%+.2f_%+.2f", forecastCacheVersion, lat, lon)
+}
 
 // gridCacheVersion namespaces the grid cache; bump it when a layer's semantics change (e.g. precip went
 // from rain amount in mm to chance of precipitation in %) or the grid geometry changes, so stale cached

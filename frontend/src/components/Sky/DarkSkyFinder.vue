@@ -26,10 +26,18 @@ import GenericTable, {
 } from "@/components/Common/GenericTable.vue";
 import LightPollutionLegend from "@/components/Sky/LightPollutionLegend.vue";
 import BortleScalePicker from "@/components/Sky/BortleScalePicker.vue";
+import NightPicker from "@/components/Sky/NightPicker.vue";
 import IconCar from "@/components/Icons/IconCar.vue";
-import { btnPrimary, btnGhost, input } from "@/constants/styles";
+import IconCloud from "@/components/Icons/IconCloud.vue";
+import { btnPrimary, btnGhost, input, checkbox } from "@/constants/styles";
 import { bortleColor } from "@/utils/bortle";
 import { formatTimestamp } from "@/utils/format";
+import {
+  dewRiskColor,
+  goodBad,
+  verdictColor,
+  verdictLabel,
+} from "@/utils/weather";
 import { apiGet } from "@/services/api";
 import type {
   AtlasBuildRequest,
@@ -60,12 +68,20 @@ function observerLatLon(): { lat: number; lon: number } | null {
 const mapEl = ref<HTMLDivElement | null>(null);
 const maxBortle = ref(4);
 const evalHorizon = ref(true);
+// Weather is on by default: "where should I go on Saturday" is a question about the sky, and a ranking
+// that answers it from terrain alone is confidently wrong whenever the darkest spot is clouded in.
+const useWeather = ref(true);
+const nightIndex = ref(0);
+// How much of the score the forecast takes. Moving it re-ranks the results already on screen straight
+// away and re-searches on a debounce, so dragging never fires a burst of forecast calls.
+const weatherWeight = ref(0.3);
+const NIGHT_COUNT = 7;
 const drawing = ref(false);
 const hasArea = ref(false);
 const region = ref("france");
 const canopyRegion = ref("custom"); // canopy default: the drawn area (smallest download)
 
-// Bidirectional map↔table selection: the highlighted candidate's index in store.candidates (stable across
+// Bidirectional map↔table selection: the highlighted candidate's index in rankedCandidates (stable across
 // table sorting). null = nothing selected. tableRef.scrollToKey reveals the row when a marker is clicked.
 const tableRef = ref<{ scrollToKey: (k: string | number) => void } | null>(
   null,
@@ -183,6 +199,8 @@ onMounted(() => {
   addLpLayer();
   lpStore.fetchStatus();
   canopyStore.fetchStatus();
+  // Twilight and moonrise are computed, not fetched, so the night list is cheap and can load eagerly.
+  void store.loadNights(home?.lat, home?.lon);
   if (home) drawHome(home.lat, home.lon);
 
   // Area drawing: while active, a press-drag traces the search rectangle (map panning is suspended).
@@ -238,6 +256,15 @@ watch(
     if (v && v !== old && store.searched && areaRect) search();
   },
 );
+
+// Picking a different night is a different question, so answer it immediately rather than waiting for
+// the user to press Search again with a stale list on screen.
+watch(nightIndex, () => {
+  if (store.searched && areaRect) search();
+});
+watch(useWeather, () => {
+  if (store.searched && areaRect) search();
+});
 
 // One-line summary of the installed canopy atlas, or a prompt to download one.
 const canopyCoverageLabel = computed(() => {
@@ -364,9 +391,44 @@ async function search() {
     horizon: evalHorizon.value,
     lat: home?.lat,
     lon: home?.lon,
+    night: nightIndex.value,
+    weather: useWeather.value,
+    weatherWeight: useWeather.value ? weatherWeight.value : undefined,
   });
-  renderMarkers();
 }
+
+// Re-searching after a slider nudge would spend a forecast call per pixel dragged. The visible ranking
+// updates instantly from the sub-scores already in hand (see rankedCandidates); this only refreshes the
+// shortlist, which can change when the weight moves far enough to pull in a spot that missed the cut.
+let weightTimer: ReturnType<typeof setTimeout> | null = null;
+function onWeightChange() {
+  if (weightTimer) clearTimeout(weightTimer);
+  if (!hasArea.value || !store.searched) return;
+  weightTimer = setTimeout(() => void search(), 500);
+}
+onBeforeUnmount(() => {
+  if (weightTimer) clearTimeout(weightTimer);
+});
+
+// Re-blend the returned candidates for the current slider position. The server ordered them for the
+// weight it was given; this keeps the list honest while the user drags, without another round trip.
+const rankedCandidates = computed<DarkSite[]>(() => {
+  const w = useWeather.value ? weatherWeight.value : 0;
+  if (!w || !store.weatherAvailable) return store.candidates;
+  return [...store.candidates].sort(
+    (a, b) => blendScore(b, w) - blendScore(a, w),
+  );
+});
+
+function blendScore(c: DarkSite, weight: number): number {
+  const terrain = 0.6 * c.sub.darkness + 0.4 * c.sub.openness;
+  if (!c.sub.weather_known) return terrain;
+  return (1 - weight) * terrain + weight * c.sub.weather;
+}
+
+// The markers are indexed by the displayed order, so any re-ranking — a new search or a slider move —
+// has to rebuild them in lockstep, or clicking a pin would select a different spot than the one shown.
+watch(rankedCandidates, () => renderMarkers());
 
 function clearMarkers() {
   for (const m of markers) lmap?.removeLayer(m);
@@ -387,7 +449,7 @@ function styleMarker(m: CircleMarker, c: DarkSite, selected: boolean) {
   if (selected) m.bringToFront();
 }
 function restyleMarkers() {
-  store.candidates.forEach((c, i) => {
+  rankedCandidates.value.forEach((c, i) => {
     const m = markers[i];
     if (m) styleMarker(m, c, i === selectedIdx.value);
   });
@@ -396,7 +458,7 @@ function renderMarkers() {
   clearMarkers();
   if (!lmap) return;
   const map = lmap;
-  store.candidates.forEach((c, i) => {
+  rankedCandidates.value.forEach((c, i) => {
     const m = circleMarker([c.lat, c.lon]).addTo(map);
     styleMarker(m, c, false);
     m.bindTooltip(markerTip(c), { direction: "top" });
@@ -413,7 +475,7 @@ function selectCandidate(
   idx: number,
   opts: { zoomTo?: boolean; scrollRow?: boolean } = {},
 ) {
-  const c = store.candidates[idx];
+  const c = rankedCandidates.value[idx];
   if (!c) return;
   selectedIdx.value = idx;
   restyleMarkers();
@@ -449,6 +511,10 @@ function markerTip(c: DarkSite): string {
     );
   if (c.horizon?.canopy_m)
     lines.push(`${t("darksky.trees")} ${Math.round(c.horizon.canopy_m)} m`);
+  if (hasForecast(c))
+    lines.push(
+      `${t(`tonight.weather.verdictLabel.${verdictLabel(c.weather!.score)}`)} · ${Math.round(c.weather!.cloud_pct)}% ${t("darksky.weather.clouds").toLowerCase()} · ${t("darksky.weather.hours", { n: c.weather!.clear_hours })}`,
+    );
   if (c.drive_km)
     lines.push(
       `🚗 ${Math.round(c.drive_km)} km · ${formatDriveMin(c.drive_min ?? 0)}`,
@@ -458,7 +524,7 @@ function markerTip(c: DarkSite): string {
 
 type Row = Record<string, unknown>;
 const rows = computed<Row[]>(() =>
-  store.candidates.map((c, i) => ({
+  rankedCandidates.value.map((c, i) => ({
     idx: i, // stable identity → correlates a row with its marker across sorting/selection
     n: i + 1,
     coords: `${c.lat.toFixed(3)}, ${c.lon.toFixed(3)}`,
@@ -467,12 +533,37 @@ const rows = computed<Row[]>(() =>
     openness: c.horizon?.openness_pct ?? null,
     south: c.horizon?.south_openness_pct ?? null,
     trees: c.horizon?.canopy_m ?? null,
+    sky: hasForecast(c) ? c.weather!.score : null,
+    clouds: hasForecast(c) ? c.weather!.cloud_pct : null,
+    clear: hasForecast(c) ? c.weather!.clear_hours : null,
+    seeing:
+      hasForecast(c) && c.weather!.seeing_arcsec > 0
+        ? c.weather!.seeing_arcsec
+        : null,
     // Sort by drive time (nearest first); rows without routing sort last.
     drive:
       c.drive_min && c.drive_min > 0 ? c.drive_min : Number.POSITIVE_INFINITY,
     site: c as unknown,
   })),
 );
+
+// A candidate has a forecast only when the scan actually returned hours for it. A zero-hour outlook is
+// "we do not know", and must never be rendered as a perfectly cloudy night.
+function hasForecast(c: DarkSite): boolean {
+  return !!c.weather && c.weather.sample_hours > 0;
+}
+
+// Flags are locale-neutral keys from the engine; the ones worth interrupting the user for get a chip.
+const FLAG_CHIPS: Record<string, { icon: string; tone: string }> = {
+  above_inversion: { icon: "⛰", tone: "text-success" },
+  fog_risk: { icon: "≈", tone: "text-warning" },
+  frost: { icon: "❄", tone: "text-info" },
+};
+function flagChips(c: DarkSite): { key: string; icon: string; tone: string }[] {
+  return (c.weather?.flags ?? [])
+    .filter((f) => FLAG_CHIPS[f])
+    .map((f) => ({ key: f, ...FLAG_CHIPS[f] }));
+}
 
 function rowIdx(row: Row): number {
   return Number(row.idx);
@@ -482,11 +573,19 @@ function onRowClick(row: Row) {
   selectCandidate(rowIdx(row));
 }
 // The selected candidate's row gets a ring; every other row keeps the default clickable hover style.
+// A spot whose night the forecast writes off is dimmed rather than dropped — on a marginal night the
+// least-bad option is still the answer, and hiding it would leave an empty map.
 function rowClassFor(row: Row): string {
-  return rowIdx(row) === selectedIdx.value
-    ? "cursor-pointer bg-brand-100/70 ring-1 ring-inset ring-brand-400/60 dark:bg-brand-500/20"
-    : "cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50";
+  const base =
+    rowIdx(row) === selectedIdx.value
+      ? "cursor-pointer bg-brand-100/70 ring-1 ring-inset ring-brand-400/60 dark:bg-brand-500/20"
+      : "cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50";
+  const sky = row.sky;
+  return typeof sky === "number" && sky < HOPELESS_SKY
+    ? `${base} opacity-60`
+    : base;
 }
+const HOPELESS_SKY = 20;
 const columns: Column<Row>[] = [
   { key: "n", label: "#", align: "right" },
   { key: "coords", label: t("darksky.coords"), searchable: true },
@@ -519,6 +618,28 @@ const columns: Column<Row>[] = [
     align: "right",
     format: (v) =>
       v == null || Number(v) <= 0 ? "—" : `${Math.round(Number(v))} m`,
+  },
+  { key: "sky", label: t("darksky.weather.sky"), sortable: true },
+  {
+    key: "clouds",
+    label: t("darksky.weather.clouds"),
+    sortable: true,
+    align: "right",
+    format: (v) => (v == null ? "—" : `${Math.round(Number(v))}%`),
+  },
+  {
+    key: "clear",
+    label: t("darksky.weather.clearHours"),
+    sortable: true,
+    align: "right",
+    format: (v) => (v == null ? "—" : t("darksky.weather.hours", { n: v })),
+  },
+  {
+    key: "seeing",
+    label: t("darksky.weather.seeing"),
+    sortable: true,
+    align: "right",
+    format: (v) => (v == null ? "—" : `${Number(v).toFixed(1)}″`),
   },
   { key: "drive", label: t("darksky.drive"), sortable: true, align: "right" },
   { key: "actions", label: "", align: "right" },
@@ -610,6 +731,13 @@ const columns: Column<Row>[] = [
         <input v-model="evalHorizon" type="checkbox" class="accent-brand-500" />
         {{ t("darksky.evalHorizon") }}
       </label>
+      <label
+        class="flex items-center gap-2 text-sm"
+        :title="t('darksky.weather.useHint')"
+      >
+        <input v-model="useWeather" type="checkbox" :class="checkbox" />
+        {{ t("darksky.weather.use") }}
+      </label>
       <button
         :class="btnPrimary"
         :disabled="!hasArea || store.loading"
@@ -617,6 +745,75 @@ const columns: Column<Row>[] = [
       >
         {{ store.loading ? t("common.loading") : t("darksky.search") }}
       </button>
+    </div>
+
+    <!-- which night to plan for, and how much the forecast should count -->
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <NightPicker
+        v-model="nightIndex"
+        :nights="store.nights"
+        :count="NIGHT_COUNT"
+      />
+      <label
+        v-if="useWeather"
+        class="flex items-center gap-2 text-sm"
+        :title="t('darksky.weather.weightHint')"
+      >
+        <span class="text-slate-500 dark:text-slate-400">{{
+          t("darksky.weather.darkest")
+        }}</span>
+        <input
+          v-model.number="weatherWeight"
+          type="range"
+          min="0"
+          max="0.8"
+          step="0.05"
+          class="w-32 accent-brand-600"
+          :aria-label="t('darksky.weather.weightHint')"
+          @change="onWeightChange"
+        />
+        <span class="text-slate-500 dark:text-slate-400">{{
+          t("darksky.weather.clearest")
+        }}</span>
+      </label>
+    </div>
+
+    <!-- what the chosen night actually looks like, before any spot is picked -->
+    <div
+      v-if="useWeather && store.night"
+      class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 dark:text-slate-400"
+    >
+      <span class="inline-flex items-center gap-1">
+        <IconCloud class="text-slate-400" />
+        {{
+          t("darksky.weather.nightSummary", {
+            hours: store.night.dark_hours.toFixed(1),
+            moon: Math.round(store.night.moon_illum * 100),
+          })
+        }}
+      </span>
+      <span v-if="store.night.moon_up_hours > 0.1">
+        {{
+          t("darksky.weather.moonUp", {
+            hours: store.night.moon_up_hours.toFixed(1),
+          })
+        }}
+      </span>
+      <span
+        v-if="store.night.confidence"
+        :title="t('darksky.weather.agreementHint')"
+      >
+        {{
+          t("darksky.weather.agreement", {
+            pct: Math.round(store.night.confidence.agreement * 100),
+            clear: store.night.confidence.clear_members,
+            total: store.night.confidence.members,
+          })
+        }}
+      </span>
+      <span v-if="!store.weatherAvailable" class="text-warning">
+        {{ t("darksky.weather.degraded") }}
+      </span>
     </div>
 
     <!-- map (static class — Leaflet manages this element's classes/cursor at runtime; see setMapCursor) -->
@@ -755,6 +952,42 @@ const columns: Column<Row>[] = [
         />
         <span class="ml-1.5 align-middle">{{ value }}</span>
       </template>
+      <template #cell-sky="{ row }">
+        <span
+          v-if="row.sky != null"
+          class="inline-flex items-center gap-1.5 whitespace-nowrap"
+        >
+          <span
+            class="inline-block h-2.5 w-2.5 rounded-full"
+            :style="{ backgroundColor: verdictColor(Number(row.sky)) }"
+          />
+          <span>{{
+            t(`tonight.weather.verdictLabel.${verdictLabel(Number(row.sky))}`)
+          }}</span>
+          <span
+            v-for="chip in flagChips(row.site as DarkSite)"
+            :key="chip.key"
+            :class="chip.tone"
+            :title="t(`darksky.weather.flags.${chip.key}`)"
+            >{{ chip.icon }}</span
+          >
+          <span
+            v-if="(row.site as DarkSite).weather?.dew_risk === 'high'"
+            :style="{ color: dewRiskColor('high') }"
+            :title="t('darksky.weather.dewHigh')"
+            >•</span
+          >
+        </span>
+        <span v-else class="text-slate-400">—</span>
+      </template>
+      <template #cell-clouds="{ row }">
+        <span
+          v-if="row.clouds != null"
+          :style="{ color: goodBad(Number(row.clouds), 0, 100) }"
+          >{{ Math.round(Number(row.clouds)) }}%</span
+        >
+        <span v-else class="text-slate-400">—</span>
+      </template>
       <template #cell-drive="{ row }">
         <span
           v-if="(row.site as DarkSite).drive_km"
@@ -805,6 +1038,11 @@ const columns: Column<Row>[] = [
       class="text-sm text-slate-400"
     >
       {{ t("darksky.noResults") }}
+    </p>
+
+    <!-- Open-Meteo's free tier is CC BY 4.0: attribution is a licence condition, not decoration. -->
+    <p v-if="useWeather" class="text-xs text-slate-400">
+      {{ t("darksky.weather.attribution") }}
     </p>
   </div>
 </template>

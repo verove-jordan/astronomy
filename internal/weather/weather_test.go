@@ -63,6 +63,7 @@ func testProvider(t *testing.T, omURL, aqURL, stURL, swpcURL string) *Provider {
 		WeatherGridSize:      4,
 		WeatherGridRadiusDeg: 2,
 		WeatherCacheTTLMin:   30,
+		WeatherForecastDays:  7,
 	})
 }
 

@@ -87,7 +87,7 @@ func opticsOf(d Deps) skyplan.Optics {
 	c := d.Cfg
 	return skyplan.Optics{
 		FocalMM: c.FocalLenMM, ApertureMM: c.ApertureMM, PixelUm: c.PixelSizeUm,
-		SensorWpx: c.SensorWpx, SensorHpx: c.SensorHpx, BarlowX: c.BarlowX,
+		SensorWpx: c.SensorWpx, SensorHpx: c.SensorHpx, BarlowX: c.BarlowX, ReducerX: c.ReducerX,
 	}
 }
 

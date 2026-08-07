@@ -9,6 +9,7 @@ import type {
   CalibPreview,
   RunPlanPreview,
   RunSummary,
+  Scene3DManifest,
   SetQaReport,
   StarAnnotations,
 } from "@/types";
@@ -103,14 +104,59 @@ export interface KnobRange {
   int?: boolean;
 }
 
+// StackAlgo is one row of the engine's stacking catalogue (internal/stackalg): a combination method
+// or a rejection algorithm, which engines implement it, what its two parameters mean, and the
+// frame-count band it is best in. The panel builds its dropdowns from these — never from a
+// hardcoded list — so it can never offer an algorithm the engine cannot run.
+export interface StackAlgoParam {
+  kind: "sigma" | "fraction" | "alpha";
+  default: number;
+  min: number;
+  max: number;
+}
+export interface StackCombineInfo {
+  id: string;
+  engines: string[];
+  rejects?: boolean;
+  normalizes?: boolean;
+}
+export interface StackRejectInfo {
+  id: string;
+  engines: string[];
+  has_params?: boolean;
+  low?: StackAlgoParam;
+  high?: StackAlgoParam;
+  best_from?: number;
+  best_to?: number;
+}
+// StackAutoBand is one frame-count band of the automatic rejection rule, so the panel can badge the
+// algorithm "auto" would pick for the capture in hand.
+export interface StackAutoBand {
+  up_to?: number;
+  from?: number;
+  reject: string;
+}
+export interface StackMenu {
+  combines: StackCombineInfo[];
+  rejects: StackRejectInfo[];
+  norms: string[];
+  weights: string[];
+  auto_bands: StackAutoBand[];
+  // The calibration frame types that carry their own recipe, as wire prefixes
+  // ("master_bias" → master_bias_reject …).
+  master_types: string[];
+}
+
 // ModeParams is a stacking mode's effective tunable knobs (the run's real values) + their min/max
 // ranges + the human-readable knob menu, from GET /api/mode-params. Powers the Advanced-parameters
-// prefill and the glossary's default/min/max reference in the Import run controls.
+// prefill and the glossary's default/min/max reference in the Import run controls. stack_menu is
+// null for the modes that stack natively (planetary/sun/milkyway).
 export interface ModeParams {
   mode: string;
   defaults: Record<string, unknown>;
   ranges: Record<string, KnobRange>;
   menu: string;
+  stack_menu?: StackMenu | null;
 }
 
 // Runs gallery page size (paginated so a large output dir loads fast).
@@ -136,6 +182,10 @@ export const useJobsStore = defineStore("jobs", () => {
   const starsByJob = ref<Record<number, StarAnnotations>>({});
   // POST in flight per job — survives a JobView remount so the button can't double-submit.
   const starsBusy = ref<Record<number, boolean>>({});
+  // 3D field-map manifests, cached per job alongside the annotation they are built from. The star
+  // field itself is a binary blob fetched separately and only when the 3D view is actually opened —
+  // it is the one payload big enough to be worth not loading for someone who never asks for it.
+  const sceneByJob = ref<Record<number, Scene3DManifest>>({});
 
   // list refreshes the currently-loaded window (newest first). It re-fetches from offset 0 with a limit of
   // however many are already shown (min one page), so the Tasks poll updates live status without discarding
@@ -446,9 +496,34 @@ export const useJobsStore = defineStore("jobs", () => {
         withS3(`/api/jobs/${id}/stars`),
       );
       starsByJob.value[id] = normalizeStars(data);
+      // The same pass rebuilds the 3D scene, so the cached manifest is now stale by construction —
+      // dropping it is what makes "recompute" visibly fix a run whose scene could not be built.
+      delete sceneByJob.value[id];
+      void fetchScene3D(id);
       return starsByJob.value[id];
     } finally {
       starsBusy.value[id] = false;
+    }
+  }
+
+  function sceneFor(id: number): Scene3DManifest | null {
+    return sceneByJob.value[id] ?? null;
+  }
+
+  // fetchScene3D loads the cached 3D manifest (GET). 404 = the stars were never computed, which is
+  // the normal state before the user asks for them; both that and any other failure yield null so
+  // the 3D chip simply stays hidden. Carries the S3 tags like the stars calls do.
+  async function fetchScene3D(id: number): Promise<Scene3DManifest | null> {
+    const cached = sceneByJob.value[id];
+    if (cached) return cached;
+    try {
+      const data = await apiGet<Scene3DManifest>(
+        withS3(`/api/jobs/${id}/scene3d`),
+      );
+      sceneByJob.value[id] = data;
+      return data;
+    } catch {
+      return null;
     }
   }
 
@@ -578,6 +653,8 @@ export const useJobsStore = defineStore("jobs", () => {
     starsFor,
     fetchStars,
     countStars,
+    sceneFor,
+    fetchScene3D,
     freeLocal,
     refine,
     rerun,

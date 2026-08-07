@@ -10,6 +10,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/grade"
 	"github.com/verove-jordan/astronomy/internal/inspect"
 	"github.com/verove-jordan/astronomy/internal/siril"
+	"github.com/verove-jordan/astronomy/internal/stackalg"
 )
 
 // Live-stacking stack primitives. They reuse the same Siril building blocks as the batch pipeline
@@ -138,7 +139,12 @@ func StackLinearLive(ctx context.Context, runner *siril.Runner, poolPaths []stri
 
 	masterName := "master_" + filterTag(filter)
 	outBase := filepath.Join(outDir, masterName)
-	_, stackNote, err := stackSelectedOrCopy(ctx, runner, seqDir, reg, regCount, rejected, outBase, "wfwhm", onProgress)
+	// The live PREVIEW deliberately keeps the proven default recipe: it re-stacks after every batch,
+	// so it must stay fast and predictable. The user's own stacking choice applies to the FINAL run,
+	// which goes through the standard deep-sky path with the livestack preset.
+	liveStack := stackalg.DefaultLights()
+	liveStack.Weight = stackalg.WeightWFWHM
+	_, stackNote, err := stackSelectedOrCopy(ctx, runner, seqDir, reg, regCount, rejected, outBase, liveStack, onProgress)
 	if err != nil {
 		ch.Err = err.Error()
 		return ch, err

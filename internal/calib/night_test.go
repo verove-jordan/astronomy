@@ -15,12 +15,12 @@ import (
 // stacks must never overwrite each other); a keyless (single-night) set keeps its historical name.
 func TestMasterName_SessionSuffix(t *testing.T) {
 	base := inspect.SetKey{Type: inspect.Flat, Filter: "L", ExposureMs: 5, Gain: 0, Offset: 10, Bin: 1, TempBucket: -25}
-	assert.Equal(t, "master_FLAT_L_5ms_g0o10_b1_-25C", masterName(MasterFlat, base),
+	assert.Equal(t, "master_FLAT_L_5ms_g0o10_b1_-25C", masterName(MasterFlat, base, defaultStack(MasterFlat)),
 		"single-night name unchanged — the byte-identity pin")
 
 	night := base
 	night.Session = "2023-02-27"
-	assert.Equal(t, "master_FLAT_L_5ms_g0o10_b1_-25C_n2023-02-27", masterName(MasterFlat, night))
+	assert.Equal(t, "master_FLAT_L_5ms_g0o10_b1_-25C_n2023-02-27", masterName(MasterFlat, night, defaultStack(MasterFlat)))
 }
 
 // TestPickFlat_NightTiers: the light's own night wins over a deeper other-night flat; unknown nights

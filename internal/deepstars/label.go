@@ -8,13 +8,15 @@ import (
 
 // greekByToken maps HYG's 3-letter Bayer tokens to greek letters. The generator hard-fails on any
 // token outside this map (plus an optional "-N" component suffix), so it is provably complete for
-// the embedded catalogue.
-var greekByToken = map[string]string{
-	"Alp": "α", "Bet": "β", "Gam": "γ", "Del": "δ", "Eps": "ε", "Zet": "ζ",
-	"Eta": "η", "The": "θ", "Iot": "ι", "Kap": "κ", "Lam": "λ", "Mu": "μ",
-	"Nu": "ν", "Xi": "ξ", "Omi": "ο", "Pi": "π", "Rho": "ρ", "Sig": "σ",
-	"Tau": "τ", "Ups": "υ", "Phi": "φ", "Chi": "χ", "Psi": "ψ", "Ome": "ω",
-}
+// the embedded catalogue. It is derived from greekTokens/greekLetters (format.go) so the runtime
+// map and the index the binary catalogue stores can never drift apart.
+var greekByToken = func() map[string]string {
+	m := make(map[string]string, len(greekTokens))
+	for i, tok := range greekTokens {
+		m[tok] = greekLetters[i]
+	}
+	return m
+}()
 
 var superscripts = [10]string{"", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"}
 
@@ -41,7 +43,16 @@ func (s Star) bayerLabel() string {
 	return greek + sup + " " + s.Con
 }
 
-// designations lists the star's names best-first: proper → Bayer → Flamsteed → HD.
+// designations lists the star's names best-first: proper → Bayer → Flamsteed → HD → HIP → Tycho-2
+// → Gaia DR3.
+//
+// The last two tiers are what make the deep catalogue worth having. Below roughly magnitude 9 a
+// star has no proper name, no Bayer letter and usually no HD number, so on the old embedded extract
+// it fell off the end of this chain and rendered as nothing at all — an anonymous circle. Almost
+// every ATHYG star carries a Tycho-2 designation, and the handful that do not carry a Gaia source
+// id, so a field of eleventh-magnitude stars is now fully identifiable. A Tycho or Gaia id is not a
+// name anyone recognises, but it is a real, resolvable catalogue entry: it can be pasted into
+// SIMBAD or Vizier, which "unnamed" cannot.
 func (s Star) designations() []string {
 	var out []string
 	if s.Proper != "" {
@@ -56,10 +67,20 @@ func (s Star) designations() []string {
 	if s.HD > 0 {
 		out = append(out, "HD "+strconv.Itoa(s.HD))
 	}
+	if s.HIP > 0 {
+		out = append(out, "HIP "+strconv.Itoa(s.HIP))
+	}
+	if s.TYC != "" {
+		out = append(out, "TYC "+s.TYC)
+	}
+	if s.Gaia > 0 {
+		out = append(out, "Gaia DR3 "+strconv.FormatUint(s.Gaia, 10))
+	}
 	return out
 }
 
-// Primary returns the display designation ("Vega" → "α² Cen" → "61 Cyg" → "HD 48915" → "").
+// Primary returns the display designation ("Vega" → "α² Cen" → "61 Cyg" → "HD 48915" →
+// "TYC 4669-731-1" → "").
 func (s Star) Primary() string {
 	d := s.designations()
 	if len(d) == 0 {

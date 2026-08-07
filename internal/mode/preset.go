@@ -10,6 +10,8 @@ import (
 
 	"github.com/verove-jordan/astronomy/internal/grade"
 	"github.com/verove-jordan/astronomy/internal/planetary"
+	"github.com/verove-jordan/astronomy/internal/solar"
+	"github.com/verove-jordan/astronomy/internal/stackalg"
 )
 
 // BrightnessTarget maps the milkyway brightness control to an auto-levels target sky-background level
@@ -43,6 +45,7 @@ const (
 	Livestack Mode = "livestack" // watch a source + incrementally stack during a session; finalize = deepsky
 	Comet     Mode = "comet"     // moving comet: dual star/comet stack + star-layer recomposite
 	Mosaic    Mode = "mosaic"    // tiled panels of one large object: per-panel deepsky stacks + WCS assembly
+	Sun       Mode = "sun"       // the Sun in Hα or white light: limb-registered lucky imaging
 )
 
 // Format is the desired output artifact.
@@ -95,6 +98,7 @@ type Preset struct {
 	LumCurve         []float64         // galaxy-brightness curve applied to the L luminance layer (LRGB)
 	LumOpacity       float64           // opacity (0..1) of the L luminance layer in the LRGB composite (1 = full detail from L; lower = softer, more RGB-driven). 0/unset → full.
 	Planetary        planetary.Options // lucky-imaging settings (planetary only)
+	Sun              solar.Preset      // solar ingest/stack/finish settings (sun only)
 
 	// CoreHighlightKnee / CoreHighlightCeil roll off the L luminance highlights (after LumCurve, before the
 	// Ha screen) to tame a blown nebula core: identity below knee (outer nebula/stars/sky untouched),
@@ -155,7 +159,22 @@ type Preset struct {
 	// StackWeight sets the Siril stack weighting mode ("" | noise | wfwhm | nbstars | nbstack). wfwhm
 	// weights each sub by its star sharpness, so the deeper/sharper subs dominate — the cross-session
 	// merge already uses it; single-session and OSC stacks were previously unweighted. "" → unweighted.
+	// It is copied into Stack.Weight at the stack call site, because a photometrically normalized
+	// multi-group channel may override it per channel (see pipeline.photomStackWeight).
 	StackWeight string
+
+	// Stack is the LIGHT-frame combination recipe: which method combines the pixels, which outlier
+	// test rejects them and with what parameters, how the frames are normalized and weighted. Its
+	// default (stackalg.DefaultLights) is the count-adaptive Winsorized/GESD/percentile clause the
+	// engine has always emitted, so an untouched preset stacks byte-identically to before the knob.
+	Stack stackalg.Options
+	// StackComet is the COMET-ALIGNED stack's own recipe (comet mode only). It defaults to an
+	// asymmetric winsorization that erases the marching star trails while protecting the faint tail
+	// — see stackalg.DefaultComet. The star-aligned half of a comet run uses Stack.
+	StackComet stackalg.Options
+	// Masters is the calibration-master stacking recipe (bias / dark / flat), each with its own
+	// physically-mandated normalization. See stackalg.DefaultMasters.
+	Masters stackalg.MasterOptions
 
 	// PhotomNorm photometrically normalizes heterogeneous calibration groups (sessions shot at
 	// different exposure/gain/temperature) in Go before the cross-session merge: each group's linear
@@ -432,10 +451,10 @@ func (f Format) WantsImage() bool { return f != FormatVideo }
 // ParseMode validates a mode string.
 func ParseMode(s string) (Mode, error) {
 	switch Mode(strings.ToLower(s)) {
-	case Deepsky, Nebula, Milkyway, Planetary, Livestack, Comet, Mosaic:
+	case Deepsky, Nebula, Milkyway, Planetary, Livestack, Comet, Mosaic, Sun:
 		return Mode(strings.ToLower(s)), nil
 	default:
-		return "", fmt.Errorf("unknown mode %q (want: deepsky, nebula, milkyway, planetary, livestack, comet, mosaic)", s)
+		return "", fmt.Errorf("unknown mode %q (want: deepsky, nebula, milkyway, planetary, livestack, comet, mosaic, sun)", s)
 	}
 }
 
@@ -451,6 +470,24 @@ func ParseFormat(s string) (Format, error) {
 
 // For returns the preset for a mode.
 func For(m Mode) Preset {
+	p := presetFor(m)
+	// The stacking recipes are shared by every mode, so the per-mode literals below stay focused on
+	// their own grade/look tuning. Filling them here (rather than in each literal) also means a mode
+	// that never stacks light frames still carries a valid recipe if an OSC path reaches one.
+	if p.Stack == (stackalg.Options{}) {
+		p.Stack = stackalg.DefaultLights()
+	}
+	if p.StackComet == (stackalg.Options{}) {
+		p.StackComet = stackalg.DefaultComet()
+	}
+	if p.Masters == (stackalg.MasterOptions{}) {
+		p.Masters = stackalg.DefaultMasters()
+	}
+	return p
+}
+
+// presetFor is the per-mode tuning table; For wraps it with the shared stacking defaults.
+func presetFor(m Mode) Preset {
 	switch m {
 	case Mosaic:
 		// Tiled-panel mosaic: every panel stacks with the full deepsky tuning; the assembler owns
@@ -566,6 +603,18 @@ func For(m Mode) Preset {
 			},
 			Curve:    []float64{0, 0, 0.5, 0.52, 1, 1},
 			Previews: true, // lucky-imaging sharpens; no denoise/color-cal
+		}
+	case Sun:
+		// Solar imaging shares lucky imaging's shape and almost none of its tuning. Registration is
+		// geometric — the fitted limb gives scale, centre and (with the annulus correlation) rotation
+		// — so none of the star- or feature-matching knobs apply. The frame keep rate is far higher
+		// than a planetary run's because a 40 mm aperture is diffraction-limited rather than
+		// seeing-limited: frame-to-frame variation is small and the stack is SNR-limited, so
+		// discarding most frames would cost more noise than it buys sharpness.
+		return Preset{
+			Mode:     Sun,
+			Sun:      solar.DefaultPreset(),
+			Previews: true,
 		}
 	case Livestack:
 		// Live stacking finalizes through the standard deep-sky path; the per-batch live preview reads

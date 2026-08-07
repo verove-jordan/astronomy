@@ -33,6 +33,9 @@ import (
 	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/skycat"
+	"github.com/verove-jordan/astronomy/internal/solar"
+	"github.com/verove-jordan/astronomy/internal/stackalg"
+	"github.com/verove-jordan/astronomy/internal/stacknative"
 	"github.com/verove-jordan/astronomy/internal/starnet"
 	"github.com/verove-jordan/astronomy/internal/sysmon"
 	"github.com/verove-jordan/astronomy/internal/transient"
@@ -333,7 +336,15 @@ type Result struct {
 	// MosaicAssembly records a Mode "mosaic" run's panel assembly (segmentation, per-panel solves,
 	// photometric matching, canvas + seam metrics). See mosaicassemble.go.
 	MosaicAssembly *MosaicResult `json:"mosaic_assembly,omitempty"`
-	Warnings       []string      `json:"warnings"`
+	// Bracket records a Mode "sun" run's exposure composite: how far apart the tiers were measured to
+	// be, and how much of the finished master each one actually contributed. Absent for a session
+	// shot at a single exposure. See solar/bracket.go.
+	Bracket []solar.TierReport `json:"bracket,omitempty"`
+	// PSF is what the finished solar master actually resolved, measured off its limb — the width the
+	// run deconvolved at, and whether the camera had already sharpened the frames. It is the number
+	// that says whether a session was worth the sharpening it was given. See solar/psf.go.
+	PSF      *solar.PSF `json:"psf,omitempty"`
+	Warnings []string   `json:"warnings"`
 	// Engine identifies the build that produced this run (buildinfo; "dev" for un-stamped binaries) —
 	// so a result from a stale Docker engine is identifiable instead of masquerading as current code.
 	Engine string `json:"engine,omitempty"`
@@ -360,13 +371,21 @@ type RunOptions struct {
 	BackgroundAI     bool    `json:"background_ai,omitempty"`
 	StarReduce       float64 `json:"star_reduce,omitempty"`
 	StackWeight      string  `json:"stack_weight,omitempty"`
-	Mosaic           bool    `json:"mosaic,omitempty"`
-	MosaicFill       string  `json:"mosaic_fill,omitempty"`
-	SeamOffsetRefit  bool    `json:"seam_offset_refit,omitempty"`
-	SeamNoiseEq      bool    `json:"seam_noise_eq,omitempty"`
-	Palette          string  `json:"palette,omitempty"`
-	LuminanceMono    bool    `json:"luminance_mono,omitempty"`
-	AllChannelMono   bool    `json:"all_channel_mono,omitempty"`
+	// How the pixels were combined. Recorded because `params` alone cannot answer "which algorithm
+	// produced this master?" when the choice came from the mode default or a preset rather than
+	// from a knob the user typed. StackReject is "auto" when the count-adaptive rule chose per
+	// channel — the per-channel clause is in the Siril log.
+	StackEngine     string `json:"stack_engine,omitempty"`
+	StackCombine    string `json:"stack_combine,omitempty"`
+	StackReject     string `json:"stack_reject,omitempty"`
+	StackNorm       string `json:"stack_norm,omitempty"`
+	Mosaic          bool   `json:"mosaic,omitempty"`
+	MosaicFill      string `json:"mosaic_fill,omitempty"`
+	SeamOffsetRefit bool   `json:"seam_offset_refit,omitempty"`
+	SeamNoiseEq     bool   `json:"seam_noise_eq,omitempty"`
+	Palette         string `json:"palette,omitempty"`
+	LuminanceMono   bool   `json:"luminance_mono,omitempty"`
+	AllChannelMono  bool   `json:"all_channel_mono,omitempty"`
 }
 
 // runOptionsFrom snapshots the resolved preset toggles into a RunOptions (nil when there is no preset).
@@ -388,6 +407,10 @@ func runOptionsFrom(p *mode.Preset) *RunOptions {
 		BackgroundAI:     p.BackgroundAI,
 		StarReduce:       p.StarReduce,
 		StackWeight:      p.StackWeight,
+		StackEngine:      displayEngine(p.Stack.Engine),
+		StackCombine:     displayCombine(p.Stack.Combine),
+		StackReject:      displayReject(p.Stack.Reject),
+		StackNorm:        displayNorm(p.Stack.Norm),
 		Palette:          p.Palette,
 		LuminanceMono:    p.EmitLuminanceMono,
 		AllChannelMono:   p.EmitAllChannelMono,
@@ -749,17 +772,18 @@ func buildRunMasters(ctx context.Context, opts Options, inv *inspect.Inventory, 
 			return nil, nil, err
 		}
 		return calib.BuildDeepMasters(ctx, opts.Runner, inv, opts.RawCalib, opts.Library,
-			opts.Deep, libDir, workRun, progress("building deep master calibration frames"))
+			opts.Deep, libDir, workRun, opts.masterStacks(),
+			progress("building deep master calibration frames"))
 	case opts.Library != nil:
 		libDir, err := libraryDir(opts, workAbs)
 		if err != nil {
 			return nil, nil, err
 		}
 		return calib.BuildOrReuseMasters(ctx, opts.Runner, inv, opts.Library, libDir, workRun,
-			progress("building/reusing master calibration frames"))
+			opts.masterStacks(), progress("building/reusing master calibration frames"))
 	default:
 		return calib.BuildMasters(ctx, opts.Runner, inv, filepath.Join(workRun, "masters"), workRun,
-			progress("building master calibration frames"))
+			opts.masterStacks(), progress("building master calibration frames"))
 	}
 }
 
@@ -1581,6 +1605,42 @@ func (o Options) stackWeight() string {
 	}
 }
 
+// lightStack is this run's light-frame stacking recipe: the preset's own combination/rejection/
+// normalization choice with the weighting resolved for THIS channel — a photometrically normalized
+// multi-group channel may override the preset's weight (see photomStackWeight). A nil or unset
+// preset falls back to the historical defaults, so the emitted command stays byte-identical.
+func (o Options) lightStack(weight string) stackalg.Options {
+	s := stackalg.DefaultLights()
+	if o.Preset != nil && o.Preset.Stack != (stackalg.Options{}) {
+		s = o.Preset.Stack
+	}
+	s.Weight = stackalg.Weight(weight)
+	return s
+}
+
+// cometStack is the COMET-ALIGNED stack's recipe — asymmetric by default so the marching star
+// trails are clipped while the faint tail survives (see stackalg.DefaultComet).
+func (o Options) cometStack() stackalg.Options {
+	if o.Preset != nil && o.Preset.StackComet != (stackalg.Options{}) {
+		return o.Preset.StackComet
+	}
+	return stackalg.DefaultComet()
+}
+
+// masterStacks is this run's per-frame-type calibration recipes (bias/dark/flat/dark-flat). A nil or
+// unset preset falls back to the historical defaults, so master names and contents are unchanged.
+func (o Options) masterStacks() stackalg.MasterOptions {
+	if o.Preset != nil && o.Preset.Masters != (stackalg.MasterOptions{}) {
+		return o.Preset.Masters
+	}
+	return stackalg.DefaultMasters()
+}
+
+// masterStack is one calibration master's stacking recipe for this run.
+func (o Options) masterStack(mt calib.MasterType) stackalg.Options {
+	return calib.MasterStackOptions(mt, o.masterStacks())
+}
+
 func processChannel(ctx context.Context, opts Options, set inspect.Set, masters []calib.Master,
 	workRun, outDir string, gradeOpts grade.Options, onProgress func(siril.Progress)) ChannelResult {
 	sel := calib.MatchForLightExcluding(set.Key, masters, opts.CalibExclude, opts.ForceCalibration)
@@ -1679,7 +1739,7 @@ func finishStackedChannel(ctx context.Context, opts Options, seqDir, baseSeq, re
 
 	masterName := "master_" + filterTag(filter) // basename in outDir (Siril CWD)
 	outBase := filepath.Join(outDir, masterName)
-	_, stackNote, err := stackSelectedOrCopy(ctx, opts.Runner, seqDir, regSeq, regCount, rejectedReg, outBase, stackWeight, onProgress)
+	_, stackNote, err := stackSelectedOrCopy(ctx, opts.Runner, seqDir, regSeq, regCount, rejectedReg, outBase, opts.lightStack(stackWeight), onProgress)
 	if err != nil {
 		ch.Err = err.Error()
 		return
@@ -1818,7 +1878,8 @@ func applyTrailMask(opts Options, seqDir, regSeq string, ch *ChannelResult, satC
 // more frames registered is a grading-contract violation (grade.Grade restores frames to the stack
 // minimum) reported as a clear error instead of an opaque Siril script failure.
 func stackSelectedOrCopy(ctx context.Context, runner *siril.Runner, seqDir, regSeq string,
-	regCount int, rejected []int, outBase, weight string, onProgress func(siril.Progress)) (*siril.Result, string, error) {
+	regCount int, rejected []int, outBase string, stack stackalg.Options,
+	onProgress func(siril.Progress)) (*siril.Result, string, error) {
 	if regCount == 1 {
 		src := filepath.Join(seqDir, regSeq+"_00001.fits") // registered space is contiguous
 		if err := fsutil.CopyFile(src, outBase+".fits"); err != nil {
@@ -1829,8 +1890,60 @@ func stackSelectedOrCopy(ctx context.Context, runner *siril.Runner, seqDir, regS
 	if survivors := regCount - len(rejected); survivors < 2 {
 		return nil, "", fmt.Errorf("%d of %d registered frames survived grading — below Siril's two-frame stack minimum", survivors, regCount)
 	}
-	res, err := runner.Run(ctx, seqDir, siril.StackSelectedScript(regSeq, regCount, rejected, outBase, weight), onProgress)
+	// An algorithm Siril cannot run goes to the Go combiner over the frames Siril already registered.
+	// It does NOT soft-fail back to Siril: silently substituting a different algorithm would make the
+	// run's own provenance a lie.
+	if stackalg.EngineFor(stack) == stackalg.EngineNative {
+		note, err := stackNative(ctx, seqDir, regSeq, regCount, rejected, outBase, stack, onProgress)
+		return nil, note, err
+	}
+	res, err := runner.Run(ctx, seqDir, siril.StackSelectedScript(regSeq, regCount, rejected, outBase, stack), onProgress)
 	return res, "", err
+}
+
+// stackNative combines the surviving registered frames with the Go combiner (internal/stacknative)
+// and returns a note naming the algorithm and the fraction of samples it rejected — the provenance
+// the Siril path gets from Siril's own log.
+func stackNative(ctx context.Context, seqDir, regSeq string, regCount int, rejected []int,
+	outBase string, stack stackalg.Options, onProgress func(siril.Progress)) (string, error) {
+	frames := registeredSurvivors(seqDir, regSeq, regCount, rejected)
+	if len(frames) < 2 {
+		return "", fmt.Errorf("native stack: %d surviving frames", len(frames))
+	}
+	res, err := stacknative.Stack(ctx, stacknative.Request{
+		Frames:  frames,
+		Out:     outBase + ".fits",
+		Options: stack,
+		OnProgress: func(done, total int) {
+			if onProgress == nil || total == 0 {
+				return
+			}
+			onProgress(siril.Progress{Percent: done * 100 / total})
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("native stack: %w", err)
+	}
+	return fmt.Sprintf("stacked %d frames with the Go combiner (%s, %.2f%% of samples rejected)",
+		res.Frames, res.Algorithm, res.Rejected*100), nil
+}
+
+// registeredSurvivors lists the registered frame files that survived grading. Siril names them
+// <regSeq>_00001.fits upward in a contiguous registered space, and `rejected` holds 1-based indices
+// into it — the same convention StackSelectedScript's `unselect` lines use.
+func registeredSurvivors(seqDir, regSeq string, regCount int, rejected []int) []string {
+	drop := make(map[int]bool, len(rejected))
+	for _, i := range rejected {
+		drop[i] = true
+	}
+	out := make([]string, 0, regCount-len(rejected))
+	for i := 1; i <= regCount; i++ {
+		if drop[i] {
+			continue
+		}
+		out = append(out, filepath.Join(seqDir, fmt.Sprintf("%s_%05d.fits", regSeq, i)))
+	}
+	return out
 }
 
 // denoiseFor returns the denoise options for a channel: luminance keeps detail (often skipped),

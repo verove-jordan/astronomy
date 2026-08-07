@@ -12,6 +12,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/inspect"
 	"github.com/verove-jordan/astronomy/internal/siril"
+	"github.com/verove-jordan/astronomy/internal/stackalg"
 )
 
 // MasterType is the kind of a master calibration frame.
@@ -53,11 +54,28 @@ var masterByFrameType = map[inspect.FrameType]MasterType{
 	inspect.DarkFlat: MasterDarkFlat,
 }
 
+// MasterStackOptions picks a frame type's stacking recipe out of the run's MasterOptions. Bias and
+// dark (and a flat's own dark) stack UN-normalized — their pedestal IS the signal — while a flat
+// stacks multiplicatively, because only its relative shape matters.
+func MasterStackOptions(mt MasterType, o stackalg.MasterOptions) stackalg.Options {
+	switch mt {
+	case MasterFlat:
+		return o.Flat
+	case MasterBias:
+		return o.Bias
+	case MasterDarkFlat:
+		return o.DarkFlat
+	default:
+		return o.Dark
+	}
+}
+
 // BuildMasters stacks every calibration set in inv into a master under mastersDir, using workDir
 // for the per-set Siril sequences. Bias/dark-flats are built before flats (flats use them). A set
 // that fails to stack is reported as a warning rather than aborting the run.
 func BuildMasters(ctx context.Context, runner *siril.Runner, inv *inspect.Inventory,
-	mastersDir, workDir string, onProgress func(siril.Progress)) ([]Master, []string, error) {
+	mastersDir, workDir string, stacks stackalg.MasterOptions,
+	onProgress func(siril.Progress)) ([]Master, []string, error) {
 	if err := fsutil.EnsureDir(mastersDir); err != nil {
 		return nil, nil, err
 	}
@@ -66,7 +84,7 @@ func BuildMasters(ctx context.Context, runner *siril.Runner, inv *inspect.Invent
 	var warnings []string
 	for _, ft := range order {
 		for _, set := range inv.SetsOfType(ft) {
-			m, qc, err := buildOne(ctx, runner, set, masters, mastersDir, workDir, onProgress)
+			m, qc, err := buildOne(ctx, runner, set, masters, mastersDir, workDir, stacks, onProgress)
 			warnings = append(warnings, qc...)
 			if err != nil {
 				warnings = append(warnings, err.Error())
@@ -82,9 +100,10 @@ func BuildMasters(ctx context.Context, runner *siril.Runner, inv *inspect.Invent
 // quality analysis (dust donuts, saturation, vignetting), returning any QC warnings; other master
 // types return no warnings.
 func buildOne(ctx context.Context, runner *siril.Runner, set inspect.Set, built []Master,
-	mastersDir, workDir string, onProgress func(siril.Progress)) (Master, []string, error) {
+	mastersDir, workDir string, stacks stackalg.MasterOptions,
+	onProgress func(siril.Progress)) (Master, []string, error) {
 	mt := masterByFrameType[set.Key.Type]
-	name := masterName(mt, set.Key)
+	name := masterName(mt, set.Key, MasterStackOptions(mt, stacks))
 	outBase := filepath.Join(mastersDir, name)
 	seqDir := filepath.Join(workDir, "cal_"+name)
 
@@ -93,7 +112,7 @@ func buildOne(ctx context.Context, runner *siril.Runner, set inspect.Set, built 
 		return Master{}, nil, err
 	}
 
-	stackNote, err := stackMasterSet(ctx, runner, set.Key, built, seqDir, outBase, paths, onProgress)
+	stackNote, err := stackMasterSet(ctx, runner, set.Key, built, seqDir, outBase, paths, stacks, onProgress)
 	if err != nil {
 		return Master{}, nil, fmt.Errorf("stack master %s: %w", name, err)
 	}
@@ -135,7 +154,8 @@ func buildOne(ctx context.Context, runner *siril.Runner, set inspect.Set, built 
 // lights went un-flat-fielded). The retry runs on fresh links in a sibling dir — the first
 // attempt's convert products would otherwise poison a re-conversion in place.
 func stackMasterSet(ctx context.Context, runner *siril.Runner, key inspect.SetKey, built []Master,
-	seqDir, outBase string, paths []string, onProgress func(siril.Progress)) (string, error) {
+	seqDir, outBase string, paths []string, stacks stackalg.MasterOptions,
+	onProgress func(siril.Progress)) (string, error) {
 	// A single-frame pool (an S3-freed set's last frame on disk, a vendor-made master file) cannot
 	// be stacked — Siril has no one-image sequences — and used to fail the whole category ("No
 	// sequence `cal' found"), silently costing the night its flat. Convert and promote the lone
@@ -147,12 +167,14 @@ func stackMasterSet(ctx context.Context, runner *siril.Runner, key inspect.SetKe
 		return fmt.Sprintf("master %s: single-frame pool — the lone frame was promoted unstacked (no outlier rejection%s)",
 			filepath.Base(outBase), loneFlatSuffix(key)), nil
 	}
-	if masterByFrameType[key.Type] != MasterFlat {
-		_, err := runner.Run(ctx, seqDir, siril.StackMasterScript("cal", outBase, len(paths)), onProgress)
+	mt := masterByFrameType[key.Type]
+	opts := MasterStackOptions(mt, stacks)
+	if mt != MasterFlat {
+		_, err := runner.Run(ctx, seqDir, siril.StackMasterScript("cal", outBase, len(paths), opts), onProgress)
 		return "", err
 	}
 	biasPath := flatBias(key, built)
-	_, err := runner.Run(ctx, seqDir, siril.StackFlatScript("cal", outBase, biasPath, len(paths)), onProgress)
+	_, err := runner.Run(ctx, seqDir, siril.StackFlatScript("cal", outBase, biasPath, len(paths), opts), onProgress)
 	if err == nil || biasPath == "" {
 		return "", err
 	}
@@ -161,7 +183,7 @@ func stackMasterSet(ctx context.Context, runner *siril.Runner, key inspect.SetKe
 	if _, lerr := fsutil.LinkFrames(retryDir, paths); lerr != nil {
 		return "", err // the retry could not even start — report the original failure
 	}
-	if _, rerr := runner.Run(ctx, retryDir, siril.StackFlatScript("cal", outBase, "", len(paths)), onProgress); rerr != nil {
+	if _, rerr := runner.Run(ctx, retryDir, siril.StackFlatScript("cal", outBase, "", len(paths), opts), onProgress); rerr != nil {
 		return "", err // the retry changed nothing — report the original failure
 	}
 	return fmt.Sprintf("flat %s: stacked WITHOUT its bias — flat calibration failed (%v)",
@@ -209,7 +231,11 @@ func framePaths(frames []*inspect.Frame) []string {
 	return out
 }
 
-func masterName(mt MasterType, k inspect.SetKey) string {
+// masterName is the master's filename. A NON-DEFAULT stacking recipe adds a short fingerprint, so
+// a master built with, say, GESD rejection can never overwrite — or be silently reused in place of —
+// the default-options master the shared library and every other run depend on. Default options add
+// nothing, so existing library masters keep their names and are reused byte-identically.
+func masterName(mt MasterType, k inspect.SetKey, stack stackalg.Options) string {
 	name := "master_" + string(mt)
 	if k.Filter != "" {
 		name += "_" + k.Filter
@@ -226,5 +252,14 @@ func masterName(mt MasterType, k inspect.SetKey) string {
 		// stacks silently overwrite each other. Single-night keys carry no Session → names unchanged.
 		name += "_n" + k.Session
 	}
+	if fp := stack.Fingerprint(MasterStackOptions(mt, stackalg.DefaultMasters())); fp != "" {
+		name += "_s" + fp
+	}
 	return name
+}
+
+// defaultStack is the default recipe for a master type — the shorthand tests and callers use when
+// they are not exercising the per-frame-type knobs.
+func defaultStack(mt MasterType) stackalg.Options {
+	return MasterStackOptions(mt, stackalg.DefaultMasters())
 }

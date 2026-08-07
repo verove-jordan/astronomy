@@ -15,6 +15,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/inspect"
 	"github.com/verove-jordan/astronomy/internal/siril"
+	"github.com/verove-jordan/astronomy/internal/stackalg"
 )
 
 // buildDeepBias pools this session's bias frames with every matching bias from prior sessions and
@@ -23,7 +24,7 @@ import (
 // file previous runs stacked with, so calibration stays byte-identical without the raws.
 func buildDeepBias(ctx context.Context, runner *siril.Runner, inv *inspect.Inventory,
 	provider RawCalibProvider, libRows []Master, sig cameraSig, mastersDir, workDir string,
-	onProgress func(siril.Progress)) (Master, bool, string) {
+	stacks stackalg.MasterOptions, onProgress func(siril.Progress)) (Master, bool, string) {
 	paths := localCalibPaths(inv, inspect.Bias, func(k inspect.SetKey) bool {
 		return cameraSig{k.Gain, k.Offset, k.Bin} == sig
 	})
@@ -44,7 +45,7 @@ func buildDeepBias(ctx context.Context, runner *siril.Runner, inv *inspect.Inven
 	}
 
 	key := inspect.SetKey{Type: inspect.Bias, Gain: sig.Gain, Offset: sig.Offset, Bin: sig.Bin}
-	m, note, err := stackPooled(ctx, runner, MasterBias, key, paths, mastersDir, workDir, onProgress)
+	m, note, err := stackPooled(ctx, runner, MasterBias, key, paths, mastersDir, workDir, stacks, onProgress)
 	if err != nil {
 		return Master{}, false, joinWarn(warn, err.Error())
 	}
@@ -56,7 +57,7 @@ func buildDeepBias(ctx context.Context, runner *siril.Runner, inv *inspect.Inven
 // stacks one deep master.
 func buildDeepDark(ctx context.Context, runner *siril.Runner, inv *inspect.Inventory,
 	provider RawCalibProvider, libRows []Master, sig darkSig, opts DeepOptions, mastersDir, workDir string,
-	onProgress func(siril.Progress)) (Master, bool, string) {
+	stacks stackalg.MasterOptions, onProgress func(siril.Progress)) (Master, bool, string) {
 	tol := opts.tempTol()
 	matchesTemp := func(f RawFrame) bool {
 		if f.ExposureMs != sig.ExposureMs {
@@ -97,7 +98,7 @@ func buildDeepDark(ctx context.Context, runner *siril.Runner, inv *inspect.Inven
 		Type: inspect.Dark, Gain: sig.Gain, Offset: sig.Offset, Bin: sig.Bin,
 		ExposureMs: sig.ExposureMs, TempBucket: sig.TempBucket,
 	}
-	m, note, err := stackPooled(ctx, runner, MasterDark, key, paths, mastersDir, workDir, onProgress)
+	m, note, err := stackPooled(ctx, runner, MasterDark, key, paths, mastersDir, workDir, stacks, onProgress)
 	if err != nil {
 		return Master{}, false, joinWarn(warn, err.Error())
 	}
@@ -231,8 +232,10 @@ func mergePaths(base []string, pool []RawFrame, keep func(RawFrame) bool) []stri
 // stackPooled links the pooled frames into a sequence and stacks them into a master FITS, returning
 // the master metadata (frame count = pool size) plus an optional user-facing note.
 func stackPooled(ctx context.Context, runner *siril.Runner, mt MasterType, key inspect.SetKey,
-	paths []string, mastersDir, workDir string, onProgress func(siril.Progress)) (Master, string, error) {
-	name := masterName(mt, key)
+	paths []string, mastersDir, workDir string, stacks stackalg.MasterOptions,
+	onProgress func(siril.Progress)) (Master, string, error) {
+	stack := MasterStackOptions(mt, stacks)
+	name := masterName(mt, key, stack)
 	outBase := filepath.Join(mastersDir, name)
 	master := Master{
 		Type: mt, Filter: key.Filter, ExposureMs: key.ExposureMs,
@@ -278,7 +281,9 @@ func stackPooled(ctx context.Context, runner *siril.Runner, mt MasterType, key i
 		if err := promoteLoneCalFrame(ctx, runner, seqDir, tmpBase, onProgress); err != nil {
 			return Master{}, "", fmt.Errorf("promote lone-frame master %s: %w", name, err)
 		}
-	} else if _, err := runner.Run(ctx, seqDir, siril.StackMasterScript("cal", tmpBase, len(paths)), onProgress); err != nil {
+	} else if _, err := runner.Run(ctx, seqDir,
+		siril.StackMasterScript("cal", tmpBase, len(paths), stack),
+		onProgress); err != nil {
 		return Master{}, "", fmt.Errorf("stack master %s: %w", name, err)
 	}
 	if err := os.Rename(tmpBase+".fits", outBase+".fits"); err != nil {

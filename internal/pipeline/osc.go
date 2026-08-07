@@ -146,7 +146,7 @@ func ProcessOSC(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	opts.report(Progress{Step: "stacking", Index: 2, Total: 3})
-	st, stackNote, err := stackSelectedOrCopy(ctx, opts.Runner, seqDir, "r_osc", regCount, rejectedReg, masterBase, opts.stackWeight(), opts.sirilLines("stacking"))
+	st, stackNote, err := stackSelectedOrCopy(ctx, opts.Runner, seqDir, "r_osc", regCount, rejectedReg, masterBase, opts.lightStack(opts.stackWeight()), opts.sirilLines("stacking"))
 	if err != nil {
 		return nil, fmt.Errorf("stacking: %w\n%s", err, sirilTail(st))
 	}

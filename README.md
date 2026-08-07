@@ -80,7 +80,7 @@ plate-solving + SPCC**, download the Gaia catalogues once: `just download-catalo
 | `just` | List every recipe. |
 | `just setup` / `just up` / `just migrate` | First-run setup · start Postgres · apply schema. |
 | `just inspect DIR` | Print the classified inventory of a capture folder (no processing). |
-| `just process MODE FORMAT PATH` | Full auto pipeline. MODE: `deepsky`·`nebula`·`milkyway`·`planetary`·`comet`; FORMAT: `image`·`video`·`both`. Pass-through flags after the path (e.g. `-v --supervise`). |
+| `just process MODE FORMAT PATH` | Full auto pipeline. MODE: `deepsky`·`nebula`·`milkyway`·`planetary`·`comet`·`sun`; FORMAT: `image`·`video`·`both`. Pass-through flags after the path (e.g. `-v --supervise`). |
 | `just video FILE` | Shortcut for `process planetary video` (lucky imaging). |
 | `just refine RUNDIR` | Re-run **only** the finish (AI supervisor) on an existing run — no re-stacking. |
 | `just dev` / `just web` | Host API with hot reload · Vue dev server. |
@@ -153,12 +153,14 @@ servers for Claude (`siril`, vendored `gimp`). The docs are topic-organized:
 | [pipeline.md](docs/pipeline.md) | how stacking is made, stage by stage |
 | [calibration.md](docs/calibration.md) | master library, cross-session pools, **dark defect maps**, matching rules |
 | [modes/](docs/modes/README.md) | per-mode deep dives (deepsky · nebula · milkyway · planetary · comet · livestack) |
+| [mount.md](docs/mount.md) | the Celestron hand-controller link: wiring, the macOS driver trap, recovery, the overnight soak |
 | [storage-s3.md](docs/storage-s3.md) | S3 mirror, connections & secrets, verified frees, backup/restore |
 | [configuration.md](docs/configuration.md) | every environment variable |
 | [api.md](docs/api.md) | the HTTP API reference |
 | [planner.md](docs/planner.md) | the sky-planner pages and their data sources |
 | [ui.md](docs/ui.md) | the web UI, page by page |
 | [agent.md](docs/agent.md) | the local AI: finish supervisor, AstroAgent chat, series |
+| [third-party.md](docs/third-party.md) | every external tool, catalogue, data service and library, with its licence |
 | [verification.md](docs/verification.md) | end-to-end verification recipes with pass criteria |
 
 ## Development
@@ -172,4 +174,15 @@ servers for Claude (`siril`, vendored `gimp`). The docs are topic-organized:
 
 ## License
 
-MIT
+MIT — for the code in this repository.
+
+AstroStack orchestrates a great deal of other people's work: **Siril** and **GIMP** do the stacking and
+the finishing, and the sky itself comes from **Open-Meteo**, **NASA/NOAA VIIRS**, the **HYG**/**ATHYG**
+and **OpenNGC** catalogues, **Gaia DR3**, the **Minor Planet Center**, **CelesTrak**,
+**OpenStreetMap** and others. Every tool is invoked rather than bundled, and every feed is fetched at
+runtime under its own terms.
+
+Two of those terms bind a redistributor: **Open-Meteo's free tier is non-commercial** and its data is
+CC BY 4.0 (the attribution is rendered in the UI), and the **HYG, ATHYG and OpenNGC catalogues are CC
+BY-SA**. The complete list, with licences and the reasoning behind each choice, is in
+[docs/third-party.md](docs/third-party.md).

@@ -42,6 +42,8 @@ rejects anything else); two endpoints stream Server-Sent Events (SSE).
 | `POST /api/jobs/{id}/denoise-final` | Extra denoise pass on the final image |
 | `POST /api/jobs/{id}/free-local` | Verified free-local of the run's inputs (S3-checked deletes) |
 | `GET /api/jobs/{id}/iterations` | Supervisor iterations of a run |
+| `POST /api/jobs/{id}/stars` · `GET /api/jobs/{id}/stars` | Compute / fetch the run's star annotation (`stars.json`). Synchronous, cached, deliberately not a job |
+| `GET /api/jobs/{id}/scene3d` | The 3D field map's manifest, built by the same annotation pass. `available: false` + `reason` when the run cannot have a scene; the star field and backdrop it points at are ordinary run files fetched through `GET /api/file` |
 | `GET /api/jobs/{id}/events` | **SSE** — progress, log lines, previews, resources. Sends a snapshot first; for a finished job it closes immediately after the snapshot (clients should not stream terminal jobs) |
 | `POST /api/series` · `GET /api/series` · `GET /api/series/{id}` | Goal-driven improvement campaigns |
 | `POST /api/series/{id}/continue` · `/stop` | Resume / stop a campaign |
@@ -66,9 +68,35 @@ rejects anything else); two endpoints stream Server-Sent Events (SSE).
 | `GET /api/sky/align` · `GET /api/sky/align/profiles` | GoTo alignment star sequences |
 | `GET /api/sky/geocode` | Place-name lookup |
 | `GET /api/sky/lightpollution` (+ `/atlas` GET/POST, `/tiles/{z}/{x}/{y}`) | Sky brightness point/atlas/overlay tiles |
-| `GET /api/sky/darksites` | Dark-site search (darkness + horizon + drive distance) |
+| `GET /api/sky/darksites` | Dark-site search for one night (darkness + horizon + forecast + drive distance); `night=`, `weather=0|1`, `weather_weight=` |
+| `GET /api/sky/nights` | Upcoming observing nights (dark window, Moon) for the night picker |
 | `GET /api/sky/canopy/atlas` (GET/POST) | Tree-canopy atlas status / build |
 | `GET /api/sky/weather` (+ `/grid`, `/grid/frames`, `/tiles/{metric}/{time}/{z}/{x}/{y}`) | Astro weather panel + animated map layers |
+
+## Capture & logbook
+
+The sequencer lives in the engine (not the device server) because a session is a statement about a
+target and a night. `/api/device/*` is a transparent reverse proxy onto the device server.
+
+| Method + path | Purpose |
+|---|---|
+| `POST /api/capture/start` | Launch an auto-run (`sequence`, `path`, `object`, optional `ra_deg`/`dec_deg`, `lat_deg`/`lon_deg`, `measure_tracking`) |
+| `POST /api/capture/pause` · `/resume` · `/abort` | Sequencer control (pause takes effect after the current exposure) |
+| `GET /api/capture/status` · `GET /api/capture/events` | Current progress / the same progress as SSE |
+| `POST /api/capture/center` | Plate-solve centring loop (expose → solve → sync → re-slew) |
+| `POST /api/capture/polar/start` | Begin a camera polar alignment and take the first frame (`lat_deg`/`lon_deg`, `points`, `exposure_us`, `gain`, `no_refraction`) |
+| `POST /api/capture/polar/rough` | Answer from ONE frame, assuming the tube looks down the RA axis (declination at its 90° index) — polar-scope accuracy, no rotation |
+| `POST /api/capture/polar/next` | "I have turned the right-ascension axis" — take the next frame |
+| `POST /api/capture/polar/adjust` · `/refresh` | Enter the live phase / take another frame while the bolts are being turned |
+| `POST /api/capture/polar/stop` | End the session and clear its frames |
+| `GET /api/capture/polar` · `GET /api/capture/polar/events` | Session snapshot / the same as SSE |
+| `GET /api/capture/sessions` | The logbook, newest first. `limit`, `offset`, `object` (case-insensitive substring), `from`/`to` (epoch ms) → `{sessions, total}` |
+| `GET /api/capture/sessions/{id}` | One session + every frame + the per-filter/type tallies (`frame_stats`) |
+| `GET /api/capture/sessions/{id}/conditions` | The night's sky: hourly samples, the archived start/end forecast snapshots, and the rolled-up summary |
+| `GET/POST /api/capture/sequences` · `DELETE /{id}` | Saved auto-run plans |
+| `POST /api/capture/calibration/plan` | Derive a matched darks/flats/bias sequence from the lights |
+| `GET/POST /api/capture/filters` | The wheel slot → filter-name map |
+| `GET /api/tracking/report/{id}` · `GET /api/tracking/sessions` | Measured periodic error for a session / sessions that have tracking data |
 
 ## S3 storage
 

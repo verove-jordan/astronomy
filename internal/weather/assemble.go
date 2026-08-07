@@ -10,40 +10,20 @@ func assembleForecast(lat, lon float64, om omResponse, aq aqResponse, aqOK bool,
 	stVals := sevenTimerSeries(st, stOK)
 
 	hours := make([]Hour, 0, len(om.Hourly.Time))
-	for i, ts := range om.Hourly.Time {
-		ms, ok := parseOMTime(ts)
+	for i := range om.Hourly.Time {
+		h, ok := omHour(om.Hourly, i)
 		if !ok {
 			continue
 		}
-		at := func(s []float64) float64 {
-			if i < len(s) {
-				return s[i]
-			}
-			return 0
-		}
-		h := Hour{
-			TMs:         ms,
-			CloudPct:    at(om.Hourly.CloudCover),
-			CloudLow:    at(om.Hourly.CloudCoverLow),
-			CloudMid:    at(om.Hourly.CloudCoverMid),
-			CloudHigh:   at(om.Hourly.CloudCoverHigh),
-			HumidityPct: at(om.Hourly.RelativeHumidity2m),
-			DewPointC:   at(om.Hourly.DewPoint2m),
-			TempC:       at(om.Hourly.Temperature2m),
-			WindKmh:     at(om.Hourly.WindSpeed10m),
-			GustKmh:     at(om.Hourly.WindGusts10m),
-			Jet300Kmh:   at(om.Hourly.WindSpeed300hPa),
-			CAPE:        at(om.Hourly.CAPE),
-			LiftedIndex: at(om.Hourly.LiftedIndex),
-			VisibilityM: at(om.Hourly.Visibility),
-			PrecipPct:   at(om.Hourly.PrecipitationProbability),
-			AOD:         aod[ms],
-		}
-		h.DewSpreadC = round1(h.TempC - h.DewPointC)
-		h.DewRisk = dewRisk(h.DewSpreadC)
+		h.AOD = aod[h.TMs]
 
-		seeing, transp := stVals.at(ms)
-		h.SeeingArcsec = seeing
+		// Seeing precedence: the wind-shear index derived from this same hourly response wins, because
+		// it is hourly and at model resolution; 7Timer's 3-hourly 10 km index only fills the gap when
+		// the pressure levels are missing.
+		seeing, transp := stVals.at(h.TMs)
+		if h.SeeingArcsec == 0 && seeing > 0 {
+			h.SeeingArcsec, h.SeeingSource = seeing, SeeingSourceSevenTimer
+		}
 		switch {
 		case transp > 0:
 			h.Transparency = transp
@@ -62,6 +42,56 @@ func assembleForecast(lat, lon float64, om omResponse, aq aqResponse, aqOK bool,
 		f.Sources = append(f.Sources, "7Timer! ASTRO")
 	}
 	return f
+}
+
+// omHour builds one Hour from index i of an Open-Meteo hourly block: everything the response itself
+// supplies, plus the metrics derivable from it alone (dew spread and risk, the wind-shear seeing
+// index). Feeds that arrive separately — 7Timer, air quality — are layered on by the caller. Shared
+// by the per-site forecast and the night scan so both read one response the same way.
+func omHour(h omHourly, i int) (Hour, bool) {
+	if i >= len(h.Time) {
+		return Hour{}, false
+	}
+	ms, ok := parseOMTime(h.Time[i])
+	if !ok {
+		return Hour{}, false
+	}
+	at := func(s []float64) float64 {
+		if i < len(s) {
+			return s[i]
+		}
+		return 0
+	}
+	out := Hour{
+		TMs:         ms,
+		CloudPct:    at(h.CloudCover),
+		CloudLow:    at(h.CloudCoverLow),
+		CloudMid:    at(h.CloudCoverMid),
+		CloudHigh:   at(h.CloudCoverHigh),
+		HumidityPct: at(h.RelativeHumidity2m),
+		DewPointC:   at(h.DewPoint2m),
+		TempC:       at(h.Temperature2m),
+		WindKmh:     at(h.WindSpeed10m),
+		GustKmh:     at(h.WindGusts10m),
+		Jet300Kmh:   at(h.WindSpeed300hPa),
+		CAPE:        at(h.CAPE),
+		LiftedIndex: at(h.LiftedIndex),
+		VisibilityM: at(h.Visibility),
+		PrecipPct:   at(h.PrecipitationProbability),
+		BLHeightM:   at(h.BoundaryLayerHeight),
+	}
+	out.DewSpreadC = round1(out.TempC - out.DewPointC)
+	out.DewRisk = dewRisk(out.DewSpreadC)
+	if s := derivedSeeing(shear{
+		jetKmh:     out.Jet300Kmh,
+		w500Kmh:    at(h.WindSpeed500hPa),
+		w850Kmh:    at(h.WindSpeed850hPa),
+		surfaceKmh: out.WindKmh,
+		blHeightM:  out.BLHeightM,
+	}); s > 0 {
+		out.SeeingArcsec, out.SeeingSource = s, SeeingSourceDerived
+	}
+	return out, true
 }
 
 func aodByTime(aq aqResponse, ok bool) map[int64]float64 {

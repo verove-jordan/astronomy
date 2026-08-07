@@ -152,6 +152,12 @@ func goldenPreset() *mode.Preset {
 // final.mono_outputs) is that feature's intended default, so the pin was refreshed to include it.
 // The re-pin diff contained ONLY the mono artifacts (verified line by line); everything else stayed
 // byte-identical through the windowed trail-mask + colour-ladder changes of the same day.
+//
+// GOLDEN RE-PIN 2026-08-03: user-selectable stacking/rejection algorithms (internal/stackalg) moved
+// the hardcoded `stack … rej winsorized 3 3 -norm=addscale` literals behind a renderer. The pin was
+// refreshed ONLY to add the four new provenance keys in the options block (stack_engine/combine/
+// reject/norm — which algorithm actually produced the master); the run itself is byte-identical, as
+// this test proved by passing UNCHANGED before those keys were added.
 func TestProcess_SingleNightGolden(t *testing.T) {
 	runner := goldenRunner(t)
 	root := t.TempDir()

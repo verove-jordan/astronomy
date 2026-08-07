@@ -33,6 +33,9 @@ func ApplyParamPatch(p *mode.Preset, raw json.RawMessage) (ParamPatchResult, err
 	if err := json.Unmarshal(raw, &keys); err != nil {
 		return ParamPatchResult{}, fmt.Errorf("params must be a JSON object of knob overrides: %w", err)
 	}
+	if err := validateStackPatch(p.Mode, raw); err != nil {
+		return ParamPatchResult{}, err
+	}
 	known := knownParamKeys(p.Mode)
 	var ignored []string
 	for k := range keys {
@@ -69,6 +72,8 @@ func applyModeParamPatch(working mode.Preset, raw json.RawMessage) (mode.Preset,
 		return applyPlanetaryParamPatch(working, raw)
 	case mode.Mosaic:
 		return applyMosaicParamPatch(working, raw)
+	case mode.Sun:
+		return applySunParamPatch(working, raw)
 	default: // deepsky / nebula / livestack share the full tiered whitelist
 		return applyDeepskyParamPatch(working, raw)
 	}
@@ -81,6 +86,7 @@ func applyDeepskyParamPatch(working mode.Preset, raw json.RawMessage) (mode.Pres
 		return working, tierA, false
 	}
 	next := clampPreset(patch.apply(working))
+	next = applyStackPatchRaw(next, raw)
 	t := tierOf(working, next)
 	changed := t > tierA || composeChanged(working, next)
 	return next, t, changed
@@ -103,6 +109,7 @@ func applyCometParamPatch(working mode.Preset, raw json.RawMessage) (mode.Preset
 	setF(&next.Grade.StarCountFrac, patch.StarCountFrac)
 	setF(&next.TrailMaskK, patch.TrailMaskK)
 	setB(&next.CometPerFrameStarnet, patch.PerFrameStarnet)
+	next = applyStackPatchRaw(next, raw)
 	next = clampComet(next)
 	next.Grade.RoundnessFloor = clampf(next.Grade.RoundnessFloor, 0.2, 0.95)
 	next.Grade.FWHMSigma = clampf(next.Grade.FWHMSigma, 1, 5)
@@ -112,7 +119,7 @@ func applyCometParamPatch(working mode.Preset, raw json.RawMessage) (mode.Preset
 
 	t := tierA
 	if gradeChanged(working.Grade, next.Grade) || floatChanged(working.TrailMaskK, next.TrailMaskK) ||
-		working.CometPerFrameStarnet != next.CometPerFrameStarnet {
+		working.CometPerFrameStarnet != next.CometPerFrameStarnet || stackChanged(working, next) {
 		t = tierC
 	}
 	changed := t == tierC ||
@@ -217,13 +224,15 @@ func applyPlanetaryParamPatch(working mode.Preset, raw json.RawMessage) (mode.Pr
 func ParamsFor(p mode.Preset) map[string]any {
 	switch p.Mode {
 	case mode.Comet:
-		return map[string]any{
+		m := map[string]any{
 			"background_level": p.BackgroundLevel, "background_degree": p.BackgroundDegree,
 			"saturation": p.Saturation, "roundness_floor": p.Grade.RoundnessFloor,
 			"fwhm_sigma": p.Grade.FWHMSigma, "background_sigma": p.Grade.BackgroundSigma,
 			"star_count_frac": p.Grade.StarCountFrac, "trail_mask_k": p.TrailMaskK,
 			"per_frame_starnet": p.CometPerFrameStarnet,
 		}
+		mergeParams(m, stackParams(p), masterStackParams(p), cometStackParams(p))
+		return m
 	case mode.Milkyway:
 		return map[string]any{
 			"look": p.Look, "brightness": p.BackgroundLevel,
@@ -246,6 +255,26 @@ func ParamsFor(p mode.Preset) map[string]any {
 			"drizzle_scale": p.Planetary.DrizzleScale,
 			"align_points":  p.Planetary.AlignPoints,
 		}
+	case mode.Sun:
+		s, f := p.Sun, p.Sun.Finish
+		return map[string]any{
+			"flat_strength": f.FlatStrength, "deconv_sigma": f.DeconvSigma, "deconv_iters": f.DeconvIters,
+			"deconv_auto":   f.DeconvAuto,
+			"sharpen_small": sharpenGroup(f.Sharpen.Gains, 0), "sharpen_medium": sharpenGroup(f.Sharpen.Gains, 1),
+			"sharpen_large": sharpenGroup(f.Sharpen.Gains, 2), "sharpen_denoise": sharpenDenoise(f.Sharpen.Thresholds),
+			"limb_flatten": f.LimbFlatten, "prominence_boost": f.ProminenceBoost,
+			"prominence_feather": f.ProminenceFeather, "palette": f.Palette,
+			"stretch": f.Stretch, "contrast": f.Contrast, "saturation": f.Saturation,
+			"background_level": f.BackgroundLevel, "background_tint": f.BackgroundTint,
+			"glow_strength": f.GlowStrength, "glow_radius": f.GlowRadius,
+			"keep_percent": s.KeepPercent, "max_frames": s.MaxFrames, "drizzle": s.Drizzle,
+			"clip_sigma": s.ClipSigma, "window_seconds": s.WindowSeconds, "window_frames": s.WindowFrames,
+			"min_frames": s.MinFrames, "crop_margin": s.CropMargin,
+			"scale_tolerance": s.ScaleTolerance, "band": string(s.Band),
+			"rescale_groups": s.RescaleGroups, "bracket_merge": s.BracketMerge,
+			"ap_align": s.APAlign, "ap_scale": s.APScale,
+			"bracket_stops": s.BracketStops, "transparency_floor": s.TransparencyFloor,
+		}
 	case mode.Mosaic:
 		m := deepskyParams(p)
 		m["overlap_expected"] = p.MosaicOverlapExpected
@@ -263,7 +292,7 @@ func ParamsFor(p mode.Preset) map[string]any {
 // deepskyParams is the deepsky-family tunable surface (deepsky/nebula/livestack; the mosaic mode
 // extends it with the assembler knobs).
 func deepskyParams(p mode.Preset) map[string]any {
-	return map[string]any{
+	m := map[string]any{
 		"saturation": p.Saturation, "ha_screen": p.HaScreen, "ha_black_point": p.HaBlackPoint,
 		"oiii_screen": p.OIIIScreen, "oiii_black_point": p.OIIIBlackPoint,
 		"sii_screen": p.SIIScreen, "sii_black_point": p.SIIBlackPoint, "sii_tint": p.SIITint,
@@ -291,6 +320,18 @@ func deepskyParams(p mode.Preset) map[string]any {
 		"seam_offset_refit": p.SeamOffsetRefit, "seam_noise_eq": p.SeamNoiseEq,
 		"union_canvas": p.Mosaic, "union_canvas_fill": p.MosaicFill,
 	}
+	mergeParams(m, stackParams(p), masterStackParams(p))
+	return m
+}
+
+// mergeParams folds extra knob maps into base (later maps win). It keeps the per-mode surfaces
+// composable: the stacking keys are declared once and spread onto every mode that offers them.
+func mergeParams(base map[string]any, extras ...map[string]any) {
+	for _, e := range extras {
+		for k, v := range e {
+			base[k] = v
+		}
+	}
 }
 
 // consentParamKeys lists per-mode knobs that are user opt-ins: the cross-run warm start must never
@@ -300,8 +341,9 @@ func consentParamKeys(m mode.Mode) map[string]bool {
 		return map[string]bool{"earthshine_gain": true}
 	}
 	// The union canvas reshapes the whole output — a warm-started rerun must never resurrect it.
-	// Both the current wire key and its legacy alias are consent-gated.
-	return map[string]bool{"union_canvas": true, "mosaic": true}
+	// Both the current wire key and its legacy alias are consent-gated. So is the native stacking
+	// engine: choosing a non-Siril combiner is a deliberate, per-run decision.
+	return map[string]bool{"union_canvas": true, "mosaic": true, "stack_engine": true}
 }
 
 // knownParamKeys is each mode's tunable-key set, derived from the patch structs' json tags so the
@@ -315,10 +357,19 @@ func knownParamKeys(m mode.Mode) map[string]bool {
 		types = []reflect.Type{reflect.TypeOf(nightscapePatch{})}
 	case mode.Planetary:
 		types = []reflect.Type{reflect.TypeOf(planetaryPatch{})}
+	case mode.Sun:
+		types = []reflect.Type{reflect.TypeOf(sunPatch{})}
 	case mode.Mosaic: // the full deepsky surface plus the assembler keys
 		types = []reflect.Type{reflect.TypeOf(supervisePatch{}), reflect.TypeOf(mosaicPatch{})}
 	default:
 		types = []reflect.Type{reflect.TypeOf(supervisePatch{})}
+	}
+	// The Siril-backed modes additionally accept the stacking panel's keys; planetary/sun/milkyway
+	// stack natively with their own knobs and must NOT advertise them.
+	switch m {
+	case mode.Planetary, mode.Sun, mode.Milkyway:
+	default:
+		types = append(types, reflect.TypeOf(stackPatch{}))
 	}
 	keys := map[string]bool{}
 	for _, t := range types {
@@ -342,6 +393,8 @@ func KnobMenuFor(m mode.Mode) string {
 		return nightscapeKnobMenu
 	case mode.Planetary:
 		return planetaryKnobMenu
+	case mode.Sun:
+		return sunKnobMenu
 	default:
 		return tierKnobMenu
 	}
@@ -364,7 +417,7 @@ type KnobRange struct {
 func KnobRangesFor(m mode.Mode) map[string]KnobRange {
 	switch m {
 	case mode.Comet:
-		return map[string]KnobRange{
+		r := map[string]KnobRange{
 			"background_level":  {Min: 0.03, Max: 0.2},
 			"background_degree": {Min: 1, Max: 4, Int: true},
 			"saturation":        {Min: 0, Max: 0.6},
@@ -373,6 +426,40 @@ func KnobRangesFor(m mode.Mode) map[string]KnobRange {
 			"background_sigma":  {Min: 1, Max: 5},
 			"star_count_frac":   {Min: 0.1, Max: 1},
 			"trail_mask_k":      {Min: 0, Max: 6},
+		}
+		mergeRanges(r, stackKnobRanges(), masterStackKnobRanges(), cometStackKnobRanges())
+		return r
+	case mode.Sun:
+		return map[string]KnobRange{
+			"flat_strength":      {Min: 0, Max: 1},
+			"deconv_sigma":       {Min: 0, Max: 5},
+			"deconv_iters":       {Min: 0, Max: 80, Int: true},
+			"transparency_floor": {Min: 0, Max: 1},
+			"bracket_stops":      {Min: 0, Max: 6},
+			"ap_scale":           {Min: 0, Max: 8, Int: true},
+			"sharpen_small":      {Min: 0, Max: 4},
+			"sharpen_medium":     {Min: 0, Max: 4},
+			"sharpen_large":      {Min: 0, Max: 4},
+			"sharpen_denoise":    {Min: 0, Max: 1},
+			"limb_flatten":       {Min: 0, Max: 1},
+			"prominence_boost":   {Min: 0, Max: 4},
+			"prominence_feather": {Min: 0, Max: 0.05},
+			"stretch":            {Min: 0, Max: 1},
+			"contrast":           {Min: 0.2, Max: 3},
+			"saturation":         {Min: 0, Max: 2},
+			"background_level":   {Min: 0, Max: 0.3},
+			"background_tint":    {Min: 0, Max: 1},
+			"glow_strength":      {Min: 0, Max: 1},
+			"glow_radius":        {Min: 0, Max: 0.3},
+			"keep_percent":       {Min: 5, Max: 100, Int: true},
+			"max_frames":         {Min: 8, Max: 2000, Int: true},
+			"drizzle":            {Min: 1, Max: 2},
+			"clip_sigma":         {Min: 1, Max: 6},
+			"window_seconds":     {Min: 5, Max: 3600},
+			"window_frames":      {Min: 8, Max: 2000, Int: true},
+			"min_frames":         {Min: 2, Max: 500, Int: true},
+			"crop_margin":        {Min: 0.02, Max: 1},
+			"scale_tolerance":    {Min: 0.002, Max: 0.2},
 		}
 	case mode.Milkyway:
 		return map[string]KnobRange{
@@ -412,7 +499,7 @@ func KnobRangesFor(m mode.Mode) map[string]KnobRange {
 
 // deepskyKnobRanges is the deepsky-family clamp table (shared by the mosaic mode).
 func deepskyKnobRanges() map[string]KnobRange {
-	return map[string]KnobRange{
+	r := map[string]KnobRange{
 		"saturation":            {Min: 0, Max: 0.35},
 		"ha_screen":             {Min: 0, Max: 0.8},
 		"ha_black_point":        {Min: 0, Max: 0.3},
@@ -444,5 +531,16 @@ func deepskyKnobRanges() map[string]KnobRange {
 		"trail_mask_k":          {Min: 0, Max: 6},
 		"denoise_chroma":        {Min: 0, Max: 1},
 		"denoise_lum":           {Min: 0, Max: 1},
+	}
+	mergeRanges(r, stackKnobRanges(), masterStackKnobRanges())
+	return r
+}
+
+// mergeRanges folds extra clamp tables into base, mirroring mergeParams.
+func mergeRanges(base map[string]KnobRange, extras ...map[string]KnobRange) {
+	for _, e := range extras {
+		for k, v := range e {
+			base[k] = v
+		}
 	}
 }

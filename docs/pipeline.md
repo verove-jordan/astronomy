@@ -49,9 +49,12 @@ by `internal/siril/scripts.go` and pinned to **32-bit float** processing (`set32
    resident and each sub is processed one at a time — instead of holding every frame in RAM.
 
 6. **Stack the survivors** — `select`/`unselect` from the grading, then
-   `stack … <adaptive rejection> -norm=addscale -output_norm -weight=wfwhm -filter-incl`. The
+   `stack … <rejection> -norm=addscale -output_norm -weight=wfwhm -filter-incl`. By default the
    rejection algorithm is sized to the **survivor count** (GESD engages on big stacks) and subs
-   are weighted by star sharpness.
+   are weighted by star sharpness. The combination method, the rejection algorithm and its
+   parameters, the normalization and the weighting are all user-selectable — see
+   [stacking.md](stacking.md); the catalogue lives in `internal/stackalg` and the clause is
+   rendered by `siril.StackClause`.
 
 7. **Pointing diagnosis** (`internal/dither`) — the registration offsets classify the session as
    *dithered / drift / static / mixed*. Drift and static leave fixed-pattern residuals correlated

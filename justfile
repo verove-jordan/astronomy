@@ -116,6 +116,30 @@ device-x86:
 device-status:
     @curl -fsS "http://${ASTRO_DEVICE_ADDR:-127.0.0.1:8084}/health" && echo " OK"
 
+# The Celestron hand controller's mini-USB port is a Prolific bridge, and macOS ships no driver for
+# it — so "no port" can mean an absent extension, a discontinued chip, an unpowered mount or a
+# charge-only cable, and only the USB bus can tell them apart. Run this FIRST, before blaming a cable.
+#
+# Diagnose the Mac -> hand-controller link (add PROBE=1 to also open the port and ask the mount).
+mount-doctor:
+    @go run ./cmd/astrostack mount doctor {{ if env_var_or_default("PROBE", "") != "" { "-probe" } else { "" } }}
+
+# Stop `just device` first: macOS gives a serial port to one process at a time.
+#
+# Connect, identify the mount, and time 500 echoes.
+mount-probe:
+    go run ./cmd/astrostack mount probe
+
+# MOTION=nudge adds ±10" out-and-back moves and an hourly deadman check; the default never moves
+# anything. Writes a PASS/FAIL report you can read in the morning.
+#
+# The overnight endurance run: `just mount-soak 8h`.
+mount-soak DURATION='8h':
+    go run ./cmd/astrostack mount soak \
+        -duration {{DURATION}} \
+        -motion {{ env_var_or_default("MOTION", "none") }} \
+        -report "$(pwd)/output/mount-soak-$(date -u +%Y%m%dT%H%M%SZ).txt"
+
 # Serve the local vision model for the finish supervisor (host; first run downloads ~28 GB).
 run-ia-model:
     @scripts/ia-model.sh
@@ -174,6 +198,16 @@ gen-skymap-data MAG="6.0":
 # Re-run only to refresh or change depth; commit the regenerated file.
 gen-deepstars-data MAG="9.0":
     go run ./cmd/astrostack deepstars-data --mag "{{MAG}}"
+
+# One-time download of the DEEP star catalogue (ATHYG v3.2 — Tycho-2 + Gaia DR3 + HYG names; ~200 MB
+# of CSV → ~130 MB .bin, ~15 s to convert) into library/catalogues. The embedded extract stops at
+# magnitude 9, so a typical eleventh-magnitude detection is anonymous and has no distance; ATHYG
+# names it, gives it a spectral type, and gives the parallax the 3D field map places it with. It also
+# feeds the plate-solve check: on sparse fields the magnitude-9 set left only 2-5 usable check stars
+# and the solve failed validation outright. Optional — absent, everything falls back to the embedded
+# extract. MAG drops stars fainter than the limit (0 = keep all).
+download-deepstars MAG="0":
+    go run ./cmd/astrostack deepstars-athyg --mag "{{MAG}}"
 
 # One-time download of Siril's OFFLINE Gaia plate-solve catalogue (~1.1 GB → ~3 GB) into
 # library/catalogues — makes plate-solving (and therefore SPCC colour calibration) work with no

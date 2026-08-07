@@ -33,8 +33,8 @@ const (
 	// carries chroma above 2× sky, and capping below that leaves a saturated residual disc (seen on
 	// the M101 left-edge halo at 0.5).
 	skyChromaMaxFrac = 2.5
-	skyChromaSamples     = 200_000
-	skyChromaMinGrid     = 8 // the refinement pass never measures below this pitch
+	skyChromaSamples = 200_000
+	skyChromaMinGrid = 8 // the refinement pass never measures below this pitch
 )
 
 // flattenSkyChroma neutralizes the large-scale sky chroma of a STRETCHED RGB FITS in place.

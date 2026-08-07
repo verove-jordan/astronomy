@@ -16,8 +16,7 @@ import (
 
 	"github.com/verove-jordan/astronomy/internal/capture"
 	"github.com/verove-jordan/astronomy/internal/localfs"
-	"github.com/verove-jordan/astronomy/internal/platesolve"
-	"github.com/verove-jordan/astronomy/internal/postprocess"
+	"github.com/verove-jordan/astronomy/internal/skylog"
 	"github.com/verove-jordan/astronomy/internal/store"
 )
 
@@ -45,6 +44,13 @@ type captureStartBody struct {
 	// MeasureTracking solves a share of the lights to characterise the mount. Opt-in: it costs CPU
 	// that the user may want for a livestack running alongside.
 	MeasureTracking bool `json:"measure_tracking"`
+
+	// LatDeg/LonDeg is where the telescope stands, sent by the browser because THAT is where the user
+	// picked their site (the sky store persists it locally, and it is the location the weather panel
+	// they just looked at was for). The engine's configured site is only the fallback — it is right at
+	// home and wrong on every trip to a dark sky.
+	LatDeg float64 `json:"lat_deg"`
+	LonDeg float64 `json:"lon_deg"`
 }
 
 // prepareCaptureDir has the DEVICE SERVER create the destination and verify it is writable.
@@ -89,14 +95,41 @@ func (s *Server) attachTrackMonitor(ctx context.Context, enabled bool) {
 		s.captureRunner().SetTrackMonitor(nil)
 		return
 	}
-	solveOpts, _ := postprocess.SolveSpccFromConfig(s.cfg)
-	solver := platesolve.New(s.sirilRunner, solveOpts)
-	if err := solver.Available(ctx); err != nil {
-		s.captureRunner().SetTrackMonitor(nil)
-		return
+	solver := s.solver()
+	if probe, ok := solver.(interface {
+		Available(context.Context) error
+	}); ok {
+		if err := probe.Available(ctx); err != nil {
+			s.captureRunner().SetTrackMonitor(nil)
+			return
+		}
 	}
 	s.captureRunner().SetTrackMonitor(
 		capture.NewTrackMonitor(solver, trackSink{store: s.store}, s.cfg.TrackingSolveEveryNth))
+}
+
+// captureSite resolves where the telescope stands for this run: the browser's picked location when
+// it sent a usable one, else the engine's configured site.
+//
+// A zero pair is treated as "not sent" rather than as the Gulf of Guinea, since that is what an older
+// client or an unset store actually means. Elevation always comes from config — the browser has no
+// reliable source for it, and it barely matters to the conditions record anyway.
+func (s *Server) captureSite(b captureStartBody) skylog.Site {
+	site := skylog.Site{Lat: s.cfg.LatDeg, Lon: s.cfg.LonDeg, ElevationM: s.cfg.ElevationM}
+	inRange := b.LatDeg >= -90 && b.LatDeg <= 90 && b.LonDeg >= -180 && b.LonDeg <= 180
+	if inRange && (b.LatDeg != 0 || b.LonDeg != 0) {
+		site.Lat, site.Lon = b.LatDeg, b.LonDeg
+	}
+	return site
+}
+
+// captureTarget is where the run points, if it says. Valid stays false for a session started without
+// coordinates, which keeps a zeroed Moon separation distinguishable from a real one.
+func captureTarget(b captureStartBody) skylog.Target {
+	if b.RADeg == 0 && b.DecDeg == 0 {
+		return skylog.Target{}
+	}
+	return skylog.Target{RADeg: b.RADeg, DecDeg: b.DecDeg, Valid: true}
 }
 
 // captureRoot resolves and validates where a session may write.
@@ -156,12 +189,14 @@ func (s *Server) startCapture(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err.Error())
 		return
 	}
+	site := s.captureSite(b)
 	req := capture.Request{
 		Sequence: b.Sequence, Root: root, Object: b.Object, Panel: b.Panel,
 		Telescope: b.Telescope, FocalMM: b.FocalMM,
 		MosaicPlanID: b.MosaicPlanID, TileIndex: b.TileIndex,
 		DitherRadiusPx: b.DitherRadiusPx, ImageScaleArcsecPx: b.ImageScaleArcsecPx,
 		RADeg: b.RADeg, DecDeg: b.DecDeg,
+		LatDeg: site.Lat, LonDeg: site.Lon, ElevationM: site.ElevationM,
 		PixelUm: s.cfg.PixelSizeUm,
 	}
 	if req.FocalMM == 0 {
@@ -183,6 +218,8 @@ func (s *Server) startCapture(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err.Error())
 		return
 	}
+	// Only now is the session row known, so recording the sky starts here rather than above.
+	s.attachConditionsLogger(progress.SessionID, site, captureTarget(b))
 	writeJSON(w, http.StatusAccepted, map[string]any{"progress": progress})
 }
 
@@ -201,12 +238,10 @@ func (s *Server) centerCapture(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "invalid body")
 		return
 	}
-	solveOpts, _ := postprocess.SolveSpccFromConfig(s.cfg)
-	solver := platesolve.New(s.sirilRunner, solveOpts)
-	if err := solver.Available(r.Context()); err != nil {
+	solver := s.solver()
+	if err := s.polarSolverReady(r); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "plate solving needs Siril: " + err.Error(),
-			"code":  "solver_unavailable",
+			"error": err.Error(), "code": "solver_unavailable",
 		})
 		return
 	}
@@ -288,10 +323,19 @@ func (s *Server) captureEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// listCaptureSessions returns the recent sessions. GET /api/capture/sessions
+// listCaptureSessions returns the logbook, newest first. GET /api/capture/sessions
+//
+// The filters and the unpaged total are what turn the panel on the capture page into a browsable
+// history; without a total the UI cannot tell "20 sessions" from "the first 20 of 137".
 func (s *Server) listCaptureSessions(w http.ResponseWriter, r *http.Request) {
-	limit := clampAtoi(r.URL.Query().Get("limit"), 50, 1, 500)
-	rows, err := s.store.ListCaptureSessions(r.Context(), limit)
+	q := r.URL.Query()
+	rows, total, err := s.store.ListCaptureSessionsFiltered(r.Context(), store.CaptureSessionFilter{
+		Limit:  clampAtoi(q.Get("limit"), 50, 1, 500),
+		Offset: clampAtoi(q.Get("offset"), 0, 0, 1<<30),
+		Object: q.Get("object"),
+		FromMs: atoi64(q.Get("from")),
+		ToMs:   atoi64(q.Get("to")),
+	})
 	if err != nil {
 		serverError(w, err)
 		return
@@ -300,10 +344,15 @@ func (s *Server) listCaptureSessions(w http.ResponseWriter, r *http.Request) {
 	for _, row := range rows {
 		out = append(out, captureSessionJSON(row))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": out, "total": total})
 }
 
-// getCaptureSession returns one session with its frames. GET /api/capture/sessions/{id}
+// getCaptureSession returns one session with its frames and their per-filter tallies.
+// GET /api/capture/sessions/{id}
+//
+// The tallies are aggregated in Postgres rather than counted from the frame list: they are what the
+// rest of the night is planned from ("how much L do I still owe?"), and only the frame rows know the
+// exposure, gain, binning and sensor temperature each filter was actually shot at.
 func (s *Server) getCaptureSession(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -320,9 +369,15 @@ func (s *Server) getCaptureSession(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
+	stats, err := s.store.CaptureFrameStats(r.Context(), id)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"session": captureSessionJSON(row),
-		"frames":  frames,
+		"session":     captureSessionJSON(row),
+		"frames":      frames,
+		"frame_stats": stats,
 	})
 }
 
@@ -335,6 +390,8 @@ func captureSessionJSON(row store.CaptureSession) map[string]any {
 		"progress":     json.RawMessage(rawOrEmpty(row.Progress, "{}")),
 		"total_frames": row.TotalFrames, "frames_done": row.FramesDone,
 		"started_at": row.StartedAt, "ended_at": row.EndedAt,
+		"site_lat": row.SiteLat, "site_lon": row.SiteLon, "site_elevation_m": row.SiteElevationM,
+		"conditions_summary": json.RawMessage(rawOrEmpty(row.ConditionsSummary, "{}")),
 	}
 }
 
@@ -416,6 +473,7 @@ func (c captureRecorder) CreateSession(ctx context.Context, req capture.Request,
 		Object: req.Object, Root: req.Root, Panel: req.Panel,
 		MosaicPlanID: req.MosaicPlanID, TileIndex: tile,
 		Sequence: seq, Status: string(capture.StatusRunning), TotalFrames: total,
+		SiteLat: req.LatDeg, SiteLon: req.LonDeg, SiteElevationM: req.ElevationM,
 	})
 }
 

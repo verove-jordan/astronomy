@@ -70,8 +70,8 @@ func TestBuiltins_ApplyCleanly(t *testing.T) {
 // slugs (which key the i18n labels) are unique.
 func TestBuiltins_SlugsUniqueAndComplete(t *testing.T) {
 	items := Builtins()
-	if len(items) != 16 {
-		t.Fatalf("expected 16 built-in presets, got %d", len(items))
+	if len(items) != 24 {
+		t.Fatalf("expected 24 built-in presets, got %d", len(items))
 	}
 	seen := map[string]bool{}
 	for _, it := range items {

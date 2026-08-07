@@ -51,17 +51,29 @@ passes the shared observing site and the engine fans out:
 | `/api/sky/align` (+ `/profiles`) | GoTo — alignment sequences | embedded `brightstars.csv` + hand-controller catalogs + max-spread compute | embedded |
 | `/api/sky/polar` | Polar reticle | celestial-pole geometry (compute) | — |
 | `/api/sky/lightpollution` (+ `/atlas`, `/tiles/…`) | SQM/Bortle scores + map overlay | keyed API → offline atlas → NASA GIBS VIIRS → default | mem + disk (~720 h) |
-| `/api/sky/darksites` | Dark-sky finder | light pollution × terrain elevation × **tree-canopy horizon** × OSRM driving distance | inherits caches |
+| `/api/sky/darksites` | Dark-sky finder | light pollution × terrain elevation × **tree-canopy horizon** × **the chosen night's forecast** × OSRM driving distance | inherits caches |
+| `/api/sky/nights` | Night picker | twilight + Moon compute (no upstream) | — |
 | `/api/sky/canopy/atlas` | canopy atlas status/build | ETH GlobalCanopyHeight download | disk atlas |
-| `/api/sky/weather` (+ `/grid`, `/grid/frames`, `/tiles/…`) | Astro-weather panel + animated map layers | Open-Meteo + Air-Quality + 7Timer! + NOAA SWPC; rain radar tiles from RainViewer | mem + disk (~30 min) |
+| `/api/sky/weather` (+ `/grid`, `/grid/frames`, `/tiles/…`) | Astro-weather panel + animated map layers | Open-Meteo + Air-Quality + ensemble + 7Timer! + NOAA SWPC; rain radar tiles from RainViewer | mem + disk (~30 min) |
 | `/api/sky/geocode` | Site picker | OpenStreetMap Nominatim | per request |
 
 Every feed is **keyless by default and soft-fails**: a dead upstream falls back to the disk cache
 (even stale), then to the offline atlas / local compute / a configurable default — no `/api/sky/*`
 call returns a hard error, and one feed down never takes the panel down. An optional calibrated
 light-pollution provider takes a key, read **server-side only** (never sent to the UI, never
-logged). Weather and the rain radar feed the overlays and the panel only — they are **not** folded
-into visibility scores; light pollution is.
+logged).
+
+Every one of these services, with its licence and attribution requirements, is listed in
+[third-party.md](third-party.md) — including the two that bind a redistributor (Open-Meteo's free tier
+is non-commercial CC BY 4.0; the HYG/ATHYG/OpenNGC catalogues are CC BY-SA).
+
+Weather and the rain radar feed the overlays and the panel, and are **not** folded into target or
+event visibility scores — those describe a site, and a forecast would make them stale within hours.
+Light pollution is. The **one exception** is the dark-sky finder: "where should I go on Saturday" is
+a question about the sky, so `/api/sky/darksites` blends the selected night's forecast into its
+ranking by default (`ASTRO_DARKSKY_WEATHER_WEIGHT`, adjustable from the page, 0 = off). It stays
+soft-fail like everything else — no forecast means a terrain-only ranking and a warning, never a
+zeroed score. See `docs/architecture.md` → "Ranking dark sites for a night".
 
 ## Offline atlases
 

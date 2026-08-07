@@ -22,15 +22,29 @@ function selectTab(key: string) {
   void router.replace({ query: { ...route.query, tab: key } });
 }
 
+// Object names are compared the way a human reads them: "M 42", "m42" and "M42" are one object.
+function sameObject(a: string, b: string) {
+  const key = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return !!a && !!b && key(a) === key(b);
+}
+
 onMounted(async () => {
-  void store.listPlans();
   const object =
     typeof route.query.object === "string" ? route.query.object : "";
   const planId = Number(route.query.plan) || store.activePlanId;
   if (object) {
     store.seedFromObject(object);
+    // Seeding is planning, not capturing: it fills the draft and saves nothing. The active plan id
+    // survives reloads, so without this the Capture tab still belongs to whatever was captured last
+    // — and picking a target that is overhead in Tonight would land on a Capture tab offering to
+    // slew at an unrelated object that set hours ago, refused for being below the horizon. Deselect
+    // only on a genuine change of object, so returning to a mosaic already in progress still resumes.
+    await store.listPlans();
+    const active = store.plans.find((p) => p.id === store.activePlanId);
+    if (active && !sameObject(active.object_name, object)) store.deselectPlan();
     return;
   }
+  void store.listPlans();
   if (planId) {
     try {
       const plan = await store.loadPlan(planId, true);

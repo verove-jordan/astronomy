@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/verove-jordan/astronomy/internal/inspect"
+	"github.com/verove-jordan/astronomy/internal/stackalg"
 )
 
 func TestPoolSigRoundtrip(t *testing.T) {
@@ -36,7 +37,7 @@ func TestPoolSigRoundtrip(t *testing.T) {
 func TestStackPooled_ShrinkGuard(t *testing.T) {
 	lib := t.TempDir()
 	key := inspect.SetKey{Type: inspect.Dark, Gain: 139, Offset: 21, Bin: 1, ExposureMs: 120000, TempBucket: -15}
-	name := masterName(MasterDark, key)
+	name := masterName(MasterDark, key, defaultStack(MasterDark))
 	masterPath := filepath.Join(lib, name+".fits")
 	if err := os.WriteFile(masterPath, []byte("DEEP MASTER BYTES"), 0o644); err != nil {
 		t.Fatal(err)
@@ -53,7 +54,7 @@ func TestStackPooled_ShrinkGuard(t *testing.T) {
 		paths = append(paths, p)
 	}
 
-	m, note, err := stackPooled(context.Background(), nil, MasterDark, key, paths, lib, t.TempDir(), nil)
+	m, note, err := stackPooled(context.Background(), nil, MasterDark, key, paths, lib, t.TempDir(), stackalg.DefaultMasters(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +75,7 @@ func TestStackPooled_ShrinkGuard(t *testing.T) {
 func TestStackPooled_SigUpgrade(t *testing.T) {
 	lib := t.TempDir()
 	key := inspect.SetKey{Type: inspect.Bias, Gain: 139, Offset: 21, Bin: 1}
-	name := masterName(MasterBias, key)
+	name := masterName(MasterBias, key, defaultStack(MasterBias))
 	if err := os.WriteFile(filepath.Join(lib, name+".fits"), []byte("M"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -90,14 +91,14 @@ func TestStackPooled_SigUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m, note, err := stackPooled(context.Background(), nil, MasterBias, key, paths, lib, t.TempDir(), nil)
+	m, note, err := stackPooled(context.Background(), nil, MasterBias, key, paths, lib, t.TempDir(), stackalg.DefaultMasters(), nil)
 	if err != nil || note != "" {
 		t.Fatalf("unchanged pool must reuse silently, got note=%q err=%v", note, err)
 	}
 	if m.FrameCount != 3 {
 		t.Fatalf("FrameCount = %d, want 3", m.FrameCount)
 	}
-	if _, c := readPoolSig(filepath.Join(lib, name + ".sig")); c != 3 {
+	if _, c := readPoolSig(filepath.Join(lib, name+".sig")); c != 3 {
 		t.Fatalf("v1 sidecar must upgrade to v2 with the pool depth, got count %d", c)
 	}
 }

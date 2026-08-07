@@ -7,8 +7,12 @@ import (
 	"github.com/verove-jordan/astronomy/internal/lightpollution"
 )
 
-// darkSites finds the darkest, most open observing sites in a map area:
+// darkSites finds the darkest, most open observing sites in a map area, ranked for one night:
 // GET /api/sky/darksites?min_lat=&min_lon=&max_lat=&max_lon=&max_bortle=&limit=&horizon=&lat=&lon=
+//
+//	&night=0..N          which night to rank for (0 = tonight)
+//	&weather=1|0         fold the night's forecast into the ranking (default on)
+//	&weather_weight=0..0.8   how much of the score the forecast takes (0 = the configured default)
 func (s *Server) darkSites(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	bbox := lightpollution.Bbox{
@@ -34,6 +38,11 @@ func (s *Server) darkSites(w http.ResponseWriter, r *http.Request) {
 		ObsLat:    floatParam(q, "lat", s.cfg.LatDeg),
 		ObsLon:    floatParam(q, "lon", s.cfg.LonDeg),
 		ObsSet:    q.Has("lat") && q.Has("lon"), // drives only from the user's real location, not the default
+		// Weather is on unless the client says otherwise: "where should I go tonight" is a question
+		// about the sky, and a ranking that ignores it is confidently wrong more often than not.
+		NightIndex:    clampInt(intParam(q, "night", 0), 0, s.nightCount()-1),
+		Weather:       q.Get("weather") != "0",
+		WeatherWeight: floatParam(q, "weather_weight", 0),
 	})
 	writeJSON(w, http.StatusOK, result)
 }

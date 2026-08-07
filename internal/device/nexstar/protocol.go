@@ -91,6 +91,26 @@ func foldDeclination(deg float64) float64 {
 	return deg
 }
 
+// DecodeAzAlt parses the reply to the precise horizontal-position query (`z`).
+//
+// Azimuth spans the whole circle and needs no folding; altitude does, for the same reason
+// declination does — the mount reports a plain fraction of a revolution, so anything below the
+// horizon comes back near 360 rather than negative.
+func DecodeAzAlt(reply string) (azDeg, altDeg float64, err error) {
+	parts := strings.Split(strings.TrimSuffix(strings.TrimSpace(reply), "#"), ",")
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("malformed horizontal position reply %q", reply)
+	}
+	if azDeg, err = decodeAngle(parts[0]); err != nil {
+		return 0, 0, err
+	}
+	raw, err := decodeAngle(parts[1])
+	if err != nil {
+		return 0, 0, err
+	}
+	return azDeg, foldDeclination(raw), nil
+}
+
 // Axis identifies which motor a pass-through command addresses.
 const (
 	axisAzmRA  = 16 // 0x10
@@ -148,6 +168,48 @@ func fixedRateCommand(axis int, rate int, positive bool) []byte {
 	return passthrough(byte(axis), dir, []byte{byte(rate)}, 0)
 }
 
+// The motor-controller commands that address a shaft directly, in its own encoder space.
+//
+// These matter because they are the only way to point a mount the hand controller has not aligned.
+// `r` (GoTo) is refused outright while the hand controller has no pointing model, and no serial
+// command exists to give it one — alignment happens in its menus or not at all. A motor controller,
+// by contrast, has no notion of alignment: it knows where its shaft is and will drive it to a number.
+// That is the seam an app-side pointing model is built through.
+//
+// Same undocumented AUX set as the PEC commands below, and the same reason to trust it: every
+// third-party driver implements these identically.
+const (
+	mcGetPosition = 0x01 // → 3 bytes, the shaft angle as a 24-bit fraction of a revolution
+	mcGotoFast    = 0x02 // 3-byte target, slews at the maximum rate
+	mcSetPosition = 0x04 // 3-byte value, redefines where the shaft believes it is
+	mcSlewDone    = 0x13 // → 0x00 while a commanded slew is running, 0xFF once it has finished
+	mcGotoSlow    = 0x17 // 3-byte target, slews at the centring rate
+)
+
+// axisRevolution is one full turn of a shaft in encoder units. The angle travels as a 24-bit
+// fraction of a revolution, most-significant byte first, so one unit is 360°/2^24 ≈ 0.077″ — finer
+// than any error this mount can be made to point to, which is why a pointing model is fitted in this
+// space rather than in the hand controller's rounded degrees.
+const axisRevolution = 1 << 24
+
+// decodeAxisPosition converts a three-byte shaft reading into degrees.
+func decodeAxisPosition(b []byte) (float64, error) {
+	if len(b) < 3 {
+		return 0, fmt.Errorf("short axis position reply (%d bytes, want 3)", len(b))
+	}
+	units := int(b[0])<<16 | int(b[1])<<8 | int(b[2])
+	return float64(units) * 360 / axisRevolution, nil
+}
+
+// encodeAxisPosition converts degrees into the three-byte form, wrapping into [0°, 360°). Wrapping
+// rather than clamping is deliberate: a shaft angle is a circle, and clamping would turn a target
+// just past zero into a slew the long way round.
+func encodeAxisPosition(deg float64) []byte {
+	units := int(math.Round(deg / 360 * axisRevolution))
+	units = ((units % axisRevolution) + axisRevolution) % axisRevolution
+	return []byte{byte(units >> 16), byte(units >> 8), byte(units)}
+}
+
 // The motor-controller commands that drive periodic-error correction. Celestron does not document
 // these; they are the AUX set, stable across firmware and implemented identically by every
 // third-party driver — INDI's being the reference this file's model table already follows.
@@ -168,6 +230,35 @@ const (
 	pecBinOffset     = 0x40
 	pecCountSelector = 0x3F
 )
+
+// The motor controller's own autoguide-rate setting, from the same undocumented AUX set as the PEC
+// commands above. Reading it is what lets a guide loop size its pulses to the rate the mount is
+// configured for, instead of assuming the dither constant is also the right guiding speed.
+const (
+	mcSetAutoguideRate = 0x46 // payload: one byte, rate = 256 × fraction of sidereal
+	mcGetAutoguideRate = 0x47 // → one byte, the same scaling
+)
+
+// autoguideRateScale is what one unit of the autoguide-rate byte is worth. The rate travels as a
+// fraction of sidereal in 1/256ths, so the whole byte spans zero to just under one times sidereal.
+const autoguideRateScale = 256.0
+
+// guideRateCommands build the read and write frames for the autoguide rate.
+func setGuideRateCommand(axis int, fraction float64) []byte {
+	units := int(math.Round(fraction * autoguideRateScale))
+	if units < 0 {
+		units = 0
+	}
+	// A full 256 does not fit in the byte, and 255 is indistinguishable from it in practice.
+	if units > 0xFF {
+		units = 0xFF
+	}
+	return passthrough(byte(axis), mcSetAutoguideRate, []byte{byte(units)}, 0)
+}
+
+func getGuideRateCommand(axis int) []byte {
+	return passthrough(byte(axis), mcGetAutoguideRate, nil, 1)
+}
 
 // siderealArcsecPerSec is the rate the sky turns, and the unit the mount's PEC rates are scaled
 // against. Shared with the simulator so the two cannot drift apart.

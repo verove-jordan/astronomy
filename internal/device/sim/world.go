@@ -16,6 +16,7 @@ import (
 
 	"github.com/verove-jordan/astronomy/internal/device"
 	"github.com/verove-jordan/astronomy/internal/filters"
+	"github.com/verove-jordan/astronomy/internal/polaralign"
 )
 
 // Config are the simulated observing conditions. The zero value is a reasonable clear night.
@@ -99,6 +100,28 @@ type Config struct {
 	// test that needs a guaranteed bright star in the field (focus metrics, centroiding) plants one
 	// here instead of hoping the sky cooperates at the chosen pointing.
 	SyntheticStars []SyntheticStar
+
+	// PolarErrorAltArcmin and PolarErrorAzArcmin put the simulated mount's polar axis off the pole:
+	// too high by the first, east of the pole's meridian by the second (as the azimuth adjuster's own
+	// angle). Both default to zero, which is EXACTLY a no-op — a simulated observatory that was not
+	// asked for a misalignment behaves precisely as it always did.
+	//
+	// This is what lets polar alignment from the camera be developed and demonstrated indoors. The
+	// error is applied where the telescope's actual pointing is decided, so the mount reports it, the
+	// camera draws it, and a measurement run against it recovers the numbers dialled in.
+	PolarErrorAltArcmin float64
+	PolarErrorAzArcmin  float64
+
+	// DecBacklashArcsec is how far the declination axis turns, on REVERSING, before the load follows.
+	// <0 → none, 0 → 4.
+	//
+	// It is directional on purpose, and that is the difference between a useful model and a decorative
+	// one. Nudge applies a flat penalty to every small declination move, which is enough to give dither
+	// feedback something to correct; a guider's problem is different and specifically about direction.
+	// A servo that reverses on one noisy sample spends the whole take-up, gets nothing for it, and then
+	// reverses back — so an autoguider is judged on how it handles the FIRST move after a reversal, and
+	// a model that also penalised the ninth would let a guider that reverses constantly look fine.
+	DecBacklashArcsec float64
 }
 
 // SyntheticStar is a test-injected point source.
@@ -154,6 +177,12 @@ func (c Config) withDefaults() Config {
 		out.PEAmplitude = 0
 	case out.PEAmplitude == 0:
 		out.PEAmplitude = 12
+	}
+	switch {
+	case out.DecBacklashArcsec < 0:
+		out.DecBacklashArcsec = 0
+	case out.DecBacklashArcsec == 0:
+		out.DecBacklashArcsec = 4
 	}
 	switch {
 	case out.PEJitterArcsec < 0:
@@ -214,6 +243,16 @@ type World struct {
 	trackingRate  string
 	aligned       bool
 
+	// Declination backlash state. decGuideDir is the direction the axis was last driven in, and
+	// decTakeUp is how much of the gear slack is still to be wound out before the load will follow.
+	// Both are meaningless until a guide pulse has been issued, which is why zero is the right start.
+	decGuideDir int
+	decTakeUp   float64
+	// guideRate is the configured autoguide rate as a fraction of sidereal. Seeded in NewWorld rather
+	// than left to the zero value, because zero is a rate a caller can legitimately ask for: treating
+	// it as "never set" made SetGuideRate(0) read back as the default.
+	guideRate float64
+
 	filterSlot  int
 	filterNames []string
 	wheelUntil  time.Time
@@ -259,6 +298,7 @@ func NewWorld(cfg Config) *World {
 		filterSlot:   1,
 		// Fitted at construction so the names can never describe more slots than the wheel has.
 		filterNames: device.FitFilterNames(filters.List(), c.WheelSlots),
+		guideRate:   simGuideRate,
 		tempMilliC:  20000,
 		targetTempC: -15,
 		pecTable:    make([]int8, simPECBins),
@@ -382,7 +422,38 @@ func (w *World) pointingAt(t time.Time) (raDeg, decDeg float64) {
 		// Untracked, the sky slides west at the sidereal rate.
 		ra += device.SiderealArcsecPerSec * t.Sub(w.driftFrom).Seconds() / 3600
 	}
-	return normRA(ra), dec
+	return w.misalignLocked(normRA(ra), dec, t)
+}
+
+// misalignLocked bends the pointing by the configured polar-alignment error.
+//
+// Everything above this line describes a mount whose axis is exactly on the pole; this is where that
+// stops being assumed. It is applied at the very end, to the single place the telescope's real pointing
+// is decided, so the mount readout, the rendered star field and any plate solve of it all agree — one
+// consistently misaligned telescope rather than three views of different ones.
+//
+// The drift a badly aligned mount suffers falls out of this rather than being modelled: the error is a
+// rotation fixed to the GROUND, so applying it to a pointing that is fixed in the SKY (which is what
+// tracking maintains) makes the result creep, at the rate and in the direction it really would.
+//
+// Caller holds w.mu.
+func (w *World) misalignLocked(raDeg, decDeg float64, t time.Time) (float64, float64) {
+	if w.cfg.PolarErrorAltArcmin == 0 && w.cfg.PolarErrorAzArcmin == 0 {
+		return raDeg, decDeg
+	}
+	return polaralign.MisalignPointing(raDeg, decDeg,
+		polaralign.Site{LatDeg: w.cfg.LatDeg, LonDeg: w.cfg.LonDeg}, t,
+		w.cfg.PolarErrorAltArcmin/60, w.cfg.PolarErrorAzArcmin/60)
+}
+
+// SetPolarError knocks the simulated mount's polar axis off the pole while it runs, in arcminutes:
+// altArcmin too high, azArcmin east of the pole's meridian. This is the knob a developer turns to watch
+// the alignment panel find it again, and then to watch the marker converge as it is dialled back out.
+func (w *World) SetPolarError(altArcmin, azArcmin float64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.cfg.PolarErrorAltArcmin = altArcmin
+	w.cfg.PolarErrorAzArcmin = azArcmin
 }
 
 // wormElapsedLocked is how long the worm has been turning: accumulated TRACKED time, not wall time.

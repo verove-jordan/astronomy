@@ -3,6 +3,7 @@ package devsrv
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/verove-jordan/astronomy/internal/astro"
 	"github.com/verove-jordan/astronomy/internal/device"
@@ -47,8 +48,25 @@ func (s *Server) connectMount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mount = mount
+	driver := body.Driver
+	if driver == "" {
+		driver = DriverSim
+	}
+	// Remembered only once it has actually answered, so a typo in the port never becomes the thing
+	// the server tries to reconnect to every time it starts.
+	s.link.remember(driver, body.Port, mountModelOf(mount))
+	s.link.start()
 	st, _ := mount.State(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{"connected": true, "mount": st})
+}
+
+// mountModelOf reads the model from whatever driver is connected, without insisting every driver
+// expose one.
+func mountModelOf(m device.Mount) string {
+	if named, ok := m.(interface{ Model() string }); ok {
+		return named.Model()
+	}
+	return ""
 }
 
 func (s *Server) disconnectMount(w http.ResponseWriter, _ *http.Request) {
@@ -61,26 +79,14 @@ func (s *Server) disconnectMount(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"connected": false})
 }
 
+// mountStatus serves the same snapshot the event stream does, so a polling client and a streaming
+// one can never disagree about what the mount is doing.
+//
+// Note it answers 200 with an "error" field rather than a 5xx when the link is momentarily down: the
+// panel needs to show "reconnecting" with the last known position, and a failed request would blank
+// it instead.
 func (s *Server) mountStatus(w http.ResponseWriter, r *http.Request) {
-	mount := s.currentMount()
-	if mount == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"connected": false})
-		return
-	}
-	// A periodic-error run reads the worm's position several times a second, and every mount command
-	// queues behind the same single-command-in-flight mutex on a 9600-baud link. A UI polling for
-	// status would steal that time from the measurement, so while a run owns the port it is served
-	// the state the run itself refreshes.
-	if st, ok := s.pecTrain.cachedMountState(); ok {
-		writeJSON(w, http.StatusOK, map[string]any{"connected": true, "mount": st, "cached": true})
-		return
-	}
-	st, err := mount.State(r.Context())
-	if err != nil {
-		deviceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"connected": true, "mount": st})
+	writeJSON(w, http.StatusOK, s.mountSnapshot(r.Context()))
 }
 
 func (s *Server) currentMount() device.Mount {
@@ -171,6 +177,10 @@ func (s *Server) mountJog(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Direction string `json:"direction"`
 		Rate      int    `json:"rate"`
+		// HoldMs is how long the caller promises to renew within. The browser cannot be trusted with
+		// the stop — a tab closed or a laptop slept between pointerdown and pointerup sends no
+		// pointerup at all — so the driver stops the axis itself if no renewal arrives in time.
+		HoldMs int `json:"hold_ms"`
 	}
 	if !decodeBody(w, r, &body) {
 		return
@@ -179,6 +189,9 @@ func (s *Server) mountJog(w http.ResponseWriter, r *http.Request) {
 	if mount == nil {
 		deviceError(w, device.ErrNotConnected)
 		return
+	}
+	if deadman, ok := mount.(interface{ SetDeadman(time.Duration) }); ok {
+		deadman.SetDeadman(time.Duration(body.HoldMs) * time.Millisecond)
 	}
 	if err := mount.Jog(r.Context(), device.Direction(body.Direction), body.Rate); err != nil {
 		deviceError(w, err)

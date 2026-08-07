@@ -6,6 +6,7 @@ import { useCountdown } from "@/composables/useCountdown";
 import { useImageZoom } from "@/composables/useImageZoom";
 import { btnGhost, input } from "@/constants/styles";
 import { useCaptureStore } from "@/stores/capture";
+import { usePolarCamStore } from "@/stores/polarCam";
 
 // The live view: what the telescope is seeing right now.
 //
@@ -22,6 +23,7 @@ const props = defineProps<{
 }>();
 const { t } = useI18n();
 const store = useCaptureStore();
+const polar = usePolarCamStore();
 
 const canvas = ref<HTMLCanvasElement | null>(null);
 const overlay = ref<HTMLCanvasElement | null>(null);
@@ -246,9 +248,20 @@ function usableWindow(lo: number, hi: number): [number, number] {
 
 watch([black, white, gamma], draw);
 watch([showReticle, showGrid, boxPx], drawOverlay);
-// Pan and zoom move the reticle on screen even when no new frame has arrived.
+// Pan and zoom move the reticle on screen even when no new frame has arrived. So does a new polar
+// solve: the marker is what the user is steering by, and it has to move the moment it is recomputed
+// rather than waiting for the next exposure to land.
 watch(
-  () => [zoom.scale.value, zoom.tx.value, zoom.ty.value, sensorW.value],
+  () => [
+    zoom.scale.value,
+    zoom.tx.value,
+    zoom.ty.value,
+    sensorW.value,
+    polar.target?.nx,
+    polar.target?.ny,
+    polar.pole?.pole.nx,
+    polar.pole?.pole.ny,
+  ],
   drawOverlay,
 );
 
@@ -326,6 +339,139 @@ function drawOverlay() {
       ctx.stroke();
     }
   }
+
+  drawPolarTarget(ctx, w, h, toScreenX, toScreenY);
+  drawPoleFinder(ctx, toScreenX, toScreenY);
+}
+
+// drawPoleFinder marks the celestial pole and its guide star on the frame — the digital polar scope.
+//
+// It answers the question that comes BEFORE any measurement, and which is otherwise answered by lying
+// on wet grass looking through a hole in the mount: where is the pole from here? The pole is drawn
+// even when it falls outside the sensor, clipped to the border, because "it is that way and this far"
+// is exactly what somebody hunting for it needs.
+function drawPoleFinder(
+  ctx: CanvasRenderingContext2D,
+  toScreenX: (sx: number) => number,
+  toScreenY: (sy: number) => number,
+) {
+  const view = polar.pole;
+  if (!view) return;
+
+  // The guide star first, so the pole marker draws over it if they overlap.
+  if (view.star_visible) {
+    const sx = toScreenX(view.star.nx * sensorW.value);
+    const sy = toScreenY(view.star.ny * sensorH.value);
+    ctx.save();
+    ctx.strokeStyle = "rgba(148,197,253,0.9)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 9, 0, Math.PI * 2);
+    ctx.stroke();
+    labelAt(ctx, view.star_name, sx, sy + 22, "rgb(191,219,254)");
+    ctx.restore();
+  }
+
+  // The pole itself: a cross rather than a ring, so it never reads as the target ring the adjustment
+  // phase draws. They are different things — one is where the pole IS, the other is where the middle
+  // of the frame has to GO — and a user who confuses them turns the wrong way.
+  const px = toScreenX(view.pole.nx * sensorW.value);
+  const py = toScreenY(view.pole.ny * sensorH.value);
+  ctx.save();
+  ctx.strokeStyle = "rgba(129,140,248,0.95)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(px - 10, py);
+  ctx.lineTo(px + 10, py);
+  ctx.moveTo(px, py - 10);
+  ctx.lineTo(px, py + 10);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(px, py, 4, 0, Math.PI * 2);
+  ctx.stroke();
+  labelAt(ctx, t("capture.polar.poleMark"), px, py - 14, "rgb(165,180,252)");
+  ctx.restore();
+}
+
+// labelAt writes a haloed label, legible over any star field.
+function labelAt(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  fill: string,
+) {
+  ctx.font = "11px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "rgba(2,6,23,0.85)";
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = fill;
+  ctx.fillText(text, x, y);
+}
+
+// drawPolarTarget marks where the middle of the frame has to end up for the mount to be polar-aligned.
+//
+// This is the whole point of measuring: two numbers in arcminutes are the correct answer and a
+// hopeless instruction for somebody in the dark with one hand on a bolt. A ring to drive the
+// crosshairs into is not.
+//
+// It is drawn from NORMALISED coordinates rather than pixels, because the marker is computed from a
+// full-resolution frame while the screen is showing a downsampled preview, and the two only agree as
+// fractions of the sensor.
+function drawPolarTarget(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  toScreenX: (sx: number) => number,
+  toScreenY: (sy: number) => number,
+) {
+  const target = polar.target;
+  if (!target) return;
+
+  const cx = toScreenX(sensorW.value / 2);
+  const cy = toScreenY(sensorH.value / 2);
+  const tx = toScreenX(target.nx * sensorW.value);
+  const ty = toScreenY(target.ny * sensorH.value);
+
+  // Off-frame is the NORMAL first measurement: a degree of error with a one-degree field puts the
+  // marker off the edge every time. Pin it to the border with an arrow rather than drawing nothing,
+  // so the user can still see which way to turn.
+  const inside = tx >= 0 && ty >= 0 && tx <= w && ty <= h;
+  const px = Math.max(12, Math.min(w - 12, tx));
+  const py = Math.max(12, Math.min(h - 12, ty));
+
+  ctx.save();
+  ctx.strokeStyle = inside ? "rgba(74,222,128,0.95)" : "rgba(251,191,36,0.95)";
+  ctx.lineWidth = 2;
+
+  // The line from the crosshairs to the marker: the direction to drive the field.
+  ctx.beginPath();
+  ctx.setLineDash([6, 4]);
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(px, py);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // A ring of FIXED size — it marks a place, it does not measure one, and a ring that grew with zoom
+  // would swallow the field just as the user got close enough to need it.
+  ctx.beginPath();
+  ctx.arc(px, py, 14, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(px, py, 3, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // How far there is left to go, in the units the panel speaks.
+  const label = `${target.offset_arcmin.toFixed(1)}′`;
+  ctx.font = "12px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "rgba(2,6,23,0.85)";
+  ctx.strokeText(label, px, py - 20);
+  ctx.fillStyle = inside ? "rgb(134,239,172)" : "rgb(253,224,71)";
+  ctx.fillText(label, px, py - 20);
+  ctx.restore();
 }
 
 const tempLabel = computed(() => {

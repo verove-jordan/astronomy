@@ -17,6 +17,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/inspect"
 	"github.com/verove-jordan/astronomy/internal/siril"
+	"github.com/verove-jordan/astronomy/internal/stackalg"
 )
 
 func liveSirilRunner(t *testing.T) *siril.Runner {
@@ -65,7 +66,7 @@ func TestStackMasterSet_FlatRetriesUncalibrated(t *testing.T) {
 		built := []Master{{Type: MasterBias, Gain: 200, Offset: 0, Bin: 1, Path: badBias}}
 
 		outBase := filepath.Join(dir, "master_flat_bad")
-		note, err := stackMasterSet(context.Background(), runner, key, built, seqDir, outBase, flatPaths(seqDir, 4), nil)
+		note, err := stackMasterSet(context.Background(), runner, key, built, seqDir, outBase, flatPaths(seqDir, 4), stackalg.DefaultMasters(), nil)
 		require.NoError(t, err, "the flat must survive its broken bias")
 		assert.Contains(t, note, "stacked WITHOUT its bias")
 		assert.FileExists(t, outBase+".fits")
@@ -83,7 +84,7 @@ func TestStackMasterSet_FlatRetriesUncalibrated(t *testing.T) {
 		built := []Master{{Type: MasterBias, Gain: 200, Offset: 0, Bin: 1, Path: biasPath}}
 
 		outBase := filepath.Join(dir, "master_flat_ok")
-		note, err := stackMasterSet(context.Background(), runner, key, built, seqDir, outBase, flatPaths(seqDir, 4), nil)
+		note, err := stackMasterSet(context.Background(), runner, key, built, seqDir, outBase, flatPaths(seqDir, 4), stackalg.DefaultMasters(), nil)
 		require.NoError(t, err)
 		assert.Empty(t, note)
 		assert.FileExists(t, outBase+".fits")

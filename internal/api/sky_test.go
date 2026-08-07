@@ -58,6 +58,41 @@ func TestSkyTargets(t *testing.T) {
 		assert.Equal(t, "M81", resp.Targets[0].Name)
 	})
 
+	t.Run("focal reducer rescales the whole echo", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+			"/api/sky/targets?at=2026-03-15T23:00:00Z&reducer=0.66", nil))
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var resp skyResponse
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+		eq := resp.Query.Equipment
+		// 740 × 0.66 = 488.4 mm: the native focal is echoed untouched, every derived value moves.
+		assert.InDelta(t, 740.0, eq.FocalMM, 1e-9)
+		assert.InDelta(t, 0.66, eq.ReducerX, 1e-9)
+		assert.InDelta(t, 4.88, eq.FRatio, 0.01)
+		assert.InDelta(t, 1.60, eq.ImageScaleArcsecPx, 0.01)
+		assert.InDelta(t, 2.075, eq.FovWDeg, 0.01)
+
+		// A Barlow on top multiplies with it rather than replacing it: 740 × 2 × 0.66 = 976.8 mm.
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+			"/api/sky/targets?at=2026-03-15T23:00:00Z&reducer=0.66&barlow=2", nil))
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+		assert.InDelta(t, 9.77, resp.Query.Equipment.FRatio, 0.01)
+	})
+
+	t.Run("no reducer param leaves the rig at its native focal", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sky/targets", nil))
+		require.Equal(t, http.StatusOK, rec.Code)
+		var resp skyResponse
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+		assert.Zero(t, resp.Query.Equipment.ReducerX)
+		assert.InDelta(t, 7.4, resp.Query.Equipment.FRatio, 0.01)
+	})
+
 	t.Run("query location overrides config", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sky/targets?lat=40&lon=-74", nil))

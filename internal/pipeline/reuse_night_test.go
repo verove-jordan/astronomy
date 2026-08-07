@@ -297,7 +297,7 @@ func TestSessionFlatPaths(t *testing.T) {
 	})
 	t.Run("wrong filter and missing files drop out", func(t *testing.T) {
 		rows := []store.FrameRow{
-			flatRow(c, "R", n1),                                // wrong filter
+			flatRow(c, "R", n1), // wrong filter
 			flatRow(filepath.Join(dir, "flats/GONE.fits"), "L", n1), // freed to S3
 		}
 		paths, missing, note := sessionFlatPaths(rows, "L", "2023-02-27")

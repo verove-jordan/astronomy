@@ -306,6 +306,47 @@ func TestRunner_ResolvesFilterAliasesAgainstTheWheelLabels(t *testing.T) {
 		`a step asking for "SII" must resolve the slot labelled "S2"`)
 }
 
+// Where the run points has to reach the frame header. Without OBJCTRA/OBJCTDEC a later plate solve
+// has no hint and falls back to a blind all-sky search — the difference between seconds and minutes
+// per frame — and the coordinates are already sitting on the Request.
+func TestSaveRequestFor_CarriesTheTargetCoordinates(t *testing.T) {
+	r := &Runner{}
+	step := Step{Filter: "L", Count: 1, ExposureUs: 20_000, Gain: 100, Bin: 1, Type: "light"}
+	at := time.Date(2026, 8, 2, 22, 30, 0, 0, time.UTC)
+
+	t.Run("a pointed run writes them", func(t *testing.T) {
+		state := &runState{req: Request{Root: t.TempDir(), Object: "M31", RADeg: 10.6847, DecDeg: 41.2687}}
+
+		got := r.saveRequestFor(state, step, at)
+
+		assert.True(t, got.HasCoord)
+		assert.InDelta(t, 10.6847, got.RADeg, 1e-9)
+		assert.InDelta(t, 41.2687, got.DecDeg, 1e-9)
+	})
+
+	// A session started without coordinates must leave the cards OFF rather than writing 0h00m +00°00'.
+	// A solver trusts a present hint, so a bogus one is worse than none: it searches the wrong sky.
+	t.Run("an unpointed run writes no coordinates at all", func(t *testing.T) {
+		state := &runState{req: Request{Root: t.TempDir(), Object: "M31"}}
+
+		got := r.saveRequestFor(state, step, at)
+
+		assert.False(t, got.HasCoord)
+		assert.Zero(t, got.RADeg)
+		assert.Zero(t, got.DecDeg)
+	})
+
+	// RA 0 is a real place (the vernal equinox), so a declination alone must still count as pointed.
+	t.Run("a zero right ascension is still a pointing", func(t *testing.T) {
+		state := &runState{req: Request{Root: t.TempDir(), DecDeg: 89.2641}}
+
+		got := r.saveRequestFor(state, step, at)
+
+		assert.True(t, got.HasCoord)
+		assert.Zero(t, got.RADeg)
+	})
+}
+
 // Flats are per-filter, darks are not — the folder layout must reflect that, because it is what
 // makes a per-filter master flat possible while darks stay one filter-agnostic set.
 func TestFrameFolder_Layout(t *testing.T) {

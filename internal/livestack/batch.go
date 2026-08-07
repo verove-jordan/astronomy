@@ -14,6 +14,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/inspect"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
 	"github.com/verove-jordan/astronomy/internal/siril"
+	"github.com/verove-jordan/astronomy/internal/stackalg"
 )
 
 // liveFilterOrder is the canonical channel order for reporting (L first, matching the batch pipeline).
@@ -172,7 +173,10 @@ func (s *session) refreshMasters(ctx context.Context, inv *inspect.Inventory) er
 		return nil
 	}
 	wasEmpty := s.calibSig == ""
-	masters, warns, err := calib.BuildMasters(ctx, s.runner, inv, s.mastersDir, s.workDir, s.onSiril("building master calibration frames"))
+	masters, warns, err := calib.BuildMasters(ctx, s.runner, inv, s.mastersDir, s.workDir,
+		// Live stacking builds masters once per session in the background; the user's per-frame-type
+		// recipes apply to the FINAL run, which rebuilds through the standard deep-sky path.
+		stackalg.DefaultMasters(), s.onSiril("building master calibration frames"))
 	if err != nil {
 		return err
 	}

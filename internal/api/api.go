@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/klauspost/compress/gzhttp"
 	"golang.org/x/sync/singleflight"
@@ -35,6 +37,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/secret"
 	"github.com/verove-jordan/astronomy/internal/siril"
 	"github.com/verove-jordan/astronomy/internal/skyevents"
+	"github.com/verove-jordan/astronomy/internal/skylog"
 	"github.com/verove-jordan/astronomy/internal/skyplan"
 	"github.com/verove-jordan/astronomy/internal/store"
 	"github.com/verove-jordan/astronomy/internal/thumb"
@@ -56,15 +59,21 @@ type Server struct {
 	canopy         *canopy.Provider
 	darksky        *darksky.Finder
 	weather        *weather.Provider
-	s3conn         *s3conn.Service     // UI-managed S3 connections; nil when encryption is unavailable
-	agent          *agent.Runner       // tool-using AstroAgent (drives the local model over the app's tools)
-	agentTurns     *turns.Sessions     // live turns (agent chat + supervised-job conversations), streamed over SSE
-	toolHealth     *toolhealth.Checker // environment health (tool deep probes + catalogue presence)
-	s3cache        *s3Cache            // reuses minio clients + memoizes listings so browsing stays fast
-	sirilRunner    *siril.Runner       // one-off synchronous Siril work (star-annotation re-solve); nil-safe for tests
-	devices        *deviceProxy        // reverse proxy onto the separate device-server process
-	capture        *capture.Runner     // the auto-run sequencer (drives the device server)
-	starsFlight    singleflight.Group  // dedupes concurrent star-annotation computes per run dir
+	s3conn         *s3conn.Service       // UI-managed S3 connections; nil when encryption is unavailable
+	agent          *agent.Runner         // tool-using AstroAgent (drives the local model over the app's tools)
+	agentTurns     *turns.Sessions       // live turns (agent chat + supervised-job conversations), streamed over SSE
+	toolHealth     *toolhealth.Checker   // environment health (tool deep probes + catalogue presence)
+	s3cache        *s3Cache              // reuses minio clients + memoizes listings so browsing stays fast
+	sirilRunner    *siril.Runner         // one-off synchronous Siril work (star-annotation re-solve); nil-safe for tests
+	devices        *deviceProxy          // reverse proxy onto the separate device-server process
+	capture        *capture.Runner       // the auto-run sequencer (drives the device server)
+	polar          *capture.PolarSession // polar alignment from the live camera, built on first use
+	polarOnce      sync.Once
+	starsFlight    singleflight.Group // dedupes concurrent star-annotation computes per run dir
+	// conditionsLog records the sky the running session is shooting under. Held so the logbook can
+	// explain an empty chart; an atomic pointer because it is replaced on every start and read from
+	// request goroutines. nil is the normal idle state and every use is nil-safe.
+	conditionsLog atomic.Pointer[skylog.Logger]
 }
 
 // New builds the API server. hub is the shared turn transport (also handed to the job manager) so a
@@ -74,13 +83,16 @@ func New(mgr *job.Manager, st *store.Store, cfg *config.Config, hub *turns.Sessi
 	cp := canopy.New(cfg)
 	elev := elevation.New(cfg, cp)
 	rt := routing.New(cfg)
+	wx := weather.New(cfg)
 	dk := darksky.New(lp, elev, cfg.DarkSkyMaxCells, cfg.HorizonCandidates,
 		darksky.WithScore(darksky.ScoreConfig{
 			DarkWeight:       cfg.DarkSkyDarkWeight,
 			SouthWeight:      cfg.DarkSkySouthWeight,
 			MaxSouthBlockDeg: cfg.DarkSkyMaxSouthBlockDeg,
+			WeatherWeight:    cfg.DarkSkyWeatherWeight,
 		}),
-		darksky.WithRouter(rt))
+		darksky.WithRouter(rt),
+		darksky.WithWeather(wx, cfg.DarkSkyWeatherProbes))
 	s := &Server{
 		mgr:            mgr,
 		store:          st,
@@ -92,7 +104,7 @@ func New(mgr *job.Manager, st *store.Store, cfg *config.Config, hub *turns.Sessi
 		elevation:      elev,
 		canopy:         cp,
 		darksky:        dk,
-		weather:        weather.New(cfg),
+		weather:        wx,
 		s3conn:         newS3ConnService(st, cfg),
 		agentTurns:     hub,
 		toolHealth:     toolhealth.New(cfg),
@@ -153,6 +165,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/denoise-final", s.denoiseFinalJob)
 	mux.HandleFunc("POST /api/jobs/{id}/stars", s.computeStars)
 	mux.HandleFunc("GET /api/jobs/{id}/stars", s.getStars)
+	mux.HandleFunc("GET /api/jobs/{id}/scene3d", s.getScene3D)
 	mux.HandleFunc("POST /api/jobs/{id}/free-local", s.freeLocalJob)
 	mux.HandleFunc("GET /api/jobs/{id}/iterations", s.jobIterations)
 	mux.HandleFunc("GET /api/jobs/{id}/events", s.jobEvents)
@@ -175,6 +188,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sky/geocode", s.geocode)
 	mux.HandleFunc("POST /api/capture/start", s.startCapture)
 	mux.HandleFunc("POST /api/capture/center", s.centerCapture)
+	mux.HandleFunc("POST /api/capture/polar/start", s.startPolar)
+	mux.HandleFunc("POST /api/capture/polar/rough", s.roughPolar)
+	mux.HandleFunc("POST /api/capture/polar/next", s.nextPolar)
+	mux.HandleFunc("POST /api/capture/polar/adjust", s.adjustPolar)
+	mux.HandleFunc("POST /api/capture/polar/refresh", s.refreshPolar)
+	mux.HandleFunc("POST /api/capture/polar/stop", s.stopPolar)
+	mux.HandleFunc("GET /api/capture/polar", s.polarStatus)
+	mux.HandleFunc("GET /api/capture/polar/events", s.polarEvents)
 	mux.HandleFunc("POST /api/capture/pause", s.pauseCapture)
 	mux.HandleFunc("POST /api/capture/resume", s.resumeCapture)
 	mux.HandleFunc("POST /api/capture/abort", s.abortCapture)
@@ -182,6 +203,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/capture/events", s.captureEvents)
 	mux.HandleFunc("GET /api/capture/sessions", s.listCaptureSessions)
 	mux.HandleFunc("GET /api/capture/sessions/{id}", s.getCaptureSession)
+	mux.HandleFunc("GET /api/capture/sessions/{id}/conditions", s.captureConditions)
 	mux.HandleFunc("GET /api/capture/sequences", s.listCaptureSequences)
 	mux.HandleFunc("POST /api/capture/sequences", s.saveCaptureSequence)
 	mux.HandleFunc("DELETE /api/capture/sequences/{id}", s.deleteCaptureSequence)
@@ -240,6 +262,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sky/lightpollution/atlas", s.buildAtlas)
 	mux.HandleFunc("GET /api/sky/lightpollution/tiles/{z}/{x}/{y}", s.lightPollutionTile)
 	mux.HandleFunc("GET /api/sky/darksites", s.darkSites)
+	mux.HandleFunc("GET /api/sky/nights", s.skyNights)
 	mux.HandleFunc("GET /api/sky/canopy/atlas", s.canopyAtlasStatus)
 	mux.HandleFunc("POST /api/sky/canopy/atlas", s.canopyBuildAtlas)
 	mux.HandleFunc("GET /api/sky/weather", s.skyWeather)
@@ -368,6 +391,10 @@ func (s *Server) modeParams(w http.ResponseWriter, r *http.Request) {
 		"defaults": pipeline.ParamsFor(preset),
 		"ranges":   pipeline.KnobRangesFor(mo),
 		"menu":     pipeline.KnobMenuFor(mo),
+		// The stacking-algorithm catalogue behind the launch form's "Stacking & rejection" panel.
+		// Served from the engine so the dropdown can never offer an algorithm it cannot run; null
+		// for the modes that stack natively (planetary/sun/milkyway).
+		"stack_menu": pipeline.StackMenuFor(mo),
 	})
 }
 
@@ -866,6 +893,16 @@ func (s *Server) serveThumb(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	_, _ = w.Write(data)
+}
+
+// atoi64 parses an optional epoch-ms query parameter. Anything unparseable reads as 0, which every
+// caller treats as "do not filter on it" — a malformed date must narrow nothing, not everything.
+func atoi64(s string) int64 {
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // clampAtoi parses s as an int (falling back to def) and clamps the result into [lo, hi].

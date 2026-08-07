@@ -27,7 +27,7 @@ const (
 	skyLumMinSkyFrac  = 0.5
 	skyLumFitRejSigma = 2.5 // iterative fit rejection: object/edge-band tiles drop out here
 	skyLumFitIters    = 3
-	skyLumMinSamples  = 12  // fewer sky tiles than this → skip (no flatten beats a wrong one)
+	skyLumMinSamples  = 12 // fewer sky tiles than this → skip (no flatten beats a wrong one)
 	// Correction cap as a fraction of the sky level — a BACKSTOP against a degenerate fit, sized
 	// for real glows (M51's spans ~±95% of sky; the old 1.0 cap truncated the correction and left
 	// visible residual bands where the glow exceeded it).

@@ -6,6 +6,7 @@ import (
 
 	"github.com/verove-jordan/astronomy/internal/device"
 	"github.com/verove-jordan/astronomy/internal/device/asi"
+	"github.com/verove-jordan/astronomy/internal/device/avf"
 	"github.com/verove-jordan/astronomy/internal/device/efw"
 	"github.com/verove-jordan/astronomy/internal/device/nexstar"
 	"github.com/verove-jordan/astronomy/internal/device/sim"
@@ -18,6 +19,7 @@ const (
 	DriverASI     = "asi"
 	DriverEFW     = "efw"
 	DriverNexStar = "nexstar"
+	DriverAVF     = "avf"
 )
 
 // DriverStatus is one driver's availability, as reported to the UI.
@@ -43,6 +45,10 @@ var probes []hardwareProbe
 // registerProbe is called from a driver's init() once it is implemented.
 func registerProbe(p hardwareProbe) { probes = append(probes, p) }
 
+// cameraDevice selects which AVFoundation capture device the avf driver opens: an ffmpeg index, or a
+// substring of the device's name. Empty means "find a phone".
+var cameraDevice string
+
 // mountPort is the serial device the NexStar driver will open. It is set by the connect request
 // (the UI lists the candidates), defaulting to whatever looks like a USB-serial adapter.
 var mountPort string
@@ -59,6 +65,14 @@ func init() {
 		name: DriverEFW, kind: device.KindWheel,
 		probe:     efw.Available,
 		openWheel: func() (device.FilterWheel, error) { return efw.New(), nil },
+	})
+	// The Mac's own capture devices, which on a machine with an iPhone nearby means Continuity Camera.
+	// It costs nothing to register: the probe reports what it can see, and a machine with no camera
+	// permission or no ffmpeg simply says so.
+	registerProbe(hardwareProbe{
+		name: DriverAVF, kind: device.KindCamera,
+		probe:      avf.Probe,
+		openCamera: func() (device.Camera, error) { return avf.New(cameraDevice), nil },
 	})
 	registerProbe(hardwareProbe{
 		name: DriverNexStar, kind: device.KindMount,

@@ -6,12 +6,19 @@
 // collide. Redraws are rAF-coalesced and only triggered by transform/data changes — no animation
 // loop, zero idle cost. The viewer surface is always slate-950, so the light-on-dark canvas
 // colours are correct in both themes.
-import { onBeforeUnmount, onMounted, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, watch } from "vue";
 import { ref } from "vue";
-import type { StarLabel } from "@/types";
+import { useI18n } from "vue-i18n";
+import type { DetectedStar, StarCatalogInfo, StarLabel } from "@/types";
+import type { ScreenPoint } from "@/utils/starOverlay";
+import { outlineFor, selectStarMarkers } from "@/utils/starOverlay";
+import StarInfoCard from "@/components/Common/StarInfoCard.vue";
 
 const props = defineProps<{
   labels: StarLabel[]; // importance-sorted by the store (mag ascending, DSOs boosted)
+  stars?: DetectedStar[]; // detected peaks, brightest first (same coordinate space as labels)
+  starLimit?: number; // how many detected stars to plot; 0 / absent = none
+  scaleArcsecPx?: number; // plate scale, for reporting a star's size in arcseconds on hover
   imageW: number; // stars.json coordinate space (usually === natW)
   imageH: number;
   natW: number; // displayed image intrinsic px
@@ -24,11 +31,32 @@ const props = defineProps<{
 }>();
 
 const canvas = ref<HTMLCanvasElement | null>(null);
+const { t, te } = useI18n();
+
+// A detection's size is measured in pixels; the plate scale turns that into the arcseconds an
+// observer actually cares about. Without a solved field there is no scale, so it stays in pixels.
+function starArcsec(s: DetectedStar): string {
+  const r = s.r_px;
+  if (!r) return "";
+  const fwhmPx = r * 2;
+  if (!props.scaleArcsecPx) return `${fwhmPx.toFixed(1)} px`;
+  return `${(fwhmPx * props.scaleArcsecPx).toFixed(2)}″ (${fwhmPx.toFixed(1)} px)`;
+}
+
+function formatArcmin(v: number): string {
+  return v >= 60 ? `${(v / 60).toFixed(2)}°` : `${v.toFixed(1)}′`;
+}
 
 const SCAN_CAP = 1500; // wide-field guard: never scan more candidates than this per selection
 const ANCHOR_MIN_SEP = 28; // px between accepted anchors
 const PAN_RESELECT_PX = 32; // cumulative pan before the label choice is recomputed
 const OVERSCAN = 24; // px beyond the viewport still considered visible (avoids edge pop-in)
+
+// HoverTarget is whatever the pointer is currently over: a named catalogue object, or one of the
+// anonymous detections. Both carry their screen anchor so the tooltip can sit beside it.
+type HoverTarget =
+  | { kind: "label"; label: StarLabel; x: number; y: number }
+  | { kind: "star"; star: DetectedStar; x: number; y: number };
 
 interface PlacedLabel {
   label: StarLabel;
@@ -56,6 +84,13 @@ function toScreen(l: StarLabel): { x: number; y: number } {
     x: props.tx + l.x * kx * props.scale,
     y: props.ty + l.y * ky * props.scale,
   };
+}
+
+// screenExtent resolves a label's footprint against the viewer's current transform (null when the
+// object has no catalogued size or is too small to outline right now — see utils/starOverlay).
+function screenExtent(l: StarLabel) {
+  const k = (props.imageW > 0 ? props.natW / props.imageW : 1) * props.scale;
+  return outlineFor(l.extent, k);
 }
 
 // zoomRel is 1 at fit and grows as the visible fraction of the image shrinks (2 at 2×…).
@@ -166,6 +201,11 @@ function haloText(
   ctx.fillText(text, x, y);
 }
 
+// The current frame's drawn markers, kept so a pointer move can hit-test what is actually on screen
+// rather than re-deriving the selection.
+let lastMarkers: ScreenPoint[] = [];
+let hoveredMarker: ScreenPoint | null = null;
+
 let raf = 0;
 function scheduleDraw() {
   if (raf) return;
@@ -190,6 +230,29 @@ function draw() {
   if (!ctx) return;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, props.cw, props.ch);
+
+  // Detected stars first, so the named labels always draw on top of them.
+  const k = (props.imageW > 0 ? props.natW / props.imageW : 1) * props.scale;
+  const markers = selectStarMarkers(
+    props.stars,
+    { k, tx: props.tx, ty: props.ty },
+    { w: props.cw, h: props.ch },
+    props.starLimit ?? 0,
+  );
+  lastMarkers = markers;
+  for (const p of markers) {
+    // Each ring takes the star's OWN colour so it stays distinguishable whatever it sits on: a blue
+    // ring around a blue star, an amber one around a red giant. Without a colour (mono master) fall
+    // back to the neutral sky tone that reads as "measured" rather than "named".
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.lineWidth = p === hoveredMarker ? 2 : 1;
+    ctx.strokeStyle = p.hex ?? "rgb(125,211,252)";
+    ctx.globalAlpha = p === hoveredMarker ? 1 : 0.8;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
   if (props.labels.length === 0) return;
   if (needsReselect()) recomputeSelection(ctx);
 
@@ -205,11 +268,24 @@ function draw() {
       continue;
     }
     const dso = s.label.kind === "dso";
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+    // An extended object gets its catalogued footprint outlined; everything else (and anything
+    // still too small on screen) keeps the plain anchor dot.
+    const ext = dso ? screenExtent(s.label) : null;
     ctx.lineWidth = 1;
     ctx.strokeStyle = dso ? "rgba(252,211,77,0.9)" : "rgba(226,232,240,0.9)";
-    ctx.stroke();
+    if (ext) {
+      ctx.save();
+      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = "rgba(252,211,77,0.55)";
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y, ext.rx, ext.ry, ext.angle, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    } else {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+      ctx.stroke();
+    }
 
     const primaryY = s.below ? p.y + 18 : p.y - 12;
     haloText(
@@ -233,9 +309,98 @@ function draw() {
   }
 }
 
+// --- hover ------------------------------------------------------------------------------------
+// The canvas is the only thing that knows where anything ended up on screen, so it owns hit-testing
+// too. A hit prefers a NAMED label over a bare detection: when both are under the cursor the name is
+// the more informative answer.
+const hover = ref<HoverTarget | null>(null);
+const hoverAt = ref({ x: 0, y: 0 });
+const HIT_SLOP = 6; // px of forgiveness around a marker, so a 3 px ring is still catchable
+
+function hitTest(mx: number, my: number): HoverTarget | null {
+  let best: HoverTarget | null = null;
+  let bestD = Infinity;
+  for (const s of selection) {
+    const p = toScreen(s.label);
+    const d = Math.hypot(p.x - mx, p.y - my);
+    const reach = Math.max(HIT_SLOP, screenExtent(s.label) ? 10 : HIT_SLOP);
+    if (d <= reach && d < bestD) {
+      best = { kind: "label", label: s.label, x: p.x, y: p.y };
+      bestD = d;
+    }
+  }
+  if (best) return best;
+  for (const m of lastMarkers) {
+    const d = Math.hypot(m.x - mx, m.y - my);
+    if (d <= m.r + HIT_SLOP && d < bestD) {
+      best = { kind: "star", star: m.star, x: m.x, y: m.y };
+      bestD = d;
+    }
+  }
+  return best;
+}
+
+function onMove(e: MouseEvent) {
+  const el = canvas.value;
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  const mx = e.clientX - r.left;
+  const my = e.clientY - r.top;
+  const hit = hitTest(mx, my);
+  const changed = hit?.x !== hover.value?.x || hit?.y !== hover.value?.y;
+  hover.value = hit;
+  hoverAt.value = { x: mx, y: my };
+  const nextMarker = hit?.kind === "star" ? (lastMarkers.find((m) => m.star === hit.star) ?? null) : null;
+  if (nextMarker !== hoveredMarker || changed) {
+    hoveredMarker = nextMarker;
+    scheduleDraw();
+  }
+}
+
+function onLeave() {
+  if (hover.value || hoveredMarker) {
+    hover.value = null;
+    hoveredMarker = null;
+    scheduleDraw();
+  }
+}
+
+// --- hover card content -----------------------------------------------------------------------
+// Whatever is under the cursor, the card answers the same question, so both branches read one
+// catalogue record and one set of derivations.
+const info = computed<StarCatalogInfo | null>(
+  () =>
+    (hover.value?.kind === "label"
+      ? hover.value.label.star
+      : hover.value?.star.star) ?? null,
+);
+
+const infoTitle = computed(() => {
+  if (hover.value?.kind === "label") return hover.value.label.name;
+  return info.value?.name || t("stars.info.unnamed");
+});
+
+
+
+
+
+
+
 watch(
-  () => [props.scale, props.tx, props.ty, props.cw, props.ch, props.labels],
-  scheduleDraw,
+  () => [
+    props.scale,
+    props.tx,
+    props.ty,
+    props.cw,
+    props.ch,
+    props.labels,
+    props.stars,
+    props.starLimit,
+  ],
+  () => {
+    onLeave(); // a pan/zoom invalidates every screen position the hover was based on
+    scheduleDraw();
+  },
 );
 onMounted(scheduleDraw);
 onBeforeUnmount(() => {
@@ -244,9 +409,78 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <canvas
-    ref="canvas"
-    aria-hidden="true"
-    class="pointer-events-none absolute inset-0 h-full w-full"
-  />
+  <div class="absolute inset-0">
+    <canvas
+      ref="canvas"
+      aria-hidden="true"
+      class="absolute inset-0 h-full w-full"
+      @mousemove="onMove"
+      @mouseleave="onLeave"
+    />
+    <!-- Hover card: everything known about whatever is under the cursor. Flips to the other side of
+         the anchor near an edge so it never runs off the viewer. -->
+    <div
+      v-if="hover"
+      class="pointer-events-none absolute z-20 max-w-[19rem] rounded-md border border-slate-700 bg-slate-900/95 px-2.5 py-2 text-xs text-slate-200 shadow-lg backdrop-blur"
+      :style="{
+        left: `${hoverAt.x > cw - 230 ? hoverAt.x - 240 : hoverAt.x + 14}px`,
+        top: `${hoverAt.y > ch - 230 ? Math.max(4, hoverAt.y - 220) : hoverAt.y + 14}px`,
+      }"
+      role="tooltip"
+    >
+      <StarInfoCard
+        :info="info"
+        :title="infoTitle"
+        :secondary="hover.kind === 'label' ? hover.label.secondary : info?.secondary"
+        :title-class="
+          hover.kind === 'label' && hover.label.kind === 'dso'
+            ? 'text-amber-300'
+            : info
+              ? 'text-slate-100'
+              : 'text-slate-300'
+        "
+        :mag-estimate="hover.kind === 'star' ? hover.star.mag : null"
+      >
+        <!-- What kind of object this is, which only the label overlay knows. -->
+        <template #lead>
+          <template v-if="hover.kind === 'label' && hover.label.type">
+            <dt class="text-slate-500">{{ t("stars.info.type") }}</dt>
+            <dd>{{ te(`skyTypes.${hover.label.type}`) ? t(`skyTypes.${hover.label.type}`) : hover.label.type }}</dd>
+          </template>
+          <template v-if="hover.kind === 'label' && hover.label.diameter_arcmin">
+            <dt class="text-slate-500">{{ t("stars.info.size") }}</dt>
+            <dd>{{ formatArcmin(hover.label.diameter_arcmin) }}</dd>
+          </template>
+          <template v-if="hover.kind === 'label' && !info && hover.label.mag < 90">
+            <dt class="text-slate-500">{{ t("stars.info.mag") }}</dt>
+            <dd>{{ hover.label.mag.toFixed(2) }}</dd>
+          </template>
+        </template>
+
+        <template #trail>
+          <template v-if="info?.con">
+            <dt class="text-slate-500">{{ t("stars.info.constellation") }}</dt>
+            <dd>{{ te(`constellations.${info.con}`) ? t(`constellations.${info.con}`) : info.con }}</dd>
+          </template>
+
+          <!-- Measured on THIS image rather than read from a catalogue. -->
+          <template v-if="hover.kind === 'star'">
+            <template v-if="starArcsec(hover.star)">
+              <dt class="text-slate-500">{{ t("stars.info.fwhm") }}</dt>
+              <dd>{{ starArcsec(hover.star) }}</dd>
+            </template>
+            <dt class="text-slate-500">{{ t("stars.info.pos") }}</dt>
+            <dd>{{ hover.star.x }}, {{ hover.star.y }} px</dd>
+            <template v-if="hover.star.hex">
+              <dt class="text-slate-500">{{ t("stars.info.colour") }}</dt>
+              <dd class="flex items-center gap-1">
+                <span class="inline-block h-2.5 w-2.5 rounded-full border border-slate-600" :style="{ backgroundColor: hover.star.hex }" />
+                {{ hover.star.hex }}
+              </dd>
+            </template>
+          </template>
+        </template>
+      </StarInfoCard>
+    </div>
+  </div>
 </template>

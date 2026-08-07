@@ -22,11 +22,12 @@ func registerConditionTools(r *Registry, d Deps) {
 	})
 	r.Add(Tool{
 		Name: "dark_sites", Category: "conditions",
-		Description: "Find the best observing sites near a location — ranked by sky darkness and how open the horizon is (accounting for terrain and nearby trees/forest, with the low southern sky weighted most). Reports straight-line and by-road driving distance/time. Defaults to the user's site.",
+		Description: "Find the best observing sites near a location for a given night — ranked by sky darkness, how open the horizon is (terrain and nearby trees/forest, with the low southern sky weighted most) and the night's forecast (cloud, clear hours, dew risk, seeing). Reports straight-line and by-road driving distance/time. Defaults to the user's site and tonight.",
 		Schema: objectSchema(nil, map[string]any{
 			"lat": numProp("latitude (default = user setup)"), "lon": numProp("longitude (default = user setup)"),
 			"radius_deg": numProp("search radius in degrees (default 3, max 6)"),
 			"max_bortle": intProp("keep only sites at or below this Bortle (default 4)"),
+			"night":      intProp("which night to rank for: 0 = tonight, 1 = tomorrow night, … (default 0)"),
 		}),
 		Handler: func(ctx context.Context, args json.RawMessage) (string, error) { return darkSites(ctx, d, args) },
 	})
@@ -76,6 +77,7 @@ func darkSites(ctx context.Context, d Deps, args json.RawMessage) (string, error
 		siteArgs
 		RadiusDeg float64 `json:"radius_deg"`
 		MaxBortle int     `json:"max_bortle"`
+		Night     int     `json:"night"`
 	}
 	if err := decodeArgs(args, &in); err != nil {
 		return "", err
@@ -88,9 +90,15 @@ func darkSites(ctx context.Context, d Deps, args json.RawMessage) (string, error
 	if radius > 6 {
 		radius = 6
 	}
+	if in.Night < 0 {
+		in.Night = 0
+	}
 	q := darksky.Query{
 		Bbox:      lightpollution.Bbox{MinLat: lat - radius, MinLon: lon - radius, MaxLat: lat + radius, MaxLon: lon + radius},
 		MaxBortle: in.MaxBortle, Limit: 12, Horizon: true, ObsLat: lat, ObsLon: lon, ObsSet: true,
+		// The agent is asked where to go on a given night, so it gets the same forecast-aware ranking
+		// the finder page does rather than a terrain-only answer that ignores the sky.
+		Weather: true, NightIndex: in.Night,
 	}
 	res := d.DarkSky.Find(ctx, q)
 	rows := make([]map[string]any, 0, len(res.Candidates))
@@ -112,9 +120,29 @@ func darkSites(ctx context.Context, d Deps, args json.RawMessage) (string, error
 				row["canopy_m"] = c.Horizon.CanopyM
 			}
 		}
+		if c.Weather != nil && c.Weather.Known() {
+			row["cloud_pct"] = c.Weather.CloudPct
+			row["clear_hours"] = c.Weather.ClearHours
+			row["night_score"] = c.Weather.Score
+			row["dew_risk"] = c.Weather.DewRisk
+			if c.Weather.SeeingArcsec > 0 {
+				row["seeing_arcsec"] = c.Weather.SeeingArcsec
+			}
+			if len(c.Weather.Flags) > 0 {
+				row["flags"] = c.Weather.Flags
+			}
+		}
 		rows = append(rows, row)
 	}
-	return jsonResult(map[string]any{"count": len(rows), "candidates": rows, "warnings": res.Warnings})
+	out := map[string]any{"count": len(rows), "candidates": rows, "warnings": res.Warnings}
+	if res.Night != nil {
+		out["night"] = map[string]any{
+			"index": res.Night.Index, "start_ms": res.Night.StartMs, "end_ms": res.Night.EndMs,
+			"dark_hours": res.Night.DarkHours, "moon_illum": res.Night.MoonIllum,
+			"moon_up_hours": res.Night.MoonUpHours,
+		}
+	}
+	return jsonResult(out)
 }
 
 func weatherAt(ctx context.Context, d Deps, args json.RawMessage) (string, error) {

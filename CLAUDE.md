@@ -85,7 +85,11 @@ Post-run refine dispatches by mode in `refine.go` (`RefineExistingRun`). To add 
 `candidateRenderer` + persist its re-finish inputs, then gate the call on `superviseOn` in that mode's
 pipeline entry. Everything soft-falls to the standard finish; a run never fails because of the agent.
 
-**Persistence.** Postgres via `pgx/v5` + `sqlc`; versioned SQL migrations via `golang-migrate`.
+**Persistence.** Postgres via **raw `pgx/v5` — there is no ORM and no sqlc**. SQL is hand-written
+inline in `internal/store/*.go` (one file per entity), scanned with
+`pgx.CollectRows(rows, pgx.RowToStructByName[T])` against `db:"…"` tags, with a `<entity>Cols` const
+so SELECT and struct never drift. Migrations are embedded `migrations/NNNN_name.{up,down}.sql`
+applied by our own `store.Migrate` (**not** golang-migrate); both directions are mandatory.
 Per the house DB convention, `created_at`/`updated_at` are **int64 millisecond** timestamps; durations
 (exposure) are stored in ms and temperatures in milli-°C to stay integer-clean.
 
@@ -146,6 +150,23 @@ freed previews/results serve local-first with an S3 fallback (frontend must tag 
 → pushes → frees. Backup gathers **browser-only** state (favorites/setups + AI-chat IndexedDB) UI-side
 (`utils/appstate.ts`); `.env` secrets are excluded. See `docs/architecture.md` → "S3 storage".
 
+**Polar alignment from the camera NEVER commands the mount.** `/capture` → Polar alignment measures the
+mount's polar axis by plate-solving frames along a rotation of the RA axis (`internal/polaralign` = pure
+geometry; `internal/capture/polar.go` = the session; `POST /api/capture/polar/*`). The user turns the RA
+axis **by hand** between frames — the fit needs to know that it moved, not how far — and that is
+deliberate, not an unfinished feature: it is what makes the whole thing work on a mount we cannot drive,
+including one with no electronics at all. Do not "improve" it by adding a motorised sweep as the default.
+Two other decisions are load-bearing and tested: the target marker uses the rotation the ADJUSTING BOLTS
+apply, not the shortest rotation onto the pole (they differ by a first-order twist of az·sin(lat)), and
+the azimuth figure shown to the user is the KNOB angle, which is 1/cos(lat) larger than the sky error.
+Frames come from the live view via `POST /live/save` so the picture being measured is the picture on
+screen. There are TWO ways in and they must never be conflated in the UI: the four-frame measurement
+(arcminute class) and `POST /polar/rough`, which answers from ONE frame by asserting the tube looks
+down the RA axis (`polaralign.RoughAxis`) — polar-scope class, ~0.5°, and it carries `WarnAssumedOnAxis`
+plus a candid `SigmaArcsec` for exactly that reason. `polaralign.Locate` draws the pole itself and is
+assumption-free. Simulated frames cannot be plate-solved, so `ASTRO_SIM_SOLVER=1` + a sim polar error is
+the only way to exercise this indoors. See `docs/mount.md` → "Polar alignment with the camera".
+
 **Filters have ONE canonical list.** `internal/filters` (Go) and `frontend/src/constants/filters.ts`
 (mirrored, pinned by `filters.spec.ts`) own the canonical set `L,R,G,B,Ha,OIII,SII`, its aliases
 (`s2`/`sulfur`→SII, `O3`→OIII, Johnson `V`→G), the display order and `IsNarrowband`. **Never re-declare
@@ -193,7 +214,7 @@ run it inline — `astrostack process` / `just process …` / `go run ./cmd/astr
 Instead `POST /api/jobs` to the running engine (`astrostack serve`, started by **`just dev`**, host
 `:8080`) with a `job.RunRequest` JSON body — minimum `{"path","mode","format"}`; `path` must resolve
 **inside `ASTRO_DATA_DIR`** (the capture root, e.g. `input/M31/…`) or the API returns 400; `mode` ∈
-`deepsky|nebula|milkyway|planetary|comet|livestack|mosaic`, `format` ∈ `image|video|both`, fine-knob
+`deepsky|nebula|milkyway|planetary|comet|livestack|mosaic|sun`, `format` ∈ `image|video|both`, fine-knob
 overrides in `params`. Example: `curl -sS -XPOST localhost:8080/api/jobs -H 'content-type:
 application/json' -d '{"path":"input/M31/2024-01-01","mode":"deepsky","format":"image"}'` → `202
 {"id":N}`; then follow the run with `GET /api/jobs/{id}` (or stream `GET /api/jobs/{id}/events`) to

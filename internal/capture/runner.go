@@ -57,6 +57,13 @@ type Request struct {
 	RADeg  float64 `json:"ra_deg,omitempty"`
 	DecDeg float64 `json:"dec_deg,omitempty"`
 
+	// LatDeg/LonDeg/ElevationM is where the telescope stands. The sequencer never uses it — it is
+	// recorded with the session so the night's conditions (weather, Moon, sky brightness) are
+	// attributable to a place afterwards, when the observer may well have moved on.
+	LatDeg     float64 `json:"lat_deg,omitempty"`
+	LonDeg     float64 `json:"lon_deg,omitempty"`
+	ElevationM float64 `json:"elevation_m,omitempty"`
+
 	MosaicPlanID int64 `json:"mosaic_plan_id,omitempty"`
 	TileIndex    *int  `json:"tile_index,omitempty"`
 
@@ -84,6 +91,33 @@ type Runner struct {
 	// tracker measures how the mount actually tracked, from the frames this run writes. Optional:
 	// nil when no plate solver is configured, and the session runs exactly as before.
 	tracker *TrackMonitor
+
+	// guider corrects the mount from those same frames. Also optional, and for a stronger reason than
+	// the tracker: it MOVES HARDWARE. A session with no guider attached behaves exactly as it always
+	// did, and every failure inside the guider is swallowed rather than losing the night's frames.
+	guider *Guider
+}
+
+// SetGuider attaches self-guiding to this runner. Safe to call with nil.
+func (r *Runner) SetGuider(g *Guider) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.guider = g
+}
+
+// GuideStats reports self-guiding progress, or false when nothing is guiding.
+func (r *Runner) GuideStats() (GuideStats, bool) {
+	r.mu.RLock()
+	g := r.guider
+	r.mu.RUnlock()
+	return g.Stats()
+}
+
+// currentGuider reads the attached guider under the lock.
+func (r *Runner) currentGuider() *Guider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.guider
 }
 
 // TrackStats reports the tracking monitor's progress, or false when measurement is not running.
@@ -259,8 +293,24 @@ func (r *Runner) run(ctx context.Context, req Request, plan []Step) {
 				r.finish(ctx, StatusAborted, nil)
 				return
 			}
-			r.finish(ctx, StatusFailed, err)
-			return
+			// A cable nudged at 2am used to end the night. The driver reconnects on its own within
+			// seconds, so a DEVICE error is now waited out and the plan carries on from the next
+			// frame; anything else — a read-only output directory, a full disk — still fails at once,
+			// because retrying those forever is worse than stopping. See recover.go.
+			if !isRecoverable(err) {
+				r.finish(ctx, StatusFailed, err)
+				return
+			}
+			if rerr := r.recoverFromDeviceError(ctx, err); rerr != nil {
+				if ctx.Err() != nil {
+					r.finish(ctx, StatusAborted, nil)
+					return
+				}
+				r.finish(ctx, StatusFailed, rerr)
+				return
+			}
+			// The frame that failed is not retried: the exposure is gone either way, and re-taking it
+			// would double the time on this step for no gain. The plan simply continues.
 		}
 	}
 	r.finish(ctx, StatusCompleted, nil)

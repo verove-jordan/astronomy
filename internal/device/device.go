@@ -147,6 +147,10 @@ type Frame struct {
 	HasTemp    bool
 	StartedAt  time.Time // exposure START (DATE-OBS is the start of integration by convention)
 	Duration   time.Duration
+	// ExtraCards are FITS header cards only the driver could know, appended after the standard capture
+	// header. Real cameras leave this nil; the simulator uses it to record the truth about a frame it
+	// invented, which is what lets the plate-solve-driven features be exercised without a sky.
+	ExtraCards []string
 }
 
 // ExposureState is the lifecycle of one still exposure.
@@ -277,6 +281,51 @@ type Mount interface {
 // against. It lives here because the driver and the simulator must agree on it exactly — two copies
 // that differ in the fifth decimal would show up as a slow phase creep nobody could explain.
 const SiderealArcsecPerSec = 15.0410686
+
+// GuideAxis names the mount axis a guide correction addresses.
+type GuideAxis int
+
+const (
+	GuideAxisRA GuideAxis = iota
+	GuideAxisDec
+)
+
+func (a GuideAxis) String() string {
+	if a == GuideAxisDec {
+		return "dec"
+	}
+	return "ra"
+}
+
+// GuideMount is a mount that can turn one axis at a commanded rate for a commanded time.
+//
+// Deliberately NOT part of Mount, for the same reason PECMount is not: a mount that cannot do this
+// should make the absence visible rather than stub a method that silently does nothing. Callers
+// type-assert and degrade.
+//
+// # Units: AXIS arcseconds, not sky arcseconds
+//
+// A rate here is motor rotation, because that is what the wire command is. A rotation of the
+// right-ascension axis by A arcseconds moves the sky — and therefore the star on the sensor — by
+// A·cos(dec). Implementations must honour that: the simulator converts explicitly, and a driver that
+// forgot to would over-correct by 1/cos(dec), which looks like a mount that guides beautifully on the
+// celestial equator and oscillates near the pole.
+//
+// This is also why it does not reuse Mount.Nudge. Nudge is the dither primitive: fixed guide speed,
+// both axes at once, and its arguments are tangent-plane offsets rather than axis rotation. Close
+// enough for a dither, whose achieved offset is measured afterwards anyway, but not for a servo.
+type GuideMount interface {
+	// PulseGuide turns one axis at arcsecPerSec for d, then stops it. A negative rate reverses the
+	// direction. Implementations must stop the axis even when the context is cancelled: a pulse that
+	// never ends is a mount that walks away.
+	PulseGuide(ctx context.Context, axis GuideAxis, arcsecPerSec float64, d time.Duration) error
+	// GuideRate reports the mount's own configured autoguide rate as a fraction of sidereal, so a
+	// caller can size its pulses to what the mount expects instead of hardcoding a speed.
+	GuideRate(ctx context.Context) (float64, error)
+	// SetGuideRate configures that fraction. Values outside 0…1 are clamped by the driver rather than
+	// rejected, because the useful range is a property of the hardware.
+	SetGuideRate(ctx context.Context, fraction float64) error
+}
 
 // PECCaps describes the shape of a mount's periodic-error-correction table. Every field is read from
 // the mount or derived from its model rather than assumed, because the two that vary between models —

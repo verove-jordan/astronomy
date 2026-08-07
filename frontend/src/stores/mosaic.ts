@@ -134,6 +134,7 @@ export const useMosaicStore = defineStore("mosaic", () => {
         sensor_w_px: setup.sensor_w,
         sensor_h_px: setup.sensor_h,
         barlow_x: setup.barlow,
+        reducer_x: setup.reducer,
       };
     } else if (sky.query?.equipment) {
       const eq = sky.query.equipment;
@@ -144,6 +145,7 @@ export const useMosaicStore = defineStore("mosaic", () => {
         sensor_w_px: eq.sensor_w_px,
         sensor_h_px: eq.sensor_h_px,
         barlow_x: eq.barlow_x,
+        reducer_x: eq.reducer_x,
       };
     }
     if (sky.query?.location) {
@@ -437,6 +439,17 @@ export const useMosaicStore = defineStore("mosaic", () => {
     return res.plan;
   }
 
+  // deselectPlan drops the "this is the plan being captured" marker without touching the plan.
+  //
+  // It matters because activePlanId outlives a reload — it lives in localStorage so a phone at the
+  // scope resumes exactly where it stood. That is right when you come back to the same mosaic and
+  // wrong the moment you start planning a different object: the Capture tab would go on offering
+  // last night's target, and the first thing it offers to do with a target is slew a telescope at it.
+  function deselectPlan(): void {
+    activePlan.value = null;
+    persistActiveId(null);
+  }
+
   async function deletePlan(id: number): Promise<void> {
     await apiDelete(`/api/mosaic/plans/${id}`);
     if (activePlan.value?.id === id) {
@@ -632,6 +645,7 @@ export const useMosaicStore = defineStore("mosaic", () => {
     updatePlanGeometry,
     renamePlan,
     duplicatePlan,
+    deselectPlan,
     deletePlan,
     setTileStatus,
     setCaptureTargets,

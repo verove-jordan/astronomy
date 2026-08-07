@@ -37,6 +37,49 @@ export function galacticToEquatorial(
   };
 }
 
+// equatorialToGalactic is the inverse of the above: equatorial J2000 (degrees) to galactic (l, b).
+//
+// Added for the 3D galaxy view, which needs to answer "which way is this photograph pointing, in the
+// Galaxy?" — and must answer it in the galactic frame rather than by reading the drawn picture,
+// because a mirrored field (right_handed: false, which both real runs are) draws the Galaxy
+// chirally flipped. The picture is then a faithful mirror; the NUMBERS have to stay true.
+export function equatorialToGalactic(
+  raDeg: number,
+  decDeg: number,
+): { l: number; b: number } {
+  const ra = raDeg * DEG;
+  const dec = decDeg * DEG;
+  const dra = ra - RA_GP;
+  const sinB =
+    Math.sin(DEC_GP) * Math.sin(dec) +
+    Math.cos(DEC_GP) * Math.cos(dec) * Math.cos(dra);
+  const y = Math.cos(dec) * Math.sin(dra);
+  const x =
+    Math.cos(DEC_GP) * Math.sin(dec) -
+    Math.sin(DEC_GP) * Math.cos(dec) * Math.cos(dra);
+  return {
+    l: norm360((L_NCP - Math.atan2(y, x)) * RAD),
+    b: Math.asin(Math.max(-1, Math.min(1, sinB))) * RAD,
+  };
+}
+
+// galacticToCartesian places a point in HELIOCENTRIC galactic cartesian coordinates, in parsec:
+// x toward the galactic centre, y in the direction of rotation, z toward the north galactic pole.
+export function galacticToCartesian(
+  lDeg: number,
+  bDeg: number,
+  distPc: number,
+): [number, number, number] {
+  const l = lDeg * DEG;
+  const b = bDeg * DEG;
+  const cosB = Math.cos(b);
+  return [
+    distPc * cosB * Math.cos(l),
+    distPc * cosB * Math.sin(l),
+    distPc * Math.sin(b),
+  ];
+}
+
 // Control points along galactic longitude: [l°, half-width°, brightness 0..1]. Wide + bright at the
 // bulge (l≈0/360), bright again at Cygnus (l≈80) and Carina (l≈285), thin + faint at the
 // anticentre (l≈180). Linearly interpolated; the last point mirrors l=0 so the band closes.

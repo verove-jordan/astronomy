@@ -38,10 +38,34 @@ type Progress func(index, total int, name string)
 // dcraw_emu); native stills are symlinked. It returns the prepared paths plus a per-frame warning for any
 // frame that could not be prepared, and errors only if dstDir is unusable or every frame failed.
 func PrepareTIFF(ctx context.Context, srcs []string, dstDir string, onProgress Progress) (out []string, warnings []string, err error) {
+	return PrepareTIFFWith(ctx, srcs, dstDir, DevelopOptions{}, onProgress)
+}
+
+// DevelopOptions tunes raw development for callers whose subject is not a normal colour scene. The
+// zero value is the colour-photography default PrepareTIFF has always used.
+type DevelopOptions struct {
+	// Narrowband develops WITHOUT camera white balance. For a scene captured through a narrowband
+	// filter — a solar Hα etalon, say — almost all the light lands in one channel, and applying the
+	// daylight multipliers a colour scene needs pushes that channel past full scale. The image then
+	// looks correctly exposed while being entirely clipped in the only channel carrying signal.
+	Narrowband bool
+	// Linear emits linear light instead of the sRGB transfer curve, so no inverse is needed and no
+	// precision is spent encoding shadows the subject does not have.
+	Linear bool
+}
+
+// PrepareTIFFWith is PrepareTIFF with explicit development options.
+func PrepareTIFFWith(ctx context.Context, srcs []string, dstDir string, o DevelopOptions, onProgress Progress) (out []string, warnings []string, err error) {
 	if err := fsutil.EnsureDir(dstDir); err != nil {
 		return nil, nil, fmt.Errorf("create seq dir %s: %w", dstDir, err)
 	}
-	transcode, terr := rawTranscoder() // resolved once; a raw frame surfaces terr as its own warning
+	transcode, terr := rawTranscoderWith(o) // resolved once; a raw frame surfaces terr as its own warning
+	if terr == nil && o != (DevelopOptions{}) {
+		if kind, _ := Developer(); kind == "sips" {
+			warnings = append(warnings, "sips cannot disable white balance or the tone curve; "+
+				"install dcraw_emu (LibRaw) for narrowband-safe development")
+		}
+	}
 	total := len(srcs)
 	for i, src := range srcs {
 		if cerr := ctx.Err(); cerr != nil {
@@ -99,14 +123,19 @@ func Developer() (string, error) {
 // sips renders ProRAW through Apple's opaque tone curve and is kept only as a fallback. It errors
 // when neither is available so a raw frame reports a clear cause instead of a silent "no frames".
 func rawTranscoder() (func(context.Context, string, string) error, error) {
+	return rawTranscoderWith(DevelopOptions{})
+}
+
+// rawTranscoderWith resolves the developer for the given options.
+func rawTranscoderWith(o DevelopOptions) (func(context.Context, string, string) error, error) {
 	kind, err := Developer()
 	if err != nil {
 		return nil, err
 	}
 	if kind == "dcraw_emu" {
-		return transcodeDcraw, nil
+		return func(ctx context.Context, src, dst string) error { return transcodeDcrawWith(ctx, src, dst, o) }, nil
 	}
-	return transcodeSips, nil
+	return transcodeSips, nil // sips exposes none of these controls; the caller is warned
 }
 
 func sipsBin() string {
@@ -144,7 +173,31 @@ func transcodeSips(ctx context.Context, src, dst string) error {
 //	-g 2.4 12.92  exact sRGB transfer curve, so the pipeline's linearizeSRGB is its exact inverse
 //	              (dcraw's default is a BT.709-ish curve that linearizeSRGB would mis-invert)
 func transcodeDcraw(ctx context.Context, src, dst string) error {
-	return dcrawDevelop(ctx, src, dst, "-6", "-W", "-w", "-t", "0", "-g", "2.4", "12.92")
+	return transcodeDcrawWith(ctx, src, dst, DevelopOptions{})
+}
+
+// transcodeDcrawWith builds the dcraw_emu flags for the given options. Beyond the shared flags
+// above, two are switchable:
+//
+//	-r 1 1 1 1    unity multipliers instead of -w, for narrowband (see DevelopOptions.Narrowband)
+//	-o 0          keep the camera's own colour space instead of converting to sRGB. The conversion
+//	              matrix is fitted to broadband scenes; a monochromatic source such as 656.3 nm Hα
+//	              maps outside sRGB's gamut, and the red channel clips on output even though the
+//	              sensor never saturated. -o 0 leaves the sensor channels as they were measured.
+//	-g 1 1        linear output instead of the sRGB curve, for photometry
+func transcodeDcrawWith(ctx context.Context, src, dst string, o DevelopOptions) error {
+	args := []string{"-6", "-W", "-t", "0"}
+	if o.Narrowband {
+		args = append(args, "-r", "1", "1", "1", "1", "-o", "0")
+	} else {
+		args = append(args, "-w")
+	}
+	if o.Linear {
+		args = append(args, "-g", "1", "1")
+	} else {
+		args = append(args, "-g", "2.4", "12.92")
+	}
+	return dcrawDevelop(ctx, src, dst, args...)
 }
 
 // dcrawDevelop runs dcraw_emu with the given options. dcraw_emu writes `<input>.tiff` beside its input and

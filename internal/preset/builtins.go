@@ -9,9 +9,11 @@ package preset
 func Builtins() []Item {
 	out := make([]Item, 0, 16)
 	out = append(out, deepskyBuiltins()...)
+	out = append(out, stackingBuiltins()...)
 	out = append(out, nebulaBuiltins()...)
 	out = append(out, narrowbandBuiltins()...)
 	out = append(out, solarBuiltins()...)
+	out = append(out, sunBuiltins()...)
 	out = append(out, cometBuiltins()...)
 	out = append(out, milkywayBuiltins()...)
 	return out
@@ -58,6 +60,47 @@ func deepskyBuiltins() []Item {
 			// gentle star reduction.
 			Params: mustParams(map[string]any{
 				"ha_screen": 0, "saturation": 0.16, "denoise_lum": 0.45, "star_reduce": 0.1,
+			}),
+		}),
+	}
+}
+
+// stackingBuiltins — recipes that change HOW the frames are combined rather than how the result is
+// graded. They are the situations where the count-adaptive default is not the best answer; every
+// other knob is left at the mode default so the effect of the stacking choice is isolated. See
+// docs/stacking.md.
+func stackingBuiltins() []Item {
+	return []Item{
+		builtin("stack-moonlit-gradient", CategoryDeepsky, Payload{
+			Mode: "deepsky", Format: "image", Palette: "natural",
+			ColorCalibration: boolPtr(true), Denoise: boolPtr(true),
+			// A sky that MOVED during the session (rising moon, drifting light pollution): linear-fit
+			// clipping models the changing level per pixel instead of treating it as noise, which a
+			// sigma-based test cannot do. The asymmetric sigmas protect the faint end.
+			Params: mustParams(map[string]any{
+				"stack_reject": "linear_fit", "stack_reject_low": 5, "stack_reject_high": 3.5,
+			}),
+		}),
+		builtin("stack-deep-session", CategoryDeepsky, Payload{
+			Mode: "deepsky", Format: "image", Palette: "natural",
+			ColorCalibration: boolPtr(true), Denoise: boolPtr(true),
+			// A long session (50+ subs) where the correlated leftovers matter more than raw depth:
+			// GESD with a tighter significance rejects the walking-noise and trail remnants a fixed
+			// 3σ clip leaves behind, and noise weighting favours the cleanest subs.
+			Params: mustParams(map[string]any{
+				"stack_reject": "gesd", "stack_reject_low": 0.3, "stack_reject_high": 0.02,
+				"stack_weight": "noise",
+			}),
+		}),
+		builtin("stack-few-frames", CategoryDeepsky, Payload{
+			Mode: "deepsky", Format: "image", Palette: "natural",
+			ColorCalibration: boolPtr(true), Denoise: boolPtr(true),
+			// A handful of dissimilar subs: no measured sigma is trustworthy, so clip a fixed share at
+			// each end and keep the weighting off — with so few frames, weighting one of them down
+			// costs more depth than the sharpness buys.
+			Params: mustParams(map[string]any{
+				"stack_reject": "percentile", "stack_reject_low": 0.2, "stack_reject_high": 0.1,
+				"stack_weight": "none",
 			}),
 		}),
 	}
@@ -185,6 +228,71 @@ func milkywayBuiltins() []Item {
 		}),
 		builtin("milkyway-deep", CategoryMilkyway, Payload{
 			Mode: "milkyway", Format: "image", Look: "deepsky", Brightness: "brighter",
+		}),
+	}
+}
+
+// sunBuiltins — the Sun in Hα or white light: mode sun.
+//
+// NONE of these names a deconvolution width, and that is deliberate rather than an omission. The
+// width is the one setting here with a true value rather than a tasteful one — it is the measured
+// point spread function — and naming it is precisely how a user turns the measurement OFF
+// (params_sun.go). Every one of these presets used to pin it at 1.2–1.5 px, tuned when that was the
+// only number available, against captures that measure three to four. So each preset shipped a
+// deliberately under-deconvolved rendering and none of them could ever benefit from the measurement.
+// The iteration counts went the same way: they were companions to that narrow width.
+//
+// What is left here is the part that really is taste — how hard to flatten the limb, how far to push
+// the prominences, which palette, how much local contrast.
+func sunBuiltins() []Item {
+	return []Item{
+		builtin("sun_ha_full", CategorySun, Payload{
+			Mode: "sun", Format: "both",
+			// The default: disc detail and prominences in one frame, which is what an Hα scope is for.
+			Params: mustParams(map[string]any{
+				"limb_flatten": 0.85, "prominence_boost": 1.0,
+				"sharpen_medium": 1.35, "palette": "gold",
+			}),
+		}),
+		builtin("sun_ha_disk", CategorySun, Payload{
+			Mode: "sun", Format: "image",
+			// Chromosphere detail only: the limb is flattened hard and the prominences are pulled back
+			// so nothing competes with filaments and plage across the surface.
+			Params: mustParams(map[string]any{
+				"limb_flatten": 1.0, "prominence_boost": 0.2,
+				"sharpen_small": 1.3, "sharpen_medium": 1.6, "palette": "gold", "contrast": 1.15,
+			}),
+		}),
+		builtin("sun_ha_prominence", CategorySun, Payload{
+			Mode: "sun", Format: "image",
+			// Limb-forward: the off-limb material is stretched hard and the disc is left dark, the way
+			// a prominence close-up is normally presented.
+			Params: mustParams(map[string]any{
+				"limb_flatten": 0.3, "prominence_boost": 2.5, "prominence_feather": 0.012,
+				"stretch": 0.7, "palette": "gold",
+			}),
+		}),
+		builtin("sun_whitelight", CategorySun, Payload{
+			Mode: "sun", Format: "image",
+			// Photosphere through a solar film: sunspots and faculae, neutral rendering, no prominences
+			// to show (a white-light filter passes none).
+			Params: mustParams(map[string]any{
+				"band": "white_light", "limb_flatten": 0.6, "prominence_boost": 0,
+				"palette": "neutral", "saturation": 0.6,
+			}),
+		}),
+		builtin("sun_iphone_video", CategorySun, Payload{
+			Mode: "sun", Format: "both",
+			// A phone clip through the eyepiece. The starlet gains are pulled back because the camera
+			// pipeline has already sharpened once, and double-sharpening haloes every limb and filament.
+			// The DECONVOLUTION half of that concern is now measured rather than assumed: the run reads
+			// the phone's own overshoot off the limb and cuts the iteration count in proportion, which
+			// is both more accurate than a fixed cut and survives the phone, the app or the firmware
+			// changing (autotune.go).
+			Params: mustParams(map[string]any{
+				"keep_percent": 50, "max_frames": 400, "window_seconds": 30,
+				"sharpen_small": 0.9, "sharpen_medium": 1.15, "sharpen_denoise": 0.5, "palette": "gold",
+			}),
 		}),
 	}
 }

@@ -55,6 +55,13 @@ func (m mapping) wcsToFile(x, y float64) (float64, float64) {
 	return x, y
 }
 
+// fileToWcs maps a file-row y back to the WCS frame. Both directions are the same reflection about
+// the frame's mid-row, so this is literally wcsToFile — named separately only so a call site that
+// runs the chain backwards reads in the direction it travels.
+func (m mapping) fileToWcs(x, y float64) (float64, float64) {
+	return m.wcsToFile(x, y)
+}
+
 // toFinal maps file-grid coordinates to final-image pixels; inFrame is false outside the crop.
 func (m mapping) toFinal(xFile, yFile float64) (x, y float64, inFrame bool) {
 	if m.fileFlip {
@@ -65,10 +72,36 @@ func (m mapping) toFinal(xFile, yFile float64) (x, y float64, inFrame bool) {
 	return x, y, inFrame
 }
 
+// fromFinal maps final-image pixels back to the file grid — the exact inverse of toFinal, undoing
+// the crop before the row flip because toFinal applies them in the opposite order.
+func (m mapping) fromFinal(x, y float64) (xFile, yFile float64) {
+	xFile, yFile = x+float64(m.cx), y+float64(m.cy)
+	if m.fileFlip {
+		yFile = float64(m.H-1) - yFile
+	}
+	return xFile, yFile
+}
+
 // inWindow reports whether a file-grid peak lies inside the final crop window (flip-invariant —
 // the window is centered, so the count never depends on orientation).
 func (m mapping) inWindow(x, y int) bool {
 	return x >= m.cx && x < m.W-m.cx && y >= m.cy && y < m.H-m.cy
+}
+
+// frameOf anchors the final image on the sky by running the label chain backwards from three
+// pixels: the image centre and the midpoints of its far edges. It must be called only after both
+// flips are settled, since it reads the very mapping the labels are placed through — which is the
+// point: whatever geometry the labels land in, the frame describes the same one.
+func frameOf(wcs fits.WCS, m mapping) *Frame {
+	sky := func(x, y float64) (float64, float64) {
+		return wcs.PixToSky(m.fileToWcs(m.fromFinal(x, y)))
+	}
+	cx, cy := float64(m.Wf-1)/2, float64(m.Hf-1)/2
+	var f Frame
+	f.CenterRA, f.CenterDec = sky(cx, cy)
+	f.XEdgeRA, f.XEdgeDec = sky(float64(m.Wf-1), cy)
+	f.YEdgeRA, f.YEdgeDec = sky(cx, float64(m.Hf-1))
+	return &f
 }
 
 // peakGrid hashes detected peaks into 8 px buckets for O(1) nearest-peak probes.

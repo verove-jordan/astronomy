@@ -1,0 +1,56 @@
++-o USB-Serial Controller@01100000  <class IOUSBHostDevice, id 0x100061a2b, registered, matched, active, busy 0 (31 ms), retain 58>
+  | {
+  |   "idProduct" = 8963
+  |   "bcdDevice" = 1024
+  |   "bcdUSB" = 272
+  |   "USB Product Name" = "USB-Serial Controller"
+  |   "USB Vendor Name" = "Prolific Technology Inc."
+  |   "idVendor" = 1659
+  | }
+  |
+  +-o IOUSBHostInterface@0  <class IOUSBHostInterface, id 0x100061a2c, registered, matched, active, busy 0 (12 ms), retain 11>
+  | | {
+  | |   "idProduct" = 8963
+  | |   "idVendor" = 1659
+  | | }
+  | |
+  | +-o PL2303 Serial@0  <class ProlificSerialDriver, id 0x100061a2d, registered, matched, active, busy 0 (5 ms), retain 8>
+  | | | {
+  | | |   "IOProviderClass" = "IOUSBHostInterface"
+  | | | }
+  | | |
+  | | +-o IOSerialBSDClient  <class IOSerialBSDClient, id 0x100061a2e, registered, matched, active, busy 0 (0 ms), retain 5>
+  | | |   {
+  | | |     "IOCalloutDevice" = "/dev/cu.usbserial-1420"
+  | | |     "IODialinDevice" = "/dev/tty.usbserial-1420"
+  | | |   }
+  | | |
+
++-o FT232R USB UART@01200000  <class IOUSBHostDevice, id 0x100061b40, registered, matched, active, busy 0 (24 ms), retain 52>
+  | {
+  |   "idProduct" = 24577
+  |   "bcdDevice" = 1536
+  |   "bcdUSB" = 512
+  |   "USB Product Name" = "FT232R USB UART"
+  |   "USB Vendor Name" = "FTDI"
+  |   "kUSBSerialNumberString" = "A50285BI"
+  |   "idVendor" = 1027
+  | }
+  |
+  +-o IOUSBHostInterface@0  <class IOUSBHostInterface, id 0x100061b41, registered, matched, active, busy 0 (9 ms), retain 10>
+  | | {
+  | |   "idProduct" = 24577
+  | |   "idVendor" = 1027
+  | | }
+  | |
+  | +-o AppleUSBFTDI@0  <class AppleUSBFTDI, id 0x100061b42, registered, matched, active, busy 0 (3 ms), retain 8>
+  | | | {
+  | | |   "IOProviderClass" = "IOUSBHostInterface"
+  | | | }
+  | | |
+  | | +-o IOSerialBSDClient  <class IOSerialBSDClient, id 0x100061b43, registered, matched, active, busy 0 (0 ms), retain 5>
+  | | |   {
+  | | |     "IOCalloutDevice" = "/dev/cu.usbserial-A50285BI"
+  | | |     "IODialinDevice" = "/dev/tty.usbserial-A50285BI"
+  | | |   }
+  | | |

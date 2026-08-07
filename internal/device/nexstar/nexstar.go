@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -32,10 +33,25 @@ const (
 // a German equatorial that can put the tube into the tripod.
 var ErrNotAligned = errors.New("the mount is not aligned — GoTo would point somewhere arbitrary")
 
+// ErrAlignmentLost is the same refusal, but for the case worth naming separately: the mount WAS
+// aligned, the link dropped, and it came back saying it is not. That is a power cycle rather than a
+// cable, so the answer is not "try again" but "re-align" — and telling the two apart at 3am is the
+// difference between a fixable night and a confusing one.
+var ErrAlignmentLost = errors.New("the mount appears to have been power-cycled since it was aligned — re-align before slewing")
+
 // Port is the serial link, narrowed to what the driver needs so tests can supply a fake.
 type Port interface {
 	io.ReadWriteCloser
 	SetReadTimeout(d time.Duration) error
+	// ResetInputBuffer discards bytes that arrived before we were listening.
+	//
+	// It is on the interface rather than type-asserted for the reason device.go:220 records about
+	// SetFilterNames: a driver that quietly lacked the method would degrade every session instead of
+	// failing, and a missing flush degrades in the worst possible way. A port that merely opens is
+	// not empty — a run killed mid-command, or CPWI disconnecting, leaves the hand controller's
+	// answer sitting in the kernel's queue, and the first command we send reads THAT as its reply.
+	// From then on every answer belongs to the previous question, forever, silently.
+	ResetInputBuffer() error
 }
 
 // Opener creates a port for a device path; swapped out in tests.
@@ -63,6 +79,48 @@ type Mount struct {
 
 	// now is the clock used for precession; injectable so tests are not time-dependent.
 	now func() time.Time
+	// clock is the wall clock used for timeouts, backoff and health. It is deliberately SEPARATE
+	// from now: tests freeze now so precession is deterministic, and a frozen clock inside a read
+	// loop never reaches its deadline. Unifying the two does not tidy anything — it hangs.
+	clock func() time.Time
+	// sleep is how the reconnect backoff waits; injectable so tests do not spend real seconds.
+	sleep func(time.Duration)
+	// rnd draws the handshake's echo bytes. Injectable so a test can assert the bytes differ without
+	// being flaky about it.
+	rnd *rand.Rand
+
+	stats linkStats
+
+	// closing distinguishes "we closed the port" from "the adapter vanished". The two are
+	// indistinguishable in the error the serial library returns, and without the flag the reconnect
+	// loop fights every deliberate disconnect.
+	closing bool
+	// connecting suppresses recovery while Connect is itself running, which would otherwise recurse.
+	connecting   bool
+	reconnecting bool
+	// stopped closes when the driver is shut down, so the background goroutines end with it.
+	stopped chan struct{}
+
+	// alignmentStale records that the mount reported itself aligned before a reconnect and unaligned
+	// after. That is a power cycle, and a GoTo against the alignment it no longer has would point
+	// somewhere arbitrary.
+	alignmentStale bool
+
+	// candidates lists the ports a reconnect may try. Injectable because ListPorts deliberately only
+	// sees /dev/cu.* and /dev/tty.* devices, which the pseudo-terminal loopback tests are not.
+	candidates func() []PortInfo
+
+	// stops holds, per axis, the frame that would halt it and the moment it must be sent by. See
+	// watchdog.go — this is what keeps a mount from running away when the link drops mid-move.
+	stops map[int]*pendingStop
+	// deadman overrides how long an unrenewed jog may run; zero uses the default.
+	deadman time.Duration
+	// timeout overrides how long one reply may take; zero uses the protocol's documented worst case.
+	timeout         time.Duration
+	watchdogRunning bool
+	// shutdown records that Close has run, so the background goroutines are not restarted and a
+	// later Connect knows to hand them a fresh stop channel.
+	shutdown bool
 }
 
 // New builds a driver for a serial device path. Nothing is opened until Connect.
@@ -70,7 +128,17 @@ func New(path string, opener Opener) *Mount {
 	if opener == nil {
 		opener = openSerial
 	}
-	return &Mount{path: path, opener: opener, now: time.Now}
+	return &Mount{
+		path:       path,
+		opener:     opener,
+		now:        time.Now,
+		clock:      time.Now,
+		sleep:      time.Sleep,
+		rnd:        rand.New(rand.NewSource(time.Now().UnixNano())),
+		candidates: ListPorts,
+		stops:      map[int]*pendingStop{},
+		stopped:    make(chan struct{}),
+	}
 }
 
 // SetPort chooses the serial device (e.g. /dev/cu.usbserial-1420) before connecting.
@@ -84,6 +152,12 @@ func (m *Mount) SetPort(path string) {
 func (m *Mount) Connect(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.connectLocked()
+}
+
+// connectLocked is the body of Connect, split out because a reconnect performs exactly the same
+// sequence and the two must not be allowed to drift apart.
+func (m *Mount) connectLocked() error {
 	if m.path == "" {
 		return fmt.Errorf("%w: no serial port selected", device.ErrDriverUnavailable)
 	}
@@ -92,39 +166,89 @@ func (m *Mount) Connect(ctx context.Context) error {
 		return fmt.Errorf("%w: %v", device.ErrDriverUnavailable, err)
 	}
 	m.port = port
+	m.closing = false
+	// A Mount that was closed and is being connected again needs a fresh shutdown channel, or the
+	// watchdog and the reconnect loop would see the old, already-closed one and decline to start.
+	if m.shutdown || m.stopped == nil {
+		m.shutdown = false
+		m.stopped = make(chan struct{})
+		m.watchdogRunning = false
+	}
 	_ = port.SetReadTimeout(replyTimeout)
 
-	// The echo command is the handshake: a serial port that opens proves nothing (a USB adapter with
-	// nothing attached opens happily), but a mount echoes back exactly what it was sent.
-	if reply, err := m.commandLocked("Kx"); err != nil || !strings.HasPrefix(reply, "x") {
+	// The echo is the handshake: a serial port that opens proves nothing (a USB adapter with nothing
+	// attached opens happily), but a mount echoes back exactly what it was sent. Recovery is
+	// suppressed for the duration — a failed handshake must report itself, not start a reconnect
+	// loop that would call straight back into here.
+	m.connecting = true
+	hsErr := m.handshakeLocked(handshakeAttempts)
+	m.connecting = false
+	if hsErr != nil {
 		_ = port.Close()
 		m.port = nil
-		return fmt.Errorf("%w: no NexStar mount answered on %s", device.ErrDriverUnavailable, m.path)
+		return fmt.Errorf("%w: no NexStar mount answered on %s (%v)", device.ErrDriverUnavailable, m.path, hsErr)
 	}
+
 	if v, err := m.commandLocked("V"); err == nil {
 		m.firmware = parseVersion(v)
 	}
 	if mm, err := m.commandLocked("m"); err == nil {
 		m.model, m.modelCode = parseModel(mm), parseModelCode(mm)
 	}
+	m.stats.connectedAt = m.clock()
+	m.stats.lastOK = m.clock()
 	return nil
 }
 
 func (m *Mount) Close() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.port == nil {
+	// Recorded before the port is touched: a Read already blocked in another goroutine will fail the
+	// moment the descriptor goes, and without this flag that failure is indistinguishable from an
+	// unplugged cable — so the reconnect loop would fight every deliberate disconnect.
+	m.closing = true
+	m.stops = map[int]*pendingStop{}
+	if m.stopped != nil && !m.shutdown {
+		close(m.stopped)
+	}
+	m.shutdown = true
+	m.watchdogRunning = false
+	port := m.port
+	m.port = nil
+	m.mu.Unlock()
+
+	if port == nil {
 		return nil
 	}
-	err := m.port.Close()
-	m.port = nil
-	return err
+	return port.Close()
 }
 
 func (m *Mount) Connected() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.port != nil
+}
+
+// Model and Firmware report what the mount said about itself at Connect. They are cached rather
+// than re-read because they cannot change while the port is open, and because a reconnect compares
+// them against these values to prove it found the SAME mount rather than a different device that
+// happened to be handed the old device path.
+func (m *Mount) Model() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.model
+}
+
+func (m *Mount) Firmware() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.firmware
+}
+
+// Path reports the serial device the driver is using.
+func (m *Mount) Path() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.path
 }
 
 // State reports where the mount is, in J2000 — converted from the equinox of date the mount speaks.
@@ -148,6 +272,15 @@ func (m *Mount) State(ctx context.Context) (device.MountState, error) {
 		Info:  device.Info{ID: "nexstar", Name: m.model, Driver: "nexstar", Kind: device.KindMount},
 		RADeg: raJ2000, DecDeg: decJ2000,
 		Firmware: m.firmware, Model: m.model,
+	}
+	// Altitude and azimuth come from the mount rather than being computed here, because the mount
+	// derives them from ITS site and clock — which is exactly what a user needs to see when those are
+	// wrong. MountState has always declared these fields and the simulator has always filled them; on
+	// real hardware they read a constant zero until now.
+	if az, err := m.commandLocked("z"); err == nil {
+		if azDeg, altDeg, derr := DecodeAzAlt(az); derr == nil {
+			st.AzDeg, st.AltDeg = azDeg, altDeg
+		}
 	}
 	if s, err := m.commandLocked("L"); err == nil {
 		st.Slewing = parseSlewing(s)
@@ -187,8 +320,16 @@ func (m *Mount) GotoRADec(ctx context.Context, raDeg, decDeg float64) error {
 	if m.port == nil {
 		return device.ErrNotConnected
 	}
-	if aligned, err := m.commandLocked("J"); err == nil && !parseAligned(aligned) {
-		return ErrNotAligned
+	if aligned, err := m.commandLocked("J"); err == nil {
+		switch {
+		case !parseAligned(aligned) && m.alignmentStale:
+			return ErrAlignmentLost
+		case !parseAligned(aligned):
+			return ErrNotAligned
+		default:
+			// It is aligned again, so whatever happened has been dealt with by a human.
+			m.alignmentStale = false
+		}
 	}
 	raNow, decNow := astro.PrecessFromJ2000(raDeg, decDeg, m.now())
 	_, err := m.commandLocked("r" + EncodeRADec(raNow, decNow))
@@ -240,8 +381,21 @@ func (m *Mount) Jog(ctx context.Context, dir device.Direction, rate int) error {
 	default:
 		return fmt.Errorf("unknown direction %q", dir)
 	}
-	_, err := m.rawLocked(fixedRateCommand(axis, rate, positive))
-	return err
+	if _, err := m.rawLocked(fixedRateCommand(axis, rate, positive)); err != nil {
+		// The frame may still have landed, so an axis started by a command that then failed is armed
+		// anyway. Being wrong in this direction costs one redundant stop frame; being wrong the other
+		// way costs a mount that keeps slewing.
+		if rate > 0 {
+			m.armStopLocked(axis, fixedRateCommand(axis, 0, positive), m.deadmanLocked())
+		}
+		return err
+	}
+	if rate > 0 {
+		m.armStopLocked(axis, fixedRateCommand(axis, 0, positive), m.deadmanLocked())
+	} else {
+		m.disarmStopLocked(axis)
+	}
+	return nil
 }
 
 // guideRateArcsecPerSec is the speed a dither nudge is applied at: fast enough not to waste a minute
@@ -273,6 +427,10 @@ func (m *Mount) nudgeAxis(ctx context.Context, axis int, arcsec float64) error {
 		m.mu.Unlock()
 		return device.ErrNotConnected
 	}
+	// Armed BEFORE the axis is asked to move, and armed even if that command reports failure: the
+	// frame may have landed anyway. From here the deadman owns the stop, so no path out of this
+	// function can leave the motor running.
+	m.armStopLocked(axis, slewRateCommand(axis, 0), duration+stopGrace)
 	_, err := m.rawLocked(slewRateCommand(axis, rate))
 	m.mu.Unlock()
 	if err != nil {
@@ -288,10 +446,17 @@ func (m *Mount) nudgeAxis(ctx context.Context, axis int, arcsec float64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.port == nil {
-		return nil
+		// The link went while the axis was turning. This used to return nil — reporting success
+		// having never stopped the motor, which does not stop because a USB cable was pulled. The
+		// stop stays armed instead, and reopenLocked sends it before the port is handed to anyone
+		// else. The caller is told the truth in the meantime.
+		return fmt.Errorf("%w: the link went while the axis was moving; the stop is queued for the reconnect", device.ErrNotConnected)
 	}
-	_, err = m.rawLocked(slewRateCommand(axis, 0))
-	return err
+	if _, err = m.rawLocked(slewRateCommand(axis, 0)); err != nil {
+		return err
+	}
+	m.disarmStopLocked(axis)
+	return nil
 }
 
 // SetTracking switches the drive on or off. Celestron's notes warn that slew commands conflict with
@@ -328,63 +493,23 @@ func (m *Mount) commandLocked(cmd string) (string, error) {
 // empty body, and leave the real '#' sitting in the port buffer — after which every later command
 // reads the previous one's reply, forever. Binary replies must be read by LENGTH, never by delimiter.
 func (m *Mount) rawBinaryLocked(frame []byte, want int) ([]byte, error) {
-	if m.port == nil {
-		return nil, device.ErrNotConnected
-	}
-	if _, err := m.port.Write(frame); err != nil {
-		return nil, fmt.Errorf("write %v: %w", frame, err)
-	}
-	out := make([]byte, 0, want+1)
-	buf := make([]byte, want+1)
-	deadline := time.Now().Add(replyTimeout)
-	for len(out) < want+1 {
-		n, err := m.port.Read(buf[:want+1-len(out)])
-		if n > 0 {
-			out = append(out, buf[:n]...)
-			continue
-		}
-		if err != nil && err != io.EOF {
-			return out, fmt.Errorf("read %d-byte reply to %v: %w", want, frame, err)
-		}
-		if time.Now().After(deadline) {
-			return out, fmt.Errorf("no reply to %v within %s", frame, replyTimeout)
-		}
-	}
-	if out[want] != '#' {
-		return nil, fmt.Errorf("reply to %v was not '#'-terminated: %v", frame, out)
-	}
-	return out[:want], nil
+	return m.sendLocked(frame, want)
 }
 
 // rawLocked writes a frame and reads until the '#' terminator. Caller holds m.mu.
+//
+// Both framing helpers are thin wrappers over sendLocked so that the flush, resynchronisation and
+// retry rules cover every command in the package — including the PEC and guiding frames, which are
+// the ones sent most often over a whole night — without a single call site having to change.
+//
+// On any error the body comes back EMPTY. The previous version returned whatever had arrived so far
+// alongside the error, and a caller that ignored the error would parse half a reply.
 func (m *Mount) rawLocked(frame []byte) (string, error) {
-	if m.port == nil {
-		return "", device.ErrNotConnected
+	body, err := m.sendLocked(frame, -1)
+	if err != nil {
+		return "", err
 	}
-	if _, err := m.port.Write(frame); err != nil {
-		return "", fmt.Errorf("write %q: %w", frame, err)
-	}
-	var out []byte
-	buf := make([]byte, 32)
-	deadline := time.Now().Add(replyTimeout)
-	for {
-		n, err := m.port.Read(buf)
-		if n > 0 {
-			out = append(out, buf[:n]...)
-			if idx := indexByte(out, '#'); idx >= 0 {
-				return string(out[:idx+1]), nil
-			}
-		}
-		if err != nil {
-			if err == io.EOF && time.Now().Before(deadline) {
-				continue
-			}
-			return string(out), fmt.Errorf("read reply to %q: %w", frame, err)
-		}
-		if time.Now().After(deadline) {
-			return string(out), fmt.Errorf("no reply to %q within %s", frame, replyTimeout)
-		}
-	}
+	return string(body), nil
 }
 
 func indexByte(b []byte, c byte) int {

@@ -49,6 +49,22 @@ The job list (running + history) and the **job detail** view:
   grade charts, masters used, calibration notes, warnings, run options (provenance), download
   links, and for supervised runs the **supervisor panel** (one card per iteration, scores +
   reasoning + the chosen best). Finished pages read the stored result directly (no event stream).
+- **3D** — a view chip beside Final and the channel previews, on any run whose field solved. The
+  depth slider starts at 0 %, where the scene is pixel-for-pixel the photograph; opening it spreads
+  every detected star along its own line of sight at its own distance. **Fly out** both opens the
+  depth and swings the camera off the axis, because neither alone shows anything — from Earth the
+  picture looks the same at every depth, which is the point rather than a bug. Drag to orbit,
+  shift-drag or two fingers to pan, scroll or pinch to zoom (the gain rises with how fast the gesture
+  moves, so a slow scroll places the camera precisely and a flick crosses decades). Hovering a star
+  gives the same catalogue card the 2D overlay shows, plus its distance, how that distance was
+  obtained, its true angular size and its space velocity. Stars are drawn at their blackbody colour
+  and brighten as you approach them. Catalogued objects take a real shape where one can be
+  derived — an inclined disc, an expanding shell, a modelled emission volume — each labelled with
+  whether its geometry is measured, assumed or modelled, and citing its source when it has one.
+  Measured parallaxes and colour-derived estimates are drawn differently and counted separately, one
+  toggle hides the estimates, and the frame's own cross-validation score is shown whenever it says
+  they are unreliable. A motion layer draws where each star with a measured velocity will be after a
+  chosen span of time.
 - **Stage timeline & re-run** — each processing milestone is a card; edit a stage's parameters and
   **re-run from that stage** (cheap tiered re-entry, deep-sky). **Refine** re-runs only the finish
   through the supervisor; **Retry tuned** re-processes with adjusted params.
@@ -70,6 +86,44 @@ S3 connections (endpoint/key/secret — secret encrypted at rest, never shown ag
 connection selection, bucket/prefix pickers, folder sync/download/**free local** (verified),
 per-folder local/S3 presence, a plain bucket file manager, backup/restore, and removable-drive
 import.
+
+## Capture (`/capture`)
+
+Live camera, mount and filter-wheel control, the auto-run sequencer, and — in the right-hand
+column — **Polar alignment**: a four-step procedure that measures where the mount's polar axis really
+points from plate-solved frames, and then draws a ring on the live image to drive the crosshairs into.
+It never commands the mount; you turn the right-ascension axis by hand between frames, which is what
+lets it work on any mount at all. Full procedure and accuracy figures in `docs/mount.md`.
+
+## Logbook (`/logbook`)
+
+Every capture session, past and current — the answer to "what did I shoot, when, through what, and
+under what sky?", which is what a later stacking decision is actually made from.
+
+The **list** is one row per session (`GET /api/capture/sessions`, filterable by object and date, with
+the unpaged total): observing night, object, status, frames done/planned, per-filter chips,
+integration, duration, and the night's sky condensed to a single 0–100 score with a four-dot glyph.
+The score is the **median hourly weather verdict** the provider already computed — not a new scoring
+formula. A running session's row is tinted and refreshes on a slow poll; the live view stays on the
+capture page.
+
+The **detail** (`/logbook/:id`) opens one night in full:
+
+- **What was shot** — per filter and frame type, aggregated in Postgres from `capture_frames`
+  (`store.CaptureFrameStats`): frame count, integration, exposure/gain/bin ranges and the sensor
+  temperature min/avg/max. Ranges collapse to a single value when nothing changed mid-run.
+- **Capture order** — one band per filter across the session's clock, a mark per sub. Lined up with
+  the conditions chart below it, this is what answers "did the L set finish before the cloud, or is
+  half of it from the bad hour?".
+- **Conditions** — the summary cards (cloud/seeing/transparency/humidity/temp/wind medians with their
+  ranges, the Moon's phase + highest altitude + *closest* approach to the target, target altitude and
+  best airmass, sky brightness, dew risk, Kp) and an hourly chart. A toggle overlays the forecast made
+  at the start against what was then measured. Times are shown in the **session's own** timezone,
+  derived from the site stored on the row.
+- **Mount tracking**, when the run was measured.
+
+Sessions captured before this shipped show "not recorded" and cannot be backfilled — see
+[architecture.md](architecture.md#capture-conditions-the-logbook) for why.
 
 ## AstroAgent (`/astroagent`)
 

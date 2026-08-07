@@ -7,6 +7,7 @@ import { useJobsStore } from "@/stores/jobs";
 import { useS3Store, type TransferOp } from "@/stores/s3";
 import { usePresetsStore } from "@/stores/presets";
 import { useMosaicStore } from "@/stores/mosaic";
+import { MODES } from "@/constants/modes";
 import { useCaptureSummary } from "@/composables/useCaptureSummary";
 import { useChannelMapping } from "@/composables/useChannelMapping";
 import GenericTable, {
@@ -23,13 +24,14 @@ import SetArtifactsModal from "@/components/Capture/SetArtifactsModal.vue";
 import SessionBreakdown from "@/components/Capture/SessionBreakdown.vue";
 import FilePreviewButton from "@/components/Common/FilePreviewButton.vue";
 import ParamGlossary from "@/components/Common/ParamGlossary.vue";
+import StackingPanel from "@/components/Common/StackingPanel.vue";
 import CollapsibleCard from "@/components/Common/CollapsibleCard.vue";
 import TwoPane from "@/components/Common/TwoPane.vue";
 import StatusPill from "@/components/Common/StatusPill.vue";
 import EnvWarnings from "@/components/Common/EnvWarnings.vue";
 import IconFolder from "@/components/Icons/IconFolder.vue";
 import IconCloud from "@/components/Icons/IconCloud.vue";
-import type { CreateOpts, KnobRange } from "@/stores/jobs";
+import type { CreateOpts, KnobRange, StackMenu } from "@/stores/jobs";
 import type {
   AlignPointsEstimate,
   ReusePreview,
@@ -107,7 +109,7 @@ const alignPointsError = ref("");
 // Opt-in: drive the local AI agent to auto-tune the finish (every stacking mode). Off by default.
 const supervise = ref(false);
 
-const modes = ["deepsky", "nebula", "milkyway", "planetary", "comet", "mosaic"];
+const modes: string[] = [...MODES];
 const formats = ["image", "video", "both"];
 
 // Milky-Way nightscape render style (foreground composite + linear grade); only shown for milkyway.
@@ -155,6 +157,7 @@ const biasDir = ref("");
 const isMilkyway = computed(() => selectedMode.value === "milkyway");
 const isPlanetary = computed(() => selectedMode.value === "planetary");
 // Tiled-panel mosaic mode: offers the saved-plan selector (panel labeling/validation + solve hints).
+const isSun = computed(() => selectedMode.value === "sun");
 const isMosaicMode = computed(() => selectedMode.value === "mosaic");
 const mosaicStore = useMosaicStore();
 const mosaicPlanId = ref(0);
@@ -215,11 +218,12 @@ const modeRanges = ref<Record<string, KnobRange>>({});
 // the last-known maps on failure so a transient error never wipes the toggle's source of defaults.
 async function loadModeDefaults(): Promise<Record<string, unknown>> {
   try {
-    const { defaults, ranges } = await jobsStore.fetchModeParams(
+    const { defaults, ranges, stack_menu } = await jobsStore.fetchModeParams(
       selectedMode.value,
     );
     modeDefaults.value = defaults;
     modeRanges.value = ranges;
+    stackMenu.value = stack_menu ?? null;
   } catch {
     // keep the last-known defaults
   }
@@ -294,6 +298,44 @@ async function toggleParam(key: string) {
     }
   }
   paramsText.value = Object.keys(next).length ? stringifySorted(next) : "";
+  paramsDirty.value = true;
+}
+
+// The stacking-algorithm catalogue for the selected mode (GET /api/mode-params → stack_menu), null
+// for the modes that combine natively. It drives the "Stacking & rejection" panel's dropdowns, so no
+// algorithm list is duplicated in the frontend.
+const stackMenu = ref<StackMenu | null>(null);
+
+// The deepest channel's light count — what the count-adaptive rejection rule actually sees, since
+// each filter stacks on its own. Drives the panel's "recommended for N frames" badge; 0 until a
+// capture has been inspected.
+const deepestChannelFrames = computed(() => {
+  const filters = summary.value?.filters ?? [];
+  return filters.reduce((max, f) => Math.max(max, f.count ?? 0), 0);
+});
+
+// The calibration frames the inspected capture actually holds, keyed by the wire prefix the stacking
+// panel uses. It drives which per-frame-type rows are offered at all, and each row's own
+// count-adaptive recommendation — a 200-frame bias pool and a 5-flat set want opposite algorithms.
+const calibFrameCounts = computed<Record<string, number>>(() => {
+  const counts = summary.value?.frameTypeCounts ?? {};
+  return {
+    master_bias: counts.BIAS ?? 0,
+    master_dark: counts.DARK ?? 0,
+    master_flat: counts.FLAT ?? 0,
+    master_dark_flat: counts.DARKFLAT ?? 0,
+  };
+});
+
+// applyStackPatch merges the panel's typed edits into the SAME params JSON the Advanced box owns, so
+// the two stay one value: presets, param chips, rerun and run.json provenance all keep working.
+function applyStackPatch(patch: Record<string, unknown>) {
+  if (paramsInvalid.value) return;
+  const next: Record<string, unknown> = {
+    ...(runParams.value ?? {}),
+    ...patch,
+  };
+  paramsText.value = stringifySorted(next);
   paramsDirty.value = true;
 }
 
@@ -1733,6 +1775,13 @@ function histChip(exists: boolean): string {
         <p v-if="isMosaicMode" class="basis-full text-xs text-slate-400">
           {{ t("mosaic.import.folderHint") }}
         </p>
+        <p
+          v-if="isSun"
+          class="basis-full text-xs text-slate-400"
+          data-demo="run-sun-note"
+        >
+          {{ t("run.sunHint") }}
+        </p>
         <label v-if="s3.active" class="text-sm" :title="t('s3.storageHint')">
           <span class="mb-1 block text-xs font-medium text-slate-500">{{
             t("s3.storage")
@@ -2179,6 +2228,19 @@ function histChip(exists: boolean): string {
           <p class="mt-0.5 text-xs text-slate-400">
             {{ t("run.pipelineSectionHint") }}
           </p>
+          <!-- Stacking & rejection: a typed editor over the same params JSON below. -->
+          <StackingPanel
+            :menu="stackMenu"
+            :params="runParams"
+            :defaults="modeDefaults"
+            :ranges="modeRanges"
+            :frame-count="deepestChannelFrames"
+            :frame-counts="calibFrameCounts"
+            :show-comet="selectedMode === 'comet'"
+            :disabled="paramsInvalid"
+            @patch="applyStackPatch"
+          />
+
           <label class="mt-2 block text-sm">
             <span
               class="mb-1 flex items-center justify-between gap-2 text-xs font-medium text-slate-500"

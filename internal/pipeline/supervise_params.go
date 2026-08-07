@@ -288,7 +288,8 @@ func clampPreset(p mode.Preset) mode.Preset {
 // tierOf returns the highest-cost tier whose fields differ between prev and next — the stage the
 // pipeline must re-enter to reflect the change. A pure Tier-A composite tweak returns tierA.
 func tierOf(prev, next mode.Preset) tier {
-	if gradeChanged(prev.Grade, next.Grade) ||
+	if stackChanged(prev, next) || // how the pixels are combined — nothing cheaper can reflect it
+		gradeChanged(prev.Grade, next.Grade) ||
 		floatChanged(prev.TrailMaskK, next.TrailMaskK) ||
 		floatChanged(prev.DenoiseChroma, next.DenoiseChroma) ||
 		floatChanged(prev.DenoiseLum, next.DenoiseLum) ||

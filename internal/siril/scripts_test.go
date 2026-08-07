@@ -6,7 +6,21 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/verove-jordan/astronomy/internal/stackalg"
 )
+
+// The default recipes every script builder was written against. Passing them must reproduce the
+// exact command strings the engine emitted before stacking became configurable — that byte-identity
+// is what the assertions in this file pin.
+func lightOpts(w stackalg.Weight) stackalg.Options {
+	o := stackalg.DefaultLights()
+	o.Weight = w
+	return o
+}
+
+func masterOpts() stackalg.Options { return stackalg.DefaultMasters().Dark }
+func flatOpts() stackalg.Options   { return stackalg.DefaultMasters().Flat }
 
 func TestRejection_AdaptsToFrameCount(t *testing.T) {
 	// Verified against Siril 1.4.3 (see the live syntax test): percentile for tiny stacks,
@@ -32,36 +46,36 @@ func TestRejection_AdaptsToFrameCount(t *testing.T) {
 func TestScriptHeader_Pins32Bits(t *testing.T) {
 	// Dark subtraction must keep negative pixels and the Go FITS readers require BITPIX -32, so the
 	// bit depth must never depend on the host Siril's preferences.
-	assert.Contains(t, StackMasterScript("cal", "/m/x", 10), "set32bits\n")
+	assert.Contains(t, StackMasterScript("cal", "/m/x", 10, masterOpts()), "set32bits\n")
 }
 
 func TestStackMasterScript(t *testing.T) {
 	// `convert`, not `link`: a TIFF calibration set (SharpCap lunar darks) must stack like FITS.
-	s := StackMasterScript("cal", "/m/master_bias", 30)
+	s := StackMasterScript("cal", "/m/master_bias", 30, masterOpts())
 	assert.Contains(t, s, "convert cal -out=.")
 	assert.Contains(t, s, "stack cal rej winsorized 3 3 -nonorm -out=/m/master_bias")
 }
 
 func TestStackMasterScript_LargePoolUsesGESD(t *testing.T) {
-	s := StackMasterScript("cal", "/m/master_dark", 120)
+	s := StackMasterScript("cal", "/m/master_dark", 120, masterOpts())
 	assert.Contains(t, s, "stack cal rej generalized 0.3 0.05 -nonorm -out=/m/master_dark")
 }
 
 func TestStackFlatScript_WithBias(t *testing.T) {
-	s := StackFlatScript("cal", "/m/master_flat", "/m/master_bias.fits", 30)
+	s := StackFlatScript("cal", "/m/master_flat", "/m/master_bias.fits", 30, flatOpts())
 	assert.Contains(t, s, "convert cal -out=.")
 	assert.Contains(t, s, "calibrate cal -bias=/m/master_bias.fits -prefix=pp_")
 	assert.Contains(t, s, "stack pp_cal rej winsorized 3 3 -norm=mul -out=/m/master_flat")
 }
 
 func TestStackFlatScript_NoBias(t *testing.T) {
-	s := StackFlatScript("cal", "/m/master_flat", "", 30)
+	s := StackFlatScript("cal", "/m/master_flat", "", 30, flatOpts())
 	assert.NotContains(t, s, "calibrate")
 	assert.Contains(t, s, "stack cal rej winsorized 3 3 -norm=mul -out=/m/master_flat")
 }
 
 func TestStackFlatScript_FewFlatsUsePercentile(t *testing.T) {
-	s := StackFlatScript("cal", "/m/master_flat", "", 5)
+	s := StackFlatScript("cal", "/m/master_flat", "", 5, flatOpts())
 	assert.Contains(t, s, "stack cal rej percentile 0.2 0.1 -norm=mul -out=/m/master_flat")
 }
 
@@ -187,7 +201,7 @@ func TestRegisterOnlyScript(t *testing.T) {
 func TestStackSelectedScript_Weighted(t *testing.T) {
 	// The sequence is addressed exactly as Siril names it — frame prefix + trailing "_" — so the
 	// script triggers no sequence-name-lookup recovery noise.
-	s := StackSelectedScript("r_light", 10, []int{3}, "/out/master_L", "wfwhm")
+	s := StackSelectedScript("r_light", 10, []int{3}, "/out/master_L", lightOpts(stackalg.WeightWFWHM))
 	assert.Contains(t, s, "select r_light_ 1 10")
 	assert.Contains(t, s, "unselect r_light_ 3 3")
 	assert.Contains(t, s, "stack r_light_ rej winsorized 3 3 -norm=addscale -output_norm -weight=wfwhm -filter-incl -out=/out/master_L")
@@ -195,7 +209,7 @@ func TestStackSelectedScript_Weighted(t *testing.T) {
 
 func TestStackSelectedScript_UnweightedIsByteIdentical(t *testing.T) {
 	// Empty weight must leave the single-session/OSC stack command exactly as it was.
-	s := StackSelectedScript("r_light", 10, nil, "/out/master_L", "")
+	s := StackSelectedScript("r_light", 10, nil, "/out/master_L", lightOpts(stackalg.WeightNone))
 	assert.Contains(t, s, "stack r_light_ rej winsorized 3 3 -norm=addscale -output_norm -filter-incl -out=/out/master_L")
 	assert.NotContains(t, s, "-weight=")
 }
@@ -203,11 +217,11 @@ func TestStackSelectedScript_UnweightedIsByteIdentical(t *testing.T) {
 func TestStackSelectedScript_RejectionSizedToSurvivors(t *testing.T) {
 	// The rejection algorithm adapts to the frames actually stacked (registered minus graded-out),
 	// not the registered count: 60 registered − 12 rejected = 48 survivors → winsorized, not GESD.
-	s := StackSelectedScript("r_light", 60, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}, "/out/m", "wfwhm")
+	s := StackSelectedScript("r_light", 60, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}, "/out/m", lightOpts(stackalg.WeightWFWHM))
 	assert.Contains(t, s, "rej winsorized 3 3")
 
 	// All 60 kept → GESD kicks in for the large stack.
-	s = StackSelectedScript("r_light", 60, nil, "/out/m", "wfwhm")
+	s = StackSelectedScript("r_light", 60, nil, "/out/m", lightOpts(stackalg.WeightWFWHM))
 	assert.Contains(t, s, "rej generalized 0.3 0.05")
 }
 
@@ -216,7 +230,7 @@ func TestIntegrateChannelsScript_Weighted(t *testing.T) {
 	// must address the linked sequence with its trailing separator ("synth_"), use addscale
 	// normalization + sub-count weighting, and a gentle winsorized rejection (this Siril has no bare
 	// "mean" — the average grammar needs a rejection method + two sigmas).
-	s := IntegrateChannelsScript("synth", "/out/synthlum", "nbstack")
+	s := IntegrateChannelsScript("synth", "/out/synthlum", stackalg.WeightNbStack)
 	assert.True(t, strings.HasPrefix(s, "requires"))
 	assert.Contains(t, s, "link synth -out=.\n")
 	assert.Contains(t, s, "stack synth_ rej none -norm=addscale -output_norm -weight=nbstack -out=/out/synthlum\n")
@@ -226,7 +240,7 @@ func TestIntegrateChannelsScript_Weighted(t *testing.T) {
 
 func TestIntegrateChannelsScript_Unweighted(t *testing.T) {
 	// Empty weight → no -weight flag emitted (unweighted stack).
-	s := IntegrateChannelsScript("synth", "/out/synthlum", "")
+	s := IntegrateChannelsScript("synth", "/out/synthlum", stackalg.WeightNone)
 	assert.Contains(t, s, "stack synth_ rej none -norm=addscale -output_norm -out=/out/synthlum\n")
 	assert.NotContains(t, s, "-weight=")
 }

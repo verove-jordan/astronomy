@@ -25,6 +25,7 @@ type equipmentJSON struct {
 	SensorWpx  int             `json:"sensor_w_px"`
 	SensorHpx  int             `json:"sensor_h_px"`
 	BarlowX    float64         `json:"barlow_x"`
+	ReducerX   float64         `json:"reducer_x"`
 	CameraName string          `json:"camera_name"`
 	Eyepieces  json.RawMessage `json:"eyepieces"`
 	Favorite   bool            `json:"favorite"`
@@ -40,7 +41,7 @@ func equipmentJSONOf(e store.EquipmentSetup) equipmentJSON {
 	return equipmentJSON{
 		ID: e.ID, Name: e.Name, FocalMM: e.FocalMM, ApertureMM: e.ApertureMM,
 		PixelUm: e.PixelUm, SensorWpx: e.SensorWpx, SensorHpx: e.SensorHpx,
-		BarlowX: e.BarlowX, CameraName: e.CameraName, Eyepieces: eyepieces,
+		BarlowX: e.BarlowX, ReducerX: e.ReducerX, CameraName: e.CameraName, Eyepieces: eyepieces,
 		Favorite: e.Favorite, CreatedAt: e.CreatedAt, UpdatedAt: e.UpdatedAt,
 	}
 }
@@ -55,6 +56,7 @@ type equipmentBody struct {
 	SensorWpx  *int            `json:"sensor_w_px"`
 	SensorHpx  *int            `json:"sensor_h_px"`
 	BarlowX    *float64        `json:"barlow_x"`
+	ReducerX   *float64        `json:"reducer_x"`
 	CameraName *string         `json:"camera_name"`
 	Eyepieces  json.RawMessage `json:"eyepieces"`
 	Favorite   *bool           `json:"favorite"`
@@ -175,6 +177,9 @@ func applyEquipmentBody(setup *store.EquipmentSetup, b equipmentBody) {
 	}
 	if b.BarlowX != nil {
 		setup.BarlowX = *b.BarlowX
+	}
+	if b.ReducerX != nil {
+		setup.ReducerX = *b.ReducerX
 	}
 	if b.CameraName != nil {
 		setup.CameraName = *b.CameraName

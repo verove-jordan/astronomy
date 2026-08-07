@@ -11,7 +11,6 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
-	"math"
 	"sort"
 	"strconv"
 	"sync"
@@ -22,6 +21,11 @@ import (
 var embedded embed.FS
 
 // Star is one catalogue entry (J2000 position, mas/yr proper motion).
+//
+// The astrophysical fields (distance, spectral type, colour index, absolute magnitude, radial
+// velocity) come from the deep ATHYG catalogue and are all optional — the embedded HYG extract
+// leaves them zero. Where 0 is itself a legitimate value (an A0 star really has B−V = 0) a
+// companion Has* flag says whether the catalogue knew it, matching skycat.Record's convention.
 type Star struct {
 	RADeg, DecDeg float64
 	Mag           float64
@@ -31,6 +35,19 @@ type Star struct {
 	Con           string  // 3-letter IAU constellation, e.g. "Lyr"
 	HD            int     // Henry Draper number, 0 when absent
 	PMRA, PMDec   float64 // proper motion, mas/yr (PMRA includes the cos δ factor, Hipparcos-style)
+
+	HIP  int    // Hipparcos number, 0 when absent
+	TYC  string // Tycho-2 designation "1234-5678-1", "" when absent
+	Gaia uint64 // Gaia DR3 source id, 0 when absent
+
+	DistPc    float64 // distance in parsec; 0 = unknown (no star sits at 0 pc)
+	AbsMag    float64 // absolute V magnitude
+	HasAbsMag bool
+	CI        float64 // B−V colour index — the star's colour, and so its temperature
+	HasCI     bool
+	RVKmS     float64 // radial velocity, km/s (positive = receding)
+	HasRV     bool
+	Spect     string // MK spectral type, e.g. "G2 V"; "" when absent
 }
 
 var (
@@ -125,37 +142,16 @@ func Count() int {
 // epochs this app sees (~10″/yr for the fastest mover × decades ≈ arcminutes).
 const pmMarginDeg = 0.1
 
-// InField returns the catalogue stars within radiusDeg of the field center at the given epoch,
-// magnitude-ascending, capped at maxN (maxN ≤ 0 → uncapped). Positions are advanced by proper
+// InField returns the EMBEDDED catalogue's stars within radiusDeg of the field center at the given
+// epoch, magnitude-ascending, capped at maxN (maxN ≤ 0 → uncapped). Positions are advanced by proper
 // motion from J2000 to epoch; RA wrap and pole fields are handled by unit-vector math.
+//
+// This is the shallow, always-available answer (mag ≤ 9). Callers that should use the deep ATHYG
+// catalogue when the user has downloaded it go through Load + Catalog.InField instead.
 func InField(centerRADeg, centerDecDeg, radiusDeg float64, maxN int, epoch time.Time) []Star {
 	stars, err := load()
 	if err != nil {
 		return nil
 	}
-	const degRad = math.Pi / 180
-	years := epoch.Sub(j2000).Hours() / 24 / 365.25
-	sinD0, cosD0 := math.Sincos(centerDecDeg * degRad)
-	cosR := math.Cos(radiusDeg * degRad)
-
-	var out []Star
-	for _, s := range stars {
-		if math.Abs(s.DecDeg-centerDecDeg) > radiusDeg+pmMarginDeg {
-			continue
-		}
-		s.DecDeg += s.PMDec / 3.6e6 * years
-		if c := math.Cos(s.DecDeg * degRad); c > 1e-6 {
-			s.RADeg += s.PMRA / 3.6e6 * years / c
-		}
-		sinD, cosD := math.Sincos(s.DecDeg * degRad)
-		dot := sinD*sinD0 + cosD*cosD0*math.Cos((s.RADeg-centerRADeg)*degRad)
-		if dot < cosR {
-			continue
-		}
-		out = append(out, s)
-		if maxN > 0 && len(out) == maxN {
-			break
-		}
-	}
-	return out
+	return inFieldSorted(stars, centerRADeg, centerDecDeg, radiusDeg, maxN, epoch)
 }
