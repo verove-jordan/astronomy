@@ -189,6 +189,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/capture/start", s.startCapture)
 	mux.HandleFunc("POST /api/capture/center", s.centerCapture)
 	mux.HandleFunc("POST /api/capture/polar/start", s.startPolar)
+	mux.HandleFunc("POST /api/capture/polar/rough", s.roughPolar)
 	mux.HandleFunc("POST /api/capture/polar/next", s.nextPolar)
 	mux.HandleFunc("POST /api/capture/polar/adjust", s.adjustPolar)
 	mux.HandleFunc("POST /api/capture/polar/refresh", s.refreshPolar)

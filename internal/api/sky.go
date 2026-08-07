@@ -54,6 +54,7 @@ type equipmentEcho struct {
 	FovHDeg            float64        `json:"fov_h_deg"`
 	FRatio             float64        `json:"f_ratio"`
 	BarlowX            float64        `json:"barlow_x"`
+	ReducerX           float64        `json:"reducer_x"`
 	Mode               string         `json:"mode,omitempty"`
 	Eyepieces          []eyepieceEcho `json:"eyepieces,omitempty"`
 }
@@ -102,6 +103,7 @@ func (s *Server) skyTargets(w http.ResponseWriter, r *http.Request) {
 			SensorWpx:  intParam(q, "sensor_w", s.cfg.SensorWpx),
 			SensorHpx:  intParam(q, "sensor_h", s.cfg.SensorHpx),
 			BarlowX:    floatParam(q, "barlow", s.cfg.BarlowX),
+			ReducerX:   floatParam(q, "reducer", s.cfg.ReducerX),
 		},
 	}
 	// Weights are left zero so the planner picks DefaultWeights (camera) or VisualWeights by mode.
@@ -163,6 +165,7 @@ func queryEchoOf(prm skyplan.Params, at time.Time, loc *time.Location, tz string
 		FovHDeg:            round(fovH, 3),
 		FRatio:             round(prm.Optics.FRatio(), 2),
 		BarlowX:            prm.Optics.BarlowX,
+		ReducerX:           prm.Optics.ReducerX,
 	}
 	if prm.Mode == "visual" {
 		eq.Mode = "visual"

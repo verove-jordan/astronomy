@@ -51,6 +51,8 @@ func main() {
 		err = runSkymapData(os.Args[2:])
 	case "deepstars-data":
 		err = runDeepstarsData(os.Args[2:])
+	case "deepstars-athyg":
+		err = runDeepstarsATHYG(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("astrostack", version)
 	case "help", "--help", "-h":
@@ -82,6 +84,7 @@ Usage:
   astrostack lightpollution-atlas    build the offline light-pollution atlas (djlorenz model)
   astrostack skymap-data             build the frontend star + constellation dataset (skymap.json)
   astrostack deepstars-data          build the embedded deep star catalogue (internal/deepstars)
+  astrostack deepstars-athyg         download + build the DEEP star catalogue (ATHYG v3.2) into the library
   astrostack version                 print the version
 `)
 }

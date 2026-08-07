@@ -68,22 +68,31 @@ func (s *Server) polarSite(b polarStartBody) polaralign.Site {
 
 // startPolar begins a measurement and takes the first frame. POST /api/capture/polar/start
 func (s *Server) startPolar(w http.ResponseWriter, r *http.Request) {
+	b, ok := s.polarStart(w, r)
+	if !ok {
+		return
+	}
+	sess := s.polarSession()
+	s.writePolarState(w, sess, sess.Start(r.Context(), s.polarOptions(b)))
+}
+
+// polarStart parses and guards a request that begins a session. Both entry points go through it, so
+// neither can quietly skip a check the other makes.
+func (s *Server) polarStart(w http.ResponseWriter, r *http.Request) (polarStartBody, bool) {
 	var b polarStartBody
 	if r.Body != nil {
 		if err := json.NewDecoder(r.Body).Decode(&b); err != nil && !errors.Is(err, io.EOF) {
 			badRequest(w, "invalid body")
-			return
+			return b, false
 		}
 	}
-	sess := s.polarSession()
-
 	// Checked before exposing rather than after four frames: "Siril is not installed" is a setup
 	// problem, and finding it out at the end of the procedure wastes the user's night.
 	if err := s.polarSolverReady(r); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": err.Error(), "code": "solver_unavailable",
 		})
-		return
+		return b, false
 	}
 	// One telescope: a sequence already exposing owns the camera.
 	if p := s.captureRunner().Progress(); p.Status == capture.StatusRunning {
@@ -91,10 +100,13 @@ func (s *Server) startPolar(w http.ResponseWriter, r *http.Request) {
 			"error": "a capture session is running — stop it before aligning",
 			"code":  "capture_running",
 		})
-		return
+		return b, false
 	}
+	return b, true
+}
 
-	err := sess.Start(r.Context(), capture.PolarOptions{
+func (s *Server) polarOptions(b polarStartBody) capture.PolarOptions {
+	return capture.PolarOptions{
 		Site:         s.polarSite(b),
 		Points:       b.Points,
 		ExposureUs:   b.ExposureUs,
@@ -103,8 +115,18 @@ func (s *Server) startPolar(w http.ResponseWriter, r *http.Request) {
 		FocalMM:      s.cfg.FocalLenMM,
 		PixelUm:      s.cfg.PixelSizeUm,
 		ScratchDir:   s.cfg.WorkDir,
-	})
-	s.writePolarState(w, sess, err)
+	}
+}
+
+// roughPolar answers from a single frame, assuming the telescope looks down the right-ascension axis.
+// POST /api/capture/polar/rough
+func (s *Server) roughPolar(w http.ResponseWriter, r *http.Request) {
+	b, ok := s.polarStart(w, r)
+	if !ok {
+		return
+	}
+	sess := s.polarSession()
+	s.writePolarState(w, sess, sess.Rough(r.Context(), s.polarOptions(b)))
 }
 
 // nextPolar records that the user has turned the axis and takes the next frame.

@@ -18,6 +18,7 @@ import (
 
 	"github.com/verove-jordan/astronomy/internal/annotate"
 	"github.com/verove-jordan/astronomy/internal/postprocess"
+	"github.com/verove-jordan/astronomy/internal/scene3d"
 	"github.com/verove-jordan/astronomy/internal/store"
 )
 
@@ -98,13 +99,22 @@ func (s *Server) computeStars(w http.ResponseWriter, r *http.Request) {
 		Locate: func(rel string) (string, bool) {
 			return s.ensureServable(ctx, r, filepath.Join(runDir, rel), s.cfg.OutputDir, "output")
 		},
-		Runner:     s.sirilRunner,
-		Solve:      solve,
-		CatalogDir: s.cfg.SirilCatalogDir,
+		Runner:      s.sirilRunner,
+		Solve:       solve,
+		CatalogDir:  s.cfg.SirilCatalogDir,
+		StarCatalog: s.cfg.DeepStarCat,
 	}
 	// Concurrent POSTs on one run (double-click, two tabs) share a single computation.
 	v, err, _ := s.starsFlight.Do(runDir, func() (any, error) {
-		return annotate.Run(ctx, opts)
+		res, err := annotate.Run(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		// The 3D scene is built from this very pass rather than from a second one: it needs the same
+		// detections, the same catalogue identifications and the same validated geometry, and deriving
+		// them twice is how two views of one run start disagreeing about where a star is.
+		buildScene(res, scene3d.Options{RunDir: runDir, Locate: opts.Locate})
+		return res, nil
 	})
 	if err != nil {
 		switch {

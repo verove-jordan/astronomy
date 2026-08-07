@@ -78,6 +78,8 @@ func (s *Server) skyEvents(w http.ResponseWriter, r *http.Request) {
 		PixelUm:    floatParam(q, "pixel_um", s.cfg.PixelSizeUm),
 		SensorWpx:  intParam(q, "sensor_w", s.cfg.SensorWpx),
 		SensorHpx:  intParam(q, "sensor_h", s.cfg.SensorHpx),
+		BarlowX:    floatParam(q, "barlow", s.cfg.BarlowX),
+		ReducerX:   floatParam(q, "reducer", s.cfg.ReducerX),
 	}
 	prm := skyevents.Params{
 		From:       from,
@@ -145,6 +147,8 @@ func (s *Server) skyEventSeries(w http.ResponseWriter, r *http.Request) {
 			PixelUm:    floatParam(q, "pixel_um", s.cfg.PixelSizeUm),
 			SensorWpx:  intParam(q, "sensor_w", s.cfg.SensorWpx),
 			SensorHpx:  intParam(q, "sensor_h", s.cfg.SensorHpx),
+			BarlowX:    floatParam(q, "barlow", s.cfg.BarlowX),
+			ReducerX:   floatParam(q, "reducer", s.cfg.ReducerX),
 		},
 		Twilight: twilightParam(q.Get("twilight")),
 		Location: loc,
@@ -235,6 +239,8 @@ func eventsEcho(prm skyevents.Params, loc *time.Location, tz string, q url.Value
 			FovWDeg:            round(fovW, 3),
 			FovHDeg:            round(fovH, 3),
 			FRatio:             round(prm.Optics.FRatio(), 2),
+			BarlowX:            prm.Optics.BarlowX,
+			ReducerX:           prm.Optics.ReducerX,
 		},
 		Twilight: prm.Twilight,
 	}
