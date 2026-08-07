@@ -32,15 +32,21 @@ falls back to the pure Siril/GIMP path. The browser also calls the engine's `/ap
 endpoints (tonight's targets, GoTo alignment, events, weather, light-pollution), which use only keyless
 public data services by default.
 
+Every external tool, catalogue, data service and library — with its licence and what breaks without it
+— is catalogued in [third-party.md](third-party.md). Nothing is bundled: host tools are invoked, online
+feeds are fetched at runtime and cached, and both soft-fail.
+
 ## Components
 
 | Package | Responsibility |
 |---------|----------------|
 | `internal/config` | Environment configuration. |
-| `internal/fits` | Read FITS headers + pixels (`codeberg.org/astrogo/fitsio`). |
+| `internal/fits` | Read FITS headers + pixels — hand-rolled, no external FITS library. |
 | `internal/inspect` | Walk a directory, classify each file (light/dark/flat/bias/dark-flat/video), group into sets. Bare-filename legacy captures are labeled from an `info.txt` sidecar (`manifest.go`) that lists the per-sub-run filter order + gain. |
 | `internal/siril` | `SirilRunner`: generate `.ssf`, exec `siril-cli`, parse `progress:`/`log:` + `seqstat` CSV. |
 | `internal/grade` | Per-frame quality metrics + rejection rules; trail handling. |
+| `internal/stacknative` | The Go pixel combiner for the algorithms Siril lacks (trimmed mean, Robust Chauvenet, DSS auto-adaptive / entropy-weighted, local normalization) — streams registered frames in row bands; validated against Siril for the algorithms both implement. |
+| `internal/stackalg` | The canonical catalogue of frame-combination and pixel-rejection algorithms (engine-free): what exists, which engine runs it, what its parameters mean, and the count-adaptive default. One source of truth behind the Siril clause, the knob whitelist and the UI menu — see [stacking.md](stacking.md). |
 | `internal/calib` | Build master calibration frames (+ the dark **defect map** / bad-pixel scan); match the right masters to each light set; calibration library + deep cross-session pools. |
 | `internal/transient` | Cross-frame satellite/plane-trail + cosmic-ray masking on the registered subs, validated against fixed-pattern noise. |
 | `internal/photom` | Photometric normalization across mixed-session groups (percentile-curve fit; ON by default for deep-sky — a flat narrowband curve seeds from the header exposure/gain instead of mis-fitting, and the clamp admits genuine cross-gain ratios). |
@@ -59,6 +65,7 @@ public data services by default.
 | `internal/nightscape` | Milky-Way / one-shot-color foreground+sky composite recipe. |
 | `internal/rawconv` | Camera-raw → 16-bit TIFF develop for Siril ingestion: LibRaw `dcraw_emu` preferred (photometric, `-t 0`, exact sRGB), macOS `sips` fallback; also raw thumbnails. |
 | `internal/weather` | Astronomy weather: Open-Meteo + 7Timer! + air quality + NOAA SWPC merged into per-site forecasts and the chunked multi-point cloud grid (soft-fail, disk-cached). |
+| `internal/skylog` | Records the sky a capture session ran under: hourly samples (weather + Moon + target altitude/airmass + sky brightness) plus a rolled-up summary, written **while the session runs** because the weather feeds have no archive. Pure `Observe`/`Summarize` behind two narrow interfaces, so it imports neither the database nor an HTTP client. |
 | `internal/darksky` | Dark-site finder: grid an area for low light pollution, score horizon openness (terrain + canopy). |
 | `internal/elevation` | Terrain elevation provider + horizon-profile sampling (keyless Open-Meteo elevation, cached). |
 | `internal/s3store` | Small reusable minio-go v7 client (list/stat/upload/download/delete, byte progress). |
@@ -127,21 +134,98 @@ desaturation + chroma blur, so a dense field reads as natural white-ish stars, n
 
 ## Weather & sky overlays
 
-The Tonight page's animated cloud map is served by `GET /api/sky/weather/grid`
-(`internal/api/weather.go` → `weather.Provider.Grid` in `internal/weather/provider.go`): a
-`GRID_SIZE × GRID_SIZE` (default 32×32, `ASTRO_WEATHER_GRID_SIZE`) lat/lon sample box around the
-site, returned as one float frame per forecast hour per layer. The default `clouds` layer expands
-to its **per-altitude bands** — `clouds_low` / `clouds_mid` / `clouds_high` — which the browser
-composites into an intensity-true cloud raster. Because 1024 coordinates can't ride in one URL,
-the Open-Meteo multi-point request is fetched in **chunked GETs** (a few in flight at once,
-`internal/weather/openmeteo.go`); any failed chunk fails the fetch and the **stale-cache
-soft-fail** takes over (last cached frames + a warning). The disk cache is **versioned**
-(`gridCacheVersion` in `internal/weather/provider.go`, part of the cache key) so a semantic or
-geometry change ignores stale cubes instead of mis-rendering them. On the client, the coarse grid
-is bicubically interpolated onto a viewport-sized **canvas overlay** (a Leaflet `imageOverlay`
-backed by a canvas — `frontend/src/composables/useFrameTileLayer.ts`, registered through the
-modular layer registry `useMapLayers.ts`) with play/scrub over the timesteps. Weather is overlay +
-panel only — it never changes visibility scores.
+Everything here is bounded by one fact: Open-Meteo's free tier weights a call by
+**locations × days × variables** (10 000/day). Every design decision below exists to keep a page
+view inside that budget, because the failure mode is not an error — it is silently blank layers.
+
+**The animated cloud map** is rendered server-side as PNG tiles:
+`GET /api/sky/weather/tiles/{metric}/{time}/{z}/{x}/{y}` (`internal/api/weather.go` →
+`internal/weathertile`), with `GET /api/sky/weather/grid/frames` supplying the scrubber's time axis.
+The browser is a plain Leaflet tile layer (`useFrameTileLayer.ts`, registered through the modular
+layer registry `useMapLayers.ts`); the earlier client-side canvas renderer is gone.
+
+Behind both endpoints is ONE cube per region: `weather.Provider.Grid` always fetches the fixed
+`gridSupersetLayers` set (total cloud + the three altitude bands, humidity, precipitation chance,
+dew spread — 8 variables), so the frames axis and every metric share a single upstream fetch. Tiles
+past z8 fold onto their z8 ancestor block (`weathertile.regionZoomCap`) and the frames endpoint
+anchors to the same quantizer, so zooming and panning do not mint new cubes. A `singleflight` group
+collapses the tile burst a viewport fires, a 429 opens a **70 s breaker**, and a failed cube is
+negative-memoised for 30 s. Degraded responses serve the **last cached frames** (bounded by
+`staleGrace`) or a transparent tile, never a 5xx — an error body would make Leaflet retry and burn
+more quota. The disk cache is **versioned** (`gridCacheVersion`), so a semantic or geometry change
+ignores stale cubes instead of mis-rendering them.
+
+**Seeing** is derived, not fetched. `internal/weather/seeing.go` computes it from the wind profile
+Open-Meteo already returns (300/500/850 hPa winds, surface wind, boundary-layer depth): jet strength
+plus wind shear across the layers, mapped onto an arcsecond FWHM. That is hourly and at model
+resolution, where 7Timer's ASTRO feed is 3-hourly on a 10 km GFS grid — 7Timer remains the fallback,
+and each hour records which source it used (`Hour.SeeingSource`).
+
+**Weather still does not change the clear-sky visibility scores** — it is overlays, the forecast
+panel, and a separate live score (`skyplan.ScoreLive`) — with one deliberate exception, below.
+
+### Ranking dark sites for a night
+
+The dark-sky finder answers "where should I go **on this night**", which cannot be answered from
+terrain alone. `internal/darksky` therefore blends a third term into its score: the forecast for the
+selected night, taking `ASTRO_DARKSKY_WEATHER_WEIGHT` (default 0.3) off the top while darkness and
+horizon openness keep their 0.6/0.4 proportion in the remainder. Weight 0, or no forecast, reproduces
+the historical score exactly, and a candidate with no forecast is never scored as if it had a bad one.
+
+The cost discipline is `weather.NightScan`: a multi-point request restricted to the night's hours via
+`start_hour`/`end_hour`. Ten hours instead of a forecast day is what turns a 160-point area scan from
+~100 call-equivalents into ~4, which is what makes ranking next Saturday affordable at all. One search
+spends exactly **two** upstream calls:
+
+1. a coarse pass over a lattice covering the whole drawn box, applied to every surviving cell
+   **before** the shortlist is cut, so a clearer-but-slightly-brighter spot can climb into it;
+2. a precise pass at the finalists' exact coordinates, carrying the elevations the horizon step
+   resolved (Open-Meteo downscales temperature to a supplied elevation) and the pressure-level winds
+   the seeing index needs.
+
+The night aggregate (`weather.ScoreNight`) weights each hour by how much moonlight spoils it
+(`astro.MoonGlowFactor`), charges low cloud more than high cloud at the same coverage, and flags
+`fog_risk`, `frost` and `above_inversion` — the last being the winter case where a summit stands above
+a stratus deck whose top is estimated from the sampled valley floor plus the boundary-layer depth.
+Candidates come back with their normalised sub-scores, so the UI's darkest-to-clearest slider re-ranks
+what is already on screen without spending another call. `GET /api/sky/nights` supplies the picker's
+twilight and Moon arithmetic (pure computation, no upstream).
+
+## Capture conditions: the logbook
+
+`capture_sessions`/`capture_frames` record **what** was shot. `capture_conditions` records **what sky
+it was shot under** — which is half of the answer when deciding whether two nights of the same target
+can be stacked together: a 60%-lit Moon 20° from the target, or a transparency that collapsed at
+01:00, explains a set that will never blend.
+
+The constraint that shapes the whole design is that **the engine can only see a forecast, not an
+archive.** `weather.Provider.Forecast` asks Open-Meteo with `past_days=1&forecast_days=2`; 7Timer and
+NOAA SWPC are recent-or-forward only; there is no archive endpoint anywhere in the engine. Conditions
+older than about a day are simply not retrievable — so they are **sampled live, while the session
+runs**, and sessions captured before this shipped can never be backfilled.
+
+- **Cadence is hourly** (`ASTRO_CAPTURE_CONDITIONS_INTERVAL_MIN`, default 60). The feeds are
+  themselves hourly, so sampling faster repeats the same numbers while spending a free-tier request
+  budget a long winter night can genuinely exhaust. A sample is taken at the start, on each tick, and
+  once at the end (suppressed if one just landed).
+- **Half of each row is computed locally** and stays correct on a night when every feed is down:
+  Moon position/illumination/phase (`astro.MoonNow`), the target's altitude, azimuth, airmass
+  (clamped — `astro.Airmass` is +Inf below the horizon, which no column can hold) and its angular
+  distance from the Moon. `source` (`live`/`cached`/`unavailable`) is what keeps an all-zero weather
+  row readable as "the feed was down" rather than "the sky was flawless".
+- **The summary is rewritten after every sample**, denormalized onto `capture_sessions`, so the
+  logbook list draws one line per night without joining — and a session killed mid-night still carries
+  an accurate record of the hours it did get.
+- **The full hourly forecast is archived twice** (`capture_forecasts`, start and end) in its own table,
+  because one payload is tens of kilobytes and the list selects every session column at once. That is
+  what makes "what was forecast vs what actually happened" answerable.
+- **The site comes from the browser** (`lat_deg`/`lon_deg` on the start request, from the sky store's
+  picked location), falling back to `ASTRO_LAT`/`ASTRO_LON`. The engine's configured site is right at
+  home and wrong on every trip to a dark sky.
+
+Everything soft-fails: `internal/skylog` reaches weather and light pollution only through the API
+layer's existing nil-safe shims (`weatherAt`, `siteAt`), every sink error is remembered for the UI and
+then dropped, and a capture never fails because the logbook had trouble.
 
 ## Run provenance & environment health
 
@@ -223,6 +307,228 @@ Calibration follows the layout ingest already parses: `flats/<Filter>/` (flats a
 `darks/` `bias/` `darkflats/` with no filter segment (those group filter-agnostically). Redundancy is
 the point — a header stripped by a converter, or a file renamed by hand, still leaves the folder
 saying which filter these frames were shot through.
+
+## Naming the stars: two catalogues, one query
+
+A finished run can be annotated (`POST /api/jobs/{id}/stars` → `<runDir>/stars.json`): every detected
+star gets a marker, and the ones the catalogue recognises get a name and a hover card. That needs a
+star catalogue, and the two the engine ships are **not alternatives** — one is a floor, the other
+raises it.
+
+| | Embedded (`internal/deepstars/catalogue/hyg_mag9.csv.gz`) | Deep (`<library>/catalogues/athyg_v32.bin`) |
+|---|---|---|
+| Source | HYG v4.1 | **ATHYG v3.2** = Tycho-2 + Gaia DR3 + HYG's names |
+| Stars | 83 479, to magnitude 9 | **2 552 164**, to about magnitude 13 |
+| Size / where | 1.4 MB, `go:embed`ed, always present | ~130 MB, downloaded, gitignored, never committed |
+| Extra fields | — | distance, spectral type, B−V, absolute magnitude, radial velocity |
+| Installed by | nothing — it is compiled in | `just download-deepstars` |
+
+`deepstars.Load(path)` returns the deep catalogue when the file is there and the embedded one when it
+is not, so **a missing download means shallower names, never a broken feature** — CI, a fresh clone
+and an offline machine all keep working unchanged.
+
+**Why the deep one matters.** Measured on the real M42 run, going from embedded to ATHYG took the
+frame from *5 named stars out of 698 detections* to *70*, with distance on 61 of them and a spectral
+type on 37. The plate-solve check also stopped starving: M51 went from 2 usable check stars out of 5
+to 18 out of 30, and M31 from 0 out of 4 to 13 out of 30 — both had been failing validation outright
+and emitting no labels at all, purely because a magnitude-9 catalogue has almost nothing in a small
+deep-sky field.
+
+**Why it is a custom binary and not the CSV.** ATHYG ships as two ~99 MB gzipped CSVs; parsing those
+into 2.5 million Go structs is ~600 MB resident, which the engine cannot spend beside Siril. So
+`deepstars.Build` converts them once into a **declination-sorted, fixed-width record file** (52 bytes
+per star, `format.go` owns the layout). A cone query then binary-searches the dec band with `ReadAt`
+and streams only that slab: an M42-sized field costs a few hundred KB of reads and **~9 ms**, and
+nothing but the small string tables (proper names, spectral types, constellations — interned, so a
+record carries a 2-byte index) is ever resident. Declination is the sort key precisely because,
+unlike RA, it has no wrap-around, so a band is always one contiguous range.
+
+Two traps the builder is armoured against, both found the hard way:
+
+- **RA is in HOURS** in ATHYG, as in HYG — ×15 to get degrees.
+- **The second file has no header row.** The release splits one CSV by byte count, not by document,
+  so a header-expecting parser silently eats its first star. The builder applies a hard-coded column
+  order and *verifies it* against the first file's real header, so an upstream schema change fails
+  the build instead of shifting every field.
+
+Fields where zero is itself a measurement (B−V = 0 is a real A0 star; a star really can have zero
+radial velocity) carry an explicit absent-sentinel rather than being encoded as 0, and a "distance"
+past 100 kpc — what a negative parallax produces — is dropped, because a wrong number on the hover
+card is worse than a blank one. Light years, solar luminosities and an effective temperature are
+*derived at display time* (`frontend/src/utils/starInfo.ts`) from the raw catalogue values, so a
+formula that turns out to be wrong is fixed in one place instead of baked into every stars.json ever
+written. Licence and attribution: `docs/third-party.md`.
+
+## The photograph as a volume: the 3D field map
+
+A stack is a projection: everything in it is painted on one plane, whatever its real distance. Once
+the deep catalogue gives a star a **parallax**, that stops being necessary — `internal/scene3d` turns
+a finished run into a scene where each detected star sits along its own line of sight at its own
+distance, and each catalogued object hangs at its. Measured on the real M42 run: 698 detections, 690
+of them placed, spanning 73 pc to 4 kpc through a field 1.3° across.
+
+**All of it is computed in Go, once, and cached beside the run** (`scene3d.json` 1.7 KB,
+`scene3d.bin` 17.7 KB, `scene3d_bg.png` 4.3 MB). The browser fetches those, hands the binary to the
+GPU untouched, and draws three calls a frame. There is no 3D library: the scene is point sprites, a
+textured quad per object and some lines, so `useStarField3D.ts` is a few hundred lines of hand-written
+WebGL2 and **no new npm dependency**.
+
+### One line of shader maths
+
+Each record carries a **unit direction** and a **distance in parsec**. The vertex shader places it:
+
+```glsl
+float t = clamp((log(dist) - uLogNear) / (uLogFar - uLogNear), 0.0, 1.0);  // log depth
+float z = uZRef + t * uDepth * uZSpan;          // uDepth is the slider, 0…1
+vec3 pos = aDir * (z / aDir.z);                 // slide ALONG the ray, never across it
+```
+
+At `uDepth = 0` every star lands on one plane, and because a TAN plate solution *is* a pinhole
+projection, the perspective view of that plane is the photograph — exactly, to a hundredth of a pixel
+(pinned by tests on both sides of the wire). Opening the slider spreads the field into a logarithmic
+cone; logarithmic because a real field covers three or four decades, and placed linearly everything
+past the first tenth piles onto the back plane.
+
+The span the warp runs over has to cover **everything the scene draws** — every placed star and every
+catalogued object. That is not obvious and getting it wrong is invisible in the data and glaring on
+screen: the warp clamps anything outside its range onto an end plane, so a span taken from the stars
+alone put M51 at 7 Mpc on the very same plane as a star at 600 pc, twelve thousand times nearer.
+The range is the stars' own 1st-to-99th percentile spread, trimmed at the ends so one wild
+photometric estimate cannot set the scale, widened to take in every object. On the M51 run that
+gives 73 pc → 7.05 Mpc: the whole star field occupies the near 28 % of the cone and the galaxy sits
+at the very back, with decade rings at 100 pc, 1 kpc, 10 kpc, 100 kpc and 1 Mpc to read the gap by.
+
+The scene's basis comes from `annotate.Solve.Frame`: the sky positions of the final image's centre and
+of its two far edge midpoints. Three points fix orientation, field of view and parity, and they are
+settled in `internal/annotate` for the same reason `Label.Extent` is — that is the one place the
+validated solution and the crop mapping live, so no consumer can derive the geometry a second time and
+disagree. (M42 comes out `right_handed: false`: that session was shot through a star diagonal.)
+
+### Stars as light sources
+
+A star's size and brightness follow the inverse-square law **from wherever the camera is**, not from
+Earth: `m = M + 5·log10(d/10 pc)`, computed in real parsecs and never in warped scene units. Flying
+toward a star genuinely brightens and swells it; a blue supergiant reads as luminous from far off
+while a red dwarf beside it stays faint. At depth 0 the camera sits at the origin — which is Earth —
+so `d` is the star's own distance and `m` is its Earth magnitude: the photograph, out of the same
+expression, with no special case.
+
+"Real scale" in the literal sense is not renderable and the UI says so instead: the Sun at 100 pc
+subtends 0.1 milliarcsecond, so the hover card reports the true angular size as a number (radius from
+luminosity and temperature by Stefan–Boltzmann, then θ = 2R/d) and it always reads as a fraction of a
+mas. That *is* the answer — a star is a point source at any distance a telescope sees it from.
+
+Colour is computed, not sampled. `annotate`'s `starHex` deliberately lifts every colour toward white
+so a marker ring stays legible, and the sampled pixel also carries the stack's colour balance and
+stretch — feeding that into a 3D scene gives a field of pastel dots. Instead the star's B−V gives an
+effective temperature (Ballesteros), and a blackbody at that temperature has exactly one colour:
+Planck's spectrum integrated against the CIE colour-matching functions, into sRGB, normalised to a
+**hue** so brightness is not counted twice. The temperature relation is the same function
+`frontend/src/utils/starInfo.ts` uses for the hover card, guarded on the same B−V range, so a star's
+rendered colour and the number written beside it can never disagree. On the M42 run all 690 placed
+stars come out physically coloured.
+
+### Motion: where a star will be
+
+Proper motion is an *angle* per year and radial velocity a *speed* along the line of sight; neither is
+a velocity alone. With the distance the scene already has, `v_tan = 4.74·μ(″/yr)·d(pc)` on the local
+East/North axes plus the radial part gives a true space velocity, rotated into the scene basis and
+stored as three `int16` at 0.1 km/s. The viewer draws it as **where the star will be after N years**
+(a slider, default 100 kyr) — so the arrow's length is proportional to speed *and* means something
+concrete, and pushing the slider shears the field: cluster members drift together while the field
+scatters. Red is receding, blue approaching. 61 of M42's 690 stars have one.
+
+### Three sources of depth, and one of them is a guess
+
+| Source | How | On the M42 run |
+|---|---|---|
+| **Measured** | the catalogue's own parallax (Gaia DR3 / Tycho-2 via ATHYG) | 61 stars |
+| **Estimated** | spectroscopic parallax from this frame's colour and magnitude | 629 stars |
+| **Unknown** | neither — **not placed at all**, only counted | 8 stars |
+
+The estimate needs a colour index, and a stack has no absolute colour scale, so the relation is
+**fitted in-frame**: the identified stars pair their catalogued B−V with the colour this finish
+rendered them, giving `CI ≈ a·h + b` by 2σ-clipped least squares (M42: 65 pairs, RMS 0.17). B−V then
+becomes an absolute magnitude through an embedded **ZAMS table** — deliberately a standard table
+rather than a fit to the frame's own stars, because any real field mixes dwarfs with giants and
+fitting it would bake that contamination in. `d = 10^((m − M + 5)/5)` follows.
+
+Its known failure is that a red giant is placed several times too close, so the layer grades itself:
+every star that *does* have a parallax gets a photometric distance computed without ever consulting
+it, and the manifest ships the median ratio and the scatter. M42 scores **×0.79 ±0.21 dex** — the
+estimates run about 20 % close (nebular reddening pushes them there), with a factor-1.6 spread. The
+UI draws estimated stars differently, counts them separately, offers one toggle to hide them, and
+warns outright when a frame's own grade says they are decoration rather than data. A mono stack, or
+one whose colours do not track the catalogue, gets no estimates at all and says so.
+
+### Objects have shapes, and each says which kind it is
+
+A billboard is honest but obviously wrong: a galaxy is not a sticker facing the camera. How much can
+be done better differs sharply by object class, so the engine emits a **shape descriptor** per object
+— never a mesh; a 32×32 disc is a few thousand vertices and about a dozen numbers, so the descriptor
+is both the lighter wire format and the one that keeps every astrophysical decision in Go. The viewer
+holds a dumb tessellator with no astronomy in it, and vertices carry `(dir, distPc, uv)` rather than a
+position so the **same** depth warp the stars use applies per-vertex.
+
+Three tiers, kept apart and labelled in the UI:
+
+| Tier | What it means | Who gets it |
+|---|---|---|
+| **measured** | the geometry follows from catalogued numbers | spiral/lenticular galaxies: `cos²i = (q²−q₀²)/(1−q₀²)`, q₀ = 0.2 |
+| **assumed** | the size is measured, the *form* is a standard assumption | round planetary nebulae and SNR as shells; ellipticals as oblate spheroids |
+| **modelled** | no measurement of the third dimension exists at all | every diffuse nebula |
+
+The vendored OpenNGC carries a major axis, minor axis and position angle for **10 481 galaxies** (99 %
+with a PA) and 140 planetary nebulae — which is what makes the first two tiers real. Their limits are
+stated rather than hidden: inclination is good to ±3–5° between 50° and 80°, degenerate near face-on,
+and **which edge tilts toward us cannot be told from an ellipse at all**, so every disc is flagged
+`flip_ambiguous`. An elliptical's projection genuinely does not fix its 3D shape (a face-on oblate and
+an edge-on prolate can look identical), so its flattening is labelled a lower bound. A strongly
+bipolar planetary nebula is *refused* a shell rather than forced into one — the flat plane is the more
+honest answer.
+
+For diffuse nebulae nothing is measured. The image records `∫ε·dz` along each line of sight, which is
+one number where a function is wanted, so a shape needs an assumption. Two routes, both labelled
+`modelled`:
+
+- **A curated prior** where the structure has actually been published — `internal/scene3d/shapes.csv`,
+  ~18 objects, each with a citation. M42 is the case that matters: it is a *blister* H II region, a
+  cavity excavated by the Trapezium on the **near face** of OMC-1, so its bowl opens toward the
+  observer. A blind inversion would give a symmetric blob — convincing, and the wrong shape.
+- **The generic inversion** otherwise: depth ∝ √I under the stated assumption that a structure is
+  about as deep as it is wide.
+
+Either way the volume is rendered as ~24 alpha-blended depth slices whose per-fragment alpha is
+computed from the backdrop sample, so the shape lives entirely in the fragment shader and each slice
+is four vertices.
+
+### Objects: measured from the frame where possible
+
+Each catalogued object with a known distance becomes a quad cut from the run's own image by the
+ellipse `annotate` already projected into final-image pixels, drawn additively — nebulae emit, and the
+near-black sky in the cutout contributes nothing, so the ellipse self-mattes with no visible edge. The
+texture is `scene3d_bg.png`: the final image **with its stars painted out** (local-median patches, or
+the starless output when a StarReduce run produced one). Without that the field is drawn twice — right
+at depth 0, and visibly wrong the moment the slider opens and one copy stays pinned to the object.
+
+Distances come from an embedded table (`dsodist.csv`, ~170 objects) because the object catalogues the
+app already loads have no distance column at all. But for **clusters** the frame can do better than a
+lookup: histogram the member parallaxes inside the footprint in log distance, take the half-sample
+mode (a cluster is a narrow peak on a background spanning decades — no bin width to choose), and
+require the members to be a quarter of what is in the ellipse. That distance is a measurement from
+this picture, so the manifest keeps the catalogued value beside it and labels which was used, rather
+than quietly resolving a disagreement.
+
+### The wire format
+
+`scene3d.bin` is header | fixed-width records | name table, laid out so every attribute lands where
+`gl.vertexAttribPointer` can address it — floats on multiples of 4, the 16-bit fields on 2. **32 bytes
+per star** (v2: the record grew a space velocity and a two-byte index into the run's `stars.json`,
+which is how a hover reads the full catalogue row without a second copy of it living in this file), uploaded as one buffer, with no parsing, no per-star objects and no garbage. Like the deep
+star catalogue it is versioned and self-describing, and a reader meeting an unknown version or record
+size refuses the file rather than misreading it; `internal/scene3d/format.go` and
+`frontend/src/utils/scene3d.ts` are pinned to the same layout by tests on both sides that would fail
+rather than let the browser draw a scrambled field.
 
 ## Real ZWO hardware on Apple Silicon: the x86_64 device sidecar
 

@@ -148,4 +148,107 @@ night that ends badly is diagnosable at breakfast rather than being "it stopped"
   why a reconnect proves identity by *asking the mount*, rather than by USB serial number — which the
   Prolific bridge in a NexStar+ typically does not carry anyway.
 - `internal/align` and the `/goto` page are **advisory**: they plan alignment stars for you to enter
-  on the hand controller. They never command the mount.
+  on the hand controller. They never command the mount. Neither does the camera polar alignment
+  below — it measures, and you turn the bolts.
+
+## Polar alignment with the camera
+
+The `/goto` page tells you where Polaris *should* sit on a polar scope. That is open loop: it never
+looks through the telescope, so it cannot say how far off you actually are. The **Polar alignment**
+panel on `/capture` closes the loop.
+
+**How it works.** The mount is bolted to the ground, so turning the telescope about its
+right-ascension axis sweeps the optical axis around a circle centred on that axis. Plate-solve four
+frames along the sweep, express them in a ground-fixed frame, and the circle's centre *is* the mount's
+polar axis. Comparing it with the celestial pole gives the altitude and azimuth errors — exactly what
+the two adjusting bolts control.
+
+Nothing about this needs a pointing model, encoders, or a mount the software can drive. **You turn the
+axis by hand between frames** — clutch, hand controller, whatever you have. The fit needs to know that
+it moved, not how far.
+
+### Two ways in
+
+**Find the pole (one frame, ten seconds).** Set declination to its 90° index so the tube looks straight
+down the right-ascension axis, point roughly north, and press **Find the pole**. One exposure, one
+solve, and the panel marks the exact celestial pole on the image — plus Polaris, so you can tell which
+way you are looking — and tells you how far the middle of the frame is from it. Drive the marker onto
+the crosshairs and you are aligned.
+
+That is exactly what a polar scope does, and it is worth about the same: **half a degree**, set by your
+cone error and by how precisely the declination index is set. Neither is measured, so the answer is
+labelled "one frame" and carries the assumption it rests on. Use it to get on the pole fast, in the
+dark, without lying under the mount hunting for Polaris.
+
+The marker alone is useful even if you never align this way: it turns "where on earth is the pole from
+here" into something you read off a screen, and it works when Polaris is behind a tree, since it only
+needs *some* stars to solve.
+
+**Measure it properly (four frames).** The procedure below. Two orders of magnitude better, because it
+replaces the assumption with a measurement.
+
+**The procedure.**
+
+1. Point anywhere with stars, ideally near the meridian at declination 0–40° and away from the zenith.
+   Polaris does not need to be visible, which is the point: a tree in front of it costs nothing.
+2. Press **Start measuring**. It takes a frame from the live view and solves it.
+3. Turn the right-ascension axis about 20°, leave declination alone, press **Next**. Three times.
+4. Read the correction: how much too high the axis is, and how far east or west, with the direction
+   named rather than signed.
+5. Press **Adjust**. A ring appears on the live image marking where the middle of the frame has to end
+   up. Turn the altitude and azimuth bolts until the ring sits on the crosshairs.
+
+**Turn it far enough.** The axis uncertainty falls as the *square* of the total rotation, because what
+pins the circle's centre is the curvature of the arc, not its length. Measured on this implementation,
+with one arcsecond of plate-solve noise and three frames:
+
+| total arc | 20° | 25° | 30° | 45° | 60° | 90° |
+| --- | --- | --- | --- | --- | --- | --- |
+| RMS error | 1.27′ | 0.82′ | 0.57′ | 0.26′ | 0.15′ | 0.07′ |
+| 95th percentile | 2.59′ | 1.66′ | 1.15′ | 0.52′ | 0.29′ | 0.14′ |
+
+So the 30° that feels sufficient leaves a one-in-twenty chance of missing the arcminute this exists to
+find. The panel asks for four frames twenty degrees apart — sixty in total. Adding *frames* over the
+same arc buys about a fifth of what adding *arc* does, because the two ends carry nearly all the
+curvature; the fourth frame is there to cross-check, not to average.
+
+**Two numbers that are easy to confuse.** The azimuth bolt turns through more azimuth than the sky
+error it removes, by 1/cos(latitude) — a factor of 1.4 at latitude 45°, 2 at 60°. The panel quotes the
+*knob* angle for that reason. Turning by the sky error instead undershoots by cos(latitude) every time.
+
+**What it corrects for.** Plate solves speak J2000 while sidereal time speaks the equinox of date, and
+the pole has moved about nine arcminutes between them — twenty times the error being measured, so the
+conversion is not optional. Atmospheric refraction is modelled too (on by default): the solver reports
+where a star *is*, while the telescope is aimed at where it *appears*, and over a sixty-degree arc
+ignoring that biases the answer by a couple of arcminutes.
+
+**Realistic accuracy.** Sub-arcminute is comfortably reachable with a sixty-degree arc. Past that the
+limit stops being the arithmetic and becomes the mount: bearing runout, tube flexure with orientation,
+and the tripod settling are worth five to thirty arcseconds on consumer gear and no amount of averaging
+removes them.
+
+**Building on it without a sky.** Simulated frames cannot be plate-solved — the bundled catalogue is
+far too sparse for Siril to match — so `ASTRO_SIM_SOLVER=1` plus the `sim` camera and mount drivers
+runs the whole procedure at a desk. Dial an error in with
+`POST /api/device/live/simulate {"polar_error_alt_arcmin": 25, "polar_error_az_arcmin": -14}` and the
+measurement finds it. See `.env.example` for the caveats.
+
+One thing to expect there: the simulated mount reads about **nine arcminutes out with nothing
+injected**. That is not a bug in either half. The simulator holds J2000 coordinates throughout, so the
+sweep its ideal mount traces is a circle about the J2000 pole — and today's pole is nine arcminutes
+away from that, which is precisely the precession the measurement is built to account for. It is also
+not unrealistic: it is what a mount aligned from a printed J2000 chart and never touched since would
+do. Dialled-in errors compose with that baseline, so compare two measurements rather than one against
+zero.
+
+Also worth knowing when scripting against it: sweep by **jogging** the right-ascension axis, not by
+sending GoTos. The simulated mount lands a deliberate arcminute off every target it is *sent* to, which
+is realistic and is why plate-solve centring exists — but four independent arcminute offsets do not lie
+on one circle, and the fit reads that scatter as a polar error several times larger than the one under
+test. Jogging leaves declination untouched and adds no pointing error, exactly as turning the axis by
+hand does.
+
+**Where the code lives.** The geometry is `internal/polaralign` (pure, no I/O). The session — camera,
+frame gating, solving — is `internal/capture/polar.go`, engine-side because solving needs Siril. The
+device server contributes `POST /live/save`, which writes the live view's newest frame so the engine
+measures the picture the user is watching rather than stealing the camera to take its own.

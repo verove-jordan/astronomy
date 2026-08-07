@@ -160,6 +160,7 @@ servers for Claude (`siril`, vendored `gimp`). The docs are topic-organized:
 | [planner.md](docs/planner.md) | the sky-planner pages and their data sources |
 | [ui.md](docs/ui.md) | the web UI, page by page |
 | [agent.md](docs/agent.md) | the local AI: finish supervisor, AstroAgent chat, series |
+| [third-party.md](docs/third-party.md) | every external tool, catalogue, data service and library, with its licence |
 | [verification.md](docs/verification.md) | end-to-end verification recipes with pass criteria |
 
 ## Development
@@ -173,4 +174,15 @@ servers for Claude (`siril`, vendored `gimp`). The docs are topic-organized:
 
 ## License
 
-MIT
+MIT — for the code in this repository.
+
+AstroStack orchestrates a great deal of other people's work: **Siril** and **GIMP** do the stacking and
+the finishing, and the sky itself comes from **Open-Meteo**, **NASA/NOAA VIIRS**, the **HYG**/**ATHYG**
+and **OpenNGC** catalogues, **Gaia DR3**, the **Minor Planet Center**, **CelesTrak**,
+**OpenStreetMap** and others. Every tool is invoked rather than bundled, and every feed is fetched at
+runtime under its own terms.
+
+Two of those terms bind a redistributor: **Open-Meteo's free tier is non-commercial** and its data is
+CC BY 4.0 (the attribution is rendered in the UI), and the **HYG, ATHYG and OpenNGC catalogues are CC
+BY-SA**. The complete list, with licences and the reasoning behind each choice, is in
+[docs/third-party.md](docs/third-party.md).

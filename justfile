@@ -199,6 +199,16 @@ gen-skymap-data MAG="6.0":
 gen-deepstars-data MAG="9.0":
     go run ./cmd/astrostack deepstars-data --mag "{{MAG}}"
 
+# One-time download of the DEEP star catalogue (ATHYG v3.2 — Tycho-2 + Gaia DR3 + HYG names; ~200 MB
+# of CSV → ~130 MB .bin, ~15 s to convert) into library/catalogues. The embedded extract stops at
+# magnitude 9, so a typical eleventh-magnitude detection is anonymous and has no distance; ATHYG
+# names it, gives it a spectral type, and gives the parallax the 3D field map places it with. It also
+# feeds the plate-solve check: on sparse fields the magnitude-9 set left only 2-5 usable check stars
+# and the solve failed validation outright. Optional — absent, everything falls back to the embedded
+# extract. MAG drops stars fainter than the limit (0 = keep all).
+download-deepstars MAG="0":
+    go run ./cmd/astrostack deepstars-athyg --mag "{{MAG}}"
+
 # One-time download of Siril's OFFLINE Gaia plate-solve catalogue (~1.1 GB → ~3 GB) into
 # library/catalogues — makes plate-solving (and therefore SPCC colour calibration) work with no
 # network, on the host AND in the Docker engine (same files via the /data/library volume).

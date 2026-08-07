@@ -243,7 +243,12 @@ each knob requires.
 | `Grade.RoundnessFloor` | 0.55 | reject frames with elongated stars below this roundness | C (`roundness_floor`) |
 | `Grade.RoundnessSigma` / `FWHMSigma` / `BackgroundSigma` | 2.5 / 2.5 / 3.0 | median+MADσ rejection thresholds | C (`fwhm_sigma`, `background_sigma`) |
 | `Grade.StarCountFrac` | 0.5 | reject frames with < frac·median stars (clouds) | C (`star_count_frac`) |
-| `StackWeight` | `wfwhm` | Siril stack weighting (noise\|wfwhm\|nbstars\|nbstack; empty = unweighted) | — |
+| `StackWeight` | `wfwhm` | Siril stack weighting (noise\|wfwhm\|nbstars\|nbstack; empty = unweighted) | C (`stack_weight`) |
+| `Stack.Combine` | `mean` | how the surviving samples become one value (mean\|median\|sum\|max\|min\|trimmed_mean) | C (`stack_combine`) |
+| `Stack.Reject` | auto | pixel-rejection algorithm; auto = percentile ≤7 / winsorized 8–49 / GESD ≥50 — see [stacking.md](../stacking.md) | C (`stack_reject`) |
+| `Stack.Low` / `Stack.High` | the algorithm's own | its two parameters — σ multipliers, kept fractions or GESD outliers/significance depending on the algorithm | C (`stack_reject_low`, `stack_reject_high`) |
+| `Stack.Norm` | `addscale` | input normalization (none\|add\|addscale\|mul\|mulscale) | C (`stack_norm`) |
+| `Stack.Engine` | auto | who combines: Siril, or the Go combiner for the algorithms Siril lacks | C (`stack_engine`, consent-gated) |
 | `PhotomNorm` | **false** | photometric normalization across mixed-session groups — implemented, off pending re-validation | — |
 | `Palette` | "" (natural) | channel→RGB mapping: natural \| hargb \| hoo \| sho \| hos \| foraxx \| mono | A (`palette`) |
 | `BackgroundDegree` | 1 | Siril `subsky` polynomial degree at finish (clamped 1–4) | B (`background_degree`) |

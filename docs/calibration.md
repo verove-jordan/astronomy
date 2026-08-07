@@ -24,7 +24,9 @@ the **library** (`ASTRO_LIBRARY_DIR`).
 
 ### Count-adaptive rejection
 
-Every stack picks its pixel-rejection algorithm from the frame count (`siril.Rejection`):
+Every stack picks its pixel-rejection algorithm from the frame count by default
+(`stackalg.AutoReject`), sized to THAT pool's own depth. Each frame type (bias/dark/flat/dark-flat)
+carries its own recipe, overridable per run — see [stacking.md](stacking.md):
 
 | Frames | Rejection | Why |
 |---|---|---|
