@@ -126,16 +126,30 @@ func identityLUT(pts []lutPoint) bool {
 }
 
 // applyLUT maps a plane through the knots in place, interpolating between them and extrapolating
-// beyond the ends with the slope of the nearest segment — so a highlight brighter than any probe
-// stays brighter, rather than being flattened onto the last knot.
+// beyond the ends — upward with the slope of the last segment, so a highlight brighter than any
+// probe stays brighter rather than being flattened onto the final knot, and downward through the
+// ORIGIN.
+//
+// The two ends are not symmetric, and getting the lower one wrong is expensive. The curve is
+// measured ON THE DISC, because measuring it over the whole frame would let the sky — most of the
+// pixels in a solar raster — define the percentiles and normalise the background instead of the
+// subject. That leaves everything outside the limb below the lowest knot, extrapolated rather than
+// fitted: the sky, and with it every prominence. Continuing the lowest segment's slope down there is
+// an affine extrapolation over a range several times wider than the one it was fitted on, and on
+// real frames it drove the sky to MINUS eight percent of the disc — a floor no stretch can recover
+// from, sitting exactly where the faint things live. Proportional extrapolation is the only model
+// with a defensible boundary condition: no light must map to no light.
 func applyLUT(p []float32, pts []lutPoint) {
-	loSlope := segSlope(pts[0], pts[1])
+	loScale := 1.0
+	if pts[0].from > 0 {
+		loScale = pts[0].to / pts[0].from
+	}
 	hiSlope := segSlope(pts[len(pts)-2], pts[len(pts)-1])
 	for i, v := range p {
 		x := float64(v)
 		switch {
 		case x <= pts[0].from:
-			p[i] = float32(pts[0].to + (x-pts[0].from)*loSlope)
+			p[i] = float32(x * loScale)
 		case x >= pts[len(pts)-1].from:
 			last := pts[len(pts)-1]
 			p[i] = float32(last.to + (x-last.from)*hiSlope)

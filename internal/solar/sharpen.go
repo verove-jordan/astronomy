@@ -24,9 +24,14 @@ const (
 	// Below that the update is damped towards 1, so RL stops sharpening noise once it has explained
 	// the signal — the classic failure of undamped RL is that it never stops.
 	rlDampSigmas = 3.0
-	// discExtendIn/Out bound the blend that replaces the off-limb sky with a continuation of the
-	// disc before deconvolution, in pixels either side of the limb.
-	discExtendIn, discExtendOut = 2.0, 6.0
+	// discExtendMin is the shortest blend, in pixels, over which the off-limb sky is replaced by a
+	// continuation of the disc before deconvolution. The actual reach scales with the PSF — see
+	// discReach.
+	discExtendMin = 4.0
+	// discExtendSigmas is how many PSF sigmas the blend must span. The deconvolution kernel reaches
+	// three sigma, so the extension has to cover at least that or the kernel still sees the limb step
+	// it exists to hide.
+	discExtendSigmas = 3.5
 	// starletScales is the decomposition depth. Beyond five scales the planes describe structure
 	// already handled by the flat and the limb-darkening model.
 	starletScales = 5
@@ -141,7 +146,8 @@ func RichardsonLucy(p []float32, w, h int, l Limb, sigma float64, iters int, noi
 		return append([]float32(nil), p...)
 	}
 	k := gaussianKernel(sigma)
-	y := extendDisc(p, w, h, l)
+	reach := discReach(sigma)
+	y := extendDisc(p, w, h, l, reach)
 	eps := float32(rlEpsilon * math.Max(medianOfPlane(y), 1e-6))
 	damp := float32(rlDampSigmas * math.Max(noiseSigma, 1e-9))
 
@@ -171,13 +177,40 @@ func RichardsonLucy(p []float32, w, h int, l Limb, sigma float64, iters int, noi
 			}
 		}
 	}
-	restoreOffLimb(x, p, w, h, l)
+	restoreOffLimb(x, p, w, h, l, reach)
 	return x
+}
+
+// discReach is how far inside the limb the extension blend starts.
+//
+// It scales with the PSF because the thing it has to hide is the limb step, and how far that step
+// reaches into the deconvolution is set by the kernel — three sigma, by construction. Fixed pixels
+// were fine while the width was a constant near 1.4; once the width is measured per capture it
+// ranges to 4 px and beyond, whose kernel reaches twelve, and an eight-pixel blend leaves the step
+// sitting inside it. What that produced was a bright rim around the whole disc: RL ringing on an
+// edge it was supposed to have been shielded from.
+func discReach(sigma float64) float64 {
+	return math.Max(discExtendMin, discExtendSigmas*sigma)
+}
+
+// discBlendAt is the weight given to the extended disc at a signed distance from the limb: 0 at
+// reach inside it, 1 at the limb and everywhere beyond.
+//
+// The blend finishes AT the limb rather than straddling it. Straddling was the subtler half of the
+// same bug: with the old bounds the weight at the limb was only a quarter, so the profile there was
+// three parts real limb — already half-fallen — to one part disc level, and it dipped before rising
+// back to the disc level further out. That trough is not something the optics ever produced, and
+// deconvolution amplifies it exactly as enthusiastically as it would a real feature.
+func discBlendAt(d, reach float64) float32 {
+	if reach <= 0 {
+		reach = discExtendMin
+	}
+	return float32(smoothstep((d + reach) / reach))
 }
 
 // extendDisc replaces the off-limb sky with a smooth continuation of the disc, so the limb step
 // never enters the deconvolution.
-func extendDisc(p []float32, w, h int, l Limb) []float32 {
+func extendDisc(p []float32, w, h int, l Limb, reach float64) []float32 {
 	out := append([]float32(nil), p...)
 	if l.R <= 0 {
 		return out
@@ -192,11 +225,11 @@ func extendDisc(p []float32, w, h int, l Limb) []float32 {
 		for x := 0; x < w; x++ {
 			dx := float64(x) - l.CX
 			d := math.Hypot(dx, dy) - l.R
-			if d < -discExtendIn {
+			if d < -reach {
 				continue
 			}
 			i := y*w + x
-			t := float32(smoothstep((d + discExtendIn) / (discExtendIn + discExtendOut)))
+			t := discBlendAt(d, reach)
 			out[i] = out[i]*(1-t) + edge*t
 		}
 	}
@@ -205,7 +238,7 @@ func extendDisc(p []float32, w, h int, l Limb) []float32 {
 
 // restoreOffLimb puts the original sky and prominences back after deconvolution, feathered so the
 // join does not become an edge of its own.
-func restoreOffLimb(dst, src []float32, w, h int, l Limb) {
+func restoreOffLimb(dst, src []float32, w, h int, l Limb, reach float64) {
 	if l.R <= 0 {
 		return
 	}
@@ -214,11 +247,11 @@ func restoreOffLimb(dst, src []float32, w, h int, l Limb) {
 		for x := 0; x < w; x++ {
 			dx := float64(x) - l.CX
 			d := math.Hypot(dx, dy) - l.R
-			if d < -discExtendIn {
+			if d < -reach {
 				continue
 			}
 			i := y*w + x
-			t := float32(smoothstep((d + discExtendIn) / (discExtendIn + discExtendOut)))
+			t := discBlendAt(d, reach)
 			dst[i] = dst[i]*(1-t) + src[i]*t
 		}
 	}

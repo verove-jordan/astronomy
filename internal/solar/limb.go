@@ -368,13 +368,36 @@ func limbByInflection(im *fits.Image, c Limb, cos, sin float64) (float64, bool) 
 // smoothProfile applies a 5-tap binomial smooth in place. Differentiating raw samples would let
 // noise pick the peak; over 720 rays that would show up as a radius that wanders frame to frame,
 // which is the one thing registration cannot tolerate.
+//
+// Past either end the profile is continued by REFLECTING ABOUT THE ENDPOINT'S VALUE, which is what
+// makes this usable on the two monotone profiles that also depend on it — limb darkening and the
+// off-limb background. An odd extension preserves a straight line exactly, so a profile still falling
+// steeply at its boundary comes through with that trend intact.
+//
+// The two obvious alternatives both corrupt exactly the bin that matters most. Leaving the ends
+// untouched — which is what this did — smooths bin 2 against two raw neighbours on a profile falling
+// an order of magnitude per bin, roughly doubling it, and leaves bins 0 and 1 unsmoothed beside it:
+// a step. A plain mirror (src[-1] = src[1]) is worse still, folding the profile back on itself so the
+// endpoint is dragged towards its own interior — and on the off-limb background, dragging the
+// endpoint DOWN means under-subtracting the limb skirt, which the prominence stretch then renders as
+// a ring.
 func smoothProfile(v []float64) {
-	if len(v) < 5 {
+	n := len(v)
+	if n < 5 {
 		return
 	}
 	src := append([]float64(nil), v...)
-	for i := 2; i < len(v)-2; i++ {
-		v[i] = (src[i-2] + 4*src[i-1] + 6*src[i] + 4*src[i+1] + src[i+2]) / 16
+	at := func(i int) float64 {
+		switch {
+		case i < 0:
+			return 2*src[0] - src[clampInt(-i, 0, n-1)]
+		case i >= n:
+			return 2*src[n-1] - src[clampInt(2*(n-1)-i, 0, n-1)]
+		}
+		return src[i]
+	}
+	for i := range v {
+		v[i] = (at(i-2) + 4*at(i-1) + 6*src[i] + 4*at(i+1) + at(i+2)) / 16
 	}
 }
 

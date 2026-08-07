@@ -51,4 +51,38 @@ func TestNormalize_ConvergesExposures(t *testing.T) {
 
 	assert.InDelta(t, 16.0, before, 0.5, "the fixture really is a 16x bracket")
 	assert.Less(t, after, 1.02, "normalisation must bring every frame onto one scale")
+
+	// The curve is measured ON THE DISC, so every pixel outside the limb is under-range and gets
+	// extrapolated rather than fitted. That extrapolation runs through the origin, not along the
+	// lowest segment's slope: continuing the slope over a range several times wider than the one it
+	// was fitted on drove real skies to minus eight percent of the disc — a floor no stretch recovers
+	// from, sitting exactly where the prominences are.
+	for _, f := range frames {
+		im, err := readFrame(f.Path)
+		require.NoError(t, err)
+		lo := math.Inf(1)
+		for _, v := range im.Pix[0] {
+			lo = math.Min(lo, float64(v))
+		}
+		assert.GreaterOrEqual(t, lo, 0.0, "%s: normalisation must never drive the sky negative", f.Path)
+	}
+}
+
+// applyLUT is what rewrites every pixel, including the off-limb sky the curve was never fitted on.
+func TestApplyLUT_ExtrapolatesBelowTheFittedRangeThroughTheOrigin(t *testing.T) {
+	// A curve fitted between 0.10 and 0.50 that also LIFTS the level: continuing its slope downward
+	// is what used to push the sky below zero.
+	pts := []lutPoint{{from: 0.10, to: 0.02}, {from: 0.50, to: 0.60}}
+	p := []float32{0, 0.001, 0.02, 0.10, 0.30, 0.50, 0.80}
+
+	applyLUT(p, pts)
+
+	assert.Equal(t, float32(0), p[0], "no light must map to no light")
+	for i, v := range p {
+		assert.GreaterOrEqual(t, v, float32(0), "index %d went negative", i)
+	}
+	for i := 1; i < len(p); i++ {
+		assert.GreaterOrEqual(t, p[i], p[i-1], "the mapping must stay monotone across the join at %d", i)
+	}
+	assert.Greater(t, p[6], p[5], "above the fitted range the last segment's slope still carries highlights")
 }

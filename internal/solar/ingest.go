@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -36,6 +37,22 @@ const (
 	// defaultCropMargin is how far past the limb the crop reaches, as a fraction of the radius —
 	// enough to keep prominences, which is much of the point of an Hα scope.
 	defaultCropMargin = 0.18
+	// defaultTransparencyFloor is the transmission, as a fraction of the clip's clearest, below which
+	// a frame is treated as clouded and dropped before sharpness is even considered.
+	//
+	// Measured on a real session with light cloud drifting through: clear frames held within half a
+	// percent of each other, while the cloud took transmission to 90%. There is nothing between those
+	// two populations, so the threshold only has to land in the gap — 95% does, and leaves ordinary
+	// haze and the seeing-driven wobble of the level alone.
+	defaultTransparencyFloor = 0.95
+	// transparencyReferencePct is the percentile taken as "how clear this clip ever got". Not the
+	// maximum, which is one frame and therefore noise; not the median, which sinks with the cloud and
+	// would judge a mostly-clouded clip against itself.
+	transparencyReferencePct = 90.0
+	// transparencyMaxDrop is the largest fraction of a clip the gate may remove. A session shot
+	// through broken cloud is still a session: past this the run keeps the clearest frames it has and
+	// says what it did, rather than returning nothing.
+	transparencyMaxDrop = 0.6
 )
 
 // IngestOptions tunes frame materialisation.
@@ -50,6 +67,11 @@ type IngestOptions struct {
 	TargetRadius float64
 	// Band forces the colour channel the signal is read from; empty or BandAuto detects it.
 	Band Band
+	// TransparencyFloor drops frames whose transmission fell below this fraction of the clip's
+	// clearest. 0 disables the gate, the same way DeconvSigma does; the preset always sets it
+	// explicitly, so only a zero-value IngestOptions — a test reaching for the ingest alone — sees
+	// the gate off.
+	TransparencyFloor float64
 }
 
 func (o IngestOptions) band() Band {
@@ -100,7 +122,11 @@ func IngestVideo(ctx context.Context, path string, info VideoInfo, opts IngestOp
 		return nil, nil, err
 	}
 	var warnings []string
-	keep := selectFrames(scan.frames, opts.keepPct(), opts.maxFrames())
+	unclouded, cloudNote := gateTransparency(scan.frames, opts.TransparencyFloor)
+	if cloudNote != "" {
+		warnings = append(warnings, filepath.Base(path)+": "+cloudNote)
+	}
+	keep := selectFrames(unclouded, opts.keepPct(), opts.maxFrames())
 	if len(keep) == 0 {
 		return nil, nil, fmt.Errorf("ingest %s: no frame had a measurable limb", filepath.Base(path))
 	}
@@ -113,6 +139,91 @@ func IngestVideo(ctx context.Context, path string, info VideoInfo, opts IngestOp
 		return nil, warnings, err
 	}
 	return frames, warnings, nil
+}
+
+// gateTransparency drops the frames a cloud was in front of, and says what it removed.
+//
+// It runs BEFORE the sharpness ranking rather than being folded into it, and that ordering is the
+// whole idea. Sharpness here is contrast — band-pass energy over the frame's own median — so it sees
+// a cloud's veiling glow but is blind to its extinction, and it puts what it does see on the same
+// axis as seeing. Those two are not comparable. A frame blurred by seeing is a fair sample of the
+// Sun that registration and averaging improve; a frame behind cloud is a fair sample of the Sun plus
+// a glow, and no amount of averaging removes an additive veil. Worse, photometric normalisation
+// downstream then maps that frame's disc back onto the group median — scaling the veil up with the
+// signal, so a clouded frame arrives at the stack looking correctly exposed and quietly pulls the
+// contrast of every pixel it touches.
+//
+// The reference is per CLIP. Each clip is asked to contribute its own best frames, and the levels
+// between clips are the business of normalisation and, when they differ by enough to matter, of the
+// exposure tiering.
+func gateTransparency(frames []frameScan, floor float64) ([]frameScan, string) {
+	if floor <= 0 {
+		return frames, ""
+	}
+	levels := make([]float64, 0, len(frames))
+	for _, f := range frames {
+		if f.ok && f.level > 0 {
+			levels = append(levels, f.level)
+		}
+	}
+	if len(levels) < 8 { // too few to know what "clear" looked like
+		return frames, ""
+	}
+	ref := percentileOf(levels, transparencyReferencePct)
+	if ref <= 0 {
+		return frames, ""
+	}
+	cut := floor * ref
+	kept := make([]frameScan, 0, len(frames))
+	worst := math.Inf(1)
+	for _, f := range frames {
+		if f.ok && f.level > 0 && f.level < cut {
+			worst = math.Min(worst, f.level/ref)
+			continue
+		}
+		kept = append(kept, f)
+	}
+	dropped := len(frames) - len(kept)
+	if dropped == 0 {
+		return frames, ""
+	}
+	if float64(dropped) > transparencyMaxDrop*float64(len(frames)) {
+		// Broken cloud all session: keep the clearest frames up to the cap rather than the handful
+		// that happened to clear the bar, and be explicit that the whole run is compromised.
+		kept = clearestFrames(frames, int(float64(len(frames))*(1-transparencyMaxDrop)))
+		return kept, fmt.Sprintf(
+			"cloud through most of the clip — transmission fell to %.0f%% of its clearest; kept the %d clearest of %d frames",
+			100*worst, len(kept), len(frames))
+	}
+	return kept, fmt.Sprintf(
+		"cloud dropped %d of %d frames below %.0f%% transmission (worst %.0f%%)",
+		dropped, len(frames), 100*floor, 100*worst)
+}
+
+// clearestFrames keeps the n most transparent frames, back in capture order.
+func clearestFrames(frames []frameScan, n int) []frameScan {
+	if n < 1 {
+		n = 1
+	}
+	byLevel := append([]frameScan(nil), frames...)
+	sort.SliceStable(byLevel, func(i, j int) bool { return byLevel[i].level > byLevel[j].level })
+	if n > len(byLevel) {
+		n = len(byLevel)
+	}
+	out := byLevel[:n]
+	sort.SliceStable(out, func(i, j int) bool { return out[i].index < out[j].index })
+	return out
+}
+
+// percentileOf is a percentile over a float64 slice, which imgops only offers for float32 planes.
+func percentileOf(v []float64, p float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	s := append([]float64(nil), v...)
+	sort.Float64s(s)
+	i := clampInt(int(p/100*float64(len(s)-1)+0.5), 0, len(s)-1)
+	return s[i]
 }
 
 // selectFrames keeps the sharpest frames, bounded by both the percentage and the hard cap, and

@@ -531,3 +531,149 @@ func TestHalo_PreservesProminences(t *testing.T) {
 		assert.Greater(t, peak, 0.015, "prominences must survive the background subtraction")
 	})
 }
+
+// TestFinish_TheLimbOnlyEverFalls is the acceptance test for the false bright ring.
+//
+// The Sun has no ring around it. Across the limb the brightness falls — disc, transition, sky — and
+// it never comes back up. That is true of the raw video frames and it must be true of what we
+// render from them, so any rise on the way out is something the finish invented.
+//
+// It has been invented four different ways in this package, all of them landing at the same radius
+// and therefore indistinguishable by eye: the prominence curve rendering disc pixels it was never
+// meant to reach, the limb-darkening gain read at the wrong radius, an unsharp overshoot on the limb
+// step, and the halo model's end bins. Measuring the finished profile rather than any one stage is
+// what makes them all fail the same test instead of hiding behind each other.
+//
+// The fixture is deliberately clean — a limb-darkened disc, real features, prominences, a modest PSF
+// and a little noise — so a ring here cannot be blamed on the data.
+func TestFinish_TheLimbOnlyEverFalls(t *testing.T) {
+	s := defaultSun()
+	s.w, s.h, s.cx, s.cy, s.r = 1800, 1800, 903.4, 897.7, 780
+	s.proms, s.features = 4, 24
+	s.ringAmp, s.gradAmp = 0, 0
+	im := drawSun(s)
+	l, ok := FitLimb(im)
+	require.True(t, ok)
+
+	for _, c := range []struct {
+		name string
+		mut  func(*FinishOptions)
+	}{
+		{"the shipping recipe", func(*FinishOptions) {}},
+		{"without deconvolution", func(o *FinishOptions) { o.DeconvSigma, o.DeconvIters = 0, 0 }},
+		{"without the prominence composite", func(o *FinishOptions) { o.ProminenceBoost = 0 }},
+		{"without the limb-darkening flatten", func(o *FinishOptions) { o.LimbFlatten = 0 }},
+		{"without the starlet pass", func(o *FinishOptions) { o.Sharpen.Gains = nil }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			o := DefaultFinish()
+			o.DeconvAuto = false
+			c.mut(&o)
+			prof := renderedRadial(Finish(im, l, o), l)
+			amp, at := ringAmplitude(prof)
+			t.Logf("largest rise across the limb: %+.4f at %.3fR", amp, at)
+			// The floor is the median's own noise over a bin, which at this radius holds thousands of
+			// pixels — a real ring is an order of magnitude above it.
+			assert.Less(t, amp, 0.01, "the rendered limb brightens by %.4f at %.3fR: that ring is not in the data", amp, at)
+		})
+	}
+}
+
+// TestRadialProfile_GainIsReadAtTheRadiusItWasMeasuredAt pins the profile's round trip.
+//
+// MeasureRadialProfile bins radius by radialBins/(ldFitLimit·R); every lookup has to invert exactly
+// that, and for a long time one of them multiplied by ldFitLimit where it should have divided. The
+// error is only three percent of the radius, so the disc still flattened and nothing looked broken —
+// the correction was simply applied to the wrong annulus, worst where the profile is steepest, which
+// is the last few percent before the limb.
+//
+// The fixture makes the mistake impossible to miss: a narrow dark annulus at a known radius. The
+// correction that undoes it must peak THERE, not three percent inside.
+func TestRadialProfile_GainIsReadAtTheRadiusItWasMeasuredAt(t *testing.T) {
+	const at = 0.90
+	s := defaultSun()
+	s.w, s.h, s.cx, s.cy, s.r = 1200, 1200, 601.5, 598.5, 500
+	s.u1, s.u2, s.noise, s.psfSigma, s.ringAmp, s.gradAmp = 0, 0, 0, 0, 0, 0
+	im := drawSun(s)
+	// A dark ring one percent of the radius wide, riding on an otherwise uniform disc.
+	for y := 0; y < s.h; y++ {
+		dy := float64(y) - s.cy
+		for x := 0; x < s.w; x++ {
+			dx := float64(x) - s.cx
+			f := math.Hypot(dx, dy) / s.r
+			im.Pix[0][y*s.w+x] *= float32(1 - 0.35*math.Exp(-(f-at)*(f-at)/(2*0.005*0.005)))
+		}
+	}
+	l, ok := FitLimb(im)
+	require.True(t, ok)
+	prof := MeasureRadialProfile(im.Pix[0], im.W, im.H, l)
+	require.Greater(t, prof.Peak, 0.0)
+
+	best, bestAt := 0.0, 0.0
+	for f := 0.5; f < ldFreezeStart; f += 0.001 {
+		if g := prof.rawGain(f); g > best {
+			best, bestAt = g, f
+		}
+	}
+	t.Logf("the correction peaks at %.3fR (x%.2f); the ring was drawn at %.3fR", bestAt, best, at)
+	assert.InDelta(t, at, bestAt, 0.005,
+		"the gain that undoes a feature must be applied where the feature is, not %.1f%% away",
+		100*math.Abs(bestAt-at)/at)
+}
+
+// TestFinish_TheGlowIsBoundedByTheLimbItRisesFrom is the other half of the ring contract.
+//
+// TestFinish_TheLimbOnlyEverFalls says the finish must not invent brightness at the limb; this says
+// the deliberate halo does not become a way of inventing it anyway. The halo's own construction is
+// what makes that true rather than a matter of tuning — it is anchored to what the limb itself
+// renders at and composited by taking the brighter of the two — so this pins the two properties that
+// argument rests on: the halo never out-shines the disc, and it only ever decays outward.
+func TestFinish_TheGlowIsBoundedByTheLimbItRisesFrom(t *testing.T) {
+	s := defaultSun()
+	s.w, s.h, s.cx, s.cy, s.r = 1600, 1600, 803.4, 797.7, 700
+	s.proms, s.features = 0, 24 // no prominences: the halo must stand on its own here
+	s.ringAmp, s.gradAmp = 0, 0
+	im := drawSun(s)
+	l, ok := FitLimb(im)
+	require.True(t, ok)
+
+	o := DefaultFinish()
+	o.DeconvAuto = false
+	require.Positive(t, o.GlowStrength, "the fixture is meaningless with the glow off by default")
+
+	off := o
+	off.GlowStrength = 0
+	dark := renderedRadial(Finish(im, l, off), l)
+	lit := renderedRadial(Finish(im, l, o), l)
+
+	var brightest, atFrac float64
+	inner := dark[0] // 0.90 R, well inside the limb
+	for i := range lit {
+		f := radiusOfBin(i)
+		if f < 1.0 || math.IsNaN(lit[i]) {
+			continue
+		}
+		if lit[i] > brightest {
+			brightest, atFrac = lit[i], f
+		}
+	}
+	t.Logf("disc renders at %.4f; the halo peaks at %.4f (%.0f%% of it) at %.3fR",
+		inner, brightest, 100*brightest/inner, atFrac)
+	sky := dark[len(dark)-1]
+	t.Logf("sky without the halo renders at %.4f", sky)
+	assert.Greater(t, brightest, 1.3*sky,
+		"the halo must actually be there — it should stand clearly above the sky the same render has without it")
+	assert.Less(t, brightest, inner, "the halo must never out-shine the disc it surrounds")
+
+	// And outside the limb it only ever decays: a halo with a bump in it reads as a ring, which is the
+	// whole defect this was added alongside a fix for.
+	prev := math.Inf(1)
+	for i := range lit {
+		if radiusOfBin(i) < 1.005 || math.IsNaN(lit[i]) {
+			continue
+		}
+		require.LessOrEqual(t, lit[i], prev+1e-4,
+			"the halo brightens again at %.3fR", radiusOfBin(i))
+		prev = lit[i]
+	}
+}

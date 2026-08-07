@@ -46,11 +46,23 @@ type StackOptions struct {
 	// Measuring cheaply is only free while the residual being measured is larger than the reduced
 	// grid can resolve — below that the reduction is itself a source of misalignment.
 	APScale int
+	// ScalePerFrame uses each frame's own fitted disc radius as its scale, instead of the robust
+	// constant per source. Diagnostic only: the plate scale cannot change during a clip, so the
+	// per-frame spread is measurement error and applying it smears the outer disc (regmodel.go).
+	ScalePerFrame bool
+	// RotationPerFrame uses each frame's own correlated rotation instead of the robust model fitted
+	// across the clip. It exists to measure what the model is worth, and to fall back if a session
+	// ever appears whose rotation genuinely is not smooth in time; see rotmodel.go for why the
+	// per-frame estimates cannot be trusted individually.
+	RotationPerFrame bool
 	// NoDerotate skips the per-frame rotation estimate. A circle fit is rotation-blind, so rotation
 	// has to be measured from disc structure — and when there is little structure to measure, the
 	// estimate is noise that gets applied as if it were signal. At a 900 px radius a tenth of a
 	// degree of error is 1.5 px of smear at the limb, so a bad estimate is far worse than none.
 	NoDerotate bool
+	// NoRefine keeps the fitted disc centre as the final answer for translation instead of refining it
+	// by correlation (refine.go). Diagnostic: it is how the refinement's worth is measured.
+	NoRefine bool
 }
 
 // apGrid resolves the grid density for a canonical raster.
@@ -109,6 +121,12 @@ func Stack(ctx context.Context, frames []Frame, opts StackOptions) (*StackResult
 	if len(usable) == 0 {
 		return nil, fmt.Errorf("stack: no frame carries a fitted limb")
 	}
+	res := &StackResult{}
+	if !opts.ScalePerFrame {
+		var notes []string
+		usable, notes = StabiliseScale(usable)
+		res.Notes = append(res.Notes, notes...)
+	}
 	// The canonical geometry is the MEDIAN of the group, not the sharpest frame's. Anchoring on one
 	// frame would bake that frame's own scale error into every other, and the median is the estimate
 	// least disturbed by a bad fit.
@@ -122,30 +140,34 @@ func Stack(ctx context.Context, frames []Frame, opts StackOptions) (*StackResult
 	canonical.CX, canonical.CY = half, half
 	canonical.R *= opts.drizzle()
 
-	res := &StackResult{Limb: canonical}
+	res.Limb = canonical
 	weights := frameWeights(usable)
-	ref, _, err := loadWarped(usable[refIndex(usable)], canonical, side, opts, nil, Limb{}, nil, nil, nil, Limb{})
+	ref, _, err := loadWarped(usable[refIndex(usable)], canonical, side, opts, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	// A reduced reference for field measurement only. Measuring at full resolution costs an order of
-	// magnitude more time; how much reduction is affordable is a real trade-off, because the residual
-	// this is trying to measure is itself sub-pixel at full scale.
-	var refSmall *fits.Image
-	var smallLimb Limb
+	refs := &stackRefs{full: ref, limb: canonical}
+	if !opts.NoRefine {
+		refs.refiner = newRegRefiner(ref)
+	}
 	if opts.APAlign {
-		refSmall, smallLimb = reduceCanonical(ref, canonical, opts.apScale())
+		// A reduced reference for field measurement only. Measuring at full resolution costs an order
+		// of magnitude more time; how much reduction is affordable is a real trade-off, because the
+		// residual this is trying to measure is itself sub-pixel at full scale.
+		refs.small, refs.smallLimb = reduceCanonical(ref, canonical, opts.apScale())
 	}
 
 	// Both passes re-warp from disk rather than keeping the registered frames in memory. Holding
 	// them would be the simpler code and is not an option at this size: three hundred frames on a
-	// 2800-pixel canvas is nine gigabytes of float32. The rotation estimates are cached across the
-	// passes instead, since measuring them is the expensive part of a warp.
-	rot := make([]float64, len(usable))
-	for i := range rot {
-		rot[i] = math.NaN()
+	// 2800-pixel canvas is nine gigabytes of float32. Everything registration measures is solved once
+	// and cached across the passes instead.
+	regs := make([]frameReg, len(usable))
+	for i := range regs {
+		regs[i].rot = math.NaN()
 	}
-	fields := make([]*apField, len(usable))
+	if !opts.NoDerotate && !opts.RotationPerFrame {
+		res.Notes = append(res.Notes, solveRotations(ctx, usable, ref, canonical, regs)...)
+	}
 	sum := make([]float64, side*side)
 	sumSq := make([]float64, side*side)
 	wsum := make([]float64, side*side)
@@ -154,7 +176,7 @@ func Stack(ctx context.Context, frames []Frame, opts StackOptions) (*StackResult
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		im, cov, err := loadWarped(f, canonical, side, opts, ref, canonical, &rot[i], &fields[i], refSmall, smallLimb)
+		im, cov, err := loadWarped(f, canonical, side, opts, refs, &regs[i])
 		if err != nil {
 			res.Notes = append(res.Notes, fmt.Sprintf("%s: %v", f.Path, err))
 			continue
@@ -206,7 +228,7 @@ func Stack(ctx context.Context, frames []Frame, opts StackOptions) (*StackResult
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		im, cov, err := loadWarped(f, canonical, side, opts, ref, canonical, &rot[i], &fields[i], refSmall, smallLimb)
+		im, cov, err := loadWarped(f, canonical, side, opts, refs, &regs[i])
 		if err != nil {
 			continue
 		}
@@ -242,6 +264,36 @@ func Stack(ctx context.Context, frames []Frame, opts StackOptions) (*StackResult
 	return res, nil
 }
 
+// solveRotations fills rot with the rotation each frame needs, modelled rather than measured.
+//
+// It is a pass of its own, ahead of the two stacking passes, and that costs one extra read of every
+// frame. The alternative — estimating each frame's rotation inside the first stacking pass, where the
+// frame is already in memory, which is what this used to do — cannot work, because a robust model
+// needs to see the whole clip's estimates before it can tell which of them are wrong. Reading twice
+// to register correctly beats reading once to register a couple of degrees out: on a real two-clip
+// session that error reached 39 px at the limb. Only the profiles are kept, 720 numbers a frame, so
+// the pass costs I/O and nothing else.
+func solveRotations(ctx context.Context, frames []Frame, ref *fits.Image, canonical Limb, regs []frameReg) []string {
+	refProf := annulusProfile(ref, canonical)
+	raw := make([]float64, len(frames))
+	ok := make([]bool, len(frames))
+	for i, f := range frames {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+		im, err := fits.ReadImage(f.Path)
+		if err != nil {
+			continue
+		}
+		raw[i], ok[i] = CorrelateRotation(refProf, annulusProfile(firstPlane(im), f.Limb))
+	}
+	modelled, notes := ModelRotations(frames, raw, ok)
+	for i := range regs {
+		regs[i].rot = modelled[i]
+	}
+	return notes
+}
+
 // refIndex picks the sharpest frame as the rotation reference.
 func refIndex(frames []Frame) int {
 	best := 0
@@ -272,8 +324,27 @@ func frameWeights(frames []Frame) []float64 {
 	return w
 }
 
-// loadWarped reads a frame and maps it onto the canonical raster. rotCache, when supplied, carries
-// the frame's rotation between the two stacking passes so it is measured once rather than twice.
+// stackRefs is the reference material every frame is registered against, prepared once from the
+// reference frame and shared by both stacking passes.
+type stackRefs struct {
+	full      *fits.Image // the reference frame, already on the canonical raster
+	limb      Limb        // the canonical geometry
+	refiner   *regRefiner // reduced copies for the sub-pixel translation refinement; nil disables it
+	small     *fits.Image // reduced copy for the distortion-field measurement; nil disables it
+	smallLimb Limb
+}
+
+// frameReg is everything registration measures for one frame. It is measured on the first stacking
+// pass and reused on the second — which halves the cost, and, more importantly, guarantees the two
+// passes register the frame identically. A correlation re-run against the same inputs will agree, but
+// nothing in the design would have required it to.
+type frameReg struct {
+	rot     float64 // rotation in degrees; NaN until solved
+	dx, dy  float64 // residual translation after the limb fit, in canonical pixels
+	refined bool
+	field   *apField
+}
+
 // reduceCanonical shrinks a canonical raster and its geometry by the given factor, for cheap field
 // measurement.
 func reduceCanonical(im *fits.Image, l Limb, factor int) (*fits.Image, Limb) {
@@ -287,9 +358,10 @@ func reduceCanonical(im *fits.Image, l Limb, factor int) (*fits.Image, Limb) {
 	return small, Limb{CX: l.CX / f, CY: l.CY / f, R: l.R / f}
 }
 
-func loadWarped(f Frame, canonical Limb, side int, opts StackOptions, ref *fits.Image, refLimb Limb,
-	rotCache *float64, fieldCache **apField, refSmall *fits.Image, smallLimb Limb) (*fits.Image, []bool, error) {
-
+// loadWarped reads a frame and maps it onto the canonical raster in ONE resample, however many terms
+// the transform ends up carrying. reg, when supplied, caches everything measured here so the second
+// stacking pass re-warps rather than re-registers.
+func loadWarped(f Frame, canonical Limb, side int, opts StackOptions, refs *stackRefs, reg *frameReg) (*fits.Image, []bool, error) {
 	im, err := fits.ReadImage(f.Path)
 	if err != nil {
 		return nil, nil, err
@@ -298,35 +370,52 @@ func loadWarped(f Frame, canonical Limb, side int, opts StackOptions, ref *fits.
 	t := SolveTransform(f.Limb, Limb{R: canonical.R / opts.drizzle()})
 	switch {
 	case opts.NoDerotate:
-	case rotCache != nil && !math.IsNaN(*rotCache):
-		t.RotDeg = *rotCache
-	case ref != nil:
+	case reg != nil && !math.IsNaN(reg.rot):
+		t.RotDeg = reg.rot
+	case refs != nil && refs.full != nil:
 		deg := 0.0
-		if d, ok := EstimateRotation(ref, mono, refLimb, f.Limb); ok {
+		if d, ok := EstimateRotation(refs.full, mono, refs.limb, f.Limb); ok {
 			deg = d
 		}
 		t.RotDeg = deg
-		if rotCache != nil {
-			*rotCache = deg
+		if reg != nil {
+			reg.rot = deg
 		}
 	}
-	if !opts.APAlign || ref == nil || refSmall == nil {
+	// The fitted centre is where the limb fit THINKS the disc is; correlation says where it is. The
+	// difference is folded back into the transform rather than corrected afterwards, so the frame is
+	// still resampled exactly once — see refine.go.
+	if refs != nil && refs.refiner != nil {
+		if reg == nil || !reg.refined {
+			dx, dy := refs.refiner.measure(Warp(mono, t, side, opts.drizzle()), canonical)
+			if reg != nil {
+				reg.dx, reg.dy, reg.refined = dx, dy, true
+			} else {
+				t = t.shiftCanonical(dx, dy, opts.drizzle())
+			}
+		}
+		if reg != nil {
+			t = t.shiftCanonical(reg.dx, reg.dy, opts.drizzle())
+		}
+	}
+	if !opts.APAlign || refs == nil || refs.small == nil {
 		im2, cov := warpCovered(mono, t, side, opts.drizzle(), nil)
 		return im2, cov, nil
 	}
 	// The field is measured once, on the rigidly-warped frame, and reused for the second stacking
 	// pass. The measurement warp is discarded — only the final warp, which composes the similarity
 	// and the field, ever touches the output.
-	if fieldCache != nil && *fieldCache != nil {
-		im2, cov := warpCovered(mono, t, side, opts.drizzle(), *fieldCache)
+	if reg != nil && reg.field != nil {
+		im2, cov := warpCovered(mono, t, side, opts.drizzle(), reg.field)
 		return im2, cov, nil
 	}
 	// The measurement warp goes straight to the reduced raster, so the expensive full-resolution
-	// resample happens exactly once per frame — for the output.
-	rigidSmall := Warp(mono, t, refSmall.W, opts.drizzle()*float64(refSmall.W)/float64(side))
-	fld := measureAPFieldScaled(refSmall, rigidSmall, smallLimb, opts.apGrid(side), side, 1)
-	if fieldCache != nil {
-		*fieldCache = &fld
+	// resample happens exactly once per frame — for the output. It uses the REFINED transform, or the
+	// field would re-measure the global residual that has just been removed and apply it twice.
+	rigidSmall := Warp(mono, t, refs.small.W, opts.drizzle()*float64(refs.small.W)/float64(side))
+	fld := measureAPFieldScaled(refs.small, rigidSmall, refs.smallLimb, opts.apGrid(side), side, 1)
+	if reg != nil {
+		reg.field = &fld
 	}
 	im2, cov := warpCovered(mono, t, side, opts.drizzle(), &fld)
 	return im2, cov, nil

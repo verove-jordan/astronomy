@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -71,7 +72,10 @@ func TestStackLoss_Synthetic(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	t.Logf("noise-free truth: detail %.5f", dTruth)
+	truthPSF := MeasurePSF(truth, tl)
+	require.True(t, truthPSF.OK)
+	t.Logf("noise-free truth: detail %.5f, PSF sigma %.2f px (drawn at %.2f)",
+		dTruth, truthPSF.SigmaPx, spec.psfSigma)
 	for _, c := range []struct {
 		tag    string
 		jitter float64
@@ -84,7 +88,20 @@ func TestStackLoss_Synthetic(t *testing.T) {
 		res, err := Stack(ctx, frames, StackOptions{})
 		require.NoError(t, err)
 		d := FrameSharpness(res.Master, res.Limb)
-		t.Logf("jitter %.1f px: mean single %.5f (%3.0f%% of truth) | stack %.5f (%3.0f%% of truth, %3.0f%% of single)",
-			c.jitter, meanIn, 100*meanIn/dTruth, d, 100*d/dTruth, 100*d/meanIn)
+		// The PSF alongside the band-pass, because the two disagree about stacking in a way that is
+		// entirely explained by noise: FrameSharpness subtracts a floor measured on the sky, which
+		// under-corrects a single grainy frame far more than a stack, so an honest stack scores like a
+		// loss whether or not it is one. The limb settles it — noise does not make an edge narrower.
+		psf := MeasurePSF(res.Master, res.Limb)
+		require.True(t, psf.OK)
+		t.Logf("jitter %.1f px: mean single %.5f (%3.0f%% of truth) | stack %.5f (%3.0f%% of truth, %3.0f%% of single) | stack PSF %.2f px",
+			c.jitter, meanIn, 100*meanIn/dTruth, d, 100*d/dTruth, 100*d/meanIn, psf.SigmaPx)
+		// Perfect registration must cost essentially nothing, and this is the control that says so:
+		// if the warp and the combiner were themselves softening, every conclusion drawn from the
+		// jittered cases would be measuring the wrong thing.
+		if c.jitter == 0 {
+			assert.Less(t, psf.SigmaPx, truthPSF.SigmaPx+0.15,
+				"with registration exact, stacking must not blur — this bounds what the warp and the combiner cost")
+		}
 	}
 }

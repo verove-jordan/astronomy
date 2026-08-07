@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/verove-jordan/astronomy/internal/fits"
+	"github.com/verove-jordan/astronomy/internal/imgops"
 )
 
 // scan.go is pass one of video ingest: stream the whole clip once at reduced resolution, score
@@ -39,6 +40,10 @@ const (
 type frameScan struct {
 	index int
 	score float64
+	// level is the frame's on-disc median: how much light actually reached the sensor. It is what
+	// makes a passing cloud visible as a number rather than as a vague loss of quality, and it costs
+	// nothing to take — the frame is already decoded and its limb already fitted.
+	level float64
 	limb  Limb
 	ok    bool
 }
@@ -116,6 +121,7 @@ func scanFrames(r io.Reader, w, h int, info VideoInfo) (scanResult, error) {
 		if haveLast {
 			fs.limb, fs.ok = last, true
 			fs.score = FrameSharpness(im, last)
+			fs.level = discLevel(im, last)
 		}
 		out.frames = append(out.frames, fs)
 	}
@@ -131,6 +137,40 @@ func decodeGray16BE(src []byte, dst []float32) {
 	for i := range dst {
 		dst[i] = float32(uint16(src[2*i])<<8|uint16(src[2*i+1])) / 65535
 	}
+}
+
+// discLevel is a frame's on-disc median brightness — its transparency.
+//
+// The MEDIAN over the disc interior, on a stride, and nothing more elaborate. It has to be robust to
+// what is ON the Sun (plage runs 50–100% bright, filaments 40% dark, and both come and go across a
+// clip) while responding to what is IN FRONT of it, and a median over tens of thousands of pixels
+// does exactly that at a cost that can be paid on every frame of a 3000-frame clip. The interior
+// bound keeps limb darkening out of it, so the figure does not move when the disc drifts on the
+// sensor.
+func discLevel(im *fits.Image, l Limb) float64 {
+	if l.R <= 0 {
+		return 0
+	}
+	p := im.Pix[0]
+	r2 := (medianRadius * l.R) * (medianRadius * l.R)
+	vals := make([]float32, 0, 40000)
+	step := 1 + int(l.R)/100 // ~30k samples whatever the disc's size
+	for y := 0; y < im.H; y += step {
+		dy := float64(y) - l.CY
+		if dy*dy > r2 {
+			continue
+		}
+		for x := 0; x < im.W; x += step {
+			dx := float64(x) - l.CX
+			if dx*dx+dy*dy <= r2 {
+				vals = append(vals, p[y*im.W+x])
+			}
+		}
+	}
+	if len(vals) == 0 {
+		return 0
+	}
+	return imgops.Percentile(vals, 50)
 }
 
 // medianLimb is the clip's representative geometry: robust to the odd frame where a cloud or a

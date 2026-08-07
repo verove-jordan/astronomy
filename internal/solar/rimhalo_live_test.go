@@ -90,22 +90,6 @@ func TestRimHalo_Live(t *testing.T) {
 	}
 }
 
-// annulusSamples collects pixels in a radial band.
-func annulusSamples(p []float32, w, h int, l Limb, lo, hi float64) []float32 {
-	var out []float32
-	lo2, hi2 := (lo*l.R)*(lo*l.R), (hi*l.R)*(hi*l.R)
-	for y := 0; y < h; y++ {
-		dy := float64(y) - l.CY
-		for x := 0; x < w; x++ {
-			dx := float64(x) - l.CX
-			if d2 := dx*dx + dy*dy; d2 >= lo2 && d2 <= hi2 {
-				out = append(out, p[y*w+x])
-			}
-		}
-	}
-	return out
-}
-
 // sectorSamples collects pixels in a radial band restricted to an angular wedge.
 func sectorSamples(p []float32, w, h int, l Limb, lo, hi, a0, a1 float64) []float32 {
 	var out []float32

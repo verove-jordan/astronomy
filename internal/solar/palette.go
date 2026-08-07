@@ -59,13 +59,17 @@ var paletteRamps = map[string][]colourStop{
 func applyPalette(p []float32, w, h int, o FinishOptions) *fits.Image {
 	name := strings.ToLower(strings.TrimSpace(o.Palette))
 	out := fits.NewImage(w, h, 3)
+	lvl := clampF(o.BackgroundLevel, 0, 1)
 	switch name {
 	case PaletteMono, "":
 		for c := 0; c < 3; c++ {
-			copy(out.Pix[c], p)
+			for i, v := range p {
+				out.Pix[c][i] = float32(lvl) + v*float32(1-lvl)
+			}
 		}
 		return out
 	case PaletteInverted:
+		// Inverted already renders the sky white; a pedestal underneath it means nothing.
 		for i, v := range p {
 			g := 1 - v
 			out.Pix[0][i], out.Pix[1][i], out.Pix[2][i] = g, g, g
@@ -76,6 +80,7 @@ func applyPalette(p []float32, w, h int, o FinishOptions) *fits.Image {
 	if !ok {
 		ramp = paletteRamps[PaletteGold]
 	}
+	ramp = withBackground(ramp, lvl, o.BackgroundTint)
 	sat := o.Saturation
 	if sat <= 0 {
 		sat = 1
@@ -92,6 +97,37 @@ func applyPalette(p []float32, w, h int, o FinishOptions) *fits.Image {
 		out.Pix[1][i] = float32(clampF(g, 0, 1))
 		out.Pix[2][i] = float32(clampF(b, 0, 1))
 	}
+	return out
+}
+
+// withBackground returns the ramp with its darkest stop lifted off black, so the sky renders as a
+// warm pedestal rather than as nothing.
+//
+// The hue is taken from the PALETTE'S OWN deep end rather than being a colour of its own. That is
+// what makes one knob enough: gold gives amber, white light gives a warm grey, and a palette added
+// later gets a background that belongs to it without anyone having to choose a second colour. tint
+// interpolates back towards neutral for anyone who wants the pedestal without the cast.
+func withBackground(ramp []colourStop, level, tint float64) []colourStop {
+	if level <= 0 || len(ramp) == 0 {
+		return ramp
+	}
+	var deep colourStop
+	for _, s := range ramp {
+		if s.r+s.g+s.b > 0 {
+			deep = s
+			break
+		}
+	}
+	r, g, b := level, level, level
+	if lum := 0.299*deep.r + 0.587*deep.g + 0.114*deep.b; lum > 0 {
+		k := level / lum
+		t := clampF(tint, 0, 1)
+		r = level + (deep.r*k-level)*t
+		g = level + (deep.g*k-level)*t
+		b = level + (deep.b*k-level)*t
+	}
+	out := append([]colourStop(nil), ramp...)
+	out[0] = colourStop{out[0].t, clampF(r, 0, 1), clampF(g, 0, 1), clampF(b, 0, 1)}
 	return out
 }
 

@@ -25,20 +25,49 @@ import (
 
 // FinishOptions is the full tunable surface of the finish — the tier-A knobs.
 type FinishOptions struct {
-	FlatStrength    float64 // 0..1, instrument-field removal
-	DeconvSigma     float64 // px; 0 disables
-	DeconvIters     int
+	FlatStrength float64 // 0..1, instrument-field removal
+	DeconvSigma  float64 // px; 0 disables
+	DeconvIters  int
+	// DeconvAuto measures the point spread function off the limb and deconvolves at THAT width,
+	// rather than at DeconvSigma. It is on by default because the width is the one setting here with
+	// a true value rather than a tasteful one, and because the alternative — one constant across
+	// captures whose disc ranges from 500 to 2000 px — is wrong for most of them. Setting the width
+	// explicitly turns it off. See autotune.go.
+	DeconvAuto      bool
 	Sharpen         SharpenOptions
 	LimbFlatten     float64 // 0..1, limb-darkening removal
 	ProminenceBoost float64 // extra stretch applied off-limb, 1 = same as the disc
-	// ProminenceFeather is the blend width across the limb, as a fraction of the radius. It has to
-	// span the PHYSICAL limb transition — the PSF plus the chromosphere itself, on the order of ten
-	// pixels — or the sub-limb pixels get rendered with the disc curve and clip.
+	// ProminenceFeather is the width of the transition band around the limb, as a fraction of the
+	// radius. It is what the starlet pass's disc mask feathers over, so that sharpening fades out
+	// before it reaches the limb step rather than stopping at it.
+	//
+	// It used to set the prominence composite's blend width as well, and that was the false bright
+	// ring: at the default it reached eighteen pixels INSIDE the limb, and the off-limb curve renders
+	// a disc-level pixel as pure white. The composite now gates strictly at the limb — see
+	// blendProminences — and this knob no longer reaches it.
 	ProminenceFeather float64
 	Palette           string
 	Stretch           float64 // midtone lift
 	Contrast          float64
 	Saturation        float64
+	// BackgroundLevel is how bright the sky renders, 0..1, and BackgroundTint how much of the
+	// palette's own hue it carries — 0 neutral grey, 1 the palette's deep end at that brightness.
+	//
+	// The sky is not black in a solar image anyone admires, and it was being driven to exactly zero
+	// twice over: once by the disc tone curve's black anchor and again by the prominence composite.
+	// A small warm pedestal is what the reference images have, and it costs nothing — it is a floor,
+	// not a stretch, so it cannot change any contrast on the disc.
+	BackgroundLevel float64
+	BackgroundTint  float64
+	// GlowStrength is the halo's brightness where it meets the limb, as a fraction of what the limb
+	// itself renders at; GlowRadius is its e-folding scale as a fraction of the disc radius.
+	//
+	// This is deliberate rendering, not a restored artefact. The real scattered-light aureole is
+	// measured and subtracted on purpose (offLimbProfile) and must stay subtracted, because leaving
+	// it in makes every prominence render on a sloping background. Putting a controlled one back
+	// afterwards is a separate decision, and one the user can turn off.
+	GlowStrength float64
+	GlowRadius   float64
 }
 
 // DefaultFinish is the standard Hα full-disc recipe.
@@ -57,8 +86,12 @@ func DefaultFinish() FinishOptions {
 		// damping term is what makes a high iteration count safe rather than reckless — it scales the
 		// update by the local residual against the MEASURED noise, so the same setting self-limits on
 		// a noisy master instead of amplifying it.
+		// These two are the FALLBACK, used when the limb is too broken to measure. Every ordinary run
+		// replaces the width with the one it measured (autotune.go), which on real captures has come
+		// back anywhere between 0.8 and 1.6 px — a range no single constant covers.
 		DeconvSigma:       2.0,
 		DeconvIters:       50,
+		DeconvAuto:        true,
 		Sharpen:           DefaultSharpen(2.0),
 		LimbFlatten:       0.85,
 		ProminenceBoost:   1.0,
@@ -67,6 +100,14 @@ func DefaultFinish() FinishOptions {
 		Stretch:           0.5,
 		Contrast:          1.0,
 		Saturation:        1.0,
+		BackgroundLevel:   0.03,
+		BackgroundTint:    1.0,
+		// 1.0 is "as bright as the limb", which is the brightest a halo can be without the finished
+		// image rising across the limb. It is the natural default rather than a bold one: the ceiling
+		// is set by the disc tone curve, which puts its black point well above the sky and so leaves
+		// the limb itself rendering fairly dark.
+		GlowStrength: 1.0,
+		GlowRadius:   0.05,
 	}
 }
 
@@ -94,14 +135,112 @@ func Finish(master *fits.Image, l Limb, o FinishOptions) *fits.Image {
 	// brightness by two orders of magnitude: a prominence is a couple of percent of the disc, and no
 	// single tone curve shows both without either burning the surface or losing the prominences.
 	disc := toneMapDisc(p, w, h, l, o.Stretch, o.Contrast)
+	// The glow goes on BEFORE the prominences so that it is a floor they stand on rather than a veil
+	// laid over them: both composite by taking the brighter of the two, so a prominence brighter than
+	// the halo survives at full strength and one fainter than it simply disappears into it, which is
+	// what a halo does in reality.
+	addDiscGlow(disc, w, h, l, o)
 	if o.ProminenceBoost > 0 {
 		blendProminences(disc, p, w, h, l, o)
 	}
 	return applyPalette(disc, w, h, o)
 }
 
+// addDiscGlow lays a soft halo outside the limb, decaying outward.
+//
+// Its brightness at the limb is a FRACTION of what the limb itself renders at, and it is composited
+// by taking the brighter of the two rather than by adding. Both details exist for the same reason:
+// the finished image must never brighten on the way out across the limb, and a glow term added on
+// top of a falling edge does exactly that — it would put back, as a deliberate feature, the same
+// bright ring the prominence composite was just fixed to stop producing. Anchoring below the limb's
+// own rendering and taking a maximum makes the profile monotone by construction.
+func addDiscGlow(disc []float32, w, h int, l Limb, o FinishOptions) {
+	if o.GlowStrength <= 0 || o.GlowRadius <= 0 || l.R <= 0 {
+		return
+	}
+	// The ceiling is what the disc renders at ON the limb. Averaging over the last percent of the
+	// radius instead — which sounds equivalent and is not — reads mostly still-bright disc, and
+	// measured that way the ceiling came back three times too high and the glow put the bright ring
+	// straight back.
+	lo, hi := (l.R-glowAnchorPx)/l.R, (l.R+glowAnchorPx)/l.R
+	edge := float64(imgops.Percentile(imgops.Subsample(annulusSamples(disc, w, h, l, lo, hi), 100000), 50))
+	if edge <= 0 {
+		return
+	}
+	peak := clampF(o.GlowStrength, 0, 1) * edge
+	scale := math.Max(o.GlowRadius, 1e-4) * l.R
+	for y := 0; y < h; y++ {
+		dy := float64(y) - l.CY
+		for x := 0; x < w; x++ {
+			dx := float64(x) - l.CX
+			d := math.Hypot(dx, dy)
+			if d < l.R {
+				continue
+			}
+			i := y*w + x
+			if g := float32(peak * math.Exp(-(d-l.R)/scale)); g > disc[i] {
+				disc[i] = g
+			}
+		}
+	}
+}
+
+// annulusSamples collects the pixels between two radius fractions.
+func annulusSamples(p []float32, w, h int, l Limb, lo, hi float64) []float32 {
+	var vals []float32
+	lo2, hi2 := (lo*l.R)*(lo*l.R), (hi*l.R)*(hi*l.R)
+	for y := 0; y < h; y++ {
+		dy := float64(y) - l.CY
+		for x := 0; x < w; x++ {
+			dx := float64(x) - l.CX
+			if d2 := dx*dx + dy*dy; d2 >= lo2 && d2 <= hi2 {
+				vals = append(vals, p[y*w+x])
+			}
+		}
+	}
+	return vals
+}
+
+// promGateFrac is how far outside the limb, as a fraction of the radius, the off-limb rendering
+// fades in.
+//
+// It has to complete within the PHYSICAL limb transition — the PSF plus the chromosphere, on the
+// order of ten pixels at any plate scale we see — and not one pixel sooner. Everything about this
+// stage's history says so: the blend used to start eighteen pixels inside the limb and finish
+// eighteen outside, which put disc pixels through the off-limb curve, and that is where the bright
+// ring around every finished image came from.
+//
+// It is a constant rather than the ProminenceFeather knob because the two want opposite things. The
+// knob feathers the sharpening mask and wants to be generous; this wants to be as tight as the data
+// allows, because everything it spans is a prominence's brightest, most structured part — its base.
+const promGateFrac = 0.005
+
+// glowAnchorPx is the half-width, in pixels, of the band the synthetic glow reads its ceiling from —
+// a thin ring centred ON the limb.
+//
+// Centred there, and nowhere else, is what makes the glow safe by construction rather than by
+// tuning. The disc rendering never increases outward, so its value anywhere inside the limb is at
+// least its value AT the limb; a glow that starts at a fraction of that and decays outward can
+// therefore never make the finished profile rise. Reading the ceiling from a band INSIDE the limb
+// instead — the obvious first choice — reads a brighter number than the limb itself and puts a small
+// step back at the join; reading it from a band outside reads the tone curve's cliff and makes the
+// glow invisible. It is stated in pixels because the limb transition is a few pixels wide whatever
+// size the disc is.
+const glowAnchorPx = 1.0
+
 // blendProminences composites an off-limb rendering, stretched for the faint stuff, over the disc
-// rendering, feathered across the limb.
+// rendering.
+//
+// It composites by taking whichever of the two renderings is BRIGHTER, gated to the off-limb side,
+// rather than crossfading between them across the limb. The difference matters because the two
+// curves do not merely differ in the transition, they diverge violently in it: on a flattened disc
+// the off-limb curve reads a pixel as saturated white while the disc curve renders it at two thirds.
+// Any crossfade wide enough to look smooth therefore paints a bright band exactly where the physical
+// limb sits, and the narrower it is made the more it looks like a hard edge instead. Taking the
+// maximum has neither failure: on the disc the off-limb curve is never consulted at all, and off the
+// limb — where the background model has already removed the disc's own scattered-light skirt — it
+// reads near zero in empty sky, so the composite simply follows the disc curve down to black and
+// lifts only where a prominence really stands.
 func blendProminences(disc, linear []float32, w, h int, l Limb, o FinishOptions) {
 	if l.R <= 0 {
 		return
@@ -127,7 +266,16 @@ func blendProminences(disc, linear []float32, w, h int, l Limb, o FinishOptions)
 	if ref-sky <= 1e-9 {
 		return
 	}
-	feather := math.Max(o.ProminenceFeather, 0.002) * l.R
+	// The ceiling is what the DISC renders at, not 1. Nothing outside the limb is brighter than the
+	// Sun, so nothing outside the limb should render brighter than it either — and without this a
+	// prominence at forty percent of disc brightness comes out whiter than the disc, which is the
+	// glowing-rim look. Faint prominences, which is nearly all of them, are unaffected: the ceiling
+	// only ever clips the curve's top.
+	ceil := float64(imgops.Percentile(imgops.Subsample(onDiscSamples(disc, w, h, l, 0.5), 100000), 50))
+	if ceil <= 0 {
+		return
+	}
+	gate := promGateFrac * l.R
 	// asinh rather than a power curve: prominences span a wide range of faintness and this keeps the
 	// dim ones visible without pushing the sky off zero.
 	k := 40 * math.Max(o.ProminenceBoost, 0.01)
@@ -137,14 +285,19 @@ func blendProminences(disc, linear []float32, w, h int, l Limb, o FinishOptions)
 		for x := 0; x < w; x++ {
 			dx := float64(x) - l.CX
 			d := math.Hypot(dx, dy)
-			if d < l.R-feather {
+			// Strictly outside. Below the limb the background model is extrapolated rather than
+			// measured — it is only ever sampled from 1.0 R outward — so a disc pixel put through this
+			// curve is not merely rendered on the wrong scale, it is rendered against a background that
+			// was never measured where it sits.
+			if d < l.R {
 				continue
 			}
 			i := y*w + x
 			frac := (float64(linear[i]) - halo.at(d/l.R, math.Atan2(dy, dx))) / (ref - sky)
-			prom := float32(clampF(math.Asinh(k*math.Max(frac, 0))/den, 0, 1))
-			t := float32(smoothstep((d - (l.R - feather)) / (2 * feather)))
-			disc[i] = disc[i]*(1-t) + prom*t
+			prom := clampF(math.Asinh(k*math.Max(frac, 0))/den, 0, ceil)
+			if v := float32(prom * smoothstep((d-l.R)/gate)); v > disc[i] {
+				disc[i] = v
+			}
 		}
 	}
 }
@@ -152,6 +305,18 @@ func blendProminences(disc, linear []float32, w, h int, l Limb, o FinishOptions)
 const (
 	// haloBins is how finely the off-limb background is sampled in radius.
 	haloBins = 96
+	// haloWarp shapes that sampling, which is not uniform in radius and must not be.
+	//
+	// The scattered-light skirt falls by an order of magnitude within a few pixels of the limb and
+	// then by almost nothing over the next few hundred. Uniform annuli spend the same resolution on
+	// both: the first bin averages the entire limb transition and reports the middle of it as "the
+	// background" everywhere inside that bin. Subtracting an under-estimate leaves a positive
+	// residual, the prominence stretch — whose whole job is to make small residuals visible —
+	// renders it, and the result is a bright ring sitting just outside the limb.
+	//
+	// Sampling in t^0.75 rather than t puts roughly a one-pixel bin against the limb and ~7 px bins
+	// at the far end, which is the resolution each region actually needs.
+	haloWarp = 0.75
 	// haloHarmonics is the highest azimuthal order fitted to the background at each radius.
 	//
 	// The off-limb background is not a function of radius alone. The scattered-light aureole is, but
@@ -192,7 +357,7 @@ func (h haloProfile) at(frac, ang float64) float64 {
 	// edge. Interpolating as though it sat at the edge shifts the whole model by half a bin, and on a
 	// background with any gradient that shift is subtracted as if it were signal — leaving a residue
 	// shaped like the thing it was meant to remove.
-	t := (frac-h.lo)/(h.hi-h.lo)*float64(haloBins) - 0.5
+	t := haloBinOf(frac, h.lo, h.hi) - 0.5
 	t = clampF(t, 0, float64(haloBins-1))
 	i := clampInt(int(t), 0, haloBins-1)
 	fr := clampF(t-float64(i), 0, 1)
@@ -204,6 +369,12 @@ func (h haloProfile) at(frac, ang float64) float64 {
 		return h.bins[i] + fr*(h.bins[i1]-h.bins[i])
 	}
 	return h.evalBin(i, ang) + fr*(h.evalBin(i1, ang)-h.evalBin(i, ang))
+}
+
+// haloBinOf maps a radius fraction to a fractional bin index under the warped sampling. It is the
+// one place the warp is expressed, so measuring and evaluating the model cannot drift apart.
+func haloBinOf(frac, lo, hi float64) float64 {
+	return math.Pow(clampF((frac-lo)/(hi-lo), 0, 1), haloWarp) * haloBins
 }
 
 // evalBin sums the azimuthal series for one radial bin.
@@ -237,7 +408,7 @@ func offLimbProfile(p []float32, w, h int, l Limb) haloProfile {
 			if frac < prof.lo || frac > prof.hi {
 				continue
 			}
-			b := clampInt(int((frac-prof.lo)/(prof.hi-prof.lo)*float64(haloBins)), 0, haloBins-1)
+			b := clampInt(int(haloBinOf(frac, prof.lo, prof.hi)), 0, haloBins-1)
 			v := p[y*w+x]
 			buckets[b] = append(buckets[b], v)
 			a := math.Atan2(dy, dx) / (2 * math.Pi) * haloFitSectors

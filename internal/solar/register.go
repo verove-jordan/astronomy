@@ -73,22 +73,69 @@ func annulusProfile(im *fits.Image, l Limb) []float64 {
 			prof[b] /= float64(counts[b])
 		}
 	}
-	// Remove the mean so the correlation responds to structure rather than to overall brightness,
-	// which differs between frames even after photometric normalisation.
+	detrendAzimuth(prof, rotDetrendOrder)
+	return prof
+}
+
+// rotDetrendOrder is the highest azimuthal harmonic stripped from the profile before it is
+// correlated.
+//
+// Removing the mean alone is not enough, and the shortfall is not subtle: it silently rotated an
+// entire clip. The etalon has a sweet spot and the eyepiece has a vignette, neither of them centred on
+// the Sun, so the mid-disc annulus carries a large smooth brightness gradient — and that gradient
+// MOVES when the phone is re-seated between clips, which is exactly when derotation matters most.
+// Correlating two profiles each dominated by its own gradient finds the lag that best lines up the
+// GRADIENTS, and it finds it confidently: measured across two real clips it returned 1.62° with a
+// scatter of 0.17°, which looks like an excellent measurement and is 25 px of pure error at the limb.
+// Applying it left the prominences visibly doubled and scored WORSE than not derotating at all.
+//
+// Order 1 is a gradient across the field and order 2 an ellipticity; plage and filaments span a few
+// degrees and need harmonics of order thirty or more, so stripping the first two removes the
+// instrument and leaves the Sun. It is the same reasoning, and the same cutoff, as the off-limb
+// background model's haloHarmonics.
+const rotDetrendOrder = 2
+
+// detrendAzimuth subtracts the constant and the lowest harmonics from a profile sampled uniformly in
+// angle. Uniform sampling is what makes the plain Fourier projection the exact least-squares answer.
+func detrendAzimuth(prof []float64, maxOrder int) {
+	n := len(prof)
+	if n == 0 {
+		return
+	}
 	var mean float64
 	for _, v := range prof {
 		mean += v
 	}
-	mean /= float64(len(prof))
+	mean /= float64(n)
 	for i := range prof {
 		prof[i] -= mean
 	}
-	return prof
+	for k := 1; k <= maxOrder; k++ {
+		var a, b float64
+		for i, v := range prof {
+			ang := 2 * math.Pi * float64(k) * float64(i) / float64(n)
+			a += v * math.Cos(ang)
+			b += v * math.Sin(ang)
+		}
+		a, b = 2*a/float64(n), 2*b/float64(n)
+		for i := range prof {
+			ang := 2 * math.Pi * float64(k) * float64(i) / float64(n)
+			prof[i] -= a*math.Cos(ang) + b*math.Sin(ang)
+		}
+	}
 }
 
 // EstimateRotation returns the rotation, in degrees, taking target onto ref.
 func EstimateRotation(ref, target *fits.Image, refLimb, targetLimb Limb) (float64, bool) {
-	a, b := annulusProfile(ref, refLimb), annulusProfile(target, targetLimb)
+	return CorrelateRotation(annulusProfile(ref, refLimb), annulusProfile(target, targetLimb))
+}
+
+// CorrelateRotation is EstimateRotation over profiles that have already been sampled.
+//
+// It is split out because the profile is the expensive half — it needs the frame in memory — while
+// the correlation is arithmetic on 720 numbers. Keeping the profiles lets a whole clip's rotations be
+// solved, and then modelled against each other, without re-reading a gigabyte of frames.
+func CorrelateRotation(a, b []float64) (float64, bool) {
 	if a == nil || b == nil {
 		return 0, false
 	}

@@ -104,8 +104,16 @@ func (rp RadialProfile) scaledGain(frac, strength float64) float64 {
 }
 
 // rawGain is the uncapped, unblended correction at a radius fraction.
+//
+// The bin index must be the INVERSE of the one MeasureRadialProfile binned with — it scales radius by
+// radialBins/(ldFitLimit·R), so recovering the bin from a radius fraction divides by ldFitLimit. It
+// used to multiply. The factor is only ldFitLimit² = 0.970, which is why it survived: every gain was
+// simply read three percent too far in, so the disc still came out broadly flat and nothing looked
+// obviously wrong. What it left was a systematic under-correction that grows with radius, because the
+// profile falls fastest there — a residual dark rim in the last few percent of the disc, on every
+// solar image this package has ever produced. The top seven bins were never read at all.
 func (rp RadialProfile) rawGain(frac float64) float64 {
-	b := frac * ldFitLimit * float64(radialBins)
+	b := frac / ldFitLimit * float64(radialBins)
 	i := clampInt(int(b), 0, radialBins-1)
 	v := rp.Bins[i]
 	if i+1 < radialBins {
