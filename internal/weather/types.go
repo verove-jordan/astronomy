@@ -31,8 +31,9 @@ type Hour struct {
 	CloudLow     float64 `json:"cloud_low"`
 	CloudMid     float64 `json:"cloud_mid"`
 	CloudHigh    float64 `json:"cloud_high"`
-	SeeingArcsec float64 `json:"seeing_arcsec"` // 0 = unknown
-	Transparency float64 `json:"transparency"`  // 0..1 (1 = pristine); 0 = unknown
+	SeeingArcsec float64 `json:"seeing_arcsec"`           // 0 = unknown
+	SeeingSource string  `json:"seeing_source,omitempty"` // "derived" | "7timer"
+	Transparency float64 `json:"transparency"`            // 0..1 (1 = pristine); 0 = unknown
 	HumidityPct  float64 `json:"humidity_pct"`
 	DewPointC    float64 `json:"dew_point_c"`
 	TempC        float64 `json:"temp_c"`
@@ -45,8 +46,9 @@ type Hour struct {
 	LiftedIndex  float64 `json:"lifted_index"`
 	VisibilityM  float64 `json:"visibility_m"`
 	PrecipPct    float64 `json:"precip_pct"`
-	AOD          float64 `json:"aod"`     // aerosol optical depth @550nm (0 = unknown)
-	Verdict      float64 `json:"verdict"` // 0..100 overall observability for this hour
+	AOD          float64 `json:"aod"`         // aerosol optical depth @550nm (0 = unknown)
+	BLHeightM    float64 `json:"bl_height_m"` // boundary-layer top (m); caps a low-cloud deck. 0 = unknown
+	Verdict      float64 `json:"verdict"`     // 0..100 overall observability for this hour
 }
 
 // Window is a contiguous time span — used for the best clear window inside the dark window.

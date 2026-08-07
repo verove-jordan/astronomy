@@ -39,15 +39,20 @@ func (p *Provider) cachedForecast(key string) (SiteForecast, bool) {
 	return SiteForecast{}, false
 }
 
-func (p *Provider) anyForecast(key string) (SiteForecast, bool) {
+// staleForecast returns an expired-but-recent forecast for key while upstream is down, BOUNDED to
+// ttl+forecastStaleGrace the way staleGrid is. Unbounded, a long-dead feed served a days-old timeline
+// under a "last cached" warning — technically honest, practically a lie about tonight's sky.
+func (p *Provider) staleForecast(key string) (SiteForecast, bool) {
 	p.mu.Lock()
 	c, ok := p.memoFc[key]
 	p.mu.Unlock()
-	if ok {
+	if ok && time.Since(c.at) < p.ttl+forecastStaleGrace {
 		return c.f, true
 	}
-	f, _, ok := readJSON[SiteForecast](p.forecastPath(key))
-	return f, ok
+	if f, at, ok := readJSON[SiteForecast](p.forecastPath(key)); ok && time.Since(at) < p.ttl+forecastStaleGrace {
+		return f, true
+	}
+	return SiteForecast{}, false
 }
 
 func (p *Provider) storeForecast(key string, f SiteForecast) {
@@ -96,12 +101,66 @@ func (p *Provider) storeGrid(key string, g Grid) {
 	writeJSON(p.gridPath(key), g)
 }
 
+// Night scans cache the assembled HOURS, not the finished outlooks, so re-scoring the same area with a
+// different moonlight weighting or deck-top estimate costs no upstream call.
+
+type cachedNight struct {
+	hours []pointHours
+	at    time.Time
+}
+
+func (p *Provider) cachedNight(key string) ([]pointHours, bool) {
+	p.mu.Lock()
+	c, ok := p.memoNight[key]
+	p.mu.Unlock()
+	if ok && time.Since(c.at) < p.ttl {
+		return c.hours, true
+	}
+	if h, at, ok := readJSON[[]pointHours](p.nightPath(key)); ok && time.Since(at) < p.ttl {
+		p.mu.Lock()
+		p.memoNight[key] = cachedNight{h, at}
+		p.mu.Unlock()
+		return h, true
+	}
+	return nil, false
+}
+
+// staleNight is the night-scan counterpart of staleGrid: an expired-but-recent scan keeps the ranking
+// working through an upstream outage, bounded so it can never quietly present yesterday's sky.
+func (p *Provider) staleNight(key string) ([]pointHours, bool) {
+	p.mu.Lock()
+	c, ok := p.memoNight[key]
+	p.mu.Unlock()
+	if ok && time.Since(c.at) < p.ttl+forecastStaleGrace {
+		return c.hours, true
+	}
+	if h, at, ok := readJSON[[]pointHours](p.nightPath(key)); ok && time.Since(at) < p.ttl+forecastStaleGrace {
+		return h, true
+	}
+	return nil, false
+}
+
+func (p *Provider) storeNight(key string, hours []pointHours) {
+	p.mu.Lock()
+	p.memoNight[key] = cachedNight{hours, time.Now()}
+	p.mu.Unlock()
+	writeJSON(p.nightPath(key), hours)
+}
+
 func (p *Provider) forecastPath(key string) string {
 	return filepath.Join(p.cacheDir, "forecast", key+".json")
 }
 
 func (p *Provider) gridPath(key string) string {
 	return filepath.Join(p.cacheDir, "grid", key+".json")
+}
+
+func (p *Provider) nightPath(key string) string {
+	return filepath.Join(p.cacheDir, "night", key+".json")
+}
+
+func (p *Provider) confidencePath(key string) string {
+	return filepath.Join(p.cacheDir, "confidence", key+".json")
 }
 
 func readJSON[T any](path string) (T, time.Time, bool) {

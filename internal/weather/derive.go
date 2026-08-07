@@ -61,11 +61,15 @@ func hourVerdict(h Hour) float64 {
 	return round1(clampf(v, 0, 1) * 100)
 }
 
+// goodVerdict is the hourly verdict at or above which an hour counts as usable observing time. It is
+// the threshold for both the best clear window and the night's clear-hour count, so the panel's
+// highlighted span and the ranking's "N clear hours" always agree.
+const goodVerdict = 60.0
+
 // BestWindow finds the contiguous run of hours within [startMs,endMs] (the dark window) whose verdict
 // stays "good", maximizing total verdict — the slot to actually go out. Falls back to the single best
 // hour when nothing is clearly good, and returns nil when no hours fall in the window.
 func BestWindow(hours []Hour, startMs, endMs int64) *Window {
-	const goodVerdict = 60.0
 	const maxGapMs = 2 * 3600 * 1000
 
 	var rng []Hour

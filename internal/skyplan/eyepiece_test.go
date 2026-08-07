@@ -49,6 +49,52 @@ func TestOptics_Barlow(t *testing.T) {
 	assert.InDelta(t, base.ImageScale(), none.ImageScale(), 1e-9)
 }
 
+func TestOptics_Reducer(t *testing.T) {
+	base := fc100 // ReducerX 0 → no reducer
+	reduced := fc100
+	reduced.ReducerX = 0.5
+
+	// A ×0.5 reducer halves the effective focal length: image scale doubles, f-ratio halves, eyepiece
+	// magnification halves and exit pupil doubles — the exact mirror image of a 2× Barlow.
+	assert.InDelta(t, base.ImageScale()*2, reduced.ImageScale(), 1e-6)
+	assert.InDelta(t, base.FRatio()/2, reduced.FRatio(), 1e-6)
+
+	ep := Eyepiece{FocalMM: 10, AFOVDeg: 60}
+	assert.InDelta(t, base.View(ep).MagX/2, reduced.View(ep).MagX, 1e-6)
+	assert.InDelta(t, base.View(ep).ExitPupilMM*2, reduced.View(ep).ExitPupilMM, 1e-6)
+
+	// Zero/negative means "no reducer" — an Optics decoded from a payload that predates the field.
+	none := fc100
+	none.ReducerX = 0
+	assert.InDelta(t, base.ImageScale(), none.ImageScale(), 1e-9)
+	none.ReducerX = -1
+	assert.InDelta(t, base.ImageScale(), none.ImageScale(), 1e-9)
+}
+
+func TestOptics_BarlowAndReducer(t *testing.T) {
+	// The two multipliers are independent and compose: a 0.66× reducer permanently in the train with a
+	// 2× Barlow in front of it gives 740 × 2 × 0.66 = 976.8 mm, not one overriding the other.
+	both := fc100
+	both.BarlowX, both.ReducerX = 2, 0.66
+	assert.InDelta(t, 976.8, both.EffectiveFocalMM(), 1e-6)
+	assert.InDelta(t, 9.768, both.FRatio(), 1e-6)
+
+	// Order cannot matter — multiplication commutes; this pins that neither branch shadows the other.
+	swapped := fc100
+	swapped.BarlowX, swapped.ReducerX = 0.66, 2
+	assert.InDelta(t, both.EffectiveFocalMM(), swapped.EffectiveFocalMM(), 1e-9)
+
+	// The reference reducer on its own: 740 × 0.66 = 488.4 mm → f/4.884 at 1.605″/px.
+	only := fc100
+	only.ReducerX = 0.66
+	assert.InDelta(t, 488.4, only.EffectiveFocalMM(), 1e-6)
+	assert.InDelta(t, 4.884, only.FRatio(), 1e-3)
+	assert.InDelta(t, 1.605, only.ImageScale(), 1e-3)
+	w, h := only.FOV()
+	assert.InDelta(t, 2.075, w, 1e-3)
+	assert.InDelta(t, 1.569, h, 1e-3)
+}
+
 func TestChooseEyepiece(t *testing.T) {
 	t.Run("empty kit returns false", func(t *testing.T) {
 		_, ok := chooseEyepiece(fc100, nil, 30, true)

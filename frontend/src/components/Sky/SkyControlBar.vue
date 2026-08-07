@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { useSkyStore } from "@/stores/sky";
 import LocationPicker from "@/components/Sky/LocationPicker.vue";
 import ConditionsBadge from "@/components/Sky/ConditionsBadge.vue";
+import EyepieceKitTable from "@/components/Sky/EyepieceKitTable.vue";
 import IconCamera from "@/components/Icons/IconCamera.vue";
 import IconEyepiece from "@/components/Icons/IconEyepiece.vue";
 import IconStar from "@/components/Icons/IconStar.vue";
@@ -21,6 +22,7 @@ import {
 } from "@/constants/styles";
 import type { SkyEyepiece, LocationFavorite, EquipmentSetup } from "@/types";
 import { bortleColor } from "@/utils/bortle";
+import { effectiveFocalMm } from "@/utils/optics";
 
 const { t } = useI18n();
 const store = useSkyStore();
@@ -37,6 +39,7 @@ interface ControlForm {
   sensor_w: string;
   sensor_h: string;
   barlow: string;
+  reducer: string;
   min_alt: string;
   twilight: "astro" | "nautical";
   mode: Mode;
@@ -52,6 +55,7 @@ const form = reactive<ControlForm>({
   sensor_w: "",
   sensor_h: "",
   barlow: "",
+  reducer: "",
   min_alt: "30",
   twilight: "astro",
   mode: "camera",
@@ -87,8 +91,14 @@ function seedFromEcho() {
   form.pixel_um = String(q.equipment.pixel_um);
   form.sensor_w = String(q.equipment.sensor_w_px);
   form.sensor_h = String(q.equipment.sensor_h_px);
-  // Show the Barlow only when one is set (×1 reads as "none").
+  // Show a multiplier only when one is actually fitted (×1 reads as "none"). The two are separate
+  // fields because a reducer usually stays in the train while a Barlow is swapped in — and a Barlow is
+  // by definition ≥1, so its guard stays `> 1` while the reducer's only has to exclude ×1.
   form.barlow = q.equipment.barlow_x > 1 ? String(q.equipment.barlow_x) : "";
+  form.reducer =
+    q.equipment.reducer_x > 0 && q.equipment.reducer_x !== 1
+      ? String(q.equipment.reducer_x)
+      : "";
   form.min_alt = String(q.min_alt_deg);
   form.twilight = q.twilight === "nautical" ? "nautical" : "astro";
   form.mode = q.equipment.mode === "visual" ? "visual" : "camera";
@@ -104,12 +114,9 @@ function setMode(mode: Mode) {
   store.setMode(mode);
 }
 
-function addEyepiece() {
-  epKit.value.push({ label: "", focal_mm: 0, afov_deg: 60 });
-}
-
-function removeEyepiece(i: number) {
-  epKit.value.splice(i, 1);
+// The table owns add/remove/edit and hands back a fresh array; we adopt it and re-commit.
+function setKit(next: SkyEyepiece[]) {
+  epKit.value = next;
   commitKit();
 }
 
@@ -145,6 +152,7 @@ watch(
     form.focal_mm,
     form.aperture_mm,
     form.barlow,
+    form.reducer,
     form.pixel_um,
     form.sensor_w,
     form.sensor_h,
@@ -158,13 +166,40 @@ const fov = computed(() => {
   const e = store.query?.equipment;
   if (!e) return "";
   const barlow = e.barlow_x > 1 ? ` · ${e.barlow_x}× Barlow` : "";
-  return `${e.fov_w_deg.toFixed(2)}° × ${e.fov_h_deg.toFixed(2)}° · ${e.image_scale_arcsec_px.toFixed(2)}″/px · f/${e.f_ratio.toFixed(1)}${barlow}`;
+  const reducer =
+    e.reducer_x > 0 && e.reducer_x !== 1
+      ? ` · ${e.reducer_x}× ${t("tonight.equipment.reducerShort")}`
+      : "";
+  return `${e.fov_w_deg.toFixed(2)}° × ${e.fov_h_deg.toFixed(2)}° · ${e.image_scale_arcsec_px.toFixed(2)}″/px · f/${e.f_ratio.toFixed(1)}${barlow}${reducer}`;
 });
 
 function num(v: string): number | undefined {
   const n = parseFloat(v);
   return Number.isFinite(n) ? n : undefined;
 }
+
+// The eyepiece table has to react to a focal/Barlow/reducer edit IMMEDIATELY, so it reads the form
+// rather than the (debounced, round-tripped) server echo — falling back to the echo before the first
+// edit. The wide "Champ … ″/px … f/…" line stays server-derived, as it always was.
+const liveFocalMm = computed(
+  () => num(form.focal_mm) ?? store.query?.equipment.focal_mm ?? 0,
+);
+const liveApertureMm = computed(
+  () => num(form.aperture_mm) ?? store.query?.equipment.aperture_mm ?? 0,
+);
+const liveEffectiveFocalMm = computed(() =>
+  effectiveFocalMm(liveFocalMm.value, num(form.barlow), num(form.reducer)),
+);
+
+// "740 mm × 0,66 = 488 mm" — shown whenever a multiplier actually changes the focal length.
+const effectiveFocalLabel = computed(() => {
+  const mults = [num(form.barlow), num(form.reducer)].filter(
+    (m): m is number => m !== undefined && m > 0 && m !== 1,
+  );
+  if (!mults.length || liveFocalMm.value <= 0) return "";
+  const chain = mults.map((m) => ` × ${m}`).join("");
+  return `${liveFocalMm.value} mm${chain} = ${Math.round(liveEffectiveFocalMm.value)} mm`;
+});
 
 // Coordinates fed to the map/marker — current form value, else the server echo, else Paris.
 const pickerLat = computed(
@@ -186,6 +221,7 @@ function apply() {
       sensor_w: num(form.sensor_w),
       sensor_h: num(form.sensor_h),
       barlow: num(form.barlow),
+      reducer: num(form.reducer),
       min_alt: num(form.min_alt),
       twilight: form.twilight,
       mode: form.mode,
@@ -269,6 +305,7 @@ function saveCurrentSetup() {
     focal_mm: num(form.focal_mm),
     aperture_mm: num(form.aperture_mm),
     barlow: num(form.barlow),
+    reducer: num(form.reducer),
     pixel_um: num(form.pixel_um),
     sensor_w: num(form.sensor_w),
     sensor_h: num(form.sensor_h),
@@ -286,6 +323,10 @@ function applySetup(s: EquipmentSetup) {
   form.focal_mm = str(s.focal_mm);
   form.aperture_mm = str(s.aperture_mm);
   form.barlow = s.barlow != null && s.barlow > 1 ? String(s.barlow) : "";
+  form.reducer =
+    s.reducer != null && s.reducer > 0 && s.reducer !== 1
+      ? String(s.reducer)
+      : "";
   form.pixel_um = str(s.pixel_um);
   form.sensor_w = str(s.sensor_w);
   form.sensor_h = str(s.sensor_h);
@@ -567,6 +608,18 @@ defineExpose({ setLatLon });
                 :placeholder="t('tonight.equipment.barlowNone')"
               />
             </label>
+            <label class="text-xs text-slate-500 dark:text-slate-400">
+              {{ t("tonight.equipment.reducer") }}
+              <input
+                v-model="form.reducer"
+                :class="input"
+                type="number"
+                step="0.01"
+                min="0.1"
+                max="1"
+                :placeholder="t('tonight.equipment.reducerNone')"
+              />
+            </label>
             <template v-if="form.mode === 'camera'">
               <label class="text-xs text-slate-500 dark:text-slate-400">
                 {{ t("tonight.equipment.pixelSize") }}
@@ -598,69 +651,25 @@ defineExpose({ setLatLon });
             </template>
           </div>
 
+          <!-- What the multipliers actually make of the focal length, live as you type -->
+          <p
+            v-if="effectiveFocalLabel"
+            class="mt-1 text-xs text-slate-500 dark:text-slate-400"
+          >
+            {{ t("tonight.equipment.effectiveFocal") }}:
+            <span class="font-medium text-slate-700 dark:text-slate-200">{{
+              effectiveFocalLabel
+            }}</span>
+          </p>
+
           <!-- Eyepiece kit editor (visual mode) -->
-          <div v-if="form.mode === 'visual'" class="mt-2">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-xs text-slate-500 dark:text-slate-400">{{
-                t("tonight.eyepieces.title")
-              }}</span>
-              <button
-                type="button"
-                class="text-xs text-brand-600 hover:underline dark:text-brand-300"
-                @click="addEyepiece"
-              >
-                + {{ t("tonight.eyepieces.add") }}
-              </button>
-            </div>
-            <p v-if="!epKit.length" class="text-xs text-slate-400">
-              {{ t("tonight.eyepieces.empty") }}
-            </p>
-            <div
-              v-for="(ep, i) in epKit"
-              :key="i"
-              class="mb-1 flex items-center gap-1"
-            >
-              <input
-                v-model.number="ep.focal_mm"
-                :class="[input, 'w-16']"
-                type="number"
-                step="1"
-                min="1"
-                :aria-label="t('tonight.eyepieces.focal')"
-                :title="t('tonight.eyepieces.focal')"
-                @change="commitKit"
-              />
-              <input
-                v-model.number="ep.afov_deg"
-                :class="[input, 'w-16']"
-                type="number"
-                step="1"
-                min="1"
-                :aria-label="t('tonight.eyepieces.afov')"
-                :title="t('tonight.eyepieces.afov')"
-                @change="commitKit"
-              />
-              <input
-                v-model="ep.label"
-                :class="[input, 'min-w-0 flex-1']"
-                type="text"
-                :placeholder="t('tonight.eyepieces.label')"
-                :aria-label="t('tonight.eyepieces.label')"
-                @change="commitKit"
-              />
-              <button
-                type="button"
-                class="px-1 text-slate-400 hover:text-danger-500"
-                :aria-label="t('tonight.eyepieces.remove')"
-                @click="removeEyepiece(i)"
-              >
-                ✕
-              </button>
-            </div>
-            <p class="mt-1 text-[10px] text-slate-400">
-              {{ t("tonight.eyepieces.hint") }}
-            </p>
-          </div>
+          <EyepieceKitTable
+            v-if="form.mode === 'visual'"
+            :model-value="epKit"
+            :effective-focal-mm="liveEffectiveFocalMm"
+            :aperture-mm="liveApertureMm"
+            @update:model-value="setKit"
+          />
 
           <p
             v-if="fov && form.mode === 'camera'"

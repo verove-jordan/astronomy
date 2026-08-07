@@ -11,11 +11,15 @@ import (
 )
 
 // openMeteoHourlyVars are the per-site forecast fields requested from Open-Meteo (the backbone feed).
+// The 500/850 hPa winds and the boundary-layer depth feed the derived seeing index (see seeing.go);
+// everything else feeds the panel. `precipitation` (mm) is deliberately absent — it is ~0 almost
+// everywhere, nothing ever read it, and Open-Meteo weights a call by its variable count.
 var openMeteoHourlyVars = []string{
 	"cloud_cover", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high",
 	"relative_humidity_2m", "dew_point_2m", "temperature_2m",
-	"wind_speed_10m", "wind_gusts_10m", "wind_speed_300hPa",
-	"cape", "lifted_index", "visibility", "precipitation", "precipitation_probability",
+	"wind_speed_10m", "wind_gusts_10m",
+	"wind_speed_300hPa", "wind_speed_500hPa", "wind_speed_850hPa", "boundary_layer_height",
+	"cape", "lifted_index", "visibility", "precipitation_probability",
 }
 
 type omHourly struct {
@@ -30,23 +34,26 @@ type omHourly struct {
 	WindSpeed10m             []float64 `json:"wind_speed_10m"`
 	WindGusts10m             []float64 `json:"wind_gusts_10m"`
 	WindSpeed300hPa          []float64 `json:"wind_speed_300hPa"`
+	WindSpeed500hPa          []float64 `json:"wind_speed_500hPa"`
+	WindSpeed850hPa          []float64 `json:"wind_speed_850hPa"`
+	BoundaryLayerHeight      []float64 `json:"boundary_layer_height"`
 	CAPE                     []float64 `json:"cape"`
 	LiftedIndex              []float64 `json:"lifted_index"`
 	Visibility               []float64 `json:"visibility"`
-	Precipitation            []float64 `json:"precipitation"`
 	PrecipitationProbability []float64 `json:"precipitation_probability"`
 }
 
 type omResponse struct {
 	Latitude  float64  `json:"latitude"`
 	Longitude float64  `json:"longitude"`
+	Elevation float64  `json:"elevation"` // the model's terrain height, unless the request pinned one
 	Hourly    omHourly `json:"hourly"`
 }
 
-// fetchOpenMeteoPoint pulls the hourly point forecast (past day + next two days) for one site.
+// fetchOpenMeteoPoint pulls the hourly point forecast (past day + the configured horizon) for one site.
 func (p *Provider) fetchOpenMeteoPoint(ctx context.Context, lat, lon float64) (omResponse, error) {
-	url := fmt.Sprintf("%s?latitude=%s&longitude=%s&hourly=%s&wind_speed_unit=kmh&past_days=1&forecast_days=2&timezone=UTC%s",
-		p.openMeteoURL, ftoa(lat), ftoa(lon), strings.Join(openMeteoHourlyVars, ","), p.modelsParam())
+	url := fmt.Sprintf("%s?latitude=%s&longitude=%s&hourly=%s&wind_speed_unit=kmh&past_days=1&forecast_days=%d&timezone=UTC%s",
+		p.openMeteoURL, ftoa(lat), ftoa(lon), strings.Join(openMeteoHourlyVars, ","), p.forecastDays, p.modelsParam())
 	var resp omResponse
 	if err := p.getJSON(ctx, url, &resp); err != nil {
 		return omResponse{}, err
@@ -56,6 +63,13 @@ func (p *Provider) fetchOpenMeteoPoint(ctx context.Context, lat, lon float64) (o
 
 // modelsParam renders the optional Open-Meteo `models=` pin ("" = best_match auto-selection, the
 // default; see config.WeatherOpenMeteoModels).
+//
+// Leaving it empty is the right default, and not merely the safe one. Measured 2026-08-03 over the
+// French Alps, best_match returns values identical to icon_d2 (2.2 km), so it is ALREADY serving the
+// convection-permitting regional model. Pinning a regional model by hand costs data instead of
+// gaining resolution: meteofrance_arome_france_hd returns null cloud_cover and no pressure-level
+// winds at all, and meteofrance_arome_france / icon_d2 both lack boundary_layer_height, which the
+// inversion detection needs. Verify variable coverage before changing this.
 func (p *Provider) modelsParam() string {
 	if p.openMeteoModels == "" {
 		return ""
@@ -72,12 +86,21 @@ const (
 	//                          cubes to one chunk anyway; this is defense in depth)
 )
 
-// fetchOpenMeteoGrid pulls the multi-location forecast for the cloud cube. Open-Meteo returns a JSON
-// array (one object per coordinate, in request order) when many coordinates are passed; the coordinates
-// are fetched in concurrent chunks (see gridChunkMaxPoints) and reassembled in row-major request order.
-// Any chunk failing fails the whole fetch — Grid's stale-cache soft-fail takes over from there.
+// fetchOpenMeteoGrid pulls the multi-location forecast for the cloud cube, reassembled in row-major
+// request order.
 func (p *Provider) fetchOpenMeteoGrid(ctx context.Context, lats, lons []float64, vars []string) ([]omResponse, error) {
-	out := make([]omResponse, len(lats))
+	return p.fetchChunked(ctx, len(lats), func(cctx context.Context, start, end int) ([]omResponse, error) {
+		return p.fetchOpenMeteoGridChunk(cctx, lats[start:end], lons[start:end], vars)
+	})
+}
+
+// fetchChunked runs one bulk GET per coordinate chunk and reassembles the responses in request order.
+// Open-Meteo's multi-location endpoint is GET-only and returns a JSON array (one object per coordinate,
+// in request order); the coordinates are chunked (see gridChunkMaxPoints) because a dense list cannot
+// ride in one URL. Any chunk failing fails the whole fetch — the caller's stale-cache soft-fail takes
+// over from there.
+func (p *Provider) fetchChunked(ctx context.Context, n int, fetch func(context.Context, int, int) ([]omResponse, error)) ([]omResponse, error) {
+	out := make([]omResponse, n)
 	cctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -97,7 +120,7 @@ func (p *Provider) fetchOpenMeteoGrid(ctx context.Context, lats, lons []float64,
 		cancel() // the fetch is already lost — abort the other in-flight chunks
 	}
 	sem := make(chan struct{}, gridChunkParallel)
-	for _, c := range gridChunks(len(lats), gridChunkMaxPoints) {
+	for _, c := range gridChunks(n, gridChunkMaxPoints) {
 		wg.Add(1)
 		go func(start, end int) {
 			defer wg.Done()
@@ -106,7 +129,7 @@ func (p *Provider) fetchOpenMeteoGrid(ctx context.Context, lats, lons []float64,
 			if cctx.Err() != nil {
 				return
 			}
-			chunk, err := p.fetchOpenMeteoGridChunk(cctx, lats[start:end], lons[start:end], vars)
+			chunk, err := fetch(cctx, start, end)
 			if err != nil {
 				fail(fmt.Errorf("grid chunk %d..%d: %w", start, end, err))
 				return

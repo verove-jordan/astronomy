@@ -252,7 +252,7 @@ func darknessInfo(w astro.DarkWindow, moon astro.MoonState, night nightCtx, prm 
 			IllumFraction: round2(moon.IllumFraction),
 			AltNowDeg:     round1(moon.AltDeg),
 			UpNow:         moon.Up,
-			Phase:         moonPhaseName(astro.MoonPhaseAngle(prm.At)),
+			Phase:         MoonPhaseName(astro.MoonPhaseAngle(prm.At)),
 		},
 	}
 	if night.hasSunSet {
@@ -279,9 +279,9 @@ func altSeries(ra, dec float64, prm Params, start, end time.Time) []AltSample {
 	return out
 }
 
-// moonPhaseName buckets a phase angle (0=new … 180=full …) into one of eight named phases that match
+// MoonPhaseName buckets a phase angle (0=new … 180=full …) into one of eight named phases that match
 // the frontend i18n keys.
-func moonPhaseName(angleDeg float64) string {
+func MoonPhaseName(angleDeg float64) string {
 	names := []string{
 		"new", "waxing_crescent", "first_quarter", "waxing_gibbous",
 		"full", "waning_gibbous", "last_quarter", "waning_crescent",
