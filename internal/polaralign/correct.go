@@ -1,6 +1,9 @@
 package polaralign
 
-import "math"
+import (
+	"math"
+	"time"
+)
 
 // Turning a measured polar axis into two instructions and one rotation.
 //
@@ -152,18 +155,73 @@ func (c Correction) rotation() rot {
 }
 
 // rot is the two-adjuster rotation, kept as its two angles rather than a matrix: that is the form the
-// live adjust loop solves for, and the form that cannot represent anything the hardware cannot do.
+// hardware has, and the form that cannot represent anything the hardware cannot do.
 type rot struct {
-	azDeg   float64 // applied first, about the vertical, in the direction of increasing azimuth
-	tiltDeg float64 // then about the east-west horizontal, raising what lies to the north
+	azDeg   float64 // about the vertical, in the direction of increasing azimuth
+	tiltDeg float64 // about the east-west horizontal, raising what lies to the north
+	// tiltFirst reverses the order of the two stages, which is what inverting one requires. The order
+	// only matters at second order in the angles, but an inverse that is only approximately an inverse
+	// is a debt that comes due on the largest errors, which is exactly when it is least welcome.
+	tiltFirst bool
 }
 
 // apply carries a direction through the adjustment.
 func (r rot) apply(v hVec3) hVec3 {
+	if r.tiltFirst {
+		return rotateZenith(rotateEast(v, r.tiltDeg), r.azDeg)
+	}
 	return rotateEast(rotateZenith(v, r.azDeg), r.tiltDeg)
 }
 
 // scaled is a fraction of the adjustment, for stepping toward alignment a bit at a time.
 func (r rot) scaled(f float64) rot {
 	return rot{azDeg: r.azDeg * f, tiltDeg: r.tiltDeg * f}
+}
+
+// inverse undoes the adjustment. The stages run in the opposite order as well as the opposite
+// direction, which is the whole content of inverting a composition.
+func (r rot) inverse() rot { return rot{azDeg: -r.azDeg, tiltDeg: -r.tiltDeg, tiltFirst: true} }
+
+// poleAzimuth is the compass bearing of the pole the mount must be aimed at.
+func poleAzimuth(latDeg float64) float64 {
+	if latDeg < 0 {
+		return 180
+	}
+	return 0
+}
+
+// misalignedAxis builds the axis of a mount that is out by a known amount: altErrDeg too high, and
+// azKnobDeg of AZIMUTH — the angle the adjuster turns through, east positive — away from the pole's
+// meridian.
+func misalignedAxis(site Site, altErrDeg, azKnobDeg float64) Axis {
+	v := horizonVec(math.Abs(site.LatDeg)+altErrDeg,
+		poleAzimuth(site.LatDeg)+azKnobDeg*azSign(site.LatDeg))
+	alt, az := v.altAz()
+	return Axis{AltDeg: alt, AzDeg: az}
+}
+
+// MisalignPointing answers the simulator's question: a telescope whose mount is out by a known amount
+// is pointed somewhere its owner believes is (raDeg, decDeg) — where is it really pointed?
+//
+// It exists so the whole camera-alignment feature can be exercised indoors. The simulated observatory
+// applies this to everything it reports and everything it draws, so the frames, the mount readout and
+// the measurement all describe one consistently misaligned telescope, and a session run against it
+// recovers the error that was dialled in.
+//
+// altErrDeg is how much too HIGH the polar axis sits; azKnobDeg is how far EAST of the pole's meridian,
+// as the azimuth the adjuster turns through — the same quantity Correction reports as AzKnobDeg, so
+// what is dialled in here is what comes back out. Coordinates are J2000 in and out.
+func MisalignPointing(raDeg, decDeg float64, site Site, at time.Time, altErrDeg, azKnobDeg float64) (float64, float64) {
+	// Exactly zero has to be exactly a no-op: a simulator with no error configured must behave as it
+	// always did, down to the last bit.
+	if altErrDeg == 0 && azKnobDeg == 0 {
+		return raDeg, decDeg
+	}
+	opt := FitOptions{}
+	// Correct gives the rotation that would put a misaligned axis back on the pole. The simulator wants
+	// the opposite: take a mount that is aimed correctly and knock it out by exactly that much.
+	knock := Correct(misalignedAxis(site, altErrDeg, azKnobDeg), site).rotation().inverse()
+
+	here := sampleDir(Sample{RADeg: raDeg, DecDeg: decDeg, At: at}, site, opt)
+	return skyFromDir(knock.apply(here), site, at, opt)
 }

@@ -1,12 +1,14 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 import { apiGet, apiPost } from "@/services/api";
+import { useSkyStore } from "@/stores/sky";
 import { fetchPreviewBuffer } from "@/utils/previewbuf";
 import type {
   CaptureProgress,
   CaptureSequence,
   CaptureSessionRow,
   DeviceCameraState,
+  DeviceInfo,
   DeviceMountState,
   MountDiagnosis,
   DeviceStatus,
@@ -28,6 +30,11 @@ const LIVE_POLL_MS = 250;
 export const useCaptureStore = defineStore("capture", () => {
   // --- device state ---------------------------------------------------------------------------
   const deviceStatus = ref<DeviceStatus | null>(null);
+  // What the drivers can actually SEE right now, as opposed to which drivers are compiled in: the
+  // simulator always offers one of each, and real hardware is appended only when a driver found it.
+  // That distinction is what lets the UI default to the mount that is plugged in rather than to the
+  // simulator.
+  const deviceList = ref<DeviceInfo[]>([]);
   const camera = ref<DeviceCameraState | null>(null);
   const wheel = ref<DeviceWheelState | null>(null);
   const mount = ref<DeviceMountState | null>(null);
@@ -74,11 +81,30 @@ export const useCaptureStore = defineStore("capture", () => {
         camera.value = null;
         wheel.value = null;
         mount.value = null;
+        deviceList.value = [];
         return;
       }
-      await Promise.all([refreshCamera(), refreshWheel(), refreshMount()]);
+      await Promise.all([
+        refreshCamera(),
+        refreshWheel(),
+        refreshMount(),
+        refreshDeviceList(),
+      ]);
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  // Discovery is best-effort: it only enriches the connect defaults, so a failure must not blank the
+  // panel that reports whether the device server is up at all.
+  async function refreshDeviceList(): Promise<void> {
+    try {
+      const res = await apiGet<{ devices: DeviceInfo[] }>(
+        "/api/device/devices",
+      );
+      deviceList.value = res.devices ?? [];
+    } catch {
+      deviceList.value = [];
     }
   }
 
@@ -298,10 +324,21 @@ export const useCaptureStore = defineStore("capture", () => {
   }): Promise<void> {
     const res = await apiPost<{ progress: CaptureProgress }>(
       "/api/capture/start",
-      body,
+      { ...body, ...observerSite() },
     );
     progress.value = res.progress;
     watchProgress();
+  }
+
+  // The site the run is shot from, stamped on the session so its conditions (weather, Moon, sky
+  // brightness) stay attributable to a place. The browser is the authority here: the engine's
+  // configured location is right at home and wrong on every trip to a dark sky, and the sky store
+  // already holds the location the user picked (and looked at the forecast for). Omitted entirely
+  // when nothing has been picked, so the engine falls back to its own config.
+  function observerSite(): { lat_deg?: number; lon_deg?: number } {
+    const p = useSkyStore().params;
+    if (typeof p.lat !== "number" || typeof p.lon !== "number") return {};
+    return { lat_deg: p.lat, lon_deg: p.lon };
   }
 
   async function pause(): Promise<void> {
@@ -450,6 +487,7 @@ export const useCaptureStore = defineStore("capture", () => {
 
   return {
     deviceStatus,
+    deviceList,
     camera,
     wheel,
     mount,
@@ -466,6 +504,7 @@ export const useCaptureStore = defineStore("capture", () => {
     sessions,
     sequences,
     refreshDevices,
+    refreshDeviceList,
     refreshCamera,
     refreshWheel,
     refreshMount,

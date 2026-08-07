@@ -2,6 +2,7 @@ package devsrv
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -32,17 +33,10 @@ func TestSimHarness_RecoversTheInjectedPolarError(t *testing.T) {
 		wantAzArcmin  = -15
 	)
 	ts := testServer(t)
-	ctx := context.Background()
 
 	resp, _ := post(t, ts, "/camera/connect", map[string]any{"driver": "sim"})
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	resp, _ = post(t, ts, "/mount/connect", map[string]any{"driver": "sim"})
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	resp, _ = post(t, ts, "/live/simulate", map[string]any{
-		"polar_error_alt_arcmin": wantAltArcmin,
-		"polar_error_az_arcmin":  wantAzArcmin,
-	})
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	resp, _ = post(t, ts, "/live/start", map[string]any{"interval_ms": 10})
@@ -50,40 +44,68 @@ func TestSimHarness_RecoversTheInjectedPolarError(t *testing.T) {
 	t.Cleanup(func() { post(t, ts, "/live/stop", nil) })
 	waitForLiveFrame(t, ts)
 
-	// Sweep the right-ascension axis the way the user is asked to: same declination, stepped hour
-	// angle. On a misaligned mount that traces a circle about the tilted axis, which is the whole
-	// signal the fit reads.
-	solver := platesolve.NewSimSolver()
-	dir := t.TempDir()
+	// The measurement is taken twice and the answers subtracted, because the simulated mount is not
+	// perfectly aligned to begin with — and cannot be.
+	//
+	// It holds J2000 coordinates, as everything else in the simulator does, so the sweep it traces is a
+	// circle about the J2000 pole. Today's pole is about nine arcminutes away from that, so the ideal
+	// simulated mount reads as nine arcminutes out before anything is injected. (Which is not even
+	// unrealistic: it is what a mount aligned to a printed J2000 chart and never touched since would
+	// do.) Differencing two measurements isolates exactly what was dialled in, which is what this test
+	// is about.
+	baseline := measurePolarError(t, ts, 0, 0)
+	knocked := measurePolarError(t, ts, wantAltArcmin, wantAzArcmin)
+
+	assert.InDelta(t, wantAltArcmin, (knocked.AltErrorDeg-baseline.AltErrorDeg)*60, 1,
+		"altitude: dialled in %d′, measured %.1f′ against a %.1f′ baseline",
+		wantAltArcmin, knocked.AltErrorDeg*60, baseline.AltErrorDeg*60)
+	assert.InDelta(t, wantAzArcmin, (knocked.AzKnobDeg-baseline.AzKnobDeg)*60, 1,
+		"azimuth: dialled in %d′, measured %.1f′ against a %.1f′ baseline",
+		wantAzArcmin, knocked.AzKnobDeg*60, baseline.AzKnobDeg*60)
+
+	// And the instructions have to point the right way for the error that was actually injected.
+	assert.Equal(t, polaralign.MoveLower, knocked.AltMove, "the axis was raised, so it must be lowered")
+	assert.Equal(t, polaralign.MoveEast, knocked.AzMove, "the axis was moved west, so it must go east")
+}
+
+// measurePolarError dials an error into the simulated observatory and runs the whole measurement
+// against it: point, sweep the right-ascension axis, solve each frame, fit.
+func measurePolarError(t *testing.T, ts *httptest.Server, altArcmin, azArcmin float64) polaralign.Correction {
+	t.Helper()
 	site := polaralign.Site{LatDeg: 48.85, LonDeg: 2.35}
 
+	resp, _ := post(t, ts, "/live/simulate", map[string]any{
+		"polar_error_alt_arcmin": altArcmin,
+		"polar_error_az_arcmin":  azArcmin,
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	resp, _ = post(t, ts, "/mount/goto", map[string]any{
+		"ra_deg": startPointing(site), "dec_deg": sweepDecDeg,
+	})
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+	waitUntilStopped(t, ts)
+
+	solver := platesolve.NewSimSolver()
+	dir := t.TempDir()
 	var samples []polaralign.Sample
 	for i := 0; i < 4; i++ {
-		ra, dec := sweptPointing(t, ts, site, float64(i)*20)
-		resp, _ = post(t, ts, "/mount/goto", map[string]any{"ra_deg": ra, "dec_deg": dec})
-		require.Equal(t, http.StatusAccepted, resp.StatusCode, "step %d", i+1)
-		waitUntilStopped(t, ts)
+		if i > 0 {
+			turnRAAxis(t, ts, 20)
+		}
+		path := filepath.Join(dir, fmt.Sprintf("polar_%d.fit", i))
+		mid := saveFreshLiveFrame(t, ts, path)
 
-		path := filepath.Join(dir, "polar_"+string(rune('a'+i))+".fit")
-		saved := saveFreshLiveFrame(t, ts, path)
-
-		res, err := solver.Solve(ctx, path, platesolve.Hint{})
+		res, err := solver.Solve(context.Background(), path, platesolve.Hint{})
 		require.NoError(t, err)
-		samples = append(samples, polaralign.Sample{
-			RADeg: res.RADeg, DecDeg: res.DecDeg, At: saved,
-		})
+		samples = append(samples, polaralign.Sample{RADeg: res.RADeg, DecDeg: res.DecDeg, At: mid})
 	}
 
 	axis, err := polaralign.FitAxis(samples, site, polaralign.FitOptions{})
 	require.NoError(t, err)
-	got := polaralign.Correct(axis, site)
-
-	assert.InDelta(t, wantAltArcmin, got.AltErrorDeg*60, 2,
-		"altitude error: dialled in %d′, measured %.1f′", wantAltArcmin, got.AltErrorDeg*60)
-	assert.InDelta(t, wantAzArcmin, got.AzKnobDeg*60, 2,
-		"azimuth error: dialled in %d′, measured %.1f′", wantAzArcmin, got.AzKnobDeg*60)
-	assert.Equal(t, polaralign.MoveLower, got.AltMove)
-	assert.Equal(t, polaralign.MoveEast, got.AzMove)
+	require.Empty(t, axis.Warnings, "the sweep should be a clean measurement")
+	require.Less(t, axis.ResidualArcsec, 5.0, "the frames should lie on one circle")
+	return polaralign.Correct(axis, site)
 }
 
 // A simulated observatory with no error configured has to behave as it always did. Zero being exactly
@@ -143,13 +165,37 @@ func TestSimSolver_RefusesARealFrame(t *testing.T) {
 
 // --- helpers ---
 
-// sweptPointing is where to send the mount for step `haOffsetDeg` of the sweep: same declination,
-// stepped hour angle, which is the motion the user is asked to make by hand.
-func sweptPointing(t *testing.T, ts *httptest.Server, site polaralign.Site, haOffsetDeg float64) (ra, dec float64) {
+// sweepDecDeg is where the sweep is taken. Well away from the pole, so the circle the frames trace has
+// a usable radius, and high enough over Paris at any hour to stay clear of the horizon.
+const sweepDecDeg = 20
+
+// startPointing puts the telescope thirty degrees east of the meridian, so that sweeping sixty degrees
+// west stays high in the sky whatever time the suite runs at.
+func startPointing(site polaralign.Site) float64 {
+	return math.Mod(astro.LST(time.Now().UTC(), site.LonDeg)+30+360, 360)
+}
+
+// turnRAAxis moves the RIGHT-ASCENSION axis by roughly deltaDeg, and nothing else.
+//
+// It jogs rather than slewing to a computed position, because that is what the procedure actually asks
+// of the user — one axis, turned by hand — and because a GoTo does not do it. The simulated mount lands
+// a deliberate arcminute off every target it is SENT to, which is realistic and correct; but four
+// independent arcminute offsets do not lie on one circle, and the fit reads that scatter as a polar
+// error many times larger than the one being tested. Jogging keeps declination untouched and adds no
+// pointing error, so the frames stay on the circle exactly as they do on a real mount.
+func turnRAAxis(t *testing.T, ts *httptest.Server, deltaDeg float64) {
 	t.Helper()
-	const decDeg = 60 // high declination keeps each step a short slew, so the test stays quick
-	lst := astro.LST(time.Now().UTC(), site.LonDeg)
-	return math.Mod(lst-(-30+haOffsetDeg)+360, 360), decDeg
+	_, body := get(t, ts, "/mount")
+	start := mountField(body, "ra_deg")
+
+	for i := 0; i < 1000; i++ {
+		_, body = get(t, ts, "/mount")
+		if math.Abs(math.Mod(mountField(body, "ra_deg")-start+540, 360)-180) >= deltaDeg {
+			return
+		}
+		post(t, ts, "/mount/jog", map[string]any{"direction": "west", "rate": 9})
+	}
+	t.Fatalf("the simulated axis never turned %g°", deltaDeg)
 }
 
 func waitUntilStopped(t *testing.T, ts *httptest.Server) {

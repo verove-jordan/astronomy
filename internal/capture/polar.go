@@ -31,6 +31,15 @@ import (
 // PolarPhase is where the session has got to.
 type PolarPhase string
 
+// Modes a correction can come from.
+const (
+	// PolarMeasured came from a rotation of the right-ascension axis: arcminute class.
+	PolarMeasured = "measured"
+	// PolarRough came from one frame, assuming the telescope looks down the right-ascension axis:
+	// polar-scope class, and only as true as that assumption.
+	PolarRough = "rough"
+)
+
 const (
 	PolarIdle      PolarPhase = "idle"
 	PolarMeasuring PolarPhase = "measuring" // collecting frames along the rotation
@@ -89,6 +98,14 @@ type PolarState struct {
 	Axis       *polaralign.Axis       `json:"axis,omitempty"`
 	Correction *polaralign.Correction `json:"correction,omitempty"`
 	Live       *polaralign.LiveState  `json:"live,omitempty"`
+	// Pole is where the celestial pole and its guide star fall on the last solved frame. Present from
+	// the first frame onward, because "where is the pole" is useful long before anything is measured —
+	// it is what turns hunting for Polaris under a tripod into looking at a screen.
+	Pole *polaralign.PoleView `json:"pole,omitempty"`
+	// Mode says how the correction on offer was arrived at: "measured" from a rotation, or "rough" from
+	// a single frame that assumed the telescope looks down the right-ascension axis. The UI must not
+	// present the two as the same thing — they differ by two orders of magnitude in accuracy.
+	Mode string `json:"mode,omitempty"`
 	// Warnings are codes for the UI to translate, never English.
 	Warnings []string `json:"warnings,omitempty"`
 	Error    string   `json:"error,omitempty"`
@@ -197,6 +214,40 @@ func (p *PolarSession) publish() {
 
 // Start begins a measurement and takes the first frame.
 func (p *PolarSession) Start(ctx context.Context, opts PolarOptions) error {
+	if err := p.begin(ctx, opts, PolarMeasuring); err != nil {
+		return err
+	}
+	return p.captureAndSolve(ctx)
+}
+
+// Rough answers the whole question from ONE frame, by assuming the telescope is looking down the
+// right-ascension axis — declination at its 90° index.
+//
+// That assumption is exactly the one a polar scope makes, and it buys the same thing: an alignment
+// from a single glance, in ten seconds, with nothing to turn between frames. It is also only as good
+// as the assumption, so the answer is marked PolarRough and carries the cone error it cannot see. Use
+// it to get on the pole quickly; use Start to get on it properly.
+func (p *PolarSession) Rough(ctx context.Context, opts PolarOptions) error {
+	if err := p.begin(ctx, opts, PolarMeasuring); err != nil {
+		return err
+	}
+	frame, err := p.solveFreshFrame(ctx)
+	if err != nil {
+		p.fail(err)
+		return err
+	}
+	axis, ok := polaralign.RoughAxis(frame, p.opts.Site, p.fitOptions())
+	if !ok {
+		err := fmt.Errorf("the frame carries no usable plate solution")
+		p.fail(err)
+		return err
+	}
+	p.settle(frame, axis, PolarRough)
+	return nil
+}
+
+// begin claims the session, prepares the camera and records whether the drive is running.
+func (p *PolarSession) begin(ctx context.Context, opts PolarOptions, phase PolarPhase) error {
 	if p.solver == nil {
 		return ErrPolarNoSolver
 	}
@@ -215,7 +266,7 @@ func (p *PolarSession) Start(ctx context.Context, opts PolarOptions) error {
 	}
 	p.opts, p.scratch, p.samples, p.live, p.haveLastFr = o, scratch, nil, nil, false
 	p.state = PolarState{
-		Phase: PolarMeasuring, Points: o.Points, StepArcDeg: stepArcDeg, Busy: true,
+		Phase: phase, Points: o.Points, StepArcDeg: stepArcDeg, Busy: true,
 	}
 	p.mu.Unlock()
 	p.publish()
@@ -232,7 +283,27 @@ func (p *PolarSession) Start(ctx context.Context, opts PolarOptions) error {
 		p.fail(err)
 		return err
 	}
-	return p.captureAndSolve(ctx)
+	return nil
+}
+
+// settle publishes a finished measurement, however it was arrived at.
+func (p *PolarSession) settle(frame polaralign.Frame, axis polaralign.Axis, mode string) {
+	corr := polaralign.Correct(axis, p.opts.Site)
+
+	view, haveView := polaralign.Locate(frame, p.opts.Site, p.fitOptions())
+
+	p.mu.Lock()
+	p.state.Phase = PolarSolved
+	p.state.Busy = false
+	p.state.Mode = mode
+	if haveView {
+		p.state.Pole = &view
+	}
+	p.state.Axis, p.state.Correction = &axis, &corr
+	p.state.Warnings = axis.Warnings
+	p.lastFrame, p.lastCorr, p.haveLastFr = frame, corr, true
+	p.mu.Unlock()
+	p.publish()
 }
 
 // Next records that the user has turned the axis, and takes the following frame.
@@ -353,6 +424,9 @@ func (p *PolarSession) captureAndSolve(ctx context.Context) error {
 		ScaleArcsecPx: frame.WCS.ScaleArcsecPerPix(),
 	})
 	p.state.Step = len(p.samples)
+	if view, ok := polaralign.Locate(frame, p.opts.Site, p.fitOptions()); ok {
+		p.state.Pole = &view
+	}
 	p.lastFrame, p.haveLastFr = frame, true
 	done := len(p.samples) >= p.opts.Points
 	samples, site, opts := append([]polaralign.Sample(nil), p.samples...), p.opts.Site, p.fitOptions()
@@ -369,15 +443,7 @@ func (p *PolarSession) captureAndSolve(ctx context.Context) error {
 		p.fail(err)
 		return err
 	}
-	corr := polaralign.Correct(axis, site)
-
-	p.mu.Lock()
-	p.state.Phase = PolarSolved
-	p.state.Axis, p.state.Correction = &axis, &corr
-	p.state.Warnings = axis.Warnings
-	p.lastCorr = corr
-	p.mu.Unlock()
-	p.publish()
+	p.settle(frame, axis, PolarMeasured)
 	return nil
 }
 
@@ -410,6 +476,9 @@ func (p *PolarSession) refresh(ctx context.Context) error {
 	} else {
 		p.state.Error = ""
 		p.state.Live = &st
+		if view, ok := polaralign.Locate(frame, p.opts.Site, p.fitOptions()); ok {
+			p.state.Pole = &view
+		}
 		p.lastFrame, p.haveLastFr = frame, true
 	}
 	p.mu.Unlock()

@@ -23,7 +23,7 @@ var testEpoch = time.Date(2026, 8, 4, 22, 30, 0, 0, time.UTC)
 // altErr/azErr are the misalignment in DEGREES, radius is how far the tube sits off the polar axis
 // (i.e. roughly 90° − declination), and the mount is turned by arcDeg in total across n frames.
 func sweep(site Site, altErrDeg, azErrDeg, radiusDeg, arcDeg float64, n int, opt FitOptions) ([]Sample, hVec3) {
-	axis := horizonVec(math.Abs(site.LatDeg)+altErrDeg, poleAz(site)+azErrDeg)
+	axis := horizonVec(math.Abs(site.LatDeg)+altErrDeg, poleAzimuth(site.LatDeg)+azErrDeg)
 
 	// Start the tube one radius away from the axis, offset toward the east so the circle is not
 	// degenerate with the meridian plane.
@@ -41,13 +41,6 @@ func sweep(site Site, altErrDeg, azErrDeg, radiusDeg, arcDeg float64, n int, opt
 		samples[i] = Sample{RADeg: ra, DecDeg: dec, At: at}
 	}
 	return samples, axis
-}
-
-func poleAz(s Site) float64 {
-	if s.LatDeg < 0 {
-		return 180
-	}
-	return 0
 }
 
 // perpAxis returns some unit vector perpendicular to v, for tilting off it.

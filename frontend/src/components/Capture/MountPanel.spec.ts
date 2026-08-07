@@ -108,15 +108,43 @@ describe("MountPanel keyboard jogging", () => {
     expect(stops().length).toBeGreaterThan(0);
   });
 
-  it("switches axis rather than driving both when a second arrow is pressed", async () => {
+  // Two arrows on DIFFERENT axes drive both motors at once, the way the hand controller does. This
+  // replaces an earlier rule that switched axis instead — one motor per axis means both can run,
+  // and a pad that refused diagonals was a limitation of this panel, never of the mount.
+  it("drives both axes at once when arrows on different axes are held", async () => {
     const wrapper = mountPanel();
     const pad = wrapper.find('[role="group"]');
 
     await pad.trigger("keydown", { key: "ArrowUp" });
     await pad.trigger("keydown", { key: "ArrowLeft" });
 
-    expect(stops().length).toBeGreaterThan(0);
+    // Neither axis was stopped to make room for the other.
+    expect(stops()).toHaveLength(0);
     expect(starts().map((p) => p.body.direction)).toEqual(["north", "east"]);
+  });
+
+  it("reverses within an axis rather than running one motor both ways", async () => {
+    const wrapper = mountPanel();
+    const pad = wrapper.find('[role="group"]');
+
+    await pad.trigger("keydown", { key: "ArrowLeft" });
+    await pad.trigger("keydown", { key: "ArrowRight" });
+
+    // The same motor cannot run east and west together, so east is stopped before west starts.
+    expect(stops().map((p) => p.body.direction)).toEqual(["east"]);
+    expect(starts().map((p) => p.body.direction)).toEqual(["east", "west"]);
+  });
+
+  it("releasing one arrow of a diagonal stops only that axis", async () => {
+    const wrapper = mountPanel();
+    const pad = wrapper.find('[role="group"]');
+
+    await pad.trigger("keydown", { key: "ArrowUp" });
+    await pad.trigger("keydown", { key: "ArrowLeft" });
+    await pad.trigger("keyup", { key: "ArrowUp" });
+
+    // Only the declination motor is halted; the right-ascension one keeps running.
+    expect(stops().map((p) => p.body.direction)).toEqual(["north"]);
   });
 
   it("asks the server to stop the axis by itself if no renewal arrives", async () => {

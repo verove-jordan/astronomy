@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { btnGhost, input } from "@/constants/styles";
 import { apiGet, apiPost } from "@/services/api";
@@ -37,6 +37,13 @@ const siteResult = ref("");
 const mount = computed(() => store.mount?.mount ?? null);
 const connected = computed(() => !!store.connected.mount);
 const link = computed(() => store.mount?.link ?? null);
+// Connected is not the same as connected to a telescope. The devices panel can leave the simulator
+// attached, and the simulator implements neither site nor clock — so those buttons answer "not
+// supported by this device" while a perfectly good hand controller sits on the USB bus. Keep the
+// port picker reachable in that state; hiding it made disconnecting the only way back to hardware.
+const simulated = computed(
+  () => connected.value && mount.value?.driver === "sim",
+);
 
 onMounted(() => {
   document.addEventListener("visibilitychange", onVisibilityChange);
@@ -47,7 +54,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   document.removeEventListener("visibilitychange", onVisibilityChange);
-  releaseKey();
+  releaseAll();
   stopRenewal();
   store.unwatchMount();
 });
@@ -122,44 +129,95 @@ async function sendClock() {
 const HOLD_MS = 4000;
 const RENEW_MS = 1500;
 let renewTimer = 0;
-let heldDirection = "";
 
-function startRenewal(direction: string) {
-  stopRenewal();
-  heldDirection = direction;
+// A mount has one motor per axis. That is the whole rule: both can run at once — which is how the
+// hand controller slews diagonally — but neither can run two ways. So what is held is tracked PER
+// AXIS rather than as a single direction, and north+west drives a diagonal while north+south is a
+// contradiction that resolves to whichever arrow was pressed later.
+type Axis = "ra" | "dec";
+
+const AXIS_OF: Record<string, Axis> = {
+  north: "dec",
+  south: "dec",
+  east: "ra",
+  west: "ra",
+};
+
+const held = reactive<Record<Axis, string>>({ ra: "", dec: "" });
+
+const heldDirections = computed(() =>
+  [held.dec, held.ra].filter((d): d is string => !!d),
+);
+
+function isHeld(direction: string) {
+  return held[AXIS_OF[direction]] === direction;
+}
+
+// One timer renews every axis still held.
+//
+// The server arms its deadman PER AXIS, so an axis nobody renews stops on its own while the other
+// keeps running. Renewing only the most recent direction — which is what a single held-direction
+// variable can do — would therefore drop the first axis four seconds into a diagonal, and it would
+// look like the mount had decided to stop half the movement by itself.
+function startRenewal() {
+  if (renewTimer) return;
   renewTimer = window.setInterval(() => {
-    void apiPost("/api/device/mount/jog", {
-      direction: heldDirection,
-      rate: rate.value,
-      hold_ms: HOLD_MS,
-    }).catch(() => {
-      // The deadman is the safety net; a missed renewal simply stops the axis.
-    });
+    for (const direction of heldDirections.value) {
+      void apiPost("/api/device/mount/jog", {
+        direction,
+        rate: rate.value,
+        hold_ms: HOLD_MS,
+      }).catch(() => {
+        // The deadman is the safety net; a missed renewal simply stops the axis.
+      });
+    }
   }, RENEW_MS);
 }
 
 function stopRenewal() {
   window.clearInterval(renewTimer);
   renewTimer = 0;
-  heldDirection = "";
 }
 
 async function jog(direction: string) {
   error.value = "";
+  const axis = AXIS_OF[direction];
+  if (!axis) return;
+  // One motor cannot run both ways, so a reversal stops the axis before restarting it. The other
+  // axis is left alone.
+  if (held[axis] && held[axis] !== direction) await stopAxis(held[axis]);
   try {
     await apiPost("/api/device/mount/jog", {
       direction,
       rate: rate.value,
       hold_ms: HOLD_MS,
     });
-    startRenewal(direction);
+    held[axis] = direction;
+    startRenewal();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
 }
 
+// stopAxis halts one motor and leaves the other running — releasing one arrow of a diagonal should
+// straighten the movement, not end it. A rate-0 frame stops the MOTOR the direction belongs to
+// whichever way that direction pointed, so the direction only has to name the right axis.
+async function stopAxis(direction: string) {
+  const axis = AXIS_OF[direction];
+  if (!axis) return;
+  held[axis] = "";
+  if (!heldDirections.value.length) stopRenewal();
+  try {
+    await apiPost("/api/device/mount/jog", { direction, rate: 0 });
+  } catch {
+    // the STOP button below is the real safety net
+  }
+}
+
 async function stopJog() {
   stopRenewal();
+  held.ra = "";
+  held.dec = "";
   try {
     // North and east only, and that is not an oversight: a rate-0 frame stops that MOTOR whatever
     // direction byte it carries, and north/east cover both motors. Adding south and west would send
@@ -176,7 +234,12 @@ async function stopJog() {
 //
 // The arrows map to the pad's own layout: up/down are the declination motor, left/right the
 // right-ascension one (left is East, matching the "← E" button). Holding a key behaves exactly like
-// holding a button, renewal and all, because both go through jog()/stopJog().
+// holding a button, renewal and all, because both go through jog()/stopAxis().
+//
+// Two arrows on different axes are held together deliberately: the hand controller slews diagonally
+// and this pad now does too. Two arrows on the SAME axis still cannot both apply, and the later one
+// wins rather than the earlier — pressing east while west is held reverses, which is what the key
+// press plainly asks for.
 const KEY_DIRECTION: Record<string, string> = {
   ArrowUp: "north",
   ArrowDown: "south",
@@ -184,13 +247,11 @@ const KEY_DIRECTION: Record<string, string> = {
   ArrowRight: "west",
 };
 
-const heldKey = ref("");
-
 function onPadKeyDown(e: KeyboardEvent) {
   if (e.key === "Escape") {
     // Escape is the keyboard's STOP, and it must work whatever else is going on.
     e.preventDefault();
-    releaseKey();
+    void stopJog();
     void store.stopMount();
     return;
   }
@@ -201,11 +262,7 @@ function onPadKeyDown(e: KeyboardEvent) {
   // Auto-repeat fires this many times a second while a key is held. The renewal interval already
   // keeps the axis alive, so repeats are ignored rather than turned into a flood of commands down a
   // 9600-baud link.
-  if (e.repeat || heldKey.value === direction) return;
-  // Pressing a second arrow switches axis rather than driving both: the pad's buttons are one at a
-  // time, and a keyboard that behaved differently would be a surprise with a telescope attached.
-  if (heldKey.value) void stopJog();
-  heldKey.value = direction;
+  if (e.repeat || isHeld(direction)) return;
   void jog(direction);
 }
 
@@ -213,21 +270,23 @@ function onPadKeyUp(e: KeyboardEvent) {
   const direction = KEY_DIRECTION[e.key];
   if (!direction) return;
   e.preventDefault();
-  if (heldKey.value !== direction) return;
-  releaseKey();
+  // Only the released axis stops. Letting go of one arrow of a diagonal leaves the other running,
+  // exactly as it does on the hand controller.
+  if (!isHeld(direction)) return;
+  void stopAxis(direction);
 }
 
-// releaseKey is also the answer to every way a keyup can go missing — focus lost, tab switched,
-// laptop slept. The server-side deadman is still the last line, but stopping here means the mount
-// halts in milliseconds rather than in four seconds.
-function releaseKey() {
-  if (!heldKey.value) return;
-  heldKey.value = "";
+// releaseAll is the answer to every way a keyup can go missing — focus lost, tab switched, laptop
+// slept. Everything stops, because what was held is no longer knowable. The server-side deadman is
+// still the last line, but stopping here means the mount halts in milliseconds rather than in four
+// seconds.
+function releaseAll() {
+  if (!heldDirections.value.length) return;
   void stopJog();
 }
 
 function onVisibilityChange() {
-  if (document.hidden) releaseKey();
+  if (document.hidden) releaseAll();
 }
 
 function ms(v: number | undefined): string {
@@ -246,7 +305,13 @@ function uptime(v: number | undefined): string {
 <template>
   <div class="space-y-2">
     <!-- Port + connection -->
-    <div v-if="!connected" class="space-y-1">
+    <div v-if="!connected || simulated" class="space-y-1">
+      <p
+        v-if="simulated"
+        class="rounded-md border border-amber-400/50 bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-900/20 dark:text-amber-300"
+      >
+        {{ t("capture.mount.simulatedHint") }}
+      </p>
       <label class="text-xs text-slate-500 dark:text-slate-400">
         {{ t("capture.mount.port") }}
         <select v-model="selectedPort" :class="input" class="mt-0.5">
@@ -339,28 +404,28 @@ function uptime(v: number | undefined): string {
         class="inline-block rounded-md outline-none ring-brand-500 focus:ring-2"
         @keydown="onPadKeyDown"
         @keyup="onPadKeyUp"
-        @blur="releaseKey"
+        @blur="releaseAll"
       >
         <div class="grid w-32 grid-cols-3 gap-1">
           <span />
           <button
-            :class="btnGhost"
+            :class="[btnGhost, isHeld('north') ? 'ring-2 ring-brand-500' : '']"
             class="!px-1 !py-1 text-xs"
             @pointerdown="jog('north')"
-            @pointerup="stopJog"
-            @pointercancel="stopJog"
-            @pointerleave="stopJog"
+            @pointerup="stopAxis('north')"
+            @pointercancel="stopAxis('north')"
+            @pointerleave="stopAxis('north')"
           >
             ↑ N
           </button>
           <span />
           <button
-            :class="btnGhost"
+            :class="[btnGhost, isHeld('east') ? 'ring-2 ring-brand-500' : '']"
             class="!px-1 !py-1 text-xs"
             @pointerdown="jog('east')"
-            @pointerup="stopJog"
-            @pointercancel="stopJog"
-            @pointerleave="stopJog"
+            @pointerup="stopAxis('east')"
+            @pointercancel="stopAxis('east')"
+            @pointerleave="stopAxis('east')"
           >
             ← E
           </button>
@@ -371,23 +436,23 @@ function uptime(v: number | undefined): string {
             {{ t("capture.mount.stop") }}
           </button>
           <button
-            :class="btnGhost"
+            :class="[btnGhost, isHeld('west') ? 'ring-2 ring-brand-500' : '']"
             class="!px-1 !py-1 text-xs"
             @pointerdown="jog('west')"
-            @pointerup="stopJog"
-            @pointercancel="stopJog"
-            @pointerleave="stopJog"
+            @pointerup="stopAxis('west')"
+            @pointercancel="stopAxis('west')"
+            @pointerleave="stopAxis('west')"
           >
             W →
           </button>
           <span />
           <button
-            :class="btnGhost"
+            :class="[btnGhost, isHeld('south') ? 'ring-2 ring-brand-500' : '']"
             class="!px-1 !py-1 text-xs"
             @pointerdown="jog('south')"
-            @pointerup="stopJog"
-            @pointercancel="stopJog"
-            @pointerleave="stopJog"
+            @pointerup="stopAxis('south')"
+            @pointercancel="stopAxis('south')"
+            @pointerleave="stopAxis('south')"
           >
             ↓ S
           </button>

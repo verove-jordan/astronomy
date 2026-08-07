@@ -108,13 +108,24 @@ const statusClass = (status: string) =>
       <p class="text-[11px] text-slate-500 dark:text-slate-400">
         {{ t("capture.sessions.blurb") }}
       </p>
-      <button
-        :class="btnGhost"
-        class="!px-2 !py-0.5 text-xs"
-        @click="store.loadSessions()"
-      >
-        {{ t("common.refresh") }}
-      </button>
+      <div class="flex items-center gap-2">
+        <!-- The full history, with the sky each night ran under, lives on its own page — this list
+             stays the at-a-glance view of the run in front of you. -->
+        <RouterLink
+          :class="btnGhost"
+          class="!px-2 !py-0.5 text-xs"
+          :to="{ name: 'logbook' }"
+        >
+          {{ t("capture.sessions.openLogbook") }}
+        </RouterLink>
+        <button
+          :class="btnGhost"
+          class="!px-2 !py-0.5 text-xs"
+          @click="store.loadSessions()"
+        >
+          {{ t("common.refresh") }}
+        </button>
+      </div>
     </div>
 
     <p v-if="!rows.length" class="text-xs text-slate-400">

@@ -3,22 +3,19 @@ package polaralign
 import (
 	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// axisAt builds an Axis pointing a known amount away from the pole, without going through the fit.
+// axisAt builds an Axis pointing a known amount away from the pole, without going through the fit. It
+// is misalignedAxis with the fit metadata a Correction never reads filled in, so the simulator and the
+// tests describe a misaligned mount the same way.
 func axisAt(site Site, altErrDeg, azKnobDeg float64) Axis {
-	az := poleAz(site) + azKnobDeg
-	if site.LatDeg < 0 {
-		// Positive azKnobDeg means EAST in both hemispheres, and azimuth runs the other way round the
-		// compass when the pole is due south.
-		az = poleAz(site) - azKnobDeg
-	}
-	v := horizonVec(math.Abs(site.LatDeg)+altErrDeg, az)
-	alt, azOut := v.altAz()
-	return Axis{AltDeg: alt, AzDeg: azOut, RadiusDeg: 70, ArcDeg: 60, Samples: 4}
+	a := misalignedAxis(site, altErrDeg, azKnobDeg)
+	a.RadiusDeg, a.ArcDeg, a.Samples = 70, 60, 4
+	return a
 }
 
 // The instruction has to be right in both hemispheres, and "left" is a different compass direction in
@@ -157,5 +154,49 @@ func TestCorrection_StageOrderIsSecondOrder(t *testing.T) {
 		// Product of the two errors, in the same units — the signature of a second-order term.
 		assert.Less(t, gap, 2*errDeg*errDeg,
 			"at %g° of error the stage order cost %.4g°", errDeg, gap)
+	}
+}
+
+// MisalignPointing is the simulator's half of the loop, so the test that matters is that the two
+// halves agree: dial a known error into a synthetic mount, sweep it, run the real fit, and get the
+// same numbers back. Anything that drifts between the forward model and the measurement shows up here.
+func TestMisalignPointing_IsRecoveredByTheFit(t *testing.T) {
+	for _, site := range []Site{{48.8566, 2.3522}, {-33.87, 151.2}, {12, 77.6}} {
+		for _, c := range []struct{ altErr, azKnob float64 }{
+			{0.5, 0}, {0, 0.75}, {-0.4, 0.6}, {2, -1.5}, {0.05, -0.05},
+		} {
+			// A telescope on a PERFECT mount, swept about the pole: constant declination, stepping
+			// hour angle. The simulator then bends each of those into where a misaligned mount would
+			// really have been pointing.
+			samples := make([]Sample, 4)
+			for i := range samples {
+				at := testEpoch.Add(time.Duration(i*90) * time.Second)
+				haDeg := -30 + float64(i)*20
+				ideal := haVec(haDeg, 25).horizon(site.LatDeg)
+				idealRA, idealDec := skyFromDir(ideal, site, at, FitOptions{})
+				ra, dec := MisalignPointing(idealRA, idealDec, site, at, c.altErr, c.azKnob)
+				samples[i] = Sample{RADeg: ra, DecDeg: dec, At: at}
+			}
+
+			axis, err := FitAxis(samples, site, FitOptions{})
+			require.NoError(t, err, "lat %g alt %g az %g", site.LatDeg, c.altErr, c.azKnob)
+			got := Correct(axis, site)
+
+			assert.InDelta(t, c.altErr, got.AltErrorDeg, 0.01,
+				"lat %g: altitude error came back wrong", site.LatDeg)
+			assert.InDelta(t, c.azKnob, got.AzKnobDeg, 0.01,
+				"lat %g: azimuth knob came back wrong", site.LatDeg)
+		}
+	}
+}
+
+// Zero has to be exactly zero: a simulator with no error configured must behave as it always did,
+// down to the last bit, or every existing test of it becomes a coin toss.
+func TestMisalignPointing_ZeroIsExactlyANoOp(t *testing.T) {
+	site := Site{48.8566, 2.3522}
+	for _, p := range [][2]float64{{83.6, 22.0}, {201.3, -60.4}, {0, 89.9}} {
+		ra, dec := MisalignPointing(p[0], p[1], site, testEpoch, 0, 0)
+		assert.Equal(t, p[0], ra)
+		assert.Equal(t, p[1], dec)
 	}
 }
