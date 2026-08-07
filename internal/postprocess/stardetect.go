@@ -5,6 +5,7 @@
 package postprocess
 
 import (
+	"math"
 	"sort"
 
 	"github.com/verove-jordan/astronomy/internal/fits"
@@ -18,6 +19,12 @@ type StarDetectOptions struct {
 	MinSepPx   int     // greedy separation between kept peaks (0 → 8)
 	SatLevel   float32 // exclude peaks at or above this level (0 → 0.9; ≥1 → keep saturated peaks)
 	MaxHalfMax int     // reject blobs wider than this at half max (0 → 15)
+	// MinLocalSigma additionally requires a peak to rise this many LOCAL MAD-sigmas above the median
+	// of its own surrounding annulus. Sigma alone measures against the whole frame's noise floor,
+	// which is meaningless inside a bright nebula: there, faint texture and knots sit far above the
+	// global threshold and get counted as stars. 0 (the default) disables the test, so every existing
+	// caller is byte-identical.
+	MinLocalSigma float64
 }
 
 func (o StarDetectOptions) withDefaults() StarDetectOptions {
@@ -44,6 +51,10 @@ func (o StarDetectOptions) withDefaults() StarDetectOptions {
 type StarPeak struct {
 	X, Y int
 	V    float32
+	// HalfWidth is the star's measured extent at half maximum, in pixels — the same quantity the
+	// width filter already computes, kept instead of discarded so callers can size a marker to the
+	// star rather than drawing every star the same. Roughly the FWHM.
+	HalfWidth int
 }
 
 // DetectStarPeaks detects star peaks on im's luminance (3-channel image) or its single plane
@@ -64,7 +75,7 @@ func DetectStarPeaks(im *fits.Image, o StarDetectOptions) []StarPeak {
 	peaks := detectStarsOpts(lum, im.W, im.H, o)
 	out := make([]StarPeak, len(peaks))
 	for i, p := range peaks {
-		out[i] = StarPeak{X: p.x, Y: p.y, V: p.v}
+		out[i] = StarPeak{X: p.x, Y: p.y, V: p.v, HalfWidth: p.hw}
 	}
 	return out
 }
@@ -72,6 +83,7 @@ func DetectStarPeaks(im *fits.Image, o StarDetectOptions) []StarPeak {
 type starPeak struct {
 	x, y int
 	v    float32
+	hw   int
 }
 
 // detectStars finds bright local maxima with the star-field-calibration defaults (see
@@ -106,10 +118,14 @@ func detectStarsOpts(lum []float32, w, h int, o StarDetectOptions) []starPeak {
 				v < lum[row+w+x-1] || v < lum[row+w+x] || v < lum[row+w+x+1] {
 				continue
 			}
-			if halfMaxWidth(lum, w, h, x, y, v, float32(med), o.MaxHalfMax) > o.MaxHalfMax {
+			hw := halfMaxWidth(lum, w, h, x, y, v, float32(med), o.MaxHalfMax)
+			if hw > o.MaxHalfMax {
 				continue // extended blob (galaxy core, nebula knot), not a star
 			}
-			peaks = append(peaks, starPeak{x, y, v})
+			if o.MinLocalSigma > 0 && localSigma(lum, w, h, x, y, v) < o.MinLocalSigma {
+				continue // rises above the global noise floor, but not above its own surroundings
+			}
+			peaks = append(peaks, starPeak{x, y, v, hw})
 		}
 	}
 	sort.Slice(peaks, func(i, j int) bool { return peaks[i].v > peaks[j].v })
@@ -132,6 +148,62 @@ func detectStarsOpts(lum []float32, w, h int, o StarDetectOptions) []starPeak {
 		}
 	}
 	return kept
+}
+
+// Local-contrast annulus: far enough out to clear a star's own wings, tight enough to still sample
+// the structure the star sits on (nebula filament, galaxy arm) rather than the distant sky.
+const (
+	localRingInner = 6
+	localRingOuter = 12
+)
+
+// localSigma measures how far a peak stands above its OWN surroundings: (peak − median) / MAD of an
+// annulus around it. This is the test that separates a star from a bright patch of nebula — inside
+// M42 the global 5σ floor is met by texture everywhere, while a real star still spikes above the
+// filament it sits on.
+//
+// The two degenerate cases both mean "no evidence to reject", so both PASS rather than fail: an
+// annulus with no measurable scatter (a perfectly flat background — synthetic frames, or a masked
+// region) makes any rise above it infinitely significant, and an annulus clipped by the image edge
+// cannot be judged at all. Failing those would silently drop real stars, which is the one thing a
+// star counter must not do.
+func localSigma(lum []float32, w, h, px, py int, peak float32) float64 {
+	var buf [(2*localRingOuter + 1) * (2*localRingOuter + 1)]float64
+	vals := buf[:0]
+	for dy := -localRingOuter; dy <= localRingOuter; dy++ {
+		y := py + dy
+		if y < 0 || y >= h {
+			continue
+		}
+		for dx := -localRingOuter; dx <= localRingOuter; dx++ {
+			d2 := dx*dx + dy*dy
+			if d2 < localRingInner*localRingInner || d2 > localRingOuter*localRingOuter {
+				continue
+			}
+			x := px + dx
+			if x < 0 || x >= w {
+				continue
+			}
+			vals = append(vals, float64(lum[y*w+x]))
+		}
+	}
+	if len(vals) < 16 {
+		return math.Inf(1) // annulus clipped by the frame edge — unjudgeable, so not rejected
+	}
+	sort.Float64s(vals)
+	med := vals[len(vals)/2]
+	for i := range vals {
+		vals[i] = math.Abs(vals[i] - med)
+	}
+	sort.Float64s(vals)
+	mad := vals[len(vals)/2] * 1.4826
+	if mad <= 0 {
+		if float64(peak) > med {
+			return math.Inf(1) // flat surroundings: rising above them at all is unambiguous
+		}
+		return 0
+	}
+	return (float64(peak) - med) / mad
 }
 
 // halfMaxWidth measures the larger of the horizontal/vertical extents where the profile stays

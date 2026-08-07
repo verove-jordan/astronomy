@@ -536,7 +536,7 @@ func (c *flatCache) sessionFlat(ctx context.Context, opts Options, g lightGroup,
 	if _, err := fsutil.LinkFrames(buildDir, paths); err != nil {
 		return "", fmt.Sprintf("session %d: %v", g.SessionID, err)
 	}
-	if _, err := opts.Runner.Run(ctx, buildDir, siril.StackFlatScript("flat", outBase, biasPath, len(paths)), nil); err != nil {
+	if _, err := opts.Runner.Run(ctx, buildDir, siril.StackFlatScript("flat", outBase, biasPath, len(paths), opts.masterStack(calib.MasterFlat)), nil); err != nil {
 		return "", fmt.Sprintf("session %d: build flat failed: %v", g.SessionID, err)
 	}
 	c.built[key] = outBase + ".fits"

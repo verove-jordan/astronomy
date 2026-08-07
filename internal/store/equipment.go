@@ -18,6 +18,7 @@ type EquipmentSetup struct {
 	SensorWpx  int     `json:"sensor_w_px" db:"sensor_w_px"`
 	SensorHpx  int     `json:"sensor_h_px" db:"sensor_h_px"`
 	BarlowX    float64 `json:"barlow_x" db:"barlow_x"`
+	ReducerX   float64 `json:"reducer_x" db:"reducer_x"`
 	CameraName string  `json:"camera_name" db:"camera_name"`
 	Eyepieces  []byte  `json:"eyepieces" db:"eyepieces"` // JSONB array, passed through verbatim
 	Favorite   bool    `json:"favorite" db:"favorite"`
@@ -26,7 +27,7 @@ type EquipmentSetup struct {
 }
 
 const equipmentCols = `id,name,focal_mm,aperture_mm,pixel_um,sensor_w_px,sensor_h_px,barlow_x,` +
-	`camera_name,eyepieces,favorite,created_at,updated_at`
+	`reducer_x,camera_name,eyepieces,favorite,created_at,updated_at`
 
 // ListEquipmentSetups returns every saved rig, favourites first then by lowercased name.
 func (s *Store) ListEquipmentSetups(ctx context.Context) ([]EquipmentSetup, error) {
@@ -60,17 +61,17 @@ func (s *Store) SaveEquipmentSetup(ctx context.Context, e EquipmentSetup) (int64
 	var id int64
 	err := s.pool.QueryRow(ctx,
 		`INSERT INTO equipment_setups(name,focal_mm,aperture_mm,pixel_um,sensor_w_px,sensor_h_px,
-		   barlow_x,camera_name,eyepieces,favorite,created_at,updated_at)
-		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)
+		   barlow_x,reducer_x,camera_name,eyepieces,favorite,created_at,updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)
 		 ON CONFLICT (LOWER(name)) DO UPDATE SET
 		   name=EXCLUDED.name, focal_mm=EXCLUDED.focal_mm, aperture_mm=EXCLUDED.aperture_mm,
 		   pixel_um=EXCLUDED.pixel_um, sensor_w_px=EXCLUDED.sensor_w_px,
 		   sensor_h_px=EXCLUDED.sensor_h_px, barlow_x=EXCLUDED.barlow_x,
-		   camera_name=EXCLUDED.camera_name, eyepieces=EXCLUDED.eyepieces,
-		   favorite=EXCLUDED.favorite, updated_at=$11
+		   reducer_x=EXCLUDED.reducer_x, camera_name=EXCLUDED.camera_name,
+		   eyepieces=EXCLUDED.eyepieces, favorite=EXCLUDED.favorite, updated_at=$12
 		 RETURNING id`,
 		e.Name, e.FocalMM, e.ApertureMM, e.PixelUm, e.SensorWpx, e.SensorHpx,
-		e.BarlowX, e.CameraName, e.Eyepieces, e.Favorite, now).Scan(&id)
+		e.BarlowX, e.ReducerX, e.CameraName, e.Eyepieces, e.Favorite, now).Scan(&id)
 	return id, err
 }
 
@@ -82,11 +83,11 @@ func (s *Store) UpdateEquipmentSetup(ctx context.Context, e EquipmentSetup) erro
 	}
 	_, err := s.pool.Exec(ctx,
 		`UPDATE equipment_setups SET name=$2, focal_mm=$3, aperture_mm=$4, pixel_um=$5,
-		   sensor_w_px=$6, sensor_h_px=$7, barlow_x=$8, camera_name=$9, eyepieces=$10,
-		   favorite=$11, updated_at=$12
+		   sensor_w_px=$6, sensor_h_px=$7, barlow_x=$8, reducer_x=$9, camera_name=$10,
+		   eyepieces=$11, favorite=$12, updated_at=$13
 		 WHERE id=$1`,
 		e.ID, e.Name, e.FocalMM, e.ApertureMM, e.PixelUm, e.SensorWpx, e.SensorHpx,
-		e.BarlowX, e.CameraName, e.Eyepieces, e.Favorite, nowMs())
+		e.BarlowX, e.ReducerX, e.CameraName, e.Eyepieces, e.Favorite, nowMs())
 	return err
 }
 

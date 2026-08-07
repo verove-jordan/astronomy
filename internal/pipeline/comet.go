@@ -66,7 +66,8 @@ func ProcessComet(ctx context.Context, opts Options) (*Result, error) {
 	res.Warnings = append(res.Warnings, aiToolWarnings(ctx, opts)...)
 
 	opts.report(Progress{Step: "building master calibration frames", Index: 1, Total: 4})
-	masters, mWarn, err := calib.BuildMasters(ctx, opts.Runner, inv, filepath.Join(workRun, "masters"), workRun, opts.sirilLines("masters"))
+	masters, mWarn, err := calib.BuildMasters(ctx, opts.Runner, inv, filepath.Join(workRun, "masters"), workRun,
+		opts.masterStacks(), opts.sirilLines("masters"))
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +355,8 @@ func stackChannelsDual(ctx context.Context, opts Options, mergedDir string, mfra
 		// The comet-aligned stack uses ASYMMETRIC rejection: the coma is consistent frame-to-frame
 		// (a tight high clip never rejects it) while the trailing stars are bright one-or-two-frame
 		// HIGH outliers at any pixel — σ-high 1.8 erases them; σ-low 4 protects the faint tail.
-		if stackAlignedDirScript(ctx, opts, cometDir, siril.StackCometScript("s", filepath.Join(outDir, cometBase)), res, "comet "+filter) {
+		if stackAlignedDirScript(ctx, opts, cometDir,
+			siril.StackCometScript("s", filepath.Join(outDir, cometBase), len(idxs), opts.cometStack()), res, "comet "+filter) {
 			cometMasters[filter] = cometBase
 		}
 	}
@@ -423,7 +425,8 @@ func stackAligned(ctx context.Context, opts Options, paths []string, seqDir, out
 }
 
 func stackAlignedDir(ctx context.Context, opts Options, seqDir, outBase string, frames int, res *Result, label string) bool {
-	return stackAlignedDirScript(ctx, opts, seqDir, siril.StackAlignedScript("s", outBase, frames), res, label)
+	return stackAlignedDirScript(ctx, opts, seqDir,
+		siril.StackAlignedScript("s", outBase, frames, opts.lightStack(opts.stackWeight())), res, label)
 }
 
 func stackAlignedDirScript(ctx context.Context, opts Options, seqDir, script string, res *Result, label string) bool {

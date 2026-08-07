@@ -6,6 +6,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/inspect"
 	"github.com/verove-jordan/astronomy/internal/siril"
+	"github.com/verove-jordan/astronomy/internal/stackalg"
 )
 
 // RawFrame is a single raw calibration exposure pulled from the persistent catalog (prior sessions).
@@ -54,7 +55,7 @@ func (o DeepOptions) tempTol() float64 {
 // are also saved to the library. Per-set failures are warnings, not fatal.
 func BuildDeepMasters(ctx context.Context, runner *siril.Runner, inv *inspect.Inventory,
 	provider RawCalibProvider, lib MasterStore, opts DeepOptions, mastersDir, workDir string,
-	onProgress func(siril.Progress)) ([]Master, []string, error) {
+	stacks stackalg.MasterOptions, onProgress func(siril.Progress)) ([]Master, []string, error) {
 	if err := fsutil.EnsureDir(mastersDir); err != nil {
 		return nil, nil, err
 	}
@@ -76,20 +77,20 @@ func BuildDeepMasters(ctx context.Context, runner *siril.Runner, inv *inspect.In
 	}
 
 	for _, sig := range biasSigs(inv) {
-		m, ok, warn := buildDeepBias(ctx, runner, inv, provider, libRows, sig, mastersDir, workDir, onProgress)
+		m, ok, warn := buildDeepBias(ctx, runner, inv, provider, libRows, sig, mastersDir, workDir, stacks, onProgress)
 		add(m, ok, warn)
 	}
 	for _, set := range inv.SetsOfType(inspect.DarkFlat) { // session-local (used to calibrate flats)
-		m, qc, err := buildOne(ctx, runner, set, masters, mastersDir, workDir, onProgress)
+		m, qc, err := buildOne(ctx, runner, set, masters, mastersDir, workDir, stacks, onProgress)
 		warnings = append(warnings, qc...)
 		add(m, err == nil, errString(err))
 	}
 	for _, sig := range darkSigs(inv) {
-		m, ok, warn := buildDeepDark(ctx, runner, inv, provider, libRows, sig, opts, mastersDir, workDir, onProgress)
+		m, ok, warn := buildDeepDark(ctx, runner, inv, provider, libRows, sig, opts, mastersDir, workDir, stacks, onProgress)
 		add(m, ok, warn)
 	}
 	for _, set := range inv.SetsOfType(inspect.Flat) { // session-local: this night's dust/vignetting
-		m, qc, err := buildOne(ctx, runner, set, masters, mastersDir, workDir, onProgress)
+		m, qc, err := buildOne(ctx, runner, set, masters, mastersDir, workDir, stacks, onProgress)
 		warnings = append(warnings, qc...)
 		add(m, err == nil, errString(err))
 	}

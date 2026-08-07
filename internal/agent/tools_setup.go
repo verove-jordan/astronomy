@@ -29,6 +29,7 @@ func userSetup(d Deps) (string, error) {
 		"optics": map[string]any{
 			"focal_mm": c.FocalLenMM, "aperture_mm": c.ApertureMM, "pixel_um": c.PixelSizeUm,
 			"sensor_w_px": c.SensorWpx, "sensor_h_px": c.SensorHpx, "barlow_x": c.BarlowX,
+			"reducer_x": c.ReducerX,
 			"eyepieces": c.EyepieceKit,
 		},
 		"site": map[string]any{

@@ -16,6 +16,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/gimp"
 	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/siril"
+	"github.com/verove-jordan/astronomy/internal/stackalg"
 )
 
 // monoScriptHeader mirrors the Siril prelude every finish script uses (modern Siril, FITS output,
@@ -120,7 +121,7 @@ func renderAllChannelMono(ctx context.Context, opts Options, channels map[string
 		return nil, err
 	}
 	synth := filepath.Join(outDir, "synthlum")
-	if _, err := opts.Runner.Run(ctx, seqDir, siril.IntegrateChannelsScript("synth", synth, "nbstack"),
+	if _, err := opts.Runner.Run(ctx, seqDir, siril.IntegrateChannelsScript("synth", synth, stackalg.WeightNbStack),
 		opts.sirilLines("integrating all channels")); err != nil {
 		return nil, err
 	}

@@ -10,8 +10,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	"github.com/verove-jordan/astronomy/internal/grade"
 	"github.com/verove-jordan/astronomy/internal/inspect"
+	"github.com/verove-jordan/astronomy/internal/stackalg"
 )
 
 // TestGradeChannel_M92Shape replays the real M92 Ha failure at the gradeChannel level: 8 of 10
@@ -59,7 +61,7 @@ func TestStackSelectedOrCopy_LoneFrame(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(seqDir, "r_light_00001.fits"), payload, 0o644))
 
 	outBase := filepath.Join(outDir, "master_Ha")
-	_, note, err := stackSelectedOrCopy(context.Background(), nil, seqDir, "r_light", 1, nil, outBase, "", nil)
+	_, note, err := stackSelectedOrCopy(context.Background(), nil, seqDir, "r_light", 1, nil, outBase, stackalg.DefaultLights(), nil)
 	require.NoError(t, err)
 	assert.Contains(t, note, "only 1 frame registered")
 	got, err := os.ReadFile(outBase + ".fits")
@@ -70,7 +72,7 @@ func TestStackSelectedOrCopy_LoneFrame(t *testing.T) {
 // TestStackSelectedOrCopy_FloorViolation checks the defensive error: fewer than two survivors with
 // two or more registered frames is a grading-contract violation and must never reach Siril.
 func TestStackSelectedOrCopy_FloorViolation(t *testing.T) {
-	_, _, err := stackSelectedOrCopy(context.Background(), nil, t.TempDir(), "r_light", 3, []int{1, 2}, "/out/m", "", nil)
+	_, _, err := stackSelectedOrCopy(context.Background(), nil, t.TempDir(), "r_light", 3, []int{1, 2}, "/out/m", stackalg.DefaultLights(), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "two-frame stack minimum")
 }

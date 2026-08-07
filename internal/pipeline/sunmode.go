@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,29 +82,56 @@ func ProcessSun(ctx context.Context, opts Options) (*Result, error) {
 		return nil, fmt.Errorf("sun: %w", err)
 	}
 	sunPreview(opts, res, outDir, ordSunFrame, "frame", frames[0].Path, frames[0].Limb, preset)
+
+	// A bracketed group is split here and stays split all the way to the composite. Exposure tiers
+	// are normalised, windowed and stacked apart from each other because every one of those steps
+	// compares a frame against its siblings — normalisation maps onto their median, clipping rejects
+	// what disagrees with them — and across a two-stop gap those comparisons are meaningless.
+	tiers := buildSunTiers(group, frames, preset)
 	opts.report(Progress{Step: "normalising exposures", Index: 3, Total: sunSteps,
-		Line: fmt.Sprintf("%d frame(s) onto one photometric scale", len(frames))})
-	if nWarn, nerr := solar.Normalize(frames); nerr != nil {
-		res.Warnings = append(res.Warnings, "sun: photometric normalisation: "+nerr.Error())
-	} else {
-		res.Warnings = append(res.Warnings, nWarn...)
+		Line: sunTierLine(tiers, len(frames))})
+	for i := range tiers {
+		if nWarn, nerr := solar.Normalize(tiers[i].Frames); nerr != nil {
+			res.Warnings = append(res.Warnings, "sun: photometric normalisation: "+nerr.Error())
+		} else {
+			res.Warnings = append(res.Warnings, nWarn...)
+		}
+		tiers[i].Windows = solar.Windows(tiers[i].Frames, preset.WindowOpts())
 	}
 
-	windows := solar.Windows(frames, preset.WindowOpts())
 	opts.report(Progress{Step: "stacking", Index: 4, Total: sunSteps,
-		Line: fmt.Sprintf("%d window(s) over %d frame(s)", len(windows), len(frames))})
-	masters, mWarn := stackWindows(ctx, opts, windows, preset, outDir, res, sunSteps)
-	res.Warnings = append(res.Warnings, mWarn...)
+		Line: fmt.Sprintf("%d window(s) over %d frame(s)", countWindows(tiers), len(frames))})
+	sWarn := stackTiers(ctx, opts, tiers, preset, outDir, res, sunSteps)
+	res.Warnings = append(res.Warnings, sWarn...)
+	masters := tiers[0].Masters
 	if len(masters) == 0 {
 		return nil, fmt.Errorf("sun: no window produced a master")
 	}
 
 	opts.report(Progress{Step: "finishing", Index: 5, Total: sunSteps})
-	hero := solar.Sharpest(windows)
-	if hero >= len(masters) {
-		hero = 0
+	hero, hWarn := heroMaster(opts, tiers, outDir, res, preset, sunSteps)
+	res.Warnings = append(res.Warnings, hWarn...)
+	if hero == nil {
+		return nil, fmt.Errorf("sun: no master to finish")
 	}
-	final, ferr := finishSun(opts, masters, hero, preset, outDir, object)
+
+	// The finish is resolved ONCE, against the master the run is about to render, and the resolved
+	// settings are then what the hero, the time-lapse and the run record all use. Deconvolution is
+	// only meaningful at the width of the point spread function, and that is measured from this
+	// master's own limb rather than assumed — but the time-lapse's own rule still holds, that every
+	// frame of it goes through one identical finish, so the resolution has to happen here and not
+	// separately per render.
+	fin, psf, notes := solar.ResolveFinish(hero.Master, hero.Limb, preset.Finish)
+	for _, n := range notes {
+		opts.report(Progress{Step: "finishing", Index: 5, Total: sunSteps, Line: n})
+		res.Warnings = append(res.Warnings, n)
+	}
+	if psf.OK {
+		res.PSF = &psf
+	}
+	preset.Finish = fin
+
+	final, ferr := finishSun(opts, hero, preset, outDir, object)
 	if ferr != nil {
 		return nil, fmt.Errorf("sun: %w", ferr)
 	}
@@ -113,6 +141,11 @@ func ProcessSun(ctx context.Context, opts Options) (*Result, error) {
 	// The time-lapse is rendered whenever the session split into more than one window, regardless of
 	// the requested format: windowing exists because the scene evolves, so the evolution is the
 	// result, not an optional extra. The job layer may still add its own Ken-Burns pan on top.
+	//
+	// It runs over the REFERENCE tier alone. A time-lapse is a sequence in time, and a bracket is a
+	// sequence in exposure that happens to have been shot in time order — interleaving the two would
+	// render the same minute twice at two brightnesses, which reads as a flicker rather than as the
+	// chromosphere moving.
 	if len(masters) > 1 {
 		opts.report(Progress{Step: "rendering the session time-lapse", Index: 6, Total: sunSteps,
 			Line: fmt.Sprintf("%d window(s)", len(masters))})
@@ -131,10 +164,15 @@ func ProcessSun(ctx context.Context, opts Options) (*Result, error) {
 // finished image — the milestones a viewer needs to tell "the frames were bad" from "the stack was
 // bad" from "the finish was bad".
 const (
-	ordSunFrame  = 50
-	ordSunWindow = 100
-	ordSunFinal  = 900
+	ordSunFrame     = 50
+	ordSunWindow    = 100
+	ordSunComposite = 800
+	ordSunFinal     = 900
 )
+
+// sunCompositeMaster is where a bracketed run persists its exposure composite — the master it
+// finished, and therefore the one a re-finish must replay.
+const sunCompositeMaster = "master_hdr.fits"
 
 // copyFinalPreview registers the finished image as the last milestone of the timeline.
 func copyFinalPreview(opts Options, outDir string, final *postprocess.Result) {
@@ -183,7 +221,15 @@ func sunPreview(opts Options, res *Result, outDir string, ord int, stage, frameP
 			return
 		}
 		mono := &fits.Image{W: im.W, H: im.H, C: 1, Pix: [][]float32{im.Pix[0]}}
-		img = solar.Finish(mono, limb, p.Finish)
+		// Every milestone is resolved against ITS OWN limb, the same way the final image is.
+		//
+		// The timeline exists to answer "was it the frames, the stack or the finish?", and it can only
+		// answer that if the only difference between the pictures is the thing being compared. Render
+		// a single frame at the finish's fallback deconvolution width and the stack at its measured
+		// one and the timeline reports a difference the pipeline invented — which reads, wrongly and
+		// convincingly, as the stack having thrown detail away.
+		fin, _, _ := solar.ResolveFinish(mono, limb, p.Finish)
+		img = solar.Finish(mono, limb, fin)
 	default:
 		return
 	}
@@ -198,6 +244,110 @@ type sunWindowMaster struct {
 	Stack  *solar.StackResult
 	Path   string
 	Window solar.Window
+}
+
+// sunTier is one exposure tier of a run: the files shot at that exposure, their frames, and what
+// stacking them produced. A session shot at one exposure is one tier, and every step below then
+// behaves exactly as it did before brackets existed.
+type sunTier struct {
+	Label   string
+	Level   float64 // measured on-disc median of the tier's files, the exposure it stands for
+	Frames  []solar.Frame
+	Windows []solar.Window
+	Masters []sunWindowMaster
+}
+
+// sunHero is the master the run finishes: one window of a single-exposure session, or the bracket
+// composite of several tiers' best windows.
+type sunHero struct {
+	Master *fits.Image
+	Limb   solar.Limb
+	Note   string
+}
+
+// buildSunTiers assigns the ingested frames to their exposure tiers.
+//
+// The split is decided on the FILES, by triage's measured disc level, and the frames follow their
+// source. Deciding it on the frames instead would be measuring the phone's own metering jitter and
+// splitting a single clip in half on it.
+func buildSunTiers(group solar.Group, frames []solar.Frame, p solar.Preset) []sunTier {
+	groups := p.Tiers(group.Members)
+	if len(groups) == 0 {
+		return []sunTier{{Label: "all frames", Frames: frames}}
+	}
+	index := map[string]int{}
+	tiers := make([]sunTier, len(groups))
+	for i, g := range groups {
+		tiers[i] = sunTier{Label: sunTierLabel(i, g), Level: solar.TierLevel(g)}
+		for _, m := range g {
+			index[m.Path] = i
+		}
+	}
+	for _, f := range frames {
+		// A frame whose source was not tiered — it cannot normally happen, since every ingested frame
+		// came from a member — joins the reference tier rather than being dropped.
+		i, ok := index[f.Source]
+		if !ok {
+			i = 0
+		}
+		tiers[i].Frames = append(tiers[i].Frames, f)
+	}
+	out := tiers[:0]
+	for _, t := range tiers {
+		if len(t.Frames) > 0 {
+			out = append(out, t)
+		}
+	}
+	if len(out) == 0 {
+		return []sunTier{{Label: "all frames", Frames: frames}}
+	}
+	return out
+}
+
+// sunTierLabel names a tier by its files, which is how the user thinks of a bracket.
+func sunTierLabel(i int, members []solar.Member) string {
+	if len(members) == 1 {
+		return filepath.Base(members[0].Path)
+	}
+	return fmt.Sprintf("exposure %d (%d files)", i+1, len(members))
+}
+
+// sunTierLine narrates the exposure split before the run spends minutes on it.
+func sunTierLine(tiers []sunTier, frames int) string {
+	if len(tiers) < 2 {
+		return fmt.Sprintf("%d frame(s) onto one photometric scale", frames)
+	}
+	parts := make([]string, 0, len(tiers))
+	for _, t := range tiers {
+		parts = append(parts, fmt.Sprintf("%s %d frame(s)", t.Label, len(t.Frames)))
+	}
+	return fmt.Sprintf("bracket: %d exposure tiers spanning %.1f stops — %s — each onto its own scale",
+		len(tiers), sunTierSpanStops(tiers), strings.Join(parts, ", "))
+}
+
+// sunTierSpanStops is the exposure range the bracket covers, measured rather than read off metadata
+// (a phone clip carries no shutter or ISO at all).
+func sunTierSpanStops(tiers []sunTier) float64 {
+	hi, lo := 0.0, math.Inf(1)
+	for _, t := range tiers {
+		if t.Level <= 0 {
+			continue
+		}
+		hi, lo = math.Max(hi, t.Level), math.Min(lo, t.Level)
+	}
+	if hi <= 0 || math.IsInf(lo, 1) || lo <= 0 {
+		return 0
+	}
+	return math.Log2(hi / lo)
+}
+
+// countWindows totals the windows across every tier.
+func countWindows(tiers []sunTier) int {
+	n := 0
+	for _, t := range tiers {
+		n += len(t.Windows)
+	}
+	return n
 }
 
 // pickGroup chooses which triage group to stack: the highest-scoring stackable one that the caller
@@ -265,38 +415,149 @@ func ingestGroup(ctx context.Context, g solar.Group, p solar.Preset, workDir, ff
 	return frames, warnings, nil
 }
 
-// stackWindows stacks each window and persists its master, which is what a re-finish replays.
-func stackWindows(ctx context.Context, opts Options, windows []solar.Window, p solar.Preset, outDir string,
-	res *Result, total int) ([]sunWindowMaster, []string) {
+// stackTiers stacks every window of every exposure tier and persists its master, which is what a
+// re-finish replays.
+func stackTiers(ctx context.Context, opts Options, tiers []sunTier, p solar.Preset, outDir string,
+	res *Result, total int) []string {
 
-	var out []sunWindowMaster
 	var warnings []string
-	for i, w := range windows {
-		opts.report(Progress{Step: "stacking", Index: 4, Total: total,
-			Line: fmt.Sprintf("window %d/%d — registering and stacking %d frames", i+1, len(windows), w.Count)})
-		st, err := solar.Stack(ctx, w.Frames, p.StackOpts())
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("window %d: %v", i+1, err))
-			continue
+	for t := range tiers {
+		for i, w := range tiers[t].Windows {
+			label := sunWindowLabel(tiers, t, i)
+			opts.report(Progress{Step: "stacking", Index: 4, Total: total,
+				Line: fmt.Sprintf("%s — registering and stacking %d frames", label, w.Count)})
+			st, err := solar.Stack(ctx, w.Frames, p.StackOpts())
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("%s: %v", label, err))
+				continue
+			}
+			warnings = append(warnings, st.Notes...)
+			path := filepath.Join(outDir, sunMasterName(t, i))
+			if err := st.Master.WriteFITS(path); err != nil {
+				warnings = append(warnings, fmt.Sprintf("%s: persist: %v", label, err))
+				continue
+			}
+			tiers[t].Masters = append(tiers[t].Masters, sunWindowMaster{Stack: st, Path: path, Window: w})
+			opts.report(Progress{Step: "stacking", Index: 4, Total: total,
+				Line: fmt.Sprintf("%s — %d frames stacked", label, st.Frames)})
+			sunPreview(opts, res, outDir, ordSunWindow+20*t+i, sunPreviewStage(t, i), path, st.Limb, p)
 		}
-		warnings = append(warnings, st.Notes...)
-		path := filepath.Join(outDir, fmt.Sprintf("master_w%02d.fits", i+1))
-		if err := st.Master.WriteFITS(path); err != nil {
-			warnings = append(warnings, fmt.Sprintf("window %d: persist: %v", i+1, err))
-			continue
-		}
-		out = append(out, sunWindowMaster{Stack: st, Path: path, Window: w})
-		opts.report(Progress{Step: "stacking", Index: 4, Total: total,
-			Line: fmt.Sprintf("window %d/%d — %d frames stacked", i+1, len(windows), st.Frames)})
-		sunPreview(opts, res, outDir, ordSunWindow+i, fmt.Sprintf("window%02d", i+1), path, st.Limb, p)
 	}
-	return out, warnings
+	return warnings
 }
 
-// finishSun renders the hero window and returns the run result.
-func finishSun(opts Options, masters []sunWindowMaster, hero int, p solar.Preset, outDir, object string) (*postprocess.Result, error) {
-	m := masters[hero]
-	img := solar.Finish(m.Stack.Master, m.Stack.Limb, p.Finish)
+// sunMasterName is where one tier's window master is persisted.
+//
+// The reference tier keeps the historic `master_wNN.fits`, so an existing run directory, the Refine
+// panel and anything else that globs for those files behave exactly as they did. Only the extra
+// tiers a bracket introduces get a new name.
+func sunMasterName(tier, window int) string {
+	if tier == 0 {
+		return fmt.Sprintf("master_w%02d.fits", window+1)
+	}
+	return fmt.Sprintf("master_t%02d_w%02d.fits", tier+1, window+1)
+}
+
+// sunPreviewStage names a window's stage preview.
+func sunPreviewStage(tier, window int) string {
+	if tier == 0 {
+		return fmt.Sprintf("window%02d", window+1)
+	}
+	return fmt.Sprintf("exposure%02d_window%02d", tier+1, window+1)
+}
+
+// sunWindowLabel describes a window in progress output, naming its tier only when there is more than
+// one to tell apart.
+func sunWindowLabel(tiers []sunTier, t, i int) string {
+	if len(tiers) < 2 {
+		return fmt.Sprintf("window %d/%d", i+1, len(tiers[t].Windows))
+	}
+	return fmt.Sprintf("%s window %d/%d", tiers[t].Label, i+1, len(tiers[t].Windows))
+}
+
+// heroMaster produces the image the run finishes.
+//
+// With one exposure that is the sharpest window, exactly as before. With a bracket it is the
+// composite of each tier's sharpest window: a tier is stacked against its own siblings, and only
+// then — once each exposure is a clean master with a measurable noise level — are they put on one
+// scale and combined.
+func heroMaster(opts Options, tiers []sunTier, outDir string, res *Result, p solar.Preset, total int) (*sunHero, []string) {
+	var warnings []string
+	best := make([]solar.Exposure, 0, len(tiers))
+	var lead *sunWindowMaster
+	for t := range tiers {
+		m := sharpestMaster(tiers[t])
+		if m == nil {
+			if t == 0 {
+				continue
+			}
+			warnings = append(warnings, fmt.Sprintf("sun: %s produced no master and is left out of the composite", tiers[t].Label))
+			continue
+		}
+		if lead == nil {
+			lead = m
+		}
+		best = append(best, solar.Exposure{Master: m.Stack.Master, Limb: m.Stack.Limb, Label: tiers[t].Label})
+	}
+	if lead == nil {
+		return nil, warnings
+	}
+	hero := &sunHero{Master: lead.Stack.Master, Limb: lead.Stack.Limb,
+		Note: fmt.Sprintf("%d frames stacked, disc ⌀%.0f px", lead.Stack.Frames, 2*lead.Stack.Limb.R)}
+	if len(best) < 2 {
+		return hero, warnings
+	}
+
+	opts.report(Progress{Step: "finishing", Index: 5, Total: total,
+		Line: fmt.Sprintf("compositing %d exposure tiers into one high-dynamic-range master", len(best))})
+	merged, err := solar.MergeExposures(best)
+	if err != nil {
+		warnings = append(warnings, "sun: exposure composite: "+err.Error()+" — finishing the brightest exposure alone")
+		return hero, warnings
+	}
+	warnings = append(warnings, merged.Notes...)
+	for _, t := range merged.Tiers[1:] {
+		opts.report(Progress{Step: "finishing", Index: 5, Total: total,
+			Line: fmt.Sprintf("  %s: %.2f stops under, rotated %+.2f°, contributing %.0f%% of the composite",
+				t.Label, t.Stops, t.RotationDeg, 100*t.Share)})
+	}
+	path := filepath.Join(outDir, sunCompositeMaster)
+	if err := merged.Master.WriteFITS(path); err != nil {
+		warnings = append(warnings, "sun: exposure composite: persist: "+err.Error())
+	} else {
+		sunPreview(opts, res, outDir, ordSunComposite, "composite", path, merged.Limb, p)
+	}
+	res.Bracket = merged.Tiers
+	return &sunHero{Master: merged.Master, Limb: merged.Limb,
+		Note: fmt.Sprintf("%d exposures composited over %.1f stops, disc ⌀%.0f px",
+			len(best), sunTierSpanStops(tiers), 2*merged.Limb.R)}, warnings
+}
+
+// sharpestMaster returns a tier's best window master, or nil when nothing stacked.
+func sharpestMaster(t sunTier) *sunWindowMaster {
+	if len(t.Masters) == 0 {
+		return nil
+	}
+	if len(t.Windows) == 0 {
+		return &t.Masters[0]
+	}
+	// Sharpest indexes the WINDOWS; a window that failed to stack has no master, so the pick is
+	// resolved by matching window start times rather than by index.
+	want := t.Windows[solar.Sharpest(t.Windows)]
+	for i := range t.Masters {
+		if t.Masters[i].Window.StartMs == want.StartMs && t.Masters[i].Window.Count == want.Count {
+			return &t.Masters[i]
+		}
+	}
+	return &t.Masters[0]
+}
+
+// finishSun renders the hero master and returns the run result.
+func finishSun(opts Options, hero *sunHero, p solar.Preset, outDir, object string) (*postprocess.Result, error) {
+	if hero == nil {
+		return nil, fmt.Errorf("no master to finish")
+	}
+	img := solar.Finish(hero.Master, hero.Limb, p.Finish)
 	base := filepath.Join(outDir, object+"_stack")
 	outs, err := writeSunImage(img, base)
 	if err != nil {
@@ -306,8 +567,7 @@ func finishSun(opts Options, masters []sunWindowMaster, hero int, p solar.Preset
 		Mode:     "sun",
 		Channels: []string{string(p.Band)},
 		Outputs:  outs,
-		Notes: []string{fmt.Sprintf("window %d of %d, %d frames stacked, disc ⌀%.0f px",
-			hero+1, len(masters), m.Stack.Frames, 2*m.Stack.Limb.R)},
+		Notes:    []string{hero.Note},
 	}, nil
 }
 

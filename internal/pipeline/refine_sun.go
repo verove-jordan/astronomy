@@ -43,18 +43,28 @@ func refineSun(ctx context.Context, opts Options, runDir string) (*postprocess.R
 	if !ok {
 		return nil, fmt.Errorf("refine sun: no limb in %s", filepath.Base(hero))
 	}
-	outs, err := writeSunImage(solar.Finish(mono, limb, preset.Finish), filepath.Join(runDir, object+"_stack"))
+	// Resolved the same way the run resolved it, from the same master: a re-finish that deconvolved
+	// at a different width from the run would not be a re-tune of the run's image, it would be a
+	// different image, and every knob judged against it would be judged against the wrong thing.
+	fin, _, notes := solar.ResolveFinish(mono, limb, preset.Finish)
+	outs, err := writeSunImage(solar.Finish(mono, limb, fin), filepath.Join(runDir, object+"_stack"))
 	if err != nil {
 		return nil, err
 	}
 	return &postprocess.Result{
 		Mode:    "sun",
 		Outputs: outs,
-		Notes:   []string{fmt.Sprintf("re-finished from %d persisted window master(s)", len(masters))},
+		Notes: append([]string{fmt.Sprintf("re-finished from %d persisted master(s)", len(masters))},
+			notes...),
 	}, nil
 }
 
-// sunMasters lists a run's persisted window masters, in window order.
+// sunMasters lists a run's persisted masters, the one to re-finish first.
+//
+// A bracketed run's hero is the exposure COMPOSITE, not any single window, so when the run left one
+// behind it leads the list. Refining has to replay the image the run actually finished; re-rendering
+// one tier of a bracket would silently drop the other exposures and hand back a different picture
+// from the one the knobs are being judged against.
 func sunMasters(runDir string) ([]string, error) {
 	entries, err := os.ReadDir(runDir)
 	if err != nil {
@@ -66,9 +76,12 @@ func sunMasters(runDir string) ([]string, error) {
 			out = append(out, filepath.Join(runDir, e.Name()))
 		}
 	}
+	sort.Strings(out)
+	if hdr := filepath.Join(runDir, sunCompositeMaster); fileExists(hdr) {
+		out = append([]string{hdr}, out...)
+	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("refine sun: no window master in %s", runDir)
 	}
-	sort.Strings(out)
 	return out, nil
 }

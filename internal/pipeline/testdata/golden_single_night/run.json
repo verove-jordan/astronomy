@@ -481,6 +481,10 @@
     "mode": "deepsky",
     "seam_noise_eq": true,
     "seam_offset_refit": true,
+    "stack_combine": "mean",
+    "stack_engine": "auto",
+    "stack_norm": "addscale",
+    "stack_reject": "auto",
     "stack_weight": "wfwhm"
   },
   "output_dir": "\u003cROOT\u003e/out/TESTFIELD/\u003cRUN\u003e",

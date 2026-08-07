@@ -9,6 +9,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/inspect"
 	"github.com/verove-jordan/astronomy/internal/siril"
+	"github.com/verove-jordan/astronomy/internal/stackalg"
 )
 
 // MasterStore is the persistent calibration-master library (implemented by package store).
@@ -21,7 +22,8 @@ type MasterStore interface {
 // reusing any existing library master that matches a set instead of rebuilding it. Newly built
 // masters are added to the library. Returned masters (library + newly built) feed light matching.
 func BuildOrReuseMasters(ctx context.Context, runner *siril.Runner, inv *inspect.Inventory,
-	lib MasterStore, libDir, workDir string, onProgress func(siril.Progress)) ([]Master, []string, error) {
+	lib MasterStore, libDir, workDir string, stacks stackalg.MasterOptions,
+	onProgress func(siril.Progress)) ([]Master, []string, error) {
 	if err := fsutil.EnsureDir(libDir); err != nil {
 		return nil, nil, err
 	}
@@ -39,7 +41,7 @@ func BuildOrReuseMasters(ctx context.Context, runner *siril.Runner, inv *inspect
 				warnings = append(warnings, fmt.Sprintf("reused library master %s (%d frames)", masterByFrameType[set.Key.Type], existing.FrameCount))
 				continue
 			}
-			built, qc, err := buildOne(ctx, runner, set, masters, libDir, workDir, onProgress)
+			built, qc, err := buildOne(ctx, runner, set, masters, libDir, workDir, stacks, onProgress)
 			warnings = append(warnings, qc...)
 			if err != nil {
 				warnings = append(warnings, err.Error())
