@@ -11,6 +11,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/grade"
 	"github.com/verove-jordan/astronomy/internal/planetary"
 	"github.com/verove-jordan/astronomy/internal/solar"
+	"github.com/verove-jordan/astronomy/internal/stackalg"
 )
 
 // BrightnessTarget maps the milkyway brightness control to an auto-levels target sky-background level
@@ -158,7 +159,22 @@ type Preset struct {
 	// StackWeight sets the Siril stack weighting mode ("" | noise | wfwhm | nbstars | nbstack). wfwhm
 	// weights each sub by its star sharpness, so the deeper/sharper subs dominate — the cross-session
 	// merge already uses it; single-session and OSC stacks were previously unweighted. "" → unweighted.
+	// It is copied into Stack.Weight at the stack call site, because a photometrically normalized
+	// multi-group channel may override it per channel (see pipeline.photomStackWeight).
 	StackWeight string
+
+	// Stack is the LIGHT-frame combination recipe: which method combines the pixels, which outlier
+	// test rejects them and with what parameters, how the frames are normalized and weighted. Its
+	// default (stackalg.DefaultLights) is the count-adaptive Winsorized/GESD/percentile clause the
+	// engine has always emitted, so an untouched preset stacks byte-identically to before the knob.
+	Stack stackalg.Options
+	// StackComet is the COMET-ALIGNED stack's own recipe (comet mode only). It defaults to an
+	// asymmetric winsorization that erases the marching star trails while protecting the faint tail
+	// — see stackalg.DefaultComet. The star-aligned half of a comet run uses Stack.
+	StackComet stackalg.Options
+	// Masters is the calibration-master stacking recipe (bias / dark / flat), each with its own
+	// physically-mandated normalization. See stackalg.DefaultMasters.
+	Masters stackalg.MasterOptions
 
 	// PhotomNorm photometrically normalizes heterogeneous calibration groups (sessions shot at
 	// different exposure/gain/temperature) in Go before the cross-session merge: each group's linear
@@ -454,6 +470,24 @@ func ParseFormat(s string) (Format, error) {
 
 // For returns the preset for a mode.
 func For(m Mode) Preset {
+	p := presetFor(m)
+	// The stacking recipes are shared by every mode, so the per-mode literals below stay focused on
+	// their own grade/look tuning. Filling them here (rather than in each literal) also means a mode
+	// that never stacks light frames still carries a valid recipe if an OSC path reaches one.
+	if p.Stack == (stackalg.Options{}) {
+		p.Stack = stackalg.DefaultLights()
+	}
+	if p.StackComet == (stackalg.Options{}) {
+		p.StackComet = stackalg.DefaultComet()
+	}
+	if p.Masters == (stackalg.MasterOptions{}) {
+		p.Masters = stackalg.DefaultMasters()
+	}
+	return p
+}
+
+// presetFor is the per-mode tuning table; For wraps it with the shared stacking defaults.
+func presetFor(m Mode) Preset {
 	switch m {
 	case Mosaic:
 		// Tiled-panel mosaic: every panel stacks with the full deepsky tuning; the assembler owns
