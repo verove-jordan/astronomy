@@ -15,11 +15,15 @@ import {
   Z_REF,
   Z_SPAN,
   applyZoom,
+  billboardDirection,
   billboardQuad,
   cameraPhysical,
+  MIN_ORBIT_DISTANCE,
   decadeRings,
   defaultOrbit,
   fitPerspective,
+  fitTanHalf,
+  maxOrbitDistance,
   motionEndpoint,
   multiply,
   panOrbit,
@@ -44,12 +48,19 @@ import {
 import { dragToLook, orbitPerPixel } from "@/utils/scene3dfly";
 import { matchesCamera, newBasis } from "@/utils/skyframe";
 import {
+  GALAXY_OFF_LUM,
+  GALAXY_OFF_POS,
+  GALAXY_OFF_RGB,
+  GALAXY_RECORD_SIZE,
+  type GalaxyCloud,
+} from "@/utils/galaxycloud";
+import {
   buildGalaxyLines,
-  buildGalaxyMesh,
   cameraPhysicalLinear,
   galacticToScene,
-  galaxyOrbit,
-  galaxyTanScale,
+  galaxyMaxOrbitDistance,
+  galaxyView,
+  type JourneyContext,
 } from "@/utils/scene3dgalaxy";
 
 // WebGL2 renderer for the 3D field map. The scene is point sprites for the stars, a mesh per
@@ -274,6 +285,102 @@ uniform float uAlpha;
 out vec4 fragColor;
 void main() { fragColor = vec4(vColor * uAlpha, 1.0); }`;
 
+// The Galaxy itself: a couple of hundred thousand stars sampled in Go from published structure, drawn
+// as one buffer that never changes. The whole per-run part is uGalToScene, the 3×3 that rotates the
+// galactic frame into this photograph's — so switching runs costs nine floats, not a rebuild.
+const GALAXY_VERT = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;    // int16 galactic units, converted to float by the attribute
+layout(location=1) in vec3 aColor;
+layout(location=2) in float aLum;
+
+uniform mat4 uViewProj;
+uniform mat3 uGalToScene;
+uniform vec3 uEye;            // the camera, in scene units
+uniform float uKpcPerUnit;    // position unit -> kiloparsec (= one scene unit)
+uniform float uSpacingKpc;    // how far apart the points are, on average
+uniform float uPxPerRad;      // drawing-buffer pixels per radian, vertically
+uniform float uHeightPx;      // the drawing buffer's height, which is what "too coarse" is relative to
+uniform float uGain, uMaxPx;
+
+out vec3 vColor;
+out float vAlpha;
+
+void main() {
+  vec3 p = uGalToScene * (aPos * uKpcPerUnit);
+  gl_Position = uViewProj * vec4(p, 1.0);
+
+  // Each point stands for a patch of the Galaxy about uSpacingKpc across, so the honest size to draw
+  // it is the angle that patch subtends from here. That one line is what keeps the cloud's SURFACE
+  // BRIGHTNESS independent of where the eye stands: pull back and each sprite shrinks as 1/d while
+  // four times as many of them crowd into the same screen area.
+  float d = max(1e-4, distance(p, uEye));
+  float ideal = uSpacingKpc * uPxPerRad / d;
+  float px = clamp(ideal, 1.0, uMaxPx);
+  // Whatever the clamp took off the size, put back into brightness — flux goes as the square of the
+  // sprite, so this is the inverse-square law written in pixels.
+  float alpha = uGain * aLum * (ideal * ideal) / (px * px);
+  // And past the model's own resolution the cloud is fiction: one point standing for a tenth of the
+  // frame is a blob, not a galaxy. Fade it out — which is what makes the start of the journey the
+  // photograph and the run's OWN measured stars, with no model mixed in.
+  //
+  // Measured against the FRAME, not against the sprite clamp. Against the clamp it faded at six pixels,
+  // which blanked the Galaxy over most of the slider: two thirds of the way out, where the frame is a
+  // couple of kiloparsecs across, a point is a perfectly reasonable sixty pixels.
+  alpha *= 1.0 - smoothstep(0.10 * uHeightPx, 0.30 * uHeightPx, ideal);
+
+  gl_PointSize = px;
+  vAlpha = min(1.0, alpha);
+  vColor = aColor;
+}`;
+
+const GALAXY_FRAG = `#version 300 es
+precision mediump float;
+in vec3 vColor;
+in float vAlpha;
+out vec4 fragColor;
+void main() {
+  vec2 d = gl_PointCoord * 2.0 - 1.0;
+  float r2 = dot(d, d);
+  if (r2 > 1.0) discard;
+  // Softer than a field star, and with no separate core: this is a patch of a galaxy, not one point
+  // source, and a hard centre would make the disc read as gravel.
+  fragColor = vec4(vColor * exp(-r2 * 2.2) * vAlpha, 1.0);
+}`;
+
+// The stretch: the same thing every astronomical image gets, and for the same reason.
+//
+// The cloud is accumulated LINEARLY, in a float buffer, because that is physically what adding light
+// does. But a galaxy's bulge outruns its outer disc by more than a hundred to one, and eight bits of
+// screen cannot hold that: drawn straight, the core came out a featureless white ellipse with the arms
+// barely above black, and a fifth of the frame was clipped by the time the camera reached the disc.
+//
+// So the accumulated buffer is tone-mapped. Reinhard on LUMINANCE with a 2.2 gamma — the faint disc
+// lifts by around eight times, the core compresses and can never clip, and because the curve is applied
+// to luminance and the colour is scaled by the ratio, the blue arms stay blue and the bulge stays gold.
+// Stretching each channel on its own is what turns a bright core white.
+const STRETCH_VERT = `#version 300 es
+void main() {
+  // A full-screen triangle out of the vertex index alone: no buffer, no attributes, no VAO contents.
+  gl_Position = vec4(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0, 0.0, 1.0);
+}`;
+
+const STRETCH_FRAG = `#version 300 es
+precision highp float;
+uniform sampler2D uTex;
+uniform float uMaxBoost;
+out vec4 fragColor;
+
+void main() {
+  vec3 c = texelFetch(uTex, ivec2(gl_FragCoord.xy), 0).rgb;
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  if (l <= 0.0) discard;
+  float s = pow(l / (1.0 + l), 1.0 / 2.2);
+  // The curve's slope is infinite at zero, so a single faint star would be lifted a hundredfold and the
+  // halo would read as grain. Cap how much any one pixel may gain.
+  fragColor = vec4(c * min(s / l, uMaxBoost), 1.0);
+}`;
+
 // --- GL helpers ------------------------------------------------------------------------------------
 
 function compile(
@@ -345,7 +452,31 @@ export interface StarField3DInputs {
   showGalaxy?: Ref<boolean>;
   galaxyZoom?: Ref<number>;
   frame?: Ref<SkyFrame | null>;
+  // The Milky Way point cloud, fetched once per session from the engine. Run-independent, so it is
+  // uploaded the first time it arrives and never rebuilt.
+  galaxyCloud?: Ref<GalaxyCloud | null>;
+  // How brightly the cloud is exposed. Defaults to GALAXY_DEFAULT_GAIN.
+  galaxyGain?: Ref<number>;
 }
+
+// GALAXY_* tune how the cloud is drawn, and they are here rather than in the shader because they are
+// the only numbers in the renderer chosen by eye rather than derived.
+//
+// GALAXY_SPACING_KPC is the mean gap between neighbouring points in the disc — a hundred and eighty
+// thousand points over a fifteen-kiloparsec disc six hundred parsecs thick comes out near this — and it
+// sets both the sprite size and where the cloud fades for want of resolution.
+const GALAXY_SPACING_KPC = 0.15;
+const GALAXY_MAX_POINT_PX = 6;
+
+// GALAXY_DEFAULT_GAIN is the exposure the cloud is drawn at, and it is a slider because it is the one
+// number here that only an eye can settle.
+//
+// Reasoned to a starting point rather than picked: at the galactic vantage the disc's own model puts
+// about 0.28 points on each square screen parsec at the Sun's radius, each sprite covering some four
+// pixels, so a pixel out there collects roughly one point's worth of light. The arms are seven times
+// that in surface brightness. Half is therefore about where the arms reach full brightness while the
+// disc sits low and the bulge saturates — which is what a deep photograph of a spiral looks like.
+export const GALAXY_DEFAULT_GAIN = 0.5;
 
 interface MeshDraw {
   mesh: ShapeMesh;
@@ -373,10 +504,14 @@ export function useStarField3D(
   let quadProg: WebGLProgram | null = null;
   let meshProg: WebGLProgram | null = null;
   let lineProg: WebGLProgram | null = null;
+  let cloudProg: WebGLProgram | null = null;
+  let stretchProg: WebGLProgram | null = null;
   let starU: Record<string, WebGLUniformLocation | null> = {};
   let quadU: Record<string, WebGLUniformLocation | null> = {};
   let meshU: Record<string, WebGLUniformLocation | null> = {};
   let lineU: Record<string, WebGLUniformLocation | null> = {};
+  let cloudU: Record<string, WebGLUniformLocation | null> = {};
+  let stretchU: Record<string, WebGLUniformLocation | null> = {};
 
   let starVAO: WebGLVertexArrayObject | null = null;
   let starBuf: WebGLBuffer | null = null;
@@ -399,10 +534,20 @@ export function useStarField3D(
   let dirty = true;
   let observer: ResizeObserver | null = null;
   let viewportAspect = 1;
+  let viewportWidth = 1;
+  let viewportHeight = 1;
+  let floatTargets = false;
+  let emptyVAO: WebGLVertexArrayObject | null = null;
 
   const requestDraw = () => {
     dirty = true;
   };
+
+  // lens is how far the WARPED view's lens has been opened — 1 is the run's own field of view, which is
+  // what makes depth 0 the photograph. It moves only when the viewer is asked to frame the volume, and
+  // snaps back the moment the depth returns to 0, where there is no volume for a wide lens to show.
+  // (The galaxy view has its own lens, driven by the journey.)
+  const lens = ref(1);
 
   // --- setup -------------------------------------------------------------------------------------
 
@@ -424,6 +569,8 @@ export function useStarField3D(
       quadProg = link(gl, QUAD_VERT, QUAD_FRAG);
       meshProg = link(gl, MESH_VERT, MESH_FRAG);
       lineProg = link(gl, LINE_VERT, LINE_FRAG);
+      cloudProg = link(gl, GALAXY_VERT, GALAXY_FRAG);
+      stretchProg = link(gl, STRETCH_VERT, STRETCH_FRAG);
     } catch (e) {
       error.value = (e as Error).message;
       supported.value = false;
@@ -461,6 +608,26 @@ export function useStarField3D(
       "uFootprint",
     ]);
     lineU = uniforms(gl, lineProg, ["uViewProj", "uAlpha"]);
+    cloudU = uniforms(gl, cloudProg, [
+      "uViewProj",
+      "uGalToScene",
+      "uEye",
+      "uKpcPerUnit",
+      "uSpacingKpc",
+      "uPxPerRad",
+      "uHeightPx",
+      "uGain",
+      "uMaxPx",
+    ]);
+    stretchU = uniforms(gl, stretchProg, ["uTex", "uMaxBoost"]);
+    // A float colour attachment needs an extension even in WebGL2. Asking for it here rather than at
+    // draw time means the fallback is decided once: without it the cloud goes straight to the screen,
+    // clipped highlights and all, which is worse-looking but never broken.
+    floatTargets = !!(
+      gl.getExtension("EXT_color_buffer_float") ||
+      gl.getExtension("EXT_color_buffer_half_float")
+    );
+    emptyVAO = gl.createVertexArray();
 
     gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
@@ -810,43 +977,143 @@ export function useStarField3D(
     return galaxyOn() ? (input.galaxyZoom?.value ?? 0) : 0;
   }
 
-  let galaxyVAO: WebGLVertexArrayObject | null = null;
-  let galaxyPos: WebGLBuffer | null = null;
-  let galaxyCol: WebGLBuffer | null = null;
-  let galaxyIdx: WebGLBuffer | null = null;
-  let galaxyCount = 0;
+  // journeyCtx is everything the camera's journey needs: the field's own scale, its lens, the galactic
+  // axes in scene coordinates, and how far out the scene actually reaches.
+  //
+  // That last part is what lets the zoom-out keep going past the Galaxy. A run that caught a galaxy at
+  // seven megaparsecs has to be able to stand off far enough to see it AND the Milky Way; a run whose
+  // farthest object is a nebula inside the disc has nothing out there and its journey ends at the disc,
+  // exactly as before.
+  const journeyCtx = computed<JourneyContext | null>(() => {
+    const b = galaxyBasis.value;
+    const m = input.manifest.value;
+    if (!b || !m) return null;
+    const g = galacticToScene(b);
+    const unit = (v: readonly number[]): [number, number, number] => {
+      const n = Math.hypot(v[0], v[1], v[2]) || 1;
+      return [v[0] / n, v[1] / n, v[2] / n];
+    };
+    const far = farthestDrawn();
+    return {
+      medianPc: m.depth.median_pc,
+      tanHalfH: m.camera.tan_half_h,
+      toGalacticCentre: unit(g[0]),
+      toNorthPole: unit(g[2]),
+      farthestPc: far?.distPc,
+      toFarthest: far?.dir,
+    };
+  });
+
+  // farthestDrawn is the most distant object in the scene, with the direction it lies in.
+  //
+  // Taken from the OBJECTS rather than from depth.far_pc: the range is a drawing span that may reach
+  // past everything in it, and the journey needs a real thing to fly out to and frame.
+  function farthestDrawn(): {
+    distPc: number;
+    dir: [number, number, number];
+  } | null {
+    const m = input.manifest.value;
+    if (!m) return null;
+    let best: { distPc: number; dir: [number, number, number] } | null = null;
+    for (const b of m.billboards ?? []) {
+      if (!(b.dist_pc > 0) || (best && b.dist_pc <= best.distPc)) continue;
+      const dir = billboardDirection(b, m);
+      if (dir) best = { distPc: b.dist_pc, dir };
+    }
+    return best;
+  }
+
+  let cloudVAO: WebGLVertexArrayObject | null = null;
+  let cloudBuf: WebGLBuffer | null = null;
+  let cloudCount = 0;
+  let cloudUploaded: GalaxyCloud | null = null;
   let galaxyLineVAO: WebGLVertexArrayObject | null = null;
   let galaxyLinePos: WebGLBuffer | null = null;
   let galaxyLineCol: WebGLBuffer | null = null;
   let galaxyLineCount = 0;
-  let galaxyBuiltFor: unknown = null;
+  let ringsBuiltFor: { basis: unknown; farthestPc: number } | null = null;
 
-  // Built once per scene, never per frame: the transform, the scale and the per-vertex brightness
-  // are all baked in, so drawing it is one bind and one call.
-  function buildGalaxy() {
-    const b = galaxyBasis.value;
-    if (!gl || !b || galaxyBuiltFor === b) return;
-    galaxyBuiltFor = b;
-    const m = galacticToScene(b);
-    const mesh = buildGalaxyMesh(m);
-    const lines = buildGalaxyLines(m);
+  // The float target the cloud accumulates into before it is stretched, and its size, so a resize
+  // rebuilds it rather than sampling a buffer of the wrong shape.
+  let accumFBO: WebGLFramebuffer | null = null;
+  let accumTex: WebGLTexture | null = null;
+  let accumW = 0;
+  let accumH = 0;
 
-    galaxyVAO = galaxyVAO ?? gl.createVertexArray();
-    galaxyPos = galaxyPos ?? gl.createBuffer();
-    galaxyCol = galaxyCol ?? gl.createBuffer();
-    galaxyIdx = galaxyIdx ?? gl.createBuffer();
-    gl.bindVertexArray(galaxyVAO);
-    gl.bindBuffer(gl.ARRAY_BUFFER, galaxyPos);
-    gl.bufferData(gl.ARRAY_BUFFER, mesh.positions, gl.STATIC_DRAW);
+  // GALAXY_MAX_BOOST caps how far the stretch may lift one pixel. Without it the curve's infinite slope
+  // at zero turns a single faint halo star into a bright speck and the halo reads as grain.
+  const GALAXY_MAX_BOOST = 14;
+
+  // ensureAccum makes the float target match the drawing buffer. Returns false when this context cannot
+  // have one, which is the signal to draw the cloud straight to the screen instead.
+  function ensureAccum(w: number, h: number): boolean {
+    if (!gl || !floatTargets || w < 1 || h < 1) return false;
+    if (accumFBO && accumW === w && accumH === h) return true;
+    if (accumTex) gl.deleteTexture(accumTex);
+    if (accumFBO) gl.deleteFramebuffer(accumFBO);
+    accumTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, accumTex);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA16F, w, h);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    accumFBO = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, accumFBO);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D,
+      accumTex,
+      0,
+    );
+    const ok =
+      gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if (!ok) {
+      // The extension was there and the attachment still would not take. Give up on the float path for
+      // good rather than re-testing it every frame.
+      floatTargets = false;
+      return false;
+    }
+    accumW = w;
+    accumH = h;
+    return true;
+  }
+
+  // uploadCloud hands the engine's buffer to the GPU untouched, exactly as the star field is. The
+  // cloud is the same for every run, so this happens once per session however many runs are opened —
+  // and the per-run rotation is a uniform, not a rebuild.
+  function uploadCloud(cloud: GalaxyCloud | null) {
+    if (!gl || !cloud || cloudUploaded === cloud) return;
+    cloudUploaded = cloud;
+    cloudVAO = cloudVAO ?? gl.createVertexArray();
+    cloudBuf = cloudBuf ?? gl.createBuffer();
+    gl.bindVertexArray(cloudVAO);
+    gl.bindBuffer(gl.ARRAY_BUFFER, cloudBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, cloud.records, gl.STATIC_DRAW);
+    const S = GALAXY_RECORD_SIZE;
+    // Not normalised: the position is a signed count of quanta, and the shader scales it to
+    // kiloparsec. Normalising would divide it by 32767 and lose the meaning of the number.
     gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ARRAY_BUFFER, galaxyCol);
-    gl.bufferData(gl.ARRAY_BUFFER, mesh.colors, gl.STATIC_DRAW);
+    gl.vertexAttribPointer(0, 3, gl.SHORT, false, S, GALAXY_OFF_POS);
     gl.enableVertexAttribArray(1);
-    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, galaxyIdx);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
-    galaxyCount = mesh.indices.length;
+    gl.vertexAttribPointer(1, 3, gl.UNSIGNED_BYTE, true, S, GALAXY_OFF_RGB);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 1, gl.UNSIGNED_BYTE, true, S, GALAXY_OFF_LUM);
+    gl.bindVertexArray(null);
+    cloudCount = cloud.count;
+    requestDraw();
+  }
+
+  // The reference rings depend on the run — on its orientation and on how far out the scene reaches —
+  // so they are rebuilt when either changes, and never per frame.
+  function buildRings() {
+    const b = galaxyBasis.value;
+    const ctx = journeyCtx.value;
+    if (!gl || !b || !ctx) return;
+    const far = ctx.farthestPc ?? 0;
+    if (ringsBuiltFor?.basis === b && ringsBuiltFor.farthestPc === far) return;
+    ringsBuiltFor = { basis: b, farthestPc: far };
+    const lines = buildGalaxyLines(galacticToScene(b), far);
 
     galaxyLineVAO = galaxyLineVAO ?? gl.createVertexArray();
     galaxyLinePos = galaxyLinePos ?? gl.createBuffer();
@@ -864,23 +1131,34 @@ export function useStarField3D(
     gl.bindVertexArray(null);
   }
 
+  // galaxyScale is how far the lens has opened at the current point of the journey — 1 is the run's own
+  // field of view.
+  function galaxyScale(): number {
+    const ctx = journeyCtx.value;
+    return ctx ? galaxyView(galaxyT(), ctx).tanScale : 1;
+  }
+
   function viewProj(): Mat4 | null {
     const m = input.manifest.value;
     if (!m) return null;
     if (galaxyOn()) {
       // The lens opens as the camera pulls back; the clip planes follow it, since the scene spans
-      // parsecs to tens of kiloparsecs. Depth testing is off, so only w > 0 and z in [-1,1] matter.
+      // parsecs to megaparsecs. Depth testing is off, so only w > 0 and z in [-1,1] matter — which is
+      // why a far plane thousands of times the near one costs nothing here.
       const d = orbit.value.distance;
       const proj = fitPerspective(
         m,
         viewportAspect,
         d * 1e-4,
-        Math.max((d + 60) * 2, 400),
-        galaxyTanScale(galaxyT(), m.camera.tan_half_h),
+        Math.max((d + 60) * 4, 400),
+        galaxyScale(),
       );
       return multiply(proj, viewMatrix(orbit.value));
     }
-    return multiply(fitPerspective(m, viewportAspect), viewMatrix(orbit.value));
+    return multiply(
+      fitPerspective(m, viewportAspect, 0.01, 1000, lens.value),
+      viewMatrix(orbit.value),
+    );
   }
 
   function resize(): boolean {
@@ -898,7 +1176,18 @@ export function useStarField3D(
     // whatever shape it is, so a field built from the image's own aspect would be squashed by
     // however much the two differ — which on a wide panel is nearly threefold.
     viewportAspect = w / h;
+    viewportWidth = w;
+    viewportHeight = h;
     return true;
+  }
+
+  // orbitCeiling is how far out the camera may be dollied. In the warped view the scene is five units
+  // deep and the default ceiling is eighty times more room than that; in the galaxy view the answer
+  // depends on how far the scene actually reaches, which for a run that caught something extragalactic
+  // is thousands of kiloparsecs.
+  function orbitCeiling(): number {
+    const ctx = journeyCtx.value;
+    return galaxyOn() && ctx ? galaxyMaxOrbitDistance(ctx) : maxOrbitDistance();
   }
 
   // depthMask is the set of provenances currently drawn. Unknown-distance stars are never in the
@@ -925,6 +1214,82 @@ export function useStarField3D(
     gl.uniform1f(u.uZSpan!, Z_SPAN);
   }
 
+  // drawGalaxy puts the Milky Way down first: the point cloud, then the reference rings over it.
+  //
+  // Two draw calls and eight uniforms for two hundred thousand stars — the buffer is static and the
+  // per-run rotation is the 3×3, so nothing here touches the geometry.
+  function drawGalaxy(vp: Mat4) {
+    if (!gl) return;
+    const b = galaxyBasis.value;
+    const m = input.manifest.value;
+    if (!b || !m) return;
+
+    if (cloudProg && cloudCount && cloudUploaded) {
+      // Accumulate into the float target when there is one, then stretch it onto the screen. Without one
+      // the cloud goes straight out, which clips the core but still draws.
+      const stretched =
+        !!stretchProg && ensureAccum(viewportWidth, viewportHeight);
+      if (stretched) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, accumFBO);
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+      }
+      const g = galacticToScene(b);
+      const eye = eyePosition(orbit.value);
+      // The vertical half-field the projection is actually using, so the point size follows the lens
+      // rather than a second guess at it. atan is the honest conversion at the wide end of the journey,
+      // where the lens opens to fifty degrees and tan and its angle part company.
+      const th = fitTanHalf(m, viewportAspect, galaxyScale()).th;
+      const pxPerRad = viewportHeight / (2 * Math.atan(th));
+
+      gl.useProgram(cloudProg);
+      gl.uniformMatrix4fv(cloudU.uViewProj!, false, vp);
+      gl.uniformMatrix3fv(
+        cloudU.uGalToScene!,
+        false,
+        new Float32Array([...g[0], ...g[1], ...g[2]]),
+      );
+      gl.uniform3f(cloudU.uEye!, eye[0], eye[1], eye[2]);
+      gl.uniform1f(cloudU.uKpcPerUnit!, cloudUploaded.kpcPerUnit);
+      gl.uniform1f(cloudU.uSpacingKpc!, GALAXY_SPACING_KPC);
+      gl.uniform1f(cloudU.uPxPerRad!, pxPerRad);
+      gl.uniform1f(cloudU.uHeightPx!, viewportHeight);
+      gl.uniform1f(
+        cloudU.uGain!,
+        input.galaxyGain?.value ?? GALAXY_DEFAULT_GAIN,
+      );
+      gl.uniform1f(cloudU.uMaxPx!, GALAXY_MAX_POINT_PX);
+      gl.bindVertexArray(cloudVAO);
+      gl.drawArrays(gl.POINTS, 0, cloudCount);
+      gl.bindVertexArray(null);
+
+      if (stretched) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.clearColor(0.016, 0.02, 0.035, 1);
+        gl.useProgram(stretchProg!);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, accumTex);
+        gl.uniform1i(stretchU.uTex!, 0);
+        gl.uniform1f(stretchU.uMaxBoost!, GALAXY_MAX_BOOST);
+        // Attribute-less: the triangle comes out of gl_VertexID, so an empty VAO is all that is needed —
+        // and it must be bound, or whatever attributes the last draw enabled would still be live.
+        gl.bindVertexArray(emptyVAO);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.bindVertexArray(null);
+      }
+    }
+
+    buildRings();
+    if (lineProg && galaxyLineCount) {
+      gl.useProgram(lineProg);
+      gl.uniformMatrix4fv(lineU.uViewProj!, false, vp);
+      gl.uniform1f(lineU.uAlpha!, 0.5);
+      gl.bindVertexArray(galaxyLineVAO);
+      gl.drawArrays(gl.LINES, 0, galaxyLineCount);
+      gl.bindVertexArray(null);
+    }
+  }
+
   function draw() {
     if (!gl || !resize()) return;
     const m = input.manifest.value;
@@ -935,18 +1300,8 @@ export function useStarField3D(
     // The galaxy goes first, straight after the clear. Blending is additive and there is no depth
     // buffer, so "behind" is a matter of emitting little light rather than of ordering — but drawing
     // it first still keeps the intent legible.
-    if (galaxyOn() && lineProg && galaxyCount) {
-      gl.useProgram(lineProg);
-      gl.uniformMatrix4fv(lineU.uViewProj!, false, vp);
-      gl.uniform1f(lineU.uAlpha!, 1);
-      gl.bindVertexArray(galaxyVAO);
-      gl.drawElements(gl.TRIANGLES, galaxyCount, gl.UNSIGNED_SHORT, 0);
-      if (galaxyLineCount) {
-        gl.bindVertexArray(galaxyLineVAO);
-        gl.uniform1f(lineU.uAlpha!, 0.5);
-        gl.drawArrays(gl.LINES, 0, galaxyLineCount);
-      }
-      gl.bindVertexArray(null);
+    if (galaxyOn()) {
+      drawGalaxy(vp);
     }
 
     if (input.showFrustum.value && lineProg) {
@@ -1092,7 +1447,11 @@ export function useStarField3D(
         lastZoomAt = now;
         // A pinch is a distance change, so feed it in as an equivalent wheel delta — the same
         // velocity curve then serves the trackpad, the mouse and the touchscreen.
-        orbit.value = applyZoom(orbit.value, zoomExponent(pinchDist - d, dt));
+        orbit.value = applyZoom(
+          orbit.value,
+          zoomExponent(pinchDist - d, dt),
+          orbitCeiling(),
+        );
         requestDraw();
       }
       pinchDist = d;
@@ -1156,7 +1515,11 @@ export function useStarField3D(
     // A trackpad pinch arrives as a wheel event with ctrlKey and much smaller deltas; scaling it up
     // makes the gesture cover the same ground as a physical wheel.
     const delta = e.ctrlKey ? e.deltaY * 4 : e.deltaY;
-    orbit.value = applyZoom(orbit.value, zoomExponent(delta, dt));
+    orbit.value = applyZoom(
+      orbit.value,
+      zoomExponent(delta, dt),
+      orbitCeiling(),
+    );
     requestDraw();
   }
 
@@ -1199,24 +1562,88 @@ export function useStarField3D(
     hovered.value = null;
   }
 
+  // FIT_MARGIN leaves a little sky around the edge, so nothing that matters sits on the frame.
+  const FIT_MARGIN = 1.15;
+
+  /**
+   * fitCone frames the field's volume at a given depth, from a vantage off to one side.
+   *
+   * The lens is the whole point, and it is not a stylistic choice. A field's volume is a NEEDLE: on the
+   * real M42 run the cone is a hundred and fifteen parsecs across at its widest and nearly four
+   * thousand deep — eighty-seven to one. Seen from the side it is eighty-seven times too long to fit
+   * through the one-degree lens that photographed its tip, so swinging the camera round without opening
+   * the lens shows a sliver of the middle and nothing else. That is exactly what "it's focused on the
+   * centre and zoomed, we don't see anything" was.
+   *
+   * The opening is computed rather than guessed: the smaller of the two fitted half-field tangents is
+   * what has to cover the cone's bounding radius from wherever the eye is standing.
+   */
+  function fitCone(
+    depth: number,
+    standoff: number,
+    yaw: number,
+    pitch: number,
+  ): { orbit: Orbit; lens: number } | null {
+    const m = input.manifest.value;
+    if (!m) return null;
+    const zFar = Z_REF + Math.max(0, Math.min(1, depth)) * Z_SPAN;
+    const radius = 0.5 * zFar * FIT_MARGIN;
+    const distance = Math.min(
+      orbitCeiling(),
+      Math.max(MIN_ORBIT_DISTANCE, standoff * radius),
+    );
+    // At tanScale 1; both tangents scale linearly with it, so one division gives the opening needed.
+    const base = fitTanHalf(m, viewportAspect, 1);
+    const smallest = Math.min(base.tw, base.th);
+    const need = smallest > 0 ? radius / (distance * smallest) : 1;
+    return {
+      orbit: { target: [0, 0, zFar / 2], distance, yaw, pitch, roll: 0 },
+      lens: Math.max(1, need),
+    };
+  }
+
+  /**
+   * resetView goes back to the photograph: the eye at Earth, down the barrel, through the run's own
+   * lens, with the volume closed.
+   *
+   * It winds the journey back too. Leaving the galaxy slider where it was is what made this useless in
+   * the galaxy view — it dropped the camera inside the disc at the Sun, still wearing the journey's
+   * wide-angle lens, where the model has no resolution and there is nothing whatever to see.
+   */
   function resetView() {
-    orbit.value = defaultOrbit();
     selected.value = null;
+    input.depth.value = 0;
+    if (input.galaxyZoom) input.galaxyZoom.value = 0;
+    lens.value = 1;
+    orbit.value = defaultOrbit();
     requestDraw();
   }
 
-  // openView swings the camera off the optical axis AND opens the depth. From Earth the scene is the
-  // photograph at every depth — the stars slide along the rays they were seen on — so neither move
-  // alone shows anything. Doing both is what makes one click reveal the volume.
+  /**
+   * openView shows everything the scene holds, from a vantage that reveals its depth.
+   *
+   * Three things have to move together, and leaving any one of them out shows nothing. From Earth the
+   * scene is the photograph at every depth — the stars slide along the rays they were seen on — so the
+   * camera has to leave the axis. The volume has to be open, or there is no depth to see. And the LENS
+   * has to open, because the field's cone is a needle and the run's own lens was pointed at its tip.
+   *
+   * What "everything" means follows what is being drawn: the whole Galaxy when that layer is on, this
+   * field's own volume otherwise.
+   */
   function openView() {
-    input.depth.value = Math.max(input.depth.value, 0.6);
-    orbit.value = {
-      ...defaultOrbit(),
-      target: [0, 0, Z_REF + Z_SPAN * 0.4],
-      distance: Z_REF + Z_SPAN * 0.9,
-      yaw: 0.62,
-      pitch: 0.22,
-    };
+    const ctx = journeyCtx.value;
+    if (galaxyOn() && ctx) {
+      if (input.galaxyZoom) input.galaxyZoom.value = 1;
+      orbit.value = galaxyView(1, ctx).orbit;
+      requestDraw();
+      return;
+    }
+    input.depth.value = 1;
+    const fit = fitCone(1, 2, 0.66, 0.26);
+    if (fit) {
+      orbit.value = fit.orbit;
+      lens.value = fit.lens;
+    }
     requestDraw();
   }
 
@@ -1228,6 +1655,7 @@ export function useStarField3D(
       if (!el || gl) return;
       if (!init()) return;
       uploadStars(input.points.value);
+      uploadCloud(input.galaxyCloud?.value ?? null);
       loadBackdrop(input.backdropUrl.value);
       buildMeshes();
       raf = requestAnimationFrame(loop);
@@ -1237,44 +1665,41 @@ export function useStarField3D(
 
   watch(input.points, (p) => uploadStars(p));
   watch(input.backdropUrl, (u) => loadBackdrop(u));
-  watch(input.manifest, () => {
-    buildMeshes();
-    buildGalaxy();
+  watch(
+    () => input.galaxyCloud?.value ?? null,
+    (c) => uploadCloud(c),
+  );
+  watch(input.manifest, () => buildMeshes());
+
+  // The depth slider at 0 is the photograph, and the photograph is taken through the run's own lens.
+  // So returning the slider to 0 returns the lens too — otherwise the picture at "0 %" would be the
+  // photograph seen down a wide-angle barrel, which is the one thing the whole depth contract promises
+  // it is not.
+  watch(input.depth, (d) => {
+    if (d <= 0) {
+      lens.value = 1;
+      requestDraw();
+    }
   });
-  watch(
-    () => input.frame?.value,
-    () => buildGalaxy(),
-  );
-  watch(
-    () => input.showGalaxy?.value,
-    () => buildGalaxy(),
-  );
 
   // The slider WRITES the camera — the same contract openView() already has. The mouse is then free
-  // to modify it, and moving the slider re-snaps. Because galaxyOrbit(0) puts the eye at Earth with
+  // to modify it, and moving the slider re-snaps. Because galaxyView(0) puts the eye at Earth with
   // the run's own lens, switching the mode on at zero is a picture that does not move.
   watch(
     () => [input.showGalaxy?.value, input.galaxyZoom?.value] as const,
     ([on]) => {
-      const m = input.manifest.value;
-      const b = galaxyBasis.value;
-      if (!m) return;
-      if (!on || !b) {
-        if (!on) orbit.value = defaultOrbit();
+      const ctx = journeyCtx.value;
+      if (!input.manifest.value) return;
+      if (!on || !ctx) {
+        // Leaving the galaxy view goes back to the photograph, lens and all.
+        if (!on) {
+          orbit.value = defaultOrbit();
+          lens.value = 1;
+        }
         requestDraw();
         return;
       }
-      const g = galacticToScene(b);
-      const unit = (v: readonly number[]): [number, number, number] => {
-        const n = Math.hypot(v[0], v[1], v[2]) || 1;
-        return [v[0] / n, v[1] / n, v[2] / n];
-      };
-      orbit.value = galaxyOrbit(input.galaxyZoom?.value ?? 0, {
-        medianPc: m.depth.median_pc,
-        tanHalfH: m.camera.tan_half_h,
-        toGalacticCentre: unit(g[0]),
-        toNorthPole: unit(g[2]),
-      }).orbit;
+      orbit.value = galaxyView(input.galaxyZoom?.value ?? 0, ctx).orbit;
       requestDraw();
     },
   );
@@ -1290,6 +1715,7 @@ export function useStarField3D(
       input.starSize,
       input.showGalaxy ?? ref(false),
       input.galaxyZoom ?? ref(0),
+      input.galaxyGain ?? ref(GALAXY_DEFAULT_GAIN),
     ],
     requestDraw,
   );
@@ -1298,16 +1724,42 @@ export function useStarField3D(
     cancelAnimationFrame(raf);
     observer?.disconnect();
     if (!gl) return;
-    for (const b of [starBuf, quadBuf, quadIdx, lineBuf, motionBuf])
+    for (const b of [
+      starBuf,
+      quadBuf,
+      quadIdx,
+      lineBuf,
+      motionBuf,
+      cloudBuf,
+      galaxyLinePos,
+      galaxyLineCol,
+    ])
       if (b) gl.deleteBuffer(b);
-    for (const a of [starVAO, quadVAO, lineVAO, motionVAO])
+    for (const a of [
+      starVAO,
+      quadVAO,
+      lineVAO,
+      motionVAO,
+      cloudVAO,
+      galaxyLineVAO,
+      emptyVAO,
+    ])
       if (a) gl.deleteVertexArray(a);
+    if (accumTex) gl.deleteTexture(accumTex);
+    if (accumFBO) gl.deleteFramebuffer(accumFBO);
     for (const d of meshes) {
       if (d.vao) gl.deleteVertexArray(d.vao);
       if (d.vbo) gl.deleteBuffer(d.vbo);
       if (d.ibo) gl.deleteBuffer(d.ibo);
     }
-    for (const p of [starProg, quadProg, meshProg, lineProg])
+    for (const p of [
+      starProg,
+      quadProg,
+      meshProg,
+      lineProg,
+      cloudProg,
+      stretchProg,
+    ])
       if (p) gl.deleteProgram(p);
     if (tex) gl.deleteTexture(tex);
     gl = null;
@@ -1319,6 +1771,9 @@ export function useStarField3D(
     orbit,
     // Whether the field's orientation is known well enough to place a galaxy around it.
     galaxyAvailable: computed(() => !!galaxyBasis.value),
+    // The journey the galaxy slider drives, so the readout beside it describes the real thing rather
+    // than a second copy of the context that could disagree about how far out the scene reaches.
+    journeyCtx,
     selected,
     hovered,
     hoverAt,

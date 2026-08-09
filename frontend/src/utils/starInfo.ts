@@ -71,7 +71,7 @@ export function spectralClass(info?: StarCatalogInfo | null): string {
 /** Right ascension as sexagesimal hours, the form every catalogue and planetarium accepts. */
 export function formatRA(deg?: number): string {
   if (deg === undefined || !Number.isFinite(deg)) return "";
-  const hours = ((deg % 360) + 360) % 360 / 15;
+  const hours = (((deg % 360) + 360) % 360) / 15;
   const h = Math.floor(hours);
   const m = Math.floor((hours - h) * 60);
   const s = ((hours - h) * 60 - m) * 60;

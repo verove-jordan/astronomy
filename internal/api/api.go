@@ -166,6 +166,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/stars", s.computeStars)
 	mux.HandleFunc("GET /api/jobs/{id}/stars", s.getStars)
 	mux.HandleFunc("GET /api/jobs/{id}/scene3d", s.getScene3D)
+	mux.HandleFunc("GET /api/galaxy/points", s.getGalaxyPoints)
 	mux.HandleFunc("POST /api/jobs/{id}/free-local", s.freeLocalJob)
 	mux.HandleFunc("GET /api/jobs/{id}/iterations", s.jobIterations)
 	mux.HandleFunc("GET /api/jobs/{id}/events", s.jobEvents)

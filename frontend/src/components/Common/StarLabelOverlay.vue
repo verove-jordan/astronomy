@@ -350,7 +350,10 @@ function onMove(e: MouseEvent) {
   const changed = hit?.x !== hover.value?.x || hit?.y !== hover.value?.y;
   hover.value = hit;
   hoverAt.value = { x: mx, y: my };
-  const nextMarker = hit?.kind === "star" ? (lastMarkers.find((m) => m.star === hit.star) ?? null) : null;
+  const nextMarker =
+    hit?.kind === "star"
+      ? (lastMarkers.find((m) => m.star === hit.star) ?? null)
+      : null;
   if (nextMarker !== hoveredMarker || changed) {
     hoveredMarker = nextMarker;
     scheduleDraw();
@@ -379,12 +382,6 @@ const infoTitle = computed(() => {
   if (hover.value?.kind === "label") return hover.value.label.name;
   return info.value?.name || t("stars.info.unnamed");
 });
-
-
-
-
-
-
 
 watch(
   () => [
@@ -431,7 +428,9 @@ onBeforeUnmount(() => {
       <StarInfoCard
         :info="info"
         :title="infoTitle"
-        :secondary="hover.kind === 'label' ? hover.label.secondary : info?.secondary"
+        :secondary="
+          hover.kind === 'label' ? hover.label.secondary : info?.secondary
+        "
         :title-class="
           hover.kind === 'label' && hover.label.kind === 'dso'
             ? 'text-amber-300'
@@ -445,13 +444,23 @@ onBeforeUnmount(() => {
         <template #lead>
           <template v-if="hover.kind === 'label' && hover.label.type">
             <dt class="text-slate-500">{{ t("stars.info.type") }}</dt>
-            <dd>{{ te(`skyTypes.${hover.label.type}`) ? t(`skyTypes.${hover.label.type}`) : hover.label.type }}</dd>
+            <dd>
+              {{
+                te(`skyTypes.${hover.label.type}`)
+                  ? t(`skyTypes.${hover.label.type}`)
+                  : hover.label.type
+              }}
+            </dd>
           </template>
-          <template v-if="hover.kind === 'label' && hover.label.diameter_arcmin">
+          <template
+            v-if="hover.kind === 'label' && hover.label.diameter_arcmin"
+          >
             <dt class="text-slate-500">{{ t("stars.info.size") }}</dt>
             <dd>{{ formatArcmin(hover.label.diameter_arcmin) }}</dd>
           </template>
-          <template v-if="hover.kind === 'label' && !info && hover.label.mag < 90">
+          <template
+            v-if="hover.kind === 'label' && !info && hover.label.mag < 90"
+          >
             <dt class="text-slate-500">{{ t("stars.info.mag") }}</dt>
             <dd>{{ hover.label.mag.toFixed(2) }}</dd>
           </template>
@@ -460,7 +469,13 @@ onBeforeUnmount(() => {
         <template #trail>
           <template v-if="info?.con">
             <dt class="text-slate-500">{{ t("stars.info.constellation") }}</dt>
-            <dd>{{ te(`constellations.${info.con}`) ? t(`constellations.${info.con}`) : info.con }}</dd>
+            <dd>
+              {{
+                te(`constellations.${info.con}`)
+                  ? t(`constellations.${info.con}`)
+                  : info.con
+              }}
+            </dd>
           </template>
 
           <!-- Measured on THIS image rather than read from a catalogue. -->
@@ -474,7 +489,10 @@ onBeforeUnmount(() => {
             <template v-if="hover.star.hex">
               <dt class="text-slate-500">{{ t("stars.info.colour") }}</dt>
               <dd class="flex items-center gap-1">
-                <span class="inline-block h-2.5 w-2.5 rounded-full border border-slate-600" :style="{ backgroundColor: hover.star.hex }" />
+                <span
+                  class="inline-block h-2.5 w-2.5 rounded-full border border-slate-600"
+                  :style="{ backgroundColor: hover.star.hex }"
+                />
                 {{ hover.star.hex }}
               </dd>
             </template>

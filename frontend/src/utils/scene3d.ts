@@ -300,6 +300,21 @@ export function fitPerspective(
   far = 1000,
   tanScale = 1,
 ): Mat4 {
+  const { tw, th } = fitTanHalf(m, canvasAspect, tanScale);
+  return perspective(tw, th, near, far);
+}
+
+// fitTanHalf is the pair of half-field tangents fitPerspective ends up using — the corrections above,
+// without the matrix.
+//
+// Split out because the galaxy shader needs the VERTICAL one: it sizes each point by the angle the
+// patch of Galaxy it stands for actually subtends, and reading the field of view off a second
+// expression is how a renderer ends up disagreeing with its own projection.
+export function fitTanHalf(
+  m: Scene3DManifest,
+  canvasAspect: number,
+  tanScale = 1,
+): { tw: number; th: number } {
   const { width, height } = m.image;
   const kx = width > 1 ? width / (width - 1) : 1;
   const ky = height > 1 ? height / (height - 1) : 1;
@@ -312,7 +327,7 @@ export function fitPerspective(
     if (canvasAspect > imageAspect) tw = th * canvasAspect;
     else th = tw / canvasAspect;
   }
-  return perspective(tw, th, near, far);
+  return { tw, th };
 }
 
 export function multiply(a: Mat4, b: Mat4): Mat4 {
@@ -517,11 +532,36 @@ export function zoomExponent(deltaY: number, dtMs: number): number {
 export const MIN_ORBIT_DISTANCE = 0.004;
 export const MAX_ORBIT_DISTANCE = 400;
 
-export function applyZoom(o: Orbit, exponent: number): Orbit {
+// maxOrbitDistance is how far the camera may pull back, given how far away the FARTHEST THING IN THE
+// SCENE is (in scene units).
+//
+// A fixed ceiling cannot serve both spaces. The warped view spans five units end to end, so 400 is
+// already eighty times more room than it can use. The galaxy view measures in kiloparsecs, and a run
+// that caught a galaxy at seven megaparsecs needs seven thousand units just to have the thing in
+// front of the lens — let alone to see it and the Milky Way in one frame. Capping that at 400 is why
+// zooming out used to stop with the far object still off screen.
+//
+// ORBIT_HEADROOM is how much further than the farthest object the eye may go: enough to look back at
+// everything from outside it, and no further, so the zoom-out does not run off into empty space.
+export const ORBIT_HEADROOM = 6;
+
+export function maxOrbitDistance(farthestUnits = 0): number {
+  const want = Number.isFinite(farthestUnits)
+    ? farthestUnits * ORBIT_HEADROOM
+    : 0;
+  return Math.max(MAX_ORBIT_DISTANCE, want);
+}
+
+export function applyZoom(
+  o: Orbit,
+  exponent: number,
+  maxDistance?: number,
+): Orbit {
   const d = o.distance * Math.exp(exponent);
+  const hi = maxDistance ?? MAX_ORBIT_DISTANCE;
   return {
     ...o,
-    distance: Math.min(MAX_ORBIT_DISTANCE, Math.max(MIN_ORBIT_DISTANCE, d)),
+    distance: Math.min(hi, Math.max(MIN_ORBIT_DISTANCE, d)),
   };
 }
 
@@ -671,6 +711,30 @@ export interface BillboardQuad {
 // rather than the field axis (an object near the frame edge would otherwise render visibly skewed),
 // and it is sized so it subtends exactly the angle its footprint does in the picture — so at depth
 // zero it lands back on top of the pixels it was cut from.
+/**
+ * billboardDirection is the unit line of sight an object lies on, in scene coordinates.
+ *
+ * Derived from the footprint's centre and the run's own lens by exactly the relation billboardQuad
+ * places the quad with, so the direction an object is FLOWN toward can never disagree with the pixels
+ * it is drawn from.
+ */
+export function billboardDirection(
+  b: Scene3DBillboard,
+  m: Scene3DManifest,
+): [number, number, number] | null {
+  const { width, height } = m.image;
+  if (!(width > 1) || !(height > 1)) return null;
+  const perPxX = (2 * m.camera.tan_half_w) / (width - 1);
+  const perPxY = (2 * m.camera.tan_half_h) / (height - 1);
+  const v: [number, number, number] = [
+    (b.x - (width - 1) / 2) * perPxX,
+    (b.y - (height - 1) / 2) * perPxY,
+    1,
+  ];
+  const n = Math.hypot(v[0], v[1], v[2]);
+  return n > 0 ? [v[0] / n, v[1] / n, v[2] / n] : null;
+}
+
 export function billboardQuad(
   b: Scene3DBillboard,
   m: Scene3DManifest,

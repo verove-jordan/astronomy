@@ -44,6 +44,7 @@ rejects anything else); two endpoints stream Server-Sent Events (SSE).
 | `GET /api/jobs/{id}/iterations` | Supervisor iterations of a run |
 | `POST /api/jobs/{id}/stars` · `GET /api/jobs/{id}/stars` | Compute / fetch the run's star annotation (`stars.json`). Synchronous, cached, deliberately not a job |
 | `GET /api/jobs/{id}/scene3d` | The 3D field map's manifest, built by the same annotation pass. `available: false` + `reason` when the run cannot have a scene; the star field and backdrop it points at are ordinary run files fetched through `GET /api/file` |
+| `GET /api/galaxy/points` | The Milky Way point cloud the 3D map draws the Galaxy from — 180 000 stars sampled from published structure, 1.8 MB of `application/octet-stream`. Run-INDEPENDENT (only the rotation into a photograph's frame is per-run, and that is a GPU uniform), so it is generated once per process and served with an ETag and a week's `Cache-Control`. Optional `?v=` is the record layout the caller can decode: a mismatch answers **409** rather than bytes the viewer would silently reject |
 | `GET /api/jobs/{id}/events` | **SSE** — progress, log lines, previews, resources. Sends a snapshot first; for a finished job it closes immediately after the snapshot (clients should not stream terminal jobs) |
 | `POST /api/series` · `GET /api/series` · `GET /api/series/{id}` | Goal-driven improvement campaigns |
 | `POST /api/series/{id}/continue` · `/stop` | Resume / stop a campaign |

@@ -3,8 +3,12 @@ import type { Scene3DBillboard, Scene3DManifest } from "@/types";
 import {
   DEPTH_ESTIMATED,
   FLAG_HAS_VELOCITY,
+  MAX_ORBIT_DISTANCE,
   MIN_ORBIT_DISTANCE,
   applyZoom,
+  billboardDirection,
+  fitTanHalf,
+  maxOrbitDistance,
   cameraPhysical,
   motionEndpoint,
   panOrbit,
@@ -773,6 +777,104 @@ describe("applyZoom", () => {
     for (let i = 0; i < 200; i++) o = applyZoom(o, -1);
     expect(o.distance).toBeGreaterThanOrEqual(MIN_ORBIT_DISTANCE);
     expect(Number.isFinite(o.distance)).toBe(true);
+  });
+
+  it("stops at the default ceiling with nothing further out", () => {
+    let o = defaultOrbit();
+    for (let i = 0; i < 200; i++) o = applyZoom(o, 1);
+    expect(o.distance).toBe(MAX_ORBIT_DISTANCE);
+  });
+
+  it("stops at the ceiling it is given, which is how the galaxy view reaches megaparsecs", () => {
+    // The bug this pins: one fixed ceiling of 400 units cannot serve both spaces. The warped view is
+    // five units deep, so 400 is eighty times more room than it can use — and the galaxy view measures
+    // in kiloparsecs, where a run that caught something at seven megaparsecs needs seven THOUSAND units
+    // just to have it in front of the lens. Capping that at 400 is why zooming out used to stop with
+    // the far object still off screen.
+    const far = maxOrbitDistance(7052); // M51, in kiloparsec
+    expect(far).toBeGreaterThan(7052);
+    let o = defaultOrbit();
+    for (let i = 0; i < 400; i++) o = applyZoom(o, 1, far);
+    expect(o.distance).toBe(far);
+  });
+
+  it("never shrinks the ceiling below the default", () => {
+    expect(maxOrbitDistance(0)).toBe(MAX_ORBIT_DISTANCE);
+    expect(maxOrbitDistance(1)).toBe(MAX_ORBIT_DISTANCE);
+    expect(maxOrbitDistance(Number.NaN)).toBe(MAX_ORBIT_DISTANCE);
+  });
+});
+
+describe("fitTanHalf", () => {
+  const m = manifest();
+
+  it("returns the very tangents fitPerspective builds its matrix from", () => {
+    // Split out for the galaxy shader, which sizes each point by the angle it subtends. Reading the
+    // field of view off a second expression is how a renderer ends up disagreeing with its own
+    // projection, so this is the check that there is only one.
+    for (const aspect of [0.6, IMAGE_ASPECT, 3.2]) {
+      for (const scale of [1, 12.5]) {
+        const { tw, th } = fitTanHalf(m, aspect, scale);
+        const p = fitPerspective(m, aspect, 0.01, 1000, scale);
+        expect(p[0]).toBeCloseTo(1 / tw, 4);
+        expect(p[5]).toBeCloseTo(1 / th, 4);
+      }
+    }
+  });
+
+  it("scales linearly with the lens, which is what lets one division size the cloud", () => {
+    const one = fitTanHalf(m, 2.5, 1);
+    const wide = fitTanHalf(m, 2.5, 40);
+    expect(wide.tw / one.tw).toBeCloseTo(40, 6);
+    expect(wide.th / one.th).toBeCloseTo(40, 6);
+  });
+});
+
+describe("billboardDirection", () => {
+  const m = manifest();
+
+  it("agrees with where billboardQuad actually draws the object", () => {
+    // Two ways of answering "which way is this object?" would eventually disagree, and the journey
+    // flies TOWARD the answer while the quad is drawn AT it — so a mismatch would send the camera
+    // somewhere the object is not.
+    for (const [x, y] of [
+      [IMAGE_W / 2, IMAGE_H / 2],
+      [100, 80],
+      [IMAGE_W - 40, IMAGE_H - 30],
+    ]) {
+      const b: Scene3DBillboard = {
+        name: "x",
+        dist_pc: 500,
+        dist_source: "table",
+        x,
+        y,
+        rx_px: 30,
+        ry_px: 20,
+        angle_rad: 0,
+      };
+      const dir = billboardDirection(b, m)!;
+      const q = billboardQuad(b, m, 1, UNITS_PER_PC)!;
+      // The quad's centre is the mean of its corners, and it must lie along the direction.
+      const c = [0, 1, 2].map(
+        (k) => q.corners.reduce((s, v) => s + v[k], 0) / q.corners.length,
+      );
+      const n = Math.hypot(c[0], c[1], c[2]);
+      for (const k of [0, 1, 2]) expect(c[k] / n).toBeCloseTo(dir[k], 6);
+    }
+  });
+
+  it("points straight down the barrel for an object in the middle of the frame", () => {
+    const b: Scene3DBillboard = {
+      name: "x",
+      dist_pc: 500,
+      dist_source: "table",
+      x: (IMAGE_W - 1) / 2,
+      y: (IMAGE_H - 1) / 2,
+      rx_px: 10,
+      ry_px: 10,
+      angle_rad: 0,
+    };
+    expect(billboardDirection(b, m)).toEqual([0, 0, 1]);
   });
 });
 
