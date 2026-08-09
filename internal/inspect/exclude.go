@@ -5,6 +5,10 @@ import "fmt"
 // ID serializes the key into the stable exclusion token carried by RunRequest.exclude_sets
 // (the calib.SuggestID precedent). Analysis-time IDs come from a default-options scan and are
 // matched again at run time, so the field order and format are a compatibility contract.
+//
+// SetKey.Color is deliberately NOT part of the token: appending it would invalidate every selection
+// a user has already saved, to disambiguate a pair of sets that can only both exist in a folder
+// mixing mono and colour lights — which the inventory already refuses to stack in one run.
 func (k SetKey) ID() string {
 	return fmt.Sprintf("%s|%s|%s|e%d|g%do%db%d|i%d|t%d|s:%s",
 		k.Type, k.Object, k.Filter, k.ExposureMs, k.Gain, k.Offset, k.Bin, k.ISO, k.TempBucket, k.Session)

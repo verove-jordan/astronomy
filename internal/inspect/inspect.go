@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/verove-jordan/astronomy/internal/channeldetect"
+	"github.com/verove-jordan/astronomy/internal/filters"
 	"github.com/verove-jordan/astronomy/internal/fits"
 )
 
@@ -20,13 +21,19 @@ var (
 	// cameraRawExts) so a folder mixing TIFF lights + FITS calibration classifies both, and mono TIFF
 	// keeps its filter instead of being force-tagged one-shot-color.
 	tiffExts = map[string]bool{".tif": true, ".tiff": true}
-	// cameraRawExts are one-shot-color camera raws (iPhone DNG/HEIC, DSLR raws). They are surfaced
-	// as lights only when a directory holds no FITS/video, so stray jpg/png outputs in a FITS capture
-	// set are never miscounted — which is why those non-raw still formats are excluded here.
+	// cameraRawExts are one-shot-color camera raws (iPhone DNG/HEIC, DSLR raws such as Nikon NEF).
+	// They are surfaced as lights only when the directory holds no FITS/TIFF lights and no video, so
+	// stray outputs in a FITS capture set are never miscounted.
 	cameraRawExts = map[string]bool{
 		".dng": true, ".heic": true, ".heif": true,
 		".cr2": true, ".cr3": true, ".nef": true, ".arw": true, ".raf": true,
 	}
+	// colorStillExts are already-demosaiced colour stills. They are gated exactly like cameraRawExts
+	// (promoted only when nothing else in the folder looks like a light) because that guard is what
+	// keeps an exported jpg/png preview sitting next to a FITS capture set from being stacked as a
+	// frame. Before they were listed here a folder of plain colour JPEGs inspected as EMPTY, even
+	// though detect.go accepted them and the CLI would happily stack it.
+	colorStillExts = map[string]bool{".jpg": true, ".jpeg": true, ".png": true}
 )
 
 // statsSample is how many center pixels to read when inferring a missing IMAGETYP from the pixel
@@ -101,7 +108,7 @@ func scanFrames(ctx context.Context, root string, opts ScanOptions) (*Inventory,
 			// "<name>.TIF.txt" sidecar + filename/folder tokens (a darks/flats/offsets ancestor is
 			// authoritative). Whatever the names can't resolve joins `unknown` for the pixel-curve pass,
 			// exactly like a headerless FITS frame.
-			fr := &Frame{Path: path, Type: Unknown, ClassSource: SourceExtension}
+			fr := &Frame{Path: path, Type: Unknown, ClassSource: SourceExtension, Channels: stillChannels(path)}
 			backfillMeta(fr, path)
 			inv.Frames = append(inv.Frames, fr)
 			if fr.Type == Unknown {
@@ -109,7 +116,10 @@ func scanFrames(ctx context.Context, root string, opts ScanOptions) (*Inventory,
 			}
 		case videoExts[ext]:
 			inv.Videos = append(inv.Videos, &Frame{Path: path, Type: Video, ClassSource: SourceExtension})
-		case cameraRawExts[ext]:
+		case cameraRawExts[ext], colorStillExts[ext]:
+			if isProcessedName(path) {
+				return nil // an exported "*_stacked.png" is a result, not a capture
+			}
 			rawStills = append(rawStills, path)
 		}
 		return nil
@@ -141,15 +151,29 @@ func scanFrames(ctx context.Context, root string, opts ScanOptions) (*Inventory,
 		}
 		processChannels(inv, chOpts)
 	}
-	// A one-shot-color raw directory (iPhone/DSLR) carries no FITS metadata; classify its stills so
-	// darks/bias/flats dropped alongside the lights are recognized as calibration (folder/filename
-	// tokens, else pixel statistics) instead of all being surfaced as lights, and read each frame's
-	// ISO/exposure. Done only when the dir holds no FITS/video, so FITS capture sets (and stray jpg/png
-	// outputs) are unaffected; an unresolved still defaults to an RGB light, as before.
-	if len(inv.Frames) == 0 && len(inv.Videos) == 0 && len(rawStills) > 0 {
+	// A one-shot-color still directory (iPhone/DSLR raws, or plain colour jpg/png/tif) carries no FITS
+	// metadata; classify its stills so darks/bias/flats dropped alongside the lights are recognized as
+	// calibration (folder/filename tokens, else pixel statistics) instead of all being surfaced as
+	// lights, and read each frame's ISO/exposure. An unresolved still defaults to an RGB light.
+	//
+	// The guard is "nothing else here looks like a LIGHT" rather than the older "no frames at all":
+	// a DSLR session that keeps its darks/flats as FITS beside the NEFs used to make every raw
+	// invisible, because a single calibration FITS was enough to suppress the whole promotion.
+	if len(inv.Videos) == 0 && len(rawStills) > 0 && !hasLightFrame(inv) {
 		inv.Frames = append(inv.Frames, ClassifyRawStills(ctx, rawStills)...)
 	}
 	return inv, nil
+}
+
+// hasLightFrame reports whether the scan already found a light among its FITS/TIFF frames, i.e.
+// whether the folder's real subject has been ingested. Used to gate camera-raw promotion.
+func hasLightFrame(inv *Inventory) bool {
+	for _, fr := range inv.Frames {
+		if fr.Type == Light {
+			return true
+		}
+	}
+	return false
 }
 
 // ScanWithOptions walks root, reads FITS metadata, classifies and groups every frame, and — when
@@ -167,6 +191,12 @@ func ScanWithOptions(ctx context.Context, root string, opts ScanOptions) (*Inven
 // completeness warnings — the steps that must run once over the full (possibly multi-root) frame set.
 func finalizeInventory(inv *Inventory, opts ScanOptions) {
 	clearSpuriousBayer(inv)
+	inv.ColorModel = colorModel(inv) // after the spurious-BAYERPAT veto, before sets are keyed on it
+	if inv.ColorModel == ColorMixed {
+		inv.Warnings = append(inv.Warnings, "this folder mixes monochrome and one-shot-color lights — "+
+			"one run cannot stack both; process them from separate folders")
+	}
+	nameColorChannel(inv)
 	inv.Sets = buildSets(inv.Frames)
 	if len(opts.ExcludeSets) > 0 {
 		if frames, sets := inv.ExcludeSets(opts.ExcludeSets); frames > 0 {
@@ -224,15 +254,64 @@ func clearSpuriousBayer(inv *Inventory) {
 	}
 }
 
-// isMonoFilter reports whether f names a single mono filter-wheel slot (L/R/G/B/Ha/Sii/Oiii/…), as
-// opposed to the empty/one-shot-color label ("", "RGB", "OSC", "COLOR").
-func isMonoFilter(f string) bool {
-	switch strings.ToUpper(strings.TrimSpace(f)) {
-	case "", "RGB", "OSC", "COLOR", "COLOUR":
-		return false
-	default:
-		return true
+// isMonoFilter reports whether f names a single mono filter-wheel slot (L/R/G/B/Ha/SII/OIII/…), as
+// opposed to the empty/one-shot-color label ("", "RGB", "OSC", "COLOR"). The vocabulary lives in
+// internal/filters, which owns every filter-name table in the repo.
+func isMonoFilter(f string) bool { return filters.IsMono(f) }
+
+// colorModel decides the scan's overall colour verdict from its LIGHT frames. Calibration frames do
+// not vote on purpose: they carry no filter and follow whichever rig shot them, so a folder of mono
+// darks beside colour lights is still an OSC capture. A folder with no lights at all (a
+// calibration-only "build masters" run) falls back to every frame, since there is nothing else to
+// judge by. Runs AFTER clearSpuriousBayer, so a mono rig's spurious BAYERPAT cards cannot vote.
+func colorModel(inv *Inventory) ColorModel {
+	color, mono := countColor(inv.Frames, true)
+	if color+mono == 0 {
+		color, mono = countColor(inv.Frames, false)
 	}
+	switch {
+	case color == 0:
+		return ColorMono // also the answer for an empty scan: nothing to debayer
+	case mono == 0:
+		return ColorOSC
+	default:
+		return ColorMixed
+	}
+}
+
+// nameColorChannel gives every unlabeled one-shot-color light the canonical colour channel name, so
+// the rest of the system has a channel to talk about. A Bayer CFA FITS carries no FILTER card at all,
+// and the whole pipeline keys channels on SetKey.Filter — an unnamed channel is the empty string,
+// which sorts and displays as "no filter" and reads as a bug everywhere downstream.
+//
+// Only OSC scans are touched. In a MIXED folder the colour lights stay unnamed: naming them would
+// invite the mono pipeline to stack them as a channel, and the whole point of the mixed verdict is
+// that no single run should. Frames that already carry a filter (camera raws, which are stamped at
+// classification) are left alone.
+func nameColorChannel(inv *Inventory) {
+	if inv.ColorModel != ColorOSC {
+		return
+	}
+	for _, fr := range inv.Frames {
+		if fr.Type == Light && fr.IsColor() && fr.Filter == "" {
+			fr.Filter = filters.Color
+		}
+	}
+}
+
+// countColor tallies colour vs monochrome frames, optionally restricted to lights.
+func countColor(frames []*Frame, lightsOnly bool) (color, mono int) {
+	for _, fr := range frames {
+		if fr.Type == Unknown || fr.Type == Video || (lightsOnly && fr.Type != Light) {
+			continue
+		}
+		if fr.IsColor() {
+			color++
+		} else {
+			mono++
+		}
+	}
+	return color, mono
 }
 
 // ScanMany scans multiple roots and merges them into one Inventory: frames, videos, and per-file

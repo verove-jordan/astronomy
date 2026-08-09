@@ -208,7 +208,14 @@ func reconstructStackContext(ctx context.Context, opts Options, outDir, workRun 
 	if err != nil {
 		return nil, fmt.Errorf("scan inputs: %w", err)
 	}
-	inv.ExcludeBayer()
+	// Mirror Process's colour handling exactly: a one-shot-color run re-stacks as its single RGB
+	// channel, and only a mixed folder drops frames. Dropping unconditionally here meant a per-stage
+	// re-run of a colour run rebuilt its context with NO frames at all.
+	if inv.ColorModel == inspect.ColorOSC {
+		markColorPreset(opts.Preset)
+	} else {
+		inv.ExcludeColor()
+	}
 
 	workAbs, err := filepath.Abs(opts.WorkDir)
 	if err != nil {

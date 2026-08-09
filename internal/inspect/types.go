@@ -50,8 +50,16 @@ type Frame struct {
 	Width      int   `json:"width"`
 	Height     int   `json:"height"`
 	// Bayer is the colour-filter-array pattern (e.g. "GRBG") for one-shot-color frames; "" = monochrome.
-	// OSC frames must be debayered, so the mono per-filter pipeline excludes them.
-	Bayer       string `json:"bayer,omitempty"`
+	// A Bayer frame is still ONE plane of data — it has to be debayered before it is colour.
+	Bayer string `json:"bayer,omitempty"`
+	// Channels is how many planes the frame carries: 1 for monochrome and for undebayered CFA, 3 for
+	// an already-demosaiced RGB frame (a developed camera raw, a colour TIFF/PNG/JPEG, a FITS with
+	// NAXIS3=3). 0 means "not determined" and is read as 1.
+	//
+	// Bayer and Channels together name the three states the pipeline has to tell apart, which a
+	// single flag could not: mono (Bayer=="" && Channels<=1), CFA awaiting debayer (Bayer!=""), and
+	// RGB (Channels==3). Conflating the last two is what made a debayered colour frame look mono.
+	Channels int `json:"channels,omitempty"`
 	Object     string `json:"object,omitempty"`
 	Instrument string `json:"instrument,omitempty"`
 	// Creator is the capture software (SWCREATE), e.g. "ASICAP" / "SharpCap". Old ASICAP writes NO
@@ -81,6 +89,16 @@ type Frame struct {
 	ObjCtDec    string  `json:"objctdec,omitempty"`
 }
 
+// IsColor reports whether the frame carries all three primaries — either as an undebayered CFA
+// mosaic or as three already-demosaiced planes. Prefer this over testing Bayer directly: a
+// developed DSLR raw and a colour TIFF have no Bayer pattern yet are unambiguously colour.
+func (f *Frame) IsColor() bool { return f.Bayer != "" || f.Channels >= 3 }
+
+// NeedsDebayer reports whether the frame is still a raw CFA mosaic, so calibration has to run in
+// CFA-aware mode and demosaic afterwards (Siril `-cfa -equalize_cfa -debayer`). An already-RGB
+// frame must NOT take that path.
+func (f *Frame) NeedsDebayer() bool { return f.Bayer != "" && f.Channels < 3 }
+
 // ExposureSec is the exposure time in seconds.
 func (f *Frame) ExposureSec() float64 { return float64(f.ExposureMs) / 1000 }
 
@@ -104,6 +122,12 @@ type SetKey struct {
 	// signatures pooled across sessions). Zero for every single-night scan — sets, sort order and
 	// master names stay byte-identical to the pre-sessionization behavior. See buildSets.
 	Session string `json:"session,omitempty"`
+	// Color separates one-shot-color frames from monochrome ones. A colour frame and a mono frame at
+	// the same exposure/gain/temperature are NOT interchangeable — stacking them together, or
+	// calibrating one with the other's master, produces nonsense — so a folder holding both a mono
+	// session and an OSC session must not merge them into one set. False (the zero value) for every
+	// all-mono scan, so existing set IDs, ordering and master names are unchanged.
+	Color bool `json:"color,omitempty"`
 }
 
 // Set is a group of frames that share a SetKey.
@@ -114,6 +138,22 @@ type Set struct {
 	TotalIntegrationMs int64    `json:"total_integration_ms"`
 }
 
+// ColorModel is how a whole scan records colour, decided once in finalizeInventory and carried to
+// the pipeline so the routing decision is made in exactly one place.
+type ColorModel string
+
+const (
+	// ColorMono is the classic rig: a monochrome sensor behind a filter wheel, stacked per filter
+	// and combined into LRGB. The default for anything with no colour evidence.
+	ColorMono ColorModel = "mono"
+	// ColorOSC is one-shot color: every light carries all three primaries (Bayer CFA, DSLR raw, or
+	// an already-debayered RGB still). Stacked as a single RGB channel, no combine step.
+	ColorOSC ColorModel = "osc"
+	// ColorMixed is a folder holding both, which no single run can stack. The pipeline keeps the mono
+	// frames and warns about the colour ones rather than guessing which the user meant.
+	ColorMixed ColorModel = "mixed"
+)
+
 // Inventory is the full result of scanning a directory.
 type Inventory struct {
 	Root             string            `json:"root"`
@@ -122,6 +162,9 @@ type Inventory struct {
 	Videos           []*Frame          `json:"videos"`
 	Warnings         []string          `json:"warnings"`
 	ChannelDetection *ChannelDetection `json:"channel_detection,omitempty"`
+	// ColorModel is the scan's overall colour verdict (see ColorModel). Computed in finalize from the
+	// LIGHT frames only — calibration frames follow whatever rig shot them.
+	ColorModel ColorModel `json:"color_model,omitempty"`
 	// Sessions summarizes the capture nights found in the scan (per-night counts, time window and
 	// light configs), sorted by night. nil when no frame carries a DATE-OBS. See session.go.
 	Sessions []SessionInfo `json:"sessions,omitempty"`
@@ -200,14 +243,29 @@ func (inv *Inventory) SetsOfType(t FrameType) []Set {
 	return out
 }
 
-// ExcludeBayer removes one-shot-color (Bayer) frames from the inventory and rebuilds the sets, returning
-// how many were removed. The monochrome per-filter pipeline cannot stack OSC mosaics, so they are dropped
-// here (the caller warns); the OSC pipeline processes them instead.
+// ExcludeBayer removes undebayered Bayer-CFA frames from the inventory and rebuilds the sets,
+// returning how many were removed. Kept for callers that specifically cannot handle a raw CFA mosaic;
+// to drop every one-shot-color frame — including already-debayered RGB, which carries no Bayer
+// pattern — use ExcludeColor.
 func (inv *Inventory) ExcludeBayer() int {
+	return inv.excludeFrames(func(fr *Frame) bool { return fr.Bayer != "" })
+}
+
+// ExcludeColor removes every one-shot-color frame (raw CFA *and* already-debayered RGB) and rebuilds
+// the sets, returning how many were removed. This is what a mono-only run needs from a folder that
+// mixes both: ExcludeBayer alone would leave a debayered colour frame behind to be stacked as if it
+// were luminance.
+func (inv *Inventory) ExcludeColor() int {
+	return inv.excludeFrames(func(fr *Frame) bool { return fr.IsColor() })
+}
+
+// excludeFrames drops every frame matching drop and rebuilds the sets. Only the Inventory's slices
+// are touched — Frame structs are never mutated — so it is safe on ScanCache-shared frames.
+func (inv *Inventory) excludeFrames(drop func(*Frame) bool) int {
 	kept := inv.Frames[:0:0]
 	removed := 0
 	for _, fr := range inv.Frames {
-		if fr.Bayer != "" {
+		if drop(fr) {
 			removed++
 			continue
 		}

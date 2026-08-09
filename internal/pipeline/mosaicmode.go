@@ -47,9 +47,16 @@ func ProcessMosaic(ctx context.Context, opts Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	if n := inv.ExcludeBayer(); n > 0 {
+	// Each panel is stacked by the deep-sky machinery, so a one-shot-color mosaic works the same way a
+	// colour deep-sky run does: every panel becomes one RGB channel. Reprojection and the feathered
+	// blend operate on whole images and never look at the filter. Only a MIXED folder still drops
+	// frames — no single canvas can be assembled from panels shot on two different sensors.
+	if inv.ColorModel == inspect.ColorOSC {
+		markColorPreset(opts.Preset)
+	} else if n := inv.ExcludeColor(); n > 0 {
 		inv.Warnings = append(inv.Warnings, fmt.Sprintf(
-			"%d one-shot-color (Bayer) frame(s) excluded — mosaic v1 stacks mono filter-wheel panels; stack OSC panels individually with the OSC path meanwhile", n))
+			"%d one-shot-color frame(s) excluded — this folder also holds monochrome panels, and one "+
+				"canvas cannot mix the two; assemble the colour panels from their own folder", n))
 	}
 
 	// Segment the lights into panels: plan-labeled folders/coordinates, else discovery order.

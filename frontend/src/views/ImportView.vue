@@ -1592,7 +1592,11 @@ function histChip(exists: boolean): string {
 
     <!-- Selected capture + channel mapping + run controls -->
     <div v-if="inv" class="grid gap-4 lg:grid-cols-2">
-      <CaptureSummary :summary="summary" :path="summaryPath" />
+      <CaptureSummary
+        :summary="summary"
+        :path="summaryPath"
+        :color-model="inv.color_model"
+      />
       <FilterMappingEditor
         v-if="detectedFilters.length"
         v-model="mapping"

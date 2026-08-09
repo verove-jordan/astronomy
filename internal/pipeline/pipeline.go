@@ -440,12 +440,21 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The mono per-filter pipeline cannot stack one-shot-color (Bayer) frames — drop them (with a warning)
-	// before grouping, so a directory that mixes mono FITS with an older OSC session does not mis-stack
-	// the colour mosaics. The OSC frames are processed by the dedicated OSC path instead.
-	if n := inv.ExcludeBayer(); n > 0 {
-		inv.Warnings = append(inv.Warnings, fmt.Sprintf(
-			"%d one-shot-color (Bayer) frame(s) excluded from the mono pipeline — process them with the OSC path", n))
+	// One-shot-color captures stack through this same pipeline as a SINGLE channel named RGB (inspect
+	// names it; see nameColorChannel), which is what lets colour inherit the calibration library,
+	// grading, trail masking, plate-solving, SPCC and the whole finish rather than needing a parallel
+	// implementation. Only a MIXED folder still drops frames: nothing can stack mono and colour lights
+	// together, so the mono session wins and the colour frames are reported rather than silently lost.
+	osc := inv.ColorModel == inspect.ColorOSC
+	if inv.ColorModel == inspect.ColorMixed {
+		if n := inv.ExcludeColor(); n > 0 {
+			inv.Warnings = append(inv.Warnings, fmt.Sprintf(
+				"%d one-shot-color frame(s) excluded — this folder also holds monochrome lights, and one "+
+					"run cannot stack both; process the colour frames from their own folder", n))
+		}
+	}
+	if osc {
+		markColorPreset(opts.Preset)
 	}
 
 	// Absolute paths: Siril runs with its CWD set per-sequence, so every -out path must be absolute.
@@ -1210,18 +1219,28 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 		// offset would otherwise stretch into a colour cast and turn the noise into coloured blotches). A
 		// mapped narrowband palette assigns emission lines to R/G/B, where equalising the very different
 		// line pedestals toward one grey would flatten the intended false colour — so it is skipped there.
-		if !pal.Narrowband {
+		// One-shot color has a single already-merged channel: its three primaries were recorded through
+		// one optical path in one exposure, so there is nothing to equalize and nothing to combine.
+		osc := isColorRun(opts.Preset)
+		if !pal.Narrowband && !osc {
 			if n, err := equalizeBackgrounds(cpath(pal.R), cpath(pal.G), cpath(pal.B)); err != nil {
 				notes = append(notes, "background equalization skipped: "+err.Error())
 			} else if n != "" {
 				notes = append(notes, n)
 			}
 		}
-		// Combine the palette's channels into the linear RGB base (dark stretch below). The dark target
-		// background keeps the sky near-black instead of Siril's washed-out 0.25 default.
+		// Build the linear RGB base (dark stretch below). The dark target background keeps the sky
+		// near-black instead of Siril's washed-out 0.25 default. Mono channels are merged with rgbcomp;
+		// a colour master IS the base and is only background-extracted. Everything downstream of this
+		// point — combined background extraction, AI colour denoise, chroma smoothing, SPCC, the
+		// stretch and the GIMP composite — is identical for both.
 		combProg := opts.beginStep("combining channels + background")
 		s1 := hdr + pmPre + fmt.Sprintf("rgbcomp %s %s %s -out=rgb_base\nload rgb_base\n%ssave rgb_base\n",
 			rSrc, gSrc, bSrc, siril.SubskyCmd(deg))
+		if osc {
+			combProg = opts.beginStep("background extraction")
+			s1 = hdr + fmt.Sprintf("load %s\n%ssave rgb_base\n", oscSource(channels), siril.SubskyCmd(deg))
+		}
 		if _, err := runner.Run(ctx, outDir, s1, combProg); err != nil {
 			return gimp.Inputs{}, nil, calMethod, err
 		}
@@ -1662,13 +1681,14 @@ func processChannel(ctx context.Context, opts Options, set inspect.Set, masters 
 	// absence is soft: calibration then falls back to -cc=dark).
 	opts.ensureMasters(ctx, []string{dark, flat, bias, calib.DefectsListPath(dark)})
 	cm := siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias, DarkOptimize: sel.DarkOptimize,
-		BadPixelMap: calib.DefectsListFor(dark)}
+		BadPixelMap: calib.DefectsListFor(dark), CFA: needsDebayer(set.Frames)}
 
 	// A single-frame set cannot form a Siril sequence (no .seq is written for one image), so the
 	// sequence calibrate/register would abort: calibrate the frame alone and promote it to the
 	// channel master directly — no registration, grading or stacking to run on one frame.
+	ingest := seqIngest(set.Frames)
 	if set.Count == 1 {
-		if _, err := opts.Runner.Run(ctx, seqDir, siril.CalibrateSingleScript("light", cm), onProgress); err != nil {
+		if _, err := opts.Runner.Run(ctx, seqDir, siril.CalibrateSingleScriptWith("light", cm, ingest), onProgress); err != nil {
 			ch.Err = err.Error()
 			return ch
 		}
@@ -1681,7 +1701,7 @@ func processChannel(ctx context.Context, opts Options, set inspect.Set, masters 
 
 	// Calibrate + register (writes per-frame metrics to the calibrated sequence's .seq), then grade
 	// and stack the survivors.
-	if _, err := opts.Runner.Run(ctx, seqDir, siril.CalibrateRegisterScript("light", cm), onProgress); err != nil {
+	if _, err := opts.Runner.Run(ctx, seqDir, siril.CalibrateRegisterScriptWith("light", cm, ingest), onProgress); err != nil {
 		ch.Err = err.Error()
 		return ch
 	}

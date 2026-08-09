@@ -132,13 +132,40 @@ func AlignPairScript(seq string) string {
 	return b.String()
 }
 
+// SeqIngest chooses how a light sequence is brought into the working directory.
+type SeqIngest int
+
+const (
+	// IngestLink is the zero value and the historical behaviour: `link`, which symlinks FITS frames
+	// into a sequence without decoding anything. Only FITS can be linked.
+	IngestLink SeqIngest = iota
+	// IngestConvert uses `convert`, which DECODES the frames first — needed for camera raws
+	// (NEF/CR2/ARW/DNG, read through libraw) and for colour TIFF/PNG/JPEG stills. For FITS input
+	// `convert` symlinks, i.e. it does exactly what `link` does, which is why StackMasterScript has
+	// always used it for calibration sets that may arrive as 16-bit TIFF.
+	IngestConvert
+)
+
+// cmd returns the Siril command that materializes sequence seq in the working directory.
+func (i SeqIngest) cmd(seq string) string {
+	if i == IngestConvert {
+		return fmt.Sprintf("convert %s -out=.\n", seq)
+	}
+	return fmt.Sprintf("link %s -out=.\n", seq)
+}
+
 // CalibrateOnlyScript calibrates a light sequence with the matched masters WITHOUT registering or
 // stacking, producing pp_<seq> calibrated frames. Used for cross-session integration: each session's
 // frames are calibrated with their own masters, then all calibrated frames are registered together.
 func CalibrateOnlyScript(seq string, m CalibMasters) string {
+	return CalibrateOnlyScriptWith(seq, m, IngestLink)
+}
+
+// CalibrateOnlyScriptWith is CalibrateOnlyScript with an explicit sequence-ingest mode.
+func CalibrateOnlyScriptWith(seq string, m CalibMasters, in SeqIngest) string {
 	var b strings.Builder
 	b.WriteString(scriptHeader)
-	fmt.Fprintf(&b, "link %s -out=.\n", seq)
+	b.WriteString(in.cmd(seq))
 	if args := calibrateArgs(m); len(args) > 0 {
 		fmt.Fprintf(&b, "calibrate %s %s -prefix=pp_\n", seq, strings.Join(args, " "))
 	}
@@ -153,9 +180,14 @@ func CalibrateOnlyScript(seq string, m CalibMasters) string {
 // CalibratedSeq naming contract holds unchanged. Verified on Siril 1.4.3 (host macOS) and 1.4.4
 // (container linux/arm64).
 func CalibrateSingleScript(seq string, m CalibMasters) string {
+	return CalibrateSingleScriptWith(seq, m, IngestLink)
+}
+
+// CalibrateSingleScriptWith is CalibrateSingleScript with an explicit sequence-ingest mode.
+func CalibrateSingleScriptWith(seq string, m CalibMasters, in SeqIngest) string {
 	var b strings.Builder
 	b.WriteString(scriptHeader)
-	fmt.Fprintf(&b, "link %s -out=.\n", seq)
+	b.WriteString(in.cmd(seq))
 	if args := calibrateArgs(m); len(args) > 0 {
 		fmt.Fprintf(&b, "calibrate_single %s_00001 %s -prefix=pp_\n", seq, strings.Join(args, " "))
 	}
@@ -165,9 +197,14 @@ func CalibrateSingleScript(seq string, m CalibMasters) string {
 // CalibrateRegisterScript calibrates (if masters are given) and registers a light sequence
 // WITHOUT stacking, so the per-frame registration metrics are written to the .seq for grading.
 func CalibrateRegisterScript(seq string, m CalibMasters) string {
+	return CalibrateRegisterScriptWith(seq, m, IngestLink)
+}
+
+// CalibrateRegisterScriptWith is CalibrateRegisterScript with an explicit sequence-ingest mode.
+func CalibrateRegisterScriptWith(seq string, m CalibMasters, in SeqIngest) string {
 	var b strings.Builder
 	b.WriteString(scriptHeader)
-	fmt.Fprintf(&b, "link %s -out=.\n", seq)
+	b.WriteString(in.cmd(seq))
 	target := seq
 	if args := calibrateArgs(m); len(args) > 0 {
 		fmt.Fprintf(&b, "calibrate %s %s -prefix=pp_\n", seq, strings.Join(args, " "))
@@ -647,13 +684,21 @@ func calibrateArgs(m CalibMasters) []string {
 	if m.DarkOptimize && m.Dark != "" && m.Bias != "" {
 		args = append(args, "-opt") // scale the different-exposure dark onto the lights' thermal signal
 	}
-	// One-shot-color: only meaningful when there is at least one master to apply. -cfa makes the
-	// cosmetic/flat maths CFA-aware, -equalize_cfa balances the flat's Bayer channels, and -debayer
-	// demosaics after calibration (the convert step stays raw Bayer).
-	if m.CFA && len(args) > 0 {
-		args = append(args, "-cfa")
-		if m.Flat != "" {
-			args = append(args, "-equalize_cfa")
+	// One-shot-color. -debayer always runs: a raw CFA mosaic that reaches the stack undemosaiced is a
+	// green checkerboard, so an OSC sequence with no masters at all (a DSLR session shot without
+	// darks or flats — the common first-time case) still needs this pass purely to demosaic.
+	//
+	// -cfa and -equalize_cfa, by contrast, only mean something when there IS a master: they make the
+	// cosmetic-defect and flat maths CFA-aware and balance the flat's Bayer channels. Demosaicing
+	// happens LAST either way, so every master is applied to the sensor's own pixels rather than to
+	// interpolated neighbours — divide the flat after debayering and each dust shadow has already
+	// been smeared across four pixels.
+	if m.CFA {
+		if len(args) > 0 {
+			args = append(args, "-cfa")
+			if m.Flat != "" {
+				args = append(args, "-equalize_cfa")
+			}
 		}
 		args = append(args, "-debayer")
 	}

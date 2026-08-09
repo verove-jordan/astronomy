@@ -96,6 +96,12 @@ func (p paletteResolved) screenOnly(filter string) bool {
 // when a required filter is missing, and returns the resolved assignment plus a run.json note describing
 // any fallback. A nil/empty/unknown palette is "natural".
 func resolvePalette(p *mode.Preset, channels map[string]string) (paletteResolved, string) {
+	// One-shot color has no filters to map. Every entry in paletteSpecs is written in terms of filter
+	// names (Ha→R, OIII→G …), so the fallback chain below would find none of them present, walk all the
+	// way to "mono", and throw the colour away. A colour run passes its single RGB channel through.
+	if isColorRun(p) {
+		return colorPalette(), ""
+	}
 	has := func(f string) bool { _, ok := channels[f]; return ok }
 	want := "natural"
 	if p != nil {

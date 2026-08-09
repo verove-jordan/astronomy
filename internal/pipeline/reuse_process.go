@@ -62,9 +62,10 @@ func processChannelGroups(ctx context.Context, opts Options, object, filter stri
 		// A one-frame group (a night that contributed a single sub of this filter, task #352) is
 		// converted by link but gets no .seq — Siril has no one-image sequences — so the sequence
 		// calibrate would abort the whole channel; calibrate_single writes the identical pp_ output.
-		calScript := siril.CalibrateOnlyScript("light", cm)
+		ingest := seqIngest(g.Frames) // camera raws / colour stills must be decoded, not symlinked
+		calScript := siril.CalibrateOnlyScriptWith("light", cm, ingest)
 		if len(g.Frames) == 1 {
-			calScript = siril.CalibrateSingleScript("light", cm)
+			calScript = siril.CalibrateSingleScriptWith("light", cm, ingest)
 		}
 		if _, err := opts.Runner.Run(ctx, grpDir, calScript, onProgress); err != nil {
 			if ctx.Err() != nil { // a cancelled run must abort, not "skip" its way through every group
@@ -480,12 +481,17 @@ func (c *flatCache) mastersFor(ctx context.Context, opts Options, g lightGroup,
 	defer c.mu.Unlock()
 	sel := calib.MatchForLightExcluding(g.Key, masters, opts.CalibExclude, opts.ForceCalibration)
 	dark, flat, bias := sel.Masters()
+	// One-shot-color lights still in their raw CFA mosaic calibrate CFA-aware and demosaic at the END
+	// of calibration, never before it: debayering first interpolates every hot pixel and dust shadow
+	// across its neighbours, so the defect map and the flat would be correcting a smeared copy of the
+	// artifact rather than the artifact. See siril.calibrateArgs.
+	cfa := needsDebayer(g.Frames)
 	if g.Current {
 		src := flatSourceRun
 		if flat == "" {
 			src = flatSourceNone
 		}
-		return siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias, DarkOptimize: sel.DarkOptimize}, src, nil
+		return siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias, DarkOptimize: sel.DarkOptimize, CFA: cfa}, src, nil
 	}
 	// Prior session: replace the (possibly wrong-session) flat with this session's own.
 	sessionFlat, note := c.sessionFlat(ctx, opts, g, bias, workRun)
@@ -497,7 +503,7 @@ func (c *flatCache) mastersFor(ctx context.Context, opts Options, g lightGroup,
 	if sessionFlat == "" {
 		src = flatSourceNone
 	}
-	return siril.CalibMasters{Dark: dark, Flat: sessionFlat, Bias: bias, DarkOptimize: sel.DarkOptimize}, src, notes
+	return siril.CalibMasters{Dark: dark, Flat: sessionFlat, Bias: bias, DarkOptimize: sel.DarkOptimize, CFA: cfa}, src, notes
 }
 
 // sessionFlat builds (once) a master flat from a prior session's raw flats for the group's filter

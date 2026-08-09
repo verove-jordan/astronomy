@@ -124,16 +124,12 @@ func (s *session) finalize(opts Options) (*pipeline.Result, error) {
 	s.emit(pipeline.Progress{Step: fmt.Sprintf("finalizing — full registration, stacking and finish over %d frame(s)", len(fits)+len(raw))})
 	fopts := opts.Finalize
 	fopts.InputDir = root
-	// One-shot-color sessions (raw stills, or Bayer FITS) must be debayered/developed, not stacked as a
-	// mono channel — route them to the OSC pipeline, since mono Process drops every Bayer frame and would
-	// finish with no master at all.
-	var res *pipeline.Result
-	var err error
-	if len(raw) > 0 || inspect.IsOSCDir(root) {
-		res, err = pipeline.ProcessOSC(context.Background(), fopts)
-	} else {
-		res, err = pipeline.Process(context.Background(), fopts)
-	}
+	// Both colour and mono sessions finalize through the standard deep-sky pipeline, which detects
+	// one-shot color from the inventory and stacks it as a single RGB channel. Colour used to divert
+	// to ProcessOSC, a thinner path with no calibration library, no plate-solving, no SPCC and a
+	// plain-curves finish — so a live colour session ended up materially worse than the same frames
+	// submitted as a normal run.
+	res, err := pipeline.Process(context.Background(), fopts)
 	if err != nil {
 		return nil, fmt.Errorf("finalize: %w", err)
 	}

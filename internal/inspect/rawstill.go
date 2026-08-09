@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/verove-jordan/astronomy/internal/filters"
 	"github.com/verove-jordan/astronomy/internal/rawconv"
 	"github.com/verove-jordan/astronomy/internal/rawmeta"
 )
@@ -72,16 +73,19 @@ func applyRawMeta(fr *Frame, m rawmeta.Meta) {
 }
 
 // finalizeRawTypes defaults every still-Unknown frame to a Light and normalizes the filter: lights are
-// RGB one-shot-color, calibration frames carry no filter.
+// RGB one-shot-color, calibration frames carry no filter. Every frame here came from a camera raw or a
+// colour still, so all three primaries are present — stamp the plane count so the pipeline sees colour
+// without having to re-derive it from the extension.
 func finalizeRawTypes(frames []*Frame) {
 	for _, fr := range frames {
 		if fr.Type == Unknown {
 			fr.Type = Light
 		}
+		fr.Channels = 3
 		if isCalibration(fr.Type) {
 			fr.Filter = ""
 		} else {
-			fr.Filter = "RGB"
+			fr.Filter = filters.Color
 		}
 	}
 }

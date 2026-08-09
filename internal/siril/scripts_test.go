@@ -175,11 +175,17 @@ func TestCalibrateArgs_CFANoFlatOmitsEqualize(t *testing.T) {
 	assert.NotContains(t, s, "-equalize_cfa")
 }
 
-func TestCalibrateArgs_CFAWithoutMastersEmitsNothing(t *testing.T) {
-	// CFA only makes sense when there is a master to apply; with none, calibrate is skipped entirely.
+func TestCalibrateArgs_CFAWithoutMastersStillDebayers(t *testing.T) {
+	// This test previously asserted that CFA with no masters emitted NOTHING. That was safe only
+	// while no uncalibrated one-shot-color frames could reach this path; now that every mode stacks
+	// colour, the common first-time case is a DSLR session with no darks or flats at all, and
+	// skipping calibrate entirely left the mosaic undemosaiced — a green checkerboard all the way
+	// through registration and stacking. The demosaic pass must run even with nothing to apply.
 	s := CalibrateOnlyScript("osc", CalibMasters{CFA: true})
-	assert.NotContains(t, s, "calibrate")
-	assert.NotContains(t, s, "-cfa")
+	assert.Contains(t, s, "calibrate osc -debayer -prefix=pp_")
+	// -cfa/-equalize_cfa still make no sense with no master to make CFA-aware.
+	assert.NotContains(t, s, "-cfa ")
+	assert.NotContains(t, s, "-equalize_cfa")
 }
 
 func TestCalibrateArgs_MonoUnaffectedByCFAField(t *testing.T) {

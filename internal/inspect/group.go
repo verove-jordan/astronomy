@@ -47,7 +47,7 @@ func buildSets(frames []*Frame) []Set {
 // (flats must not merge across nights), while darks/dark-flats/bias are closed-shutter thermal
 // signatures the deep-master design deliberately pools across sessions.
 func setKeyFor(fr *Frame, splitNights bool) SetKey {
-	key := SetKey{Type: fr.Type, Gain: fr.Gain, Offset: fr.Offset, ISO: fr.ISO, Bin: fr.BinX}
+	key := SetKey{Type: fr.Type, Gain: fr.Gain, Offset: fr.Offset, ISO: fr.ISO, Bin: fr.BinX, Color: fr.IsColor()}
 	if fr.HasTemp && fr.Type != Bias {
 		key.TempBucket = tempBucketC(fr)
 	}

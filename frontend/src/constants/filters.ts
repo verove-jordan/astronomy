@@ -18,6 +18,20 @@ export function isNarrowband(filter: string): boolean {
   return NARROWBAND.includes(filter);
 }
 
+// COLOR_FILTER is the channel name a one-shot-color capture stacks under — a DSLR raw, a Bayer CFA
+// frame, an already-debayered RGB still. It is deliberately NOT part of FILTERS: it has no wheel
+// position, it is not narrowband, and it takes no emission screen. Mirrors filters.Color (Go).
+export const COLOR_FILTER = "RGB";
+
+// COLOR_ALIASES are the spellings capture programs write to mean "no filter, this is colour".
+const COLOR_ALIASES = new Set(["rgb", "osc", "color", "colour", "bayer"]);
+
+// isColorFilter reports whether a channel name denotes one-shot color. An empty name is NOT colour —
+// it means the filter is simply unknown.
+export function isColorFilter(filter: string): boolean {
+  return COLOR_ALIASES.has(filter.trim().toLowerCase());
+}
+
 // filterRank is a filter's position in FILTERS, or FILTERS.length for a custom one — so unknown
 // filters sort after the known set rather than interleaving with it.
 export function filterRank(filter: string): number {

@@ -12,6 +12,13 @@ export interface Frame {
   has_temp: boolean;
   width: number;
   height: number;
+  // Colour-filter-array pattern (e.g. "GRBG") for a one-shot-color frame still in its raw Bayer
+  // mosaic; absent for monochrome and for already-debayered frames.
+  bayer?: string;
+  // Plane count: 1 for monochrome and for undebayered CFA, 3 for an already-demosaiced RGB frame.
+  // Absent means undetermined (read as 1). With `bayer` this names the three states the pipeline
+  // distinguishes — mono, CFA awaiting debayer, and RGB.
+  channels?: number;
   object?: string;
   date_obs?: string;
   date_obs_ms?: number;
@@ -34,6 +41,9 @@ export interface SetKey {
   bin: number;
   // Capture night of a per-night set — present only on multi-night scans, and only for lights/flats.
   session?: string;
+  // True for a one-shot-color set. Colour and monochrome frames never share a set: nothing could
+  // stack them together or calibrate one with the other's master.
+  color?: boolean;
 }
 
 export interface FrameSet {
@@ -65,6 +75,10 @@ export interface Inventory {
   videos: Frame[];
   warnings: string[];
   channel_detection?: ChannelDetection;
+  // How the capture records colour, decided from its lights: "mono" (a filter wheel, stacked per
+  // filter and combined), "osc" (one-shot color, stacked as a single RGB channel), or "mixed" (both
+  // in one folder, which no single run can stack).
+  color_model?: "mono" | "osc" | "mixed";
   // Per-capture-night summary (sorted by night, undated bucket last); absent when nothing is dated.
   sessions?: SessionInfo[];
 }
