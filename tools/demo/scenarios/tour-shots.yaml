@@ -1,0 +1,192 @@
+# Screenshots for the in-app page tours (frontend/src/constants/tour.ts).
+#
+# Every `page` here must be a key of TOURS, and every `step` a step of that page — the pair becomes
+# the file name the modal asks for (/tour/<locale>/<page>-<step>.webp). A step listed in TOURS with
+# no entry here simply has no picture: the modal falls back to a caption, so this file can be filled
+# in gradually.
+#
+# Regenerate with `just tour-shots` (needs the app running: just up && just dev && just web).
+# Prefer a data-demo hook for `highlight`; text and css work but break more easily.
+
+meta:
+  baseWeb: http://localhost:5173
+  viewport: [1440, 900]
+  scale: 2
+  locales: [en, fr]
+  width: 1280
+  quality: 80
+
+pages:
+  # ---------------------------------------------------------------- Planner
+  - page: tonight
+    goto: /tonight
+    dwell: 1600 # the target list waits on sky + weather
+    steps:
+      - step: targets
+        highlight: { css: "main table" }
+      - step: score
+        highlight: { css: "main table tbody tr" }
+      - step: skymap
+        highlight: { css: "main canvas" }
+      - step: weather
+        highlight: { testid: tonight-mag }
+      - step: darksky
+      - step: optics
+
+  - page: goto
+    goto: /goto
+    dwell: 1200
+    steps:
+      - step: why
+      - step: catalogue
+        highlight: { testid: goto-catalogue }
+      - step: sequence
+        highlight: { css: "main table" }
+      - step: chart
+
+  - page: calendar
+    goto: /calendar
+    dwell: 1400
+    steps:
+      - step: months
+      - step: kinds
+      - step: event
+
+  # ---------------------------------------------------------------- Capture
+  - page: capture
+    goto: /capture
+    dwell: 1200
+    steps:
+      - step: devices
+      - step: liveview
+        highlight: { css: "main canvas, main img" }
+      - step: camera
+      - step: filters
+      - step: sequencer
+      - step: focus
+      - step: polar
+
+  - page: logbook
+    goto: /logbook
+    dwell: 1000
+    steps:
+      - step: list
+        highlight: { css: "main table" }
+      - step: score
+        highlight: { css: "main table tbody tr" }
+      - step: filters
+        highlight: { testid: logbook-filters }
+
+  - page: logbookSession
+    goto: /logbook
+    dwell: 1000
+    steps:
+      # Open the first session so the detail page has real content to photograph.
+      - step: shot
+        click: { css: "main table tbody tr" }
+        highlight: { testid: session-breakdown }
+      - step: order
+        click: { css: "main table tbody tr" }
+      - step: conditions
+        click: { css: "main table tbody tr" }
+
+  - page: mosaic
+    goto: /mosaic
+    dwell: 1000
+    steps:
+      - step: plan
+      - step: panels
+      - step: progress
+
+  # ------------------------------------------------------- Processing hub
+  - page: import
+    goto: /processing/import
+    dwell: 1200
+    steps:
+      - step: browse
+        highlight: { testid: browse-path }
+      - step: inspect
+        highlight: { testid: browse-inspect }
+      - step: mapping
+      - step: preset
+        highlight: { testid: run-preset }
+      - step: mode
+        highlight: { testid: run-mode }
+      - step: options
+        highlight: { testid: run-params }
+      - step: reuse
+      - step: launch
+        highlight: { testid: run-pipeline }
+
+  - page: livestack
+    goto: /processing/live
+    dwell: 900
+    steps:
+      - step: source
+        highlight: { testid: live-source }
+      - step: start
+      - step: preview
+      - step: finalize
+
+  - page: jobs
+    goto: /processing/tasks
+    dwell: 900
+    steps:
+      - step: list
+        highlight: { css: "main table, main ul" }
+      - step: status
+      - step: open
+
+  - page: job
+    goto: /processing/tasks
+    dwell: 900
+    steps:
+      # Open the most recent job; every step re-navigates, so each click stands alone.
+      - step: progress
+        click: { css: "main a[href*='/processing/tasks/']" }
+      - step: controls
+        click: { css: "main a[href*='/processing/tasks/']" }
+      - step: previews
+        click: { css: "main a[href*='/processing/tasks/']" }
+        highlight: { testid: stage-previews }
+      - step: results
+        click: { css: "main a[href*='/processing/tasks/']" }
+      - step: stages
+        click: { css: "main a[href*='/processing/tasks/']" }
+        highlight: { testid: stage-previews }
+
+  - page: runs
+    goto: /processing/runs
+    dwell: 900
+    steps:
+      - step: gallery
+      - step: open
+        highlight: { testid: run-card }
+
+  - page: library
+    goto: /processing/library
+    dwell: 900
+    steps:
+      - step: masters
+        highlight: { css: "main table" }
+      - step: keys
+        highlight: { css: "main table thead" }
+      - step: mirror
+
+  - page: storage
+    goto: /processing/storage
+    dwell: 900
+    steps:
+      - step: connections
+      - step: browse
+      - step: free
+      - step: backup
+
+  # ------------------------------------------------------------------ Agent
+  - page: astroagent
+    goto: /astroagent
+    dwell: 900
+    steps:
+      - step: chat
+      - step: tools
+      - step: confirm

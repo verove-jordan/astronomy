@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute } from "vue-router";
 import TwoPane from "@/components/Common/TwoPane.vue";
+import HelpButton from "@/components/Common/HelpButton.vue";
 import CameraControls from "@/components/Capture/CameraControls.vue";
 import DevicePanel from "@/components/Capture/DevicePanel.vue";
 import FocusMeter from "@/components/Capture/FocusMeter.vue";
@@ -113,9 +114,12 @@ const imageScale = computed(
 <template>
   <div class="space-y-4">
     <header>
-      <h1 class="text-xl font-semibold text-slate-800 dark:text-slate-100">
-        {{ t("capture.title") }}
-      </h1>
+      <div class="flex items-center gap-2">
+        <h1 class="text-xl font-semibold text-slate-800 dark:text-slate-100">
+          {{ t("capture.title") }}
+        </h1>
+        <HelpButton />
+      </div>
       <p class="text-sm text-slate-500 dark:text-slate-400">
         {{ t("capture.subtitle") }}
       </p>

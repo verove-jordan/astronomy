@@ -10,6 +10,7 @@ import GenericTable, {
 import StatusPill from "@/components/Common/StatusPill.vue";
 import Spinner from "@/components/Common/Spinner.vue";
 import ParamChips from "@/components/Common/ParamChips.vue";
+import HelpButton from "@/components/Common/HelpButton.vue";
 import type { JobParams } from "@/types";
 import { formatTimestamp, humanizeMs } from "@/utils/format";
 import { btnGhost, btnPrimary } from "@/constants/styles";
@@ -218,6 +219,7 @@ async function freeLocal(id: unknown) {
     <div class="flex items-center justify-between">
       <div class="flex items-center gap-3">
         <h1 class="text-2xl font-semibold">{{ t("nav.jobs") }}</h1>
+        <HelpButton />
         <span
           v-if="queuedCount"
           class="rounded-full bg-brand-100 px-2 py-0.5 text-xs font-medium text-brand-700 dark:bg-brand-900/40 dark:text-brand-200"

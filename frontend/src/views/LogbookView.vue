@@ -8,6 +8,7 @@ import GenericTable, {
 } from "@/components/Common/GenericTable.vue";
 import FilterChip from "@/components/Common/FilterChip.vue";
 import Spinner from "@/components/Common/Spinner.vue";
+import HelpButton from "@/components/Common/HelpButton.vue";
 import { btnGhost, input, statusPill } from "@/constants/styles";
 import { humanizeMs } from "@/utils/format";
 import { verdictColor } from "@/utils/weather";
@@ -154,12 +155,15 @@ function open(row: Row) {
   <div class="space-y-6">
     <div class="flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h1 class="text-2xl font-semibold">{{ t("logbook.title") }}</h1>
+        <div class="flex items-center gap-2">
+          <h1 class="text-2xl font-semibold">{{ t("logbook.title") }}</h1>
+          <HelpButton />
+        </div>
         <p class="text-sm text-slate-500 dark:text-slate-400">
           {{ t("logbook.subtitle") }}
         </p>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2" data-demo="logbook-filters">
         <input
           v-model="search"
           :class="[input, 'w-48']"

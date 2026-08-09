@@ -1077,6 +1077,333 @@
     "previous": "Précédent",
     "next": "Suivant"
   },
+  "tour": {
+    "open": "Comment fonctionne cette page",
+    "help": "Aide",
+    "done": "C’est compris",
+    "title": "{page} — visite guidée",
+    "stepOf": "Étape {n} sur {total}",
+    "noShot": "Pas encore de capture d’écran pour cette étape — lancez `just tour-shots` pour les générer.",
+    "tonight": {
+      "title": "Ce soir",
+      "steps": {
+        "targets": {
+          "title": "Que photographier ce soir",
+          "body": "La liste classe les objets du ciel profond pour votre site et cette nuit-là : à quelle hauteur chacun culmine, combien de temps il y reste, à quelle distance passe la Lune et à quel point votre ciel est lumineux. En haut de la liste se trouve simplement ce que vous avez le plus de chances de réussir."
+        },
+        "score": {
+          "title": "Pourquoi ce score",
+          "body": "Chaque score se décompose, pour que vous puissiez le contester. Une galaxie qui culmine à 25° reste une cible difficile quelle que soit la limpidité du ciel, et une pleine Lune à 20° coûte plus cher qu’un voile nuageux."
+        },
+        "skymap": {
+          "title": "La carte du ciel",
+          "body": "Sélectionner une cible l’entoure d’un cercle sur la carte : vous voyez où elle sera réellement — derrière le toit du voisin, ou bien placée au sud. Types, tailles et noms usuels viennent du catalogue OpenNGC."
+        },
+        "weather": {
+          "title": "Météo astronomique",
+          "body": "Nuages, turbulence, transparence, humidité et vent pour les nuits à venir, issus de plusieurs modèles. La turbulence est déduite du cisaillement du vent plutôt que reprise d’un indice générique, ce qui colle nettement mieux à la réalité."
+        },
+        "darksky": {
+          "title": "Trouver un site plus sombre",
+          "body": "Choisissez une nuit et l’outil classe les sites autour de vous, en arbitrant entre obscurité et dégagement du ciel cette nuit-là. Il évalue aussi l’horizon boisé et la vraie distance par la route — un site parfait à trois heures de voiture n’est pas un site."
+        },
+        "optics": {
+          "title": "Votre optique",
+          "body": "Focale, réducteur, Barlow et oculaires alimentent les champs calculés et l’aperçu de cadrage, pour que le plan corresponde au matériel que vous sortirez vraiment."
+        }
+      }
+    },
+    "goto": {
+      "title": "Alignement GoTo",
+      "steps": {
+        "why": {
+          "title": "À quoi sert cette page",
+          "body": "Une monture GoTo ne pointe juste qu’une fois qu’elle sait où elle se trouve. Cette page choisit les étoiles d’alignement à votre place et montre exactement ce que votre raquette attend, dans son propre ordre."
+        },
+        "catalogue": {
+          "title": "Les étoiles de votre raquette",
+          "body": "Les raquettes Celestron et SynScan ont chacune leur liste d’étoiles d’alignement, et elles ne concordent pas. Choisissez la vôtre : la page ne proposera que des étoiles que cette raquette sait accepter."
+        },
+        "sequence": {
+          "title": "La séquence d’alignement",
+          "body": "Les étoiles sont choisies visibles maintenant, bien réparties dans le ciel et assez brillantes pour être trouvées au chercheur. Un alignement Celestron en deux temps (align puis calibration) est détaillé pas à pas."
+        },
+        "chart": {
+          "title": "Trouver l’étoile",
+          "body": "Ouvrez la carte pour situer l’étoile dans sa constellation — la partie réellement difficile quand son nom ne vous évoque encore rien."
+        }
+      }
+    },
+    "calendar": {
+      "title": "Calendrier du ciel",
+      "steps": {
+        "months": {
+          "title": "Ce qui arrive",
+          "body": "Éclipses, occultations, conjonctions, pluies d’étoiles filantes, comètes et passages de l’ISS, calculés localement pour votre site plutôt que récupérés d’un flux — donc valables hors ligne et corrects pour l’endroit où vous êtes."
+        },
+        "kinds": {
+          "title": "Filtrer par type",
+          "body": "Presque chaque nuit propose quelque chose. Filtrez sur ce pour quoi vous vous lèveriez vraiment, et lisez le reste à tête reposée."
+        },
+        "event": {
+          "title": "Un événement en détail",
+          "body": "Heures dans votre fuseau, hauteur au moment où il se produit, et à quel point il est favorable depuis chez vous. Une éclipse qui culmine sous l’horizon reste listée — en le disant clairement."
+        }
+      }
+    },
+    "capture": {
+      "title": "Acquisition",
+      "steps": {
+        "devices": {
+          "title": "Connecter le matériel",
+          "body": "Caméra, roue à filtres et monture se connectent ici. Un simulateur complet est toujours disponible : vous pouvez apprendre toute la page au chaud, sans rien brancher. Sur un Mac Apple Silicon, une vraie caméra ZWO passe par le serveur x86 (`just device-x86`) — ZWO ne publie aucune bibliothèque arm64."
+        },
+        "liveview": {
+          "title": "La vue en direct",
+          "body": "Une image rafraîchie en continu avec histogramme, viseur et zoom. C’est ici que vous vérifiez le cadrage et la cohérence de la pose avant de lancer une séquence."
+        },
+        "camera": {
+          "title": "Réglages caméra",
+          "body": "Pose, gain, offset, refroidissement, bande passante USB — tout ce que la caméra déclare savoir faire. Ces valeurs sont écrites dans l’en-tête FITS de chaque image, ce qui permettra plus tard d’associer les bons maîtres de calibration."
+        },
+        "filters": {
+          "title": "Emplacements de la roue",
+          "body": "Nommez chaque emplacement physique d’après le filtre qui s’y trouve. Cette correspondance vous appartient : une roue à cinq positions change d’une session à l’autre, et le numéro seul ne dit rien à l’empileur."
+        },
+        "sequencer": {
+          "title": "Le séquenceur automatique",
+          "body": "Construisez un plan — tant de poses de ce filtre à cette durée, puis le suivant — et laissez-le dérouler la nuit. Les images arrivent dans des dossiers par filtre, avec le filtre dans le nom et dans l’en-tête."
+        },
+        "focus": {
+          "title": "La mise au point",
+          "body": "L’indicateur mesure la taille des étoiles (diamètre à demi-flux) image après image. Tournez jusqu’à ce que le nombre cesse de descendre : c’est bien plus fiable que de juger la netteté à l’œil."
+        },
+        "polar": {
+          "title": "Mise en station à la caméra",
+          "body": "Mesure où pointe réellement l’axe polaire en astrométrant des images pendant que vous tournez l’axe d’ascension droite À LA MAIN entre chacune. C’est justement parce que vous le tournez vous-même que cela fonctionne sur une monture sans la moindre électronique. La monture n’est jamais commandée."
+        }
+      }
+    },
+    "logbook": {
+      "title": "Journal",
+      "steps": {
+        "list": {
+          "title": "Toutes vos nuits",
+          "body": "Une ligne par session : ce que vous avez photographié, combien de temps, à travers quels filtres, et sous quel ciel. C’est là-dessus que se prend réellement une décision d’empilement plus tard."
+        },
+        "score": {
+          "title": "La note du ciel",
+          "body": "Un seul chiffre de 0 à 100 par nuit : la médiane des verdicts météo horaires déjà calculés pendant l’acquisition. Les sessions antérieures à cette fonction affichent « non enregistré » — la météo nécessaire n’a pas d’archive, elle ne pourra jamais être reconstituée."
+        },
+        "filters": {
+          "title": "Retrouver une session",
+          "body": "Filtrez par objet et par date pour répondre à « combien de temps ai-je au total sur cette cible, et quelle part en vaut la peine ? » avant de décider de la refaire."
+        }
+      }
+    },
+    "logbookSession": {
+      "title": "Détail de session",
+      "steps": {
+        "shot": {
+          "title": "Ce qui a été acquis",
+          "body": "Nombre d’images et intégration par filtre et par type, avec les plages de pose, de gain et de température du capteur. Une plage se réduit à une valeur unique quand rien n’a bougé en cours de route."
+        },
+        "order": {
+          "title": "Ordre d’acquisition",
+          "body": "Une bande par filtre sur la nuit, une marque par pose. Alignée avec le graphe des conditions en dessous, elle répond à « la série de luminance s’est-elle terminée avant les nuages, ou la moitié vient-elle de la mauvaise heure ? »"
+        },
+        "conditions": {
+          "title": "Le ciel de cette nuit-là",
+          "body": "Nuages, turbulence, transparence, humidité, vent, distance à la Lune, hauteur de la cible et luminosité du ciel, heure par heure. Le comparateur superpose la prévision faite au départ et ce qui a ensuite été mesuré."
+        }
+      }
+    },
+    "mosaic": {
+      "title": "Mosaïque",
+      "steps": {
+        "plan": {
+          "title": "Planifier une mosaïque",
+          "body": "Indiquez l’objet et l’étendue de ciel à couvrir : le planificateur dispose des panneaux qui se recouvrent pour votre champ — avec assez de recouvrement pour pouvoir les raccorder ensuite."
+        },
+        "panels": {
+          "title": "Les panneaux",
+          "body": "Chaque panneau est un pointage à réaliser. Le plan mémorise sa position, ce qui permet ensuite de tous les reprojeter sur une même toile au lieu de le deviner à partir des images seules."
+        },
+        "progress": {
+          "title": "Les enchaîner",
+          "body": "Les panneaux se cochent au fur et à mesure, sur autant de nuits qu’il faudra. Empilez la mosaïque dès qu’il y en a assez — ceux qui manquent rendent simplement la toile plus petite."
+        }
+      }
+    },
+    "import": {
+      "title": "Import et analyse",
+      "steps": {
+        "browse": {
+          "title": "Désigner vos acquisitions",
+          "body": "Parcourez le dossier de captures (ainsi que les disques amovibles et les miroirs S3) et sélectionnez un ou plusieurs dossiers. Plusieurs nuits d’une même cible peuvent être sélectionnées ensemble : elles seront fusionnées en un seul traitement."
+        },
+        "inspect": {
+          "title": "Ce qu’il y a dedans",
+          "body": "L’analyse lit chaque fichier et détermine sa nature : poses par filtre, darks, flats, offsets. Elle s’appuie d’abord sur les en-têtes FITS, puis sur les noms de fichiers et de dossiers, puis sur les pixels eux-mêmes. Les acquisitions couleur — reflex ou caméra couleur — sont reconnues ici et empilées comme un unique canal RVB."
+        },
+        "mapping": {
+          "title": "Corriger l’attribution des canaux",
+          "body": "Quand une acquisition ne porte aucun nom de filtre, ils sont déduits du signal, et cette déduction est affichée avec sa confiance. Si elle s’est trompée, corrigez-la ici : rien en aval ne discutera."
+        },
+        "preset": {
+          "title": "Les préréglages",
+          "body": "Partez d’une recette adaptée au sujet — galaxie faible, amas d’étoiles, nébuleuse en émission, palette bande étroite, Lune, planète, comète. Un préréglage ne fait que pré-remplir : tout reste modifiable, et vous pouvez enregistrer les vôtres."
+        },
+        "mode": {
+          "title": "Mode et sortie",
+          "body": "Le mode détermine toute la recette : deepsky, nebula, milkyway, planetary, comet, mosaic ou sun. La sortie est une image, une vidéo, ou les deux."
+        },
+        "options": {
+          "title": "Les réglages",
+          "body": "Calibration colorimétrique, débruitage, traitement de la bande étroite, palette, algorithme d’empilement et les paramètres avancés propres au mode. Chacun est enregistré avec le traitement : vous saurez toujours ce qui a produit une image donnée."
+        },
+        "reuse": {
+          "title": "Les nuits précédentes sur la même cible",
+          "body": "Les sessions antérieures du même objet sont retrouvées automatiquement et intégrées, chacune calibrée avec ses propres maîtres. Décochez celles que vous ne voulez pas."
+        },
+        "launch": {
+          "title": "Lancer",
+          "body": "« Lancer » démarre tout de suite ; « Ajouter à la file » met en attente dans une file strictement séquentielle. Dans les deux cas cela devient une tâche que vous pouvez suivre, mettre en pause et reprendre."
+        }
+      }
+    },
+    "livestack": {
+      "title": "Empilement en direct",
+      "steps": {
+        "source": {
+          "title": "Quoi surveiller",
+          "body": "Désignez le dossier dans lequel écrit votre logiciel d’acquisition — ou un préfixe S3. Chaque nouvelle pose est prise au vol."
+        },
+        "start": {
+          "title": "Démarrer",
+          "body": "Les images sont calibrées et ajoutées à la pile à mesure qu’elles arrivent : vous voyez l’image se creuser au fil de la nuit au lieu d’attendre le matin pour découvrir que cela n’a pas marché."
+        },
+        "preview": {
+          "title": "La pile qui grandit",
+          "body": "L’aperçu est un vrai empilement, pas une pose isolée — de quoi juger le cadrage, la mise au point et si la cible sort tout simplement."
+        },
+        "finalize": {
+          "title": "Arrêter et finaliser",
+          "body": "L’arrêt lance le traitement complet sur tout ce qui a été collecté : recalage propre, notation, empilement et finition complète. L’aperçu était la répétition ; ceci est le résultat."
+        }
+      }
+    },
+    "jobs": {
+      "title": "Tâches",
+      "steps": {
+        "list": {
+          "title": "Tout ce que vous avez lancé",
+          "body": "Les tâches en cours et l’historique complet, les plus récentes d’abord, avec les paramètres de lancement de chacune."
+        },
+        "status": {
+          "title": "Ce que veulent dire les états",
+          "body": "En cours, en pause, terminée, échouée ou annulée. « En pause » est un vrai point de reprise : une tâche arrêtée en plein empilement conserve les canaux déjà faits et repart de là plutôt que de tout recommencer."
+        },
+        "open": {
+          "title": "Ouvrir une tâche",
+          "body": "Ouvrez n’importe quelle tâche pour la suivre en direct, ou pour en relire le résultat complet longtemps après."
+        }
+      }
+    },
+    "job": {
+      "title": "Détail de tâche",
+      "steps": {
+        "progress": {
+          "title": "Suivre un traitement",
+          "body": "Progression en direct : l’étape en cours, le processeur et la mémoire réellement consommés par l’outil qui travaille, et un journal déroulant. Un empilement est long — c’est ainsi qu’on distingue « ça travaille » de « c’est bloqué »."
+        },
+        "controls": {
+          "title": "Pause et annulation",
+          "body": "La pause enregistre un point de reprise. L’annulation arrête le traitement, et une annulation pendant la finition conserve le résultat partiel plutôt que de jeter la nuit."
+        },
+        "previews": {
+          "title": "Des aperçus en cours de route",
+          "body": "Un aperçu est enregistré après chaque étape importante : vous voyez apparaître l’empilement, les canaux recalés puis la finition, au lieu d’attendre une seule image à la fin."
+        },
+        "results": {
+          "title": "Lire le résultat",
+          "body": "Statistiques par canal (images reçues, images empilées, maîtres retenus), graphes de qualité image par image, avertissements, et la liste complète des paramètres utilisés. Si un traitement vous déçoit, la raison est presque toujours là."
+        },
+        "stages": {
+          "title": "Changer d’avis",
+          "body": "Chaque étape est une carte dont vous pouvez modifier les paramètres et relancer à partir de là — souvent bien moins coûteux que tout refaire. « Affiner » ne relance que la finition ; la vue 3D ouvre le champ en volume pour tout traitement astrométré."
+        }
+      }
+    },
+    "runs": {
+      "title": "Traitements",
+      "steps": {
+        "gallery": {
+          "title": "Les résultats sur disque",
+          "body": "Tous les traitements présents sur le disque, indépendamment de la base : tout ce qui possède un run.json est ici. Les résultats survivent à une réinitialisation de la base."
+        },
+        "open": {
+          "title": "En rouvrir un",
+          "body": "Ouvrir un traitement reconstruit les mêmes panneaux que la page de tâche : image finale, statistiques par canal, aperçus et paramètres l’ayant produit."
+        }
+      }
+    },
+    "library": {
+      "title": "Bibliothèque de calibration",
+      "steps": {
+        "masters": {
+          "title": "Vos maîtres",
+          "body": "Darks, flats, offsets et dark-flats, construits une fois et réutilisés d’une session à l’autre. C’est pour cela qu’un traitement ultérieur ne vous redemande pas de refaire vos images de calibration."
+        },
+        "keys": {
+          "title": "Comment un maître est retenu",
+          "body": "Les maîtres sont indexés par gain, offset, binning, pose et température du capteur. Un traitement n’utilise qu’un maître qui correspond vraiment à ses poses — un maître incompatible est écarté, jamais appliqué."
+        },
+        "mirror": {
+          "title": "Garder une copie sur S3",
+          "body": "Copiez la bibliothèque sur S3 et les maîtres correspondants seront rapatriés automatiquement s’ils manquent en local — libérer de la place ne vous coûte donc pas votre calibration."
+        }
+      }
+    },
+    "storage": {
+      "title": "Stockage",
+      "steps": {
+        "connections": {
+          "title": "Connecter un S3",
+          "body": "Point d’accès, clé et secret. Le secret est chiffré avant d’être enregistré, et n’est jamais réaffiché ni renvoyé au navigateur."
+        },
+        "browse": {
+          "title": "Local et distant côte à côte",
+          "body": "Chaque dossier indique s’il existe en local, sur S3, ou les deux — vous savez donc toujours ce que libérer coûterait réellement."
+        },
+        "free": {
+          "title": "Libérer de l’espace",
+          "body": "La libération vérifie que chaque fichier est bien présent sur S3 AVANT de supprimer la copie locale, et abandonne tout le dossier si une vérification échoue. Les aperçus et résultats libérés s’ouvrent quand même : ils basculent sur S3 de façon transparente."
+        },
+        "backup": {
+          "title": "Sauvegarde et restauration",
+          "body": "Sauvegarde la base et l’état côté navigateur (favoris, configurations, conversations). Les secrets de votre .env sont volontairement exclus. Restaurer la base est destructif : cela remplace ce qui s’y trouve."
+        }
+      }
+    },
+    "astroagent": {
+      "title": "AstroAgent",
+      "steps": {
+        "chat": {
+          "title": "Un modèle local sur vos données",
+          "body": "Posez des questions sur vos acquisitions, vos traitements, le ciel et votre matériel. Le modèle tourne sur votre machine — rien n’est envoyé ailleurs."
+        },
+        "tools": {
+          "title": "Il peut aller voir",
+          "body": "Il peut lire vos inventaires et vos traitements, consulter le ciel de ce soir, et analyser une image que vous lui joignez pour en faire une critique mesurée plutôt qu’un avis vague."
+        },
+        "confirm": {
+          "title": "Rien ne se fait sans vous",
+          "body": "Toute action qui modifierait quelque chose — lancer un traitement, réajuster une finition — demande confirmation. Les traitements supervisés apparaissent aussi ici comme des conversations que vous pouvez orienter pendant qu’ils travaillent."
+        }
+      }
+    }
+  },
   "import": {
     "title": "Importer & inspecter",
     "hint": "Naviguez jusqu’à un dossier de captures, puis lancez le traitement automatique.",

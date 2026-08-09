@@ -238,6 +238,11 @@ video FILE *args:
 demo scenario="tour" *args:
     @scripts/demo.sh {{scenario}} {{args}}
 
+# Regenerate the in-app help-tour screenshots into frontend/public/tour/ (host; needs the app running).
+# Re-run whenever the UI changes, then commit frontend/public/tour/. e.g. just tour-shots --locales en
+tour-shots *args:
+    @scripts/tour-shots.sh {{args}}
+
 # Run the Siril MCP server in the foreground (manual testing).
 mcp-siril:
     go run ./cmd/siril-mcp

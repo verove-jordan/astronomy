@@ -9,6 +9,7 @@ import MarkdownText from "@/components/Common/MarkdownText.vue";
 import ImageStatsPanel from "@/components/Common/ImageStatsPanel.vue";
 import AgentActivity from "@/components/Common/AgentActivity.vue";
 import AgentConfirm from "@/components/Common/AgentConfirm.vue";
+import HelpButton from "@/components/Common/HelpButton.vue";
 
 const { t } = useI18n();
 const agent = useAgentStore();
@@ -209,9 +210,12 @@ const convItemClass = (id: string) =>
   <div class="space-y-4">
     <header class="flex flex-wrap items-start gap-3">
       <div class="min-w-0">
-        <h1 class="text-xl font-bold text-brand-300">
-          {{ t("astroAgent.title") }}
-        </h1>
+        <div class="flex items-center gap-2">
+          <h1 class="text-xl font-bold text-brand-300">
+            {{ t("astroAgent.title") }}
+          </h1>
+          <HelpButton />
+        </div>
         <p class="text-sm text-slate-400">{{ t("astroAgent.subtitle") }}</p>
       </div>
       <div

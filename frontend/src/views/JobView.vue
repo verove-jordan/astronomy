@@ -32,6 +32,7 @@ import EnvWarnings from "@/components/Common/EnvWarnings.vue";
 import ParamChips from "@/components/Common/ParamChips.vue";
 import TwoPane from "@/components/Common/TwoPane.vue";
 import StatGrid from "@/components/Common/StatGrid.vue";
+import HelpButton from "@/components/Common/HelpButton.vue";
 import {
   btnDanger,
   btnGhost,
@@ -702,6 +703,7 @@ async function savePresetFromRun() {
     </button>
     <div class="flex flex-wrap items-center gap-3">
       <h1 class="text-2xl font-semibold">{{ t("job.title") }} #{{ jobId }}</h1>
+      <HelpButton />
       <StatusPill :status="String(liveStatus)" />
       <span v-if="job?.params?.mode" class="text-sm text-slate-500">
         {{ t("run.modes." + job.params.mode) }} ·
