@@ -54,6 +54,38 @@ Open the run's `output/<object>/<runID>/run.json` and check:
 - **Preset catalog anti-drift** — `go test ./internal/preset` (locks the 16 built-in recipes
   against accidental default changes).
 
+## one-shot colour (any mode)
+
+Colour is auto-detected, so the same folder must work through the same command as a mono one. Run a
+DSLR/colour set through **deepsky** (or comet/mosaic/livestack) rather than a colour-specific mode:
+
+```bash
+just inspect input/<colour-folder>   # first: does it even read as colour?
+```
+
+- **Detected as colour** — the inventory reports `color_model: "osc"`, its LIGHT frames carry
+  `channels: 3` (already-demosaiced) or a `bayer` pattern (raw CFA), and the Import page shows a
+  **One-shot colour** badge. A mono folder must still report `"mono"` — in particular an older
+  ASICAP capture of the **mono** ASI 1600MM Pro, which stamps a spurious `BAYERPAT` on every frame
+  and must NOT be read as colour (`TestScan_SpuriousBayerOnMonoRig`).
+- **One channel, not seven** — `run.json` `channels` has exactly one entry, `filter: "RGB"`, with a
+  non-zero `stacked_frames`. Several entries, or zero frames, means detection or grouping went wrong.
+- **The demosaic actually happened** — the final image is in colour and shows no fine
+  green/magenta checkerboard at 100 %. A checkerboard is an undebayered CFA mosaic that travelled
+  the whole pipeline. Verify with a set that has **no** darks or flats at all: that path emits
+  `calibrate <seq> -debayer` on its own, and used to emit nothing.
+- **Calibration ran in CFA space** — with masters present, the generated `.ssf` contains
+  `-cfa -equalize_cfa -debayer` in that order (`internal/siril/scripts.go`). Demosaicing before the
+  flat is applied is the failure this ordering exists to prevent.
+- **The finish stayed colour** — `final.mode` is a colour mode and saturation was applied. A result
+  labelled `mono` from a colour master means the palette bypass or the Siril fallback regressed.
+- **A mixed folder is honest** — a folder holding both mono and colour lights must warn
+  (`mixes monochrome and one-shot-color lights`) and process the mono session, never silently drop
+  half the night.
+- **Mono is unchanged** — re-run a known mono target and diff `run.json` against a previous run:
+  channels, frame counts and the generated scripts must be identical. Colour support must cost the
+  mono path nothing.
+
 ## milkyway
 
 ```bash

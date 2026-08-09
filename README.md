@@ -7,14 +7,15 @@
 > at it.
 
 AstroStack inspects a capture directory, figures out **what's in it** (lights per filter, darks,
-bias/offsets, flats), **discards the bad sub-frames** (elongated stars, trails, clouds), picks and
-applies the **right master calibration** (a cross-session library with per-pixel defect maps),
-then registers and stacks per channel with count-adaptive rejection and combines them into a
-finished image. It drives **Siril** for the heavy lifting and **GIMP** for the finish, with
+bias/offsets, flats — and whether the camera is monochrome or one-shot colour), **discards the bad
+sub-frames** (elongated stars, trails, clouds), picks and applies the **right master calibration**
+(a cross-session library with per-pixel defect maps), then registers and stacks per channel with
+count-adaptive rejection and combines them into a finished image. It drives **Siril** for the heavy lifting and **GIMP** for the finish, with
 optional AI enhancers (**GraXpert**, **StarNet++**) and an opt-in **local vision-model supervisor**
 that critiques and re-tunes the finish. A built-in **session planner** (tonight's targets, GoTo
 alignment, events calendar, weather + light-pollution overlays) rounds out the workflow. Built for
-a Takahashi FC-100 DF + ZWO ASI 1600MM Pro mono rig, but the rig is configurable.
+a Takahashi FC-100 DF + ZWO ASI 1600MM Pro mono rig, but the rig is configurable — and a DSLR or a
+one-shot-colour camera works with no extra setup.
 
 Siril and GIMP are host-installed macOS apps, so for daily macOS dev the Go engine **runs on the
 host** and drives them directly; Docker Compose provides Postgres. This is a deliberate exception
@@ -24,22 +25,29 @@ to the usual "everything-in-a-container" rule. A fully **containerized** mode al
 
 ## Quickstart
 
+**New here? Follow [docs/getting-started.md](docs/getting-started.md)** — the same path with the
+prerequisites, the first-run walkthrough and the failure modes spelled out.
+
 ```bash
 git clone <repo-url> && cd astronomy
 cp .env.example .env          # adjust host tool paths / secrets if needed
 just setup                    # Go deps, dev tools, Siril MCP binary, frontend deps (idempotent)
-just up && just migrate       # Postgres (Docker) + schema
+just up                       # Postgres (Docker); the engine migrates itself on boot
 
-# A) one-shot from the CLI:
-just process deepsky image ~/Astro/M31           # mono LRGB+Ha → layered .xcf + tif/png
-just process planetary video ~/Astro/moon.mp4    # lucky imaging
+mkdir -p input                # ASTRO_DATA_DIR — the root the UI may browse (git-ignored, so a
+cp -r /path/to/captures input/M31   # clone has none of the data dirs; no sample data ships)
 
-# B) or the web UI (two terminals):
+# A) the web UI (two terminals):
 just dev                      # API on http://localhost:8080  (host; drives Siril/GIMP)
 just web                      # UI  on http://localhost:5173
+
+# B) or one-shot from the CLI:
+just process deepsky image input/M31         # mono LRGB+Ha, or colour — auto-detected
+just process planetary video input/moon.mp4  # lucky imaging
 ```
 
 Open <http://localhost:5173> → **Processing → Import**, point it at a capture folder, launch a run.
+Every page has a **help** button that opens a guided tour of that page.
 
 **Everything in Docker** (portable / server — no host toolchain; the engine image bakes the Linux
 Siril/GIMP/GraXpert):
@@ -62,8 +70,9 @@ For the all-container path you need just Docker + `just`.
 
 - **Required**: macOS (Apple Silicon recommended) · Docker · [`just`](https://github.com/casey/just)
   · Go 1.23+ · Node 20+/pnpm · **Siril** (`brew install --cask siril`) · ffmpeg
-- **Recommended**: GIMP (the LRGB+Ha finish; absent → Siril `rgbcomp` fallback) · Python 3.12
-  (Siril's plate-solve/SPCC scripting)
+- **Recommended**: GIMP (the LRGB+Ha finish; absent → Siril `rgbcomp` fallback) · LibRaw
+  (`brew install libraw` — develops DSLR/phone raws) · Python 3.12 (Siril's plate-solve/SPCC
+  scripting)
 - **Optional**: [GraXpert](https://www.graxpert.com) (AI background/denoise) ·
   [StarNet++ v2](https://www.starnetastro.com) (star reduction) · a local vision model
   (`just run-ia-model`) for the [finish supervisor](docs/agent.md)
@@ -75,30 +84,50 @@ plate-solving + SPCC**, download the Gaia catalogues once: `just download-catalo
 
 ## Usage
 
+`just` on its own lists all 58 recipes. The ones you will actually use:
+
 | Recipe | What it does |
 |--------|--------------|
 | `just` | List every recipe. |
-| `just setup` / `just up` / `just migrate` | First-run setup · start Postgres · apply schema. |
+| `just setup` / `just up` / `just down` | First-run setup · start Postgres · stop the stack. |
+| `just migrate` / `just migrate-down` | Apply / roll back schema migrations (`dev` migrates on boot, so this is rarely needed). |
 | `just inspect DIR` | Print the classified inventory of a capture folder (no processing). |
-| `just process MODE FORMAT PATH` | Full auto pipeline. MODE: `deepsky`·`nebula`·`milkyway`·`planetary`·`comet`·`sun`; FORMAT: `image`·`video`·`both`. Pass-through flags after the path (e.g. `-v --supervise`). |
+| `just process MODE FORMAT PATH` | Full auto pipeline. MODE: `deepsky`·`nebula`·`milkyway`·`planetary`·`comet`·`mosaic`·`sun`·`livestack`; FORMAT: `image`·`video`·`both`. Pass-through flags after the path (e.g. `-v --supervise`). |
 | `just video FILE` | Shortcut for `process planetary video` (lucky imaging). |
 | `just refine RUNDIR` | Re-run **only** the finish (AI supervisor) on an existing run — no re-stacking. |
 | `just dev` / `just web` | Host API with hot reload · Vue dev server. |
-| `just stack` / `just stack-down` | The whole app in Docker (no AI model) · stop it. |
-| `just run-ia-model` | Serve the local vision model (first run downloads ~28 GB). |
+| `just stack` / `just stack-down` / `just stack-logs` | The whole app in Docker (no AI model) · stop it · tail its logs. |
+| `just device` / `just device-x86` | Camera/mount/wheel server — simulator, or a real ZWO under Rosetta. |
+| `just device-status` / `just mount-doctor` | Health-check the device server · diagnose the mount USB link. |
+| `just run-ia-model` / `just ia-model-status` | Serve the local vision model (first run downloads ~28 GB) · check it. |
+| `just download-catalogues` | Offline Gaia catalogues for plate-solving (~3 GB; `-spcc` adds photometric colour calibration). |
+| `just download-deepstars` | The 2.5M-star catalogue behind star annotation and the 3D field map. |
 | `just demo tour` | Record a narrated demo video of the UI ([tools/demo](tools/demo/README.md)). |
+| `just tour-shots` | Regenerate the in-app help-tour screenshots (re-run when the UI changes). |
+| `just test` / `just lint` / `just fmt` | Test · lint and type-check · auto-format. |
 | `just check` | Lint + test — the pre-push gate. |
+| `just clean` | **Destructive**: drop containers, volumes and build output. |
+
+The `just gitnexus-*` recipes drive an author-side code-graph index and need a tool that is not part
+of this project — ignore them.
 
 ### Modes
 
+**Colour is automatic.** Every mode accepts monochrome filter-wheel frames *or* one-shot colour — a
+DSLR/mirrorless raw (NEF/CR2/CR3/ARW/RAF/DNG), a colour camera's Bayer FITS, or plain RGB
+TIFF/PNG/JPEG. It is detected while inspecting the folder and stacked as a single RGB channel, with
+calibration applied in CFA space before demosaicing. Nothing to configure.
+
 | Mode | Input | Pipeline |
 |------|-------|----------|
-| `deepsky` | mono FITS (L/R/G/B/Ha/OIII/SII) | calibrate → grade → stack per channel → co-register → GIMP LRGB composite with Ha/OIII/SII emission screens (palettes: natural/HaRGB/HOO/SHO/HOS/Foraxx/mono) |
-| `nebula` | mono FITS | deepsky retuned for faint emission: lenient grading, Ha-forward, star reduction |
+| `deepsky` | mono FITS (L/R/G/B/Ha/OIII/SII), or colour | calibrate → grade → stack per channel → co-register → GIMP LRGB composite with Ha/OIII/SII emission screens (palettes: natural/HaRGB/HOO/SHO/HOS/Foraxx/mono). Colour skips the combine and finishes the RGB master directly |
+| `nebula` | mono FITS, or colour | deepsky retuned for faint emission: lenient grading, Ha-forward, star reduction |
 | `milkyway` | one-shot-color (iPhone ProRAW/HEIC, DSLR raw) | photometric develop → sky-only stack → foreground composite + graded look |
 | `planetary` | video (SER/AVI/MP4/MOV) or stills | lucky imaging: sharpness-rank → multi-point align → AP-weighted stack → deconvolve |
-| `comet` | mono FITS (timestamped) | dual star/comet stacks over one global alignment + auto-fit motion track |
-| live stacking | a folder/S3 prefix being written | incremental re-stack during capture, full pipeline on Stop |
+| `comet` | timestamped FITS, mono or colour | dual star/comet stacks over one global alignment + auto-fit motion track |
+| `mosaic` | overlapping panels of one large object | per-panel deepsky stacks → plate-solve each → reproject onto one canvas + feathered blend |
+| `sun` | Hα or white-light video/stills | exposure-tier composite, limb-registered lucky imaging, PSF measured off the limb |
+| `livestack` | a folder/S3 prefix being written | incremental re-stack during capture, full pipeline on Stop |
 
 How stacking works stage by stage: [docs/pipeline.md](docs/pipeline.md) · per-mode deep dives:
 [docs/modes/](docs/modes/README.md).
@@ -135,7 +164,10 @@ lists candidate serial ports).
 ## Configuration
 
 Everything is env-driven. Copy [`.env.example`](.env.example) (fully commented, grouped) to `.env`
-— `just` and Compose both load it; **never commit secrets**. Flagship variables: `SIRIL_BIN` /
+— `just` and Compose both load it; **never commit secrets**. Note that the data roots are all
+git-ignored, so **a fresh clone has none of them**: create `ASTRO_DATA_DIR` (default `./input`, the
+only folder the UI may browse) before looking for your captures in the file browser.
+Flagship variables: `SIRIL_BIN` /
 `GIMP_BIN` (host tools), `ASTRO_DATA_DIR`/`ASTRO_OUTPUT_DIR`/`ASTRO_LIBRARY_DIR` (data roots),
 `ASTRO_LLM_URL`/`ASTRO_LLM_MODEL` (supervisor model), `ASTRO_SPCC_SENSOR` (must match Siril's
 database), `ASTRO_LAT`/`ASTRO_LON` (observing site), `ASTRO_S3_*` (S3 fallback credentials). Full
@@ -149,8 +181,10 @@ servers for Claude (`siril`, vendored `gimp`). The docs are topic-organized:
 
 | Doc | Covers |
 |---|---|
+| [getting-started.md](docs/getting-started.md) | **start here** — clone to first stacked image, with the failure modes |
 | [architecture.md](docs/architecture.md) | system shape, components, containerized `stack` mode, provenance & tool health |
 | [pipeline.md](docs/pipeline.md) | how stacking is made, stage by stage |
+| [stacking.md](docs/stacking.md) | combination methods, rejection algorithms, normalization and weighting |
 | [calibration.md](docs/calibration.md) | master library, cross-session pools, **dark defect maps**, matching rules |
 | [modes/](docs/modes/README.md) | per-mode deep dives (deepsky · nebula · milkyway · planetary · comet · livestack) |
 | [mount.md](docs/mount.md) | the Celestron hand-controller link: wiring, the macOS driver trap, recovery, the overnight soak |

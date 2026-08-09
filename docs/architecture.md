@@ -291,6 +291,36 @@ the stacker, the wash gates, the capture sequencer, chip colours — reads one o
 That consolidation is not cosmetic. The lists used to be copy-pasted into a dozen places and drifted:
 two of them stopped at `Ha`, so a wheel slot holding `SII` could only ever be named `"S6"`.
 
+## The colour model: one pipeline, not two
+
+A capture is either **monochrome** (a filter wheel, stacked per filter and combined into LRGB) or
+**one-shot colour** (every light carries all three primaries). The verdict is
+`inspect.Inventory.ColorModel`, decided once while scanning the folder and read by both entry
+points, so the CLI and the web UI cannot disagree — they used to, and a colour folder submitted from
+the UI as "deepsky" lost every frame in silence.
+
+**Detection.** `Frame.Bayer` (a `BAYERPAT` card) alone cannot answer this: a developed DSLR raw, a
+debayered RGB FITS and a colour TIFF have no Bayer pattern and are still colour. `Frame.Channels`
+carries the plane count beside it, filled from `NAXIS3` for FITS and from the container header for
+TIFF/PNG/JPEG, which gives three distinguishable states — mono, CFA awaiting demosaic, and RGB.
+The pre-existing spurious-`BAYERPAT` veto still runs first (older ASICAP captures stamp one even on
+a mono camera), so wheel evidence always beats a header artefact. Colour is part of the set key, so
+a folder holding two rigs cannot merge them into one stack.
+
+**Processing.** A colour run is the ordinary per-channel pipeline with exactly one channel, named
+`RGB` (`filters.Color`). That is what makes it inherit the calibration library, frame grading, trail
+masking, set QA, plate-solving, SPCC, GraXpert, StarNet, denoise, star-quality auto-fix, the
+supervised finish, stage previews, per-stage rerun and the S3 paths, instead of a parallel
+implementation drifting away from them. The seams are in `internal/pipeline/color.go`; see
+[modes/README.md](modes/README.md#monochrome-or-colour--the-same-modes) for what differs.
+
+**Calibration order is load-bearing.** A raw CFA mosaic is calibrated CFA-aware and demosaiced
+*last* (`calibrate … -cfa -equalize_cfa -debayer`). Demosaicing first would interpolate every hot
+pixel and dust shadow across its neighbours, so the defect map and the flat would be correcting a
+smeared copy of the artefact rather than the artefact. Camera raws and colour stills are brought in
+with Siril `convert` rather than `link`, which only symlinks FITS; monochrome runs still link, so
+their scripts are byte-identical to before colour existed.
+
 **A wheel reports slot numbers, never names.** The slot→filter mapping is entered once in
 Capture → Filter slots and stored server-side (`app_settings["capture.filter_slots"]`), because a
 5-slot wheel gets its filters swapped between sessions and nothing else records what was fitted. The
@@ -529,6 +559,109 @@ star catalogue it is versioned and self-describing, and a reader meeting an unkn
 size refuses the file rather than misreading it; `internal/scene3d/format.go` and
 `frontend/src/utils/scene3d.ts` are pinned to the same layout by tests on both sides that would fail
 rather than let the browser draw a scrambled field.
+
+### The Galaxy the field sits in
+
+The **Milky Way layer** draws the Galaxy around the photograph, at true scale and orientation. It is a
+point cloud of 180 000 stars sampled in Go from published structure — one binary, 1.8 MB, ten bytes a
+point (`internal/scene3d/galaxycloud.go`, served by `GET /api/galaxy/points`).
+
+It is **run-independent**: it is the Galaxy, not this photograph's Galaxy. The only per-run part is the
+3×3 that rotates the galactic frame into the image's, which is a uniform — so the cloud is generated
+once per process, cached in the browser for a week behind an ETag, and uploaded to the GPU once per
+session however many runs are opened. Its columns are the galactic axes expressed in the scene's frame,
+so the matrix carries the field's **parity** automatically: a run shot through a star diagonal draws a
+chirally flipped Galaxy, which is right, because the photograph is itself a mirror.
+
+The structure (`internal/scene3d/galaxymodel.go`) is the canonical copy; `frontend/src/utils/galaxy.ts`
+is a three-scalar mirror for framing, pinned by a test. The components:
+
+| Component | Source | Share of the mass |
+|---|---|---|
+| Spiral arms + H II knots | Reid et al. 2019 log-spiral loci and fitted widths | 0.077 |
+| Boxy/peanut bulge | Wegg & Gerhard 2013 axis ratios, 27° bar angle | 0.20 |
+| Long bar | Wegg, Gerhard & Portail 2015 | 0.035 |
+| Thin + thick disc | Bland-Hawthorn & Gerhard 2016 (2.6/0.30 and 2.0/0.90 kpc) | 0.68 |
+| Stellar halo | broken power law, −2.5 inside 25 kpc, −3.8 beyond | 0.008 |
+
+Sampling is **by mass** — every point stands for the same amount of stellar mass — so the contrast
+between the bulge, the arms and the inter-arm disc falls out of how many points land there rather than
+out of a brightness fudge. Each point then carries its population's colour, through the same
+B−V → Planck → sRGB path the run's own stars use, and its surface-brightness weight, which is where the
+difference between old red bulge stars and young blue arm stars belongs. Four decisions are worth
+recording:
+
+- **The arms are continued past the fit, with the steeper of their two pitch angles.** Reid et al.
+  measured each arm over a third of a turn; drawn only there, the arms form a one-sided fan and the
+  Galaxy's light comes out a kiloparsec off-centre. Continued, the map is a proper spiral. The pitch
+  choice is what makes it safe: Norma's *inner* pitch is −1°, so continued with that its "spiral" closes
+  into a circle and the map fills with concentric rings — which is exactly what an earlier version did.
+  The continuation carries 55 % of the arm's weight, so the measured stretch reads as the brighter one.
+- **The arm/interarm contrast is a measured output, not an input.** The first pass put it at 12×, which
+  looks like bright wires laid on a smooth disc. The arms' share is set so it comes out near 6×, where a
+  grand-design spiral sits in blue light — and these arms *are* the blue population. Pinned by a test
+  that fails in both directions.
+- **There is a 250 pc hole around the Sun.** An honesty measure, not a rendering trick: inside it the
+  scene already holds the run's own stars at distances measured or estimated from the photograph, and
+  dropping invented stars in among them would mix a model into a measurement at the one scale where the
+  user is looking closely. At galaxy scale the hole cannot be seen.
+- **Dust is not modelled, and the UI says so.** Extinction depends on where the eye stands — the same
+  cloud reddens what is behind it and leaves what is in front alone — so a darkening pass would dim the
+  near side of the bulge as readily as the far side. Doing it properly needs a 3D dust map and a
+  per-frame integration along every line of sight. What is drawn instead is the density contrast itself,
+  which is a fact.
+
+Each point is drawn at **the angle the patch of Galaxy it stands for actually subtends**, which is one
+line and is what keeps the cloud's surface brightness independent of where the eye is: pull back and
+each sprite shrinks as 1/d while four times as many crowd into the same screen area. Past the model's
+own resolution — one point standing for a tenth of the frame — the cloud fades out rather than drawing a
+blob the size of the field, which is why the start of the journey is the photograph and the run's own
+measured stars, with no model mixed in. (Measured against the *frame*: an earlier version faded at six
+pixels and blanked the Galaxy over most of the slider, where a point is a perfectly reasonable sixty.)
+
+**And the cloud is stretched, for exactly the reason every astronomical image is.** It accumulates
+linearly into an RGBA16F framebuffer, because adding light is what additive blending does; but a galaxy's
+bulge outruns its outer disc by more than a hundred to one and eight bits of screen cannot hold that.
+Drawn straight, the core came out a featureless white ellipse with the arms barely above black, and a
+fifth of the frame was clipped by the time the camera reached the disc. A second pass tone-maps the
+buffer — Reinhard on **luminance** with a 2.2 gamma, the colour scaled by the ratio so the blue arms stay
+blue and the bulge stays gold, and a cap on how far any one pixel may be lifted so the halo does not read
+as grain. Measured on the real Orion field's orientation at the galactic vantage: clipping fell from
+2.5 % of the frame to 0.4 % while the mean brightness *rose*, which is what a stretch is. The bar becomes
+visible as a distinct ellipse at its 27°; the arms resolve into blue knots and pink H II beads.
+
+The stretch applies to the cloud alone. The run's own stars are drawn afterwards, straight to the screen:
+their brightness is physical — the inverse-square law from wherever the camera is — and stretching it
+would break the contract that depth 0 is the photograph. A context without `EXT_color_buffer_float` skips
+the pass and draws the cloud direct, which clips the core but is never broken.
+
+### Zooming out: the journey, and how far it may go
+
+The galaxy slider is a journey with two legs (`frontend/src/utils/scene3dgalaxy.ts`). It moves the
+camera **and opens the lens**, and it has to do both: the run's own field is a degree across, and
+framing a forty-kiloparsec disc through a one-degree lens would put the camera two megaparsecs away.
+
+- **Leg one** runs from Earth to a vantage 35 kpc out and 55° above the galactic plane. That elevation
+  is built in the *galactic* frame and only then expressed as scene angles — ramping the scene's own
+  pitch to 55° once put the camera 16° *below* the plane, and a spiral 16° from edge-on is a set of
+  nested arcs with no visible disc.
+- **Leg two exists when the run caught something outside the Galaxy**, and it keeps going until that
+  object and the Milky Way are in one frame at true relative scale. On the M51 run the slider spans
+  8.6 pc → 12.07 Mpc, passing the whole Galaxy at t = 0.44. An M42-style run has nothing out there and
+  its journey ends at the disc, unchanged.
+
+Two things about leg two were bugs first. **The manual zoom-out ceiling is now scale-aware**: one fixed
+400 units cannot serve both spaces — the warped view is five units deep, and a galaxy at 7 Mpc needs
+seven thousand just to be in front of the lens. And **the pivot tracks the framing, not the slider**:
+easing it linearly toward the midpoint while the camera pulled back logarithmically put it 360 kpc down
+the line of sight with the camera 62 kpc behind and 45 kpc of frame, so the middle of the slider showed
+empty space with the Galaxy off screen and M51 still megaparsecs away.
+
+The same needle problem breaks the plain field view, and for the same reason: a field's cone is a
+hundred parsecs across and four thousand deep — 87:1 on the real M42 run — so viewing it from the side
+through the lens that photographed its tip shows a sliver of the middle. **"Fly out" therefore opens the
+lens as well**, by a factor computed from the cone's bounding radius and where the eye is standing, and
+the reset button winds everything — depth, lens and journey — back to the photograph.
 
 ## Real ZWO hardware on Apple Silicon: the x86_64 device sidecar
 

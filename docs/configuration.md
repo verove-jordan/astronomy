@@ -22,8 +22,9 @@ Precedence notes:
 | `DATABASE_URL` | `postgres://astro:astro@localhost:5432/astrostack?sslmode=disable` | Postgres DSN |
 | `API_ADDR` | `:8080` | HTTP API listen address |
 | `LOG_LEVEL` | `info` | Log level |
-| `ASTRO_DATA_DIR` | `./data` | Root the UI browses for capture folders |
+| `ASTRO_DATA_DIR` | `./input` | Root the UI browses for capture folders. Must exist — every data dir is git-ignored, so a fresh clone has none of them. Kept equal to the value `compose.yaml` pins for the container so both modes browse the same root |
 | `ASTRO_WORK_DIR` | `./work` | Scratch for intermediate FITS/sequences (also serve-cache, atlases) |
+| `ASTRO_KEEP_WORK` | `false` | Keep run scratch dirs after a job finishes (debugging). Off, the engine sweeps stale `<work>/run_*` on boot and after each job — a day of runs is tens to hundreds of GB |
 | `ASTRO_OUTPUT_DIR` | `./output` | Final stacks + run reports |
 | `ASTRO_LIBRARY_DIR` | `./library` | Persistent master-calibration library (+ `catalogues/`) |
 | `ASTRO_BROWSE_ROOTS` | — | Extra absolute roots the UI may browse (`:` or `,` separated), on top of removable-media defaults |
@@ -44,6 +45,33 @@ The engine drives host-installed binaries (see the [host-engine exception](archi
 | `ASTRO_GRAXPERT_GPU` | `false` | Pass `-gpu true` to GraXpert background extraction (Apple Silicon) |
 | `ASTRO_GRAXPERT_BATCH` | `0` | GraXpert denoise batch size (0 → GraXpert default) |
 | `STARNET_BIN` | `starnet++` | StarNet++ v2 — optional star removal; soft-fails to full stars |
+| `FFPROBE_BIN` | ffmpeg's sibling | ffprobe, used to probe video streams before lucky imaging |
+| `DCRAW_BIN` | `dcraw_emu` | LibRaw's developer — **preferred** for camera raws (no auto-brightening, no baked orientation, an exactly-known transfer curve). `brew install libraw` |
+| `SIPS_BIN` | `sips` | macOS fallback raw developer. Works, but applies Apple's opaque tone curve and cannot disable white balance — install LibRaw for narrowband-safe development |
+
+## Devices
+
+The camera/mount/filter-wheel server is a separate process (`just device`), reached over HTTP.
+
+| Variable | Default | Description |
+|---|---|---|
+| `ASTRO_DEVICE_ADDR` | `127.0.0.1:8084` | Where the engine expects the device server |
+| `ASI_SDK_LIB` | auto | Path to the ZWO camera library. Auto-detected from an ASIStudio install; ZWO ship no arm64 macOS build, hence `just device-x86` |
+| `EFW_SDK_LIB` | auto | Path to the ZWO filter-wheel library, same story |
+| `ASTRO_SIM_SOLVER` | `false` | Accept simulated frames as plate-solvable. The ONLY way to exercise polar alignment indoors — simulated star fields cannot be solved for real |
+| `ASTRO_WORM_PERIOD_SEC` | `478` | Mount worm period, for the periodic-error analysis |
+| `ASTRO_TRACKING_SOLVE_EVERY` | `1` | Plate-solve every Nth sub when measuring tracking |
+| `ASTRO_CAPTURE_CONDITIONS_INTERVAL_MIN` | `60` | How often a running capture samples the sky for the logbook. The weather has no archive, so a session not sampled live can never be backfilled |
+
+## Performance opt-ins
+
+| Variable | Default | Description |
+|---|---|---|
+| `ASTRO_DENOISE_SCALE` | `1.0` | Global multiplier on every denoise strength |
+| `ASTRO_CHANNEL_PARALLEL` | `1` | Channels stacked concurrently. 1 = the proven serial loop; higher trades RAM for wall-clock |
+| `ASTRO_TRAIL_MASK_MEM_GB` | auto | Memory budget for the cross-frame satellite-trail mask; caps the streamed basis size |
+| `ASTRO_SUPERVISE_HISTORY` | on | Set to `off` to stop the finish supervisor warm-starting from previous runs of the same target |
+| `NS_DEBUG` | — | Dump nightscape (milkyway) intermediates for debugging |
 
 ## AI finish supervisor (opt-in)
 

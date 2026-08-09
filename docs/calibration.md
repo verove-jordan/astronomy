@@ -105,6 +105,23 @@ on top of the warm/cold population.
 Every choice, fallback and skip is recorded as a human-readable note in `run.json`
 (`channels[].selection.notes`).
 
+**Colour (one-shot) lights match the same way**, on gain/offset/bin/exposure/temperature — a colour
+sensor's darks and flats are no different in kind. Two things are specific to them:
+
+- Colour is part of the set key, so a monochrome master can never be matched to a colour light set
+  (or the reverse) even when every other field agrees.
+- A raw CFA mosaic is calibrated **CFA-aware and demosaiced last**
+  (`calibrate … -cfa -equalize_cfa -debayer`). `-cfa` keeps the cosmetic-defect and flat maths on
+  the Bayer grid and `-equalize_cfa` balances the flat's own colour channels. Demosaicing before
+  calibration would interpolate every hot pixel and dust shadow across its neighbours, so the defect
+  map and the flat would be correcting a smeared copy of the artefact instead of the artefact.
+- With **no masters at all** — a DSLR session shot without darks or flats — the demosaic pass still
+  runs on its own. Skipping it leaves a green checkerboard all the way through the stack.
+
+Camera raws (NEF/CR2/CR3/ARW/RAF/DNG) are decoded by Siril's own libraw during `convert`. When that
+fails (Apple ProRAW is the known case) they are developed by LibRaw's `dcraw_emu` instead, in linear
+light — see `internal/rawconv`.
+
 ## Phone (iPhone DNG) calibration masters
 
 Milky-way captures calibrate through a **separate** library (`phone_calib_masters` table,
