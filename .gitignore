@@ -3,6 +3,8 @@
 /dist/
 /astrostack
 /siril-mcp
+# Ad-hoc validation binaries built at the repo root (`go build -o moonvalid ./...`).
+/moonvalid
 *.exe
 *.test
 *.out
@@ -39,6 +41,10 @@ tools/demo/assets/music/*
 /work/
 /output/
 /input/
+# Anchored rules only cover the repo root: a tool run from frontend/ (or any subdir) makes its own
+# work/ there, which is how frontend/work/.config/astrostack/secret.key came to be committed.
+work/
+data/
 *.fit
 *.fits
 *.fts
