@@ -41,7 +41,7 @@ pages:
       - step: catalogue
         highlight: { testid: goto-catalogue }
       - step: sequence
-        highlight: { css: "main table" }
+        highlight: { testid: goto-sequence }
       - step: chart
 
   - page: calendar
@@ -84,7 +84,7 @@ pages:
       # Open the first session so the detail page has real content to photograph.
       - step: shot
         click: { css: "main table tbody tr" }
-        highlight: { testid: session-breakdown }
+        highlight: { testid: logbook-tally }
       - step: order
         click: { css: "main table tbody tr" }
       - step: conditions
@@ -143,16 +143,16 @@ pages:
     steps:
       # Open the most recent job; every step re-navigates, so each click stands alone.
       - step: progress
-        click: { css: "main a[href*='/processing/tasks/']" }
+        click: { testid: job-open }
       - step: controls
-        click: { css: "main a[href*='/processing/tasks/']" }
+        click: { testid: job-open }
       - step: previews
-        click: { css: "main a[href*='/processing/tasks/']" }
+        click: { testid: job-open }
         highlight: { testid: stage-previews }
       - step: results
-        click: { css: "main a[href*='/processing/tasks/']" }
+        click: { testid: job-open }
       - step: stages
-        click: { css: "main a[href*='/processing/tasks/']" }
+        click: { testid: job-open }
         highlight: { testid: stage-previews }
 
   - page: runs

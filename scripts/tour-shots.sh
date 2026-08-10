@@ -17,7 +17,6 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEMO_DIR="$REPO_ROOT/tools/demo"
 
-WEB_URL="${ASTRO_DEMO_WEB:-http://localhost:${WEB_PORT:-5173}}"
 API_URL="${ASTRO_DEMO_API:-${VITE_API_BASE:-http://localhost:8080}}"
 
 reachable() {
@@ -26,15 +25,37 @@ reachable() {
   [ "$code" != "000" ] && [ -n "$code" ]
 }
 
-if ! reachable "$WEB_URL"; then
-  echo "error: web UI not reachable at $WEB_URL" >&2
-  echo "  bring the app up first:  just up  &&  just dev  (terminal 1)  &&  just web  (terminal 2)" >&2
+# The app is served two different ways and BOTH are the real thing: the Vite dev server on
+# WEB_PORT (just web) and the containerized nginx frontend on WEB_PORT_PROD (just stack /
+# just web-prod). Try each in turn rather than assuming the dev server — assuming it is why this
+# script used to refuse to run against a perfectly healthy `just stack`.
+CANDIDATES=()
+[ -n "${ASTRO_DEMO_WEB:-}" ] && CANDIDATES+=("$ASTRO_DEMO_WEB")
+CANDIDATES+=("http://localhost:${WEB_PORT:-5173}" "http://localhost:${WEB_PORT_PROD:-8082}")
+
+WEB_URL=""
+for candidate in "${CANDIDATES[@]}"; do
+  if reachable "$candidate"; then
+    WEB_URL="$candidate"
+    break
+  fi
+done
+
+if [ -z "$WEB_URL" ]; then
+  echo "error: web UI not reachable — tried ${CANDIDATES[*]}" >&2
+  echo "  bring the app up:  just up && just dev (terminal 1) && just web (terminal 2)" >&2
+  echo "  or all in Docker:  just stack" >&2
+  echo "  or point at it explicitly:  ASTRO_DEMO_WEB=http://localhost:PORT just tour-shots" >&2
   exit 1
 fi
 if ! reachable "$API_URL"; then
-  echo "error: API not reachable at $API_URL  (start it with: just dev)" >&2
+  echo "error: API not reachable at $API_URL  (start it with: just dev, or just stack)" >&2
   exit 1
 fi
+echo "==> shooting against $WEB_URL"
+# Hand the resolved URL to the generator: its scenario carries its own baseWeb default, so without
+# this the check above could pass while the browser still went to a port nothing is serving.
+export ASTRO_DEMO_WEB="$WEB_URL"
 
 if ! command -v pnpm >/dev/null 2>&1; then
   echo "error: pnpm not found. Install it (corepack enable) — the recorder is a pnpm/TS package." >&2

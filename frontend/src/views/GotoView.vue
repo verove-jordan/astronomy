@@ -143,7 +143,7 @@ const mapExpanded = ref(false);
     </h2>
 
     <!-- Controls -->
-    <div :class="card">
+    <div :class="card" data-demo="goto-sequence">
       <div class="grid gap-4 md:grid-cols-2">
         <div>
           <label class="mb-1 block text-xs font-medium text-slate-400">{{

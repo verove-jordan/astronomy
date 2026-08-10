@@ -158,7 +158,7 @@ const lightFrames = computed(() =>
       </div>
 
       <!-- What was shot. -->
-      <section :class="card">
+      <section :class="card" data-demo="logbook-tally">
         <h2 class="mb-3 text-lg font-medium">{{ t("logbook.tally.title") }}</h2>
         <FilterTally v-if="stats.length" :stats="stats" />
         <p v-else class="text-sm text-slate-400">

@@ -133,10 +133,16 @@ export function demoRuntime(cfg: RuntimeConfig): void {
   }
 
   // ---- spotlight -------------------------------------------------------------
+  // The dim alone is not enough on this UI. AstroStack's surface is near-black (#0b0b0d), so darkening
+  // the surround by 62% moves almost no perceptible contrast — in a still screenshot the "highlight"
+  // was invisible. The accent ring is what actually names the region; the dim now only supports it,
+  // and is pushed harder because a still has no cursor or motion to draw the eye.
   const spot = document.createElement("div");
   spot.style.cssText =
     "position:fixed;left:0;top:0;width:0;height:0;border-radius:12px;opacity:0;" +
-    "box-shadow:0 0 0 100vmax rgba(8,8,12,.62);transition:all .4s ease;";
+    `border:2px solid ${accent};` +
+    `box-shadow:0 0 0 100vmax rgba(8,8,12,.78), 0 0 0 4px ${accent}55, 0 0 22px 6px ${accent}44;` +
+    "transition:all .4s ease;";
   host.appendChild(spot);
 
   function spotlight(rect: { x: number; y: number; w: number; h: number } | null): void {

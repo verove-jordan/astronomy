@@ -244,6 +244,7 @@ async function freeLocal(id: unknown) {
       <template #cell-id="{ row }">
         <button
           class="font-medium text-brand-600 hover:underline dark:text-brand-300"
+          data-demo="job-open"
           @click="open(row.id)"
         >
           #{{ row.id }}

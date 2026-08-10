@@ -18,11 +18,14 @@ import type { Browser, Page } from "playwright";
 import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { ffmpeg } from "./ffmpeg.js";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { ffmpeg, FFMPEG } from "./ffmpeg.js";
 import { demoRuntime } from "./runtime/inject.js";
 import { Target } from "./scenario.js";
 import * as a from "./actions.js";
 
+const pExecFile = promisify(execFile);
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_ROOT = path.resolve(PKG_ROOT, "..", "..");
 const ACCENT = "#7c9cff";
@@ -69,7 +72,14 @@ async function loadScenario(file: string): Promise<ShotsScenario> {
   if (!parsed.success) {
     throw new Error(`invalid shots scenario ${path.basename(file)}:\n${parsed.error.message}`);
   }
-  return parsed.data;
+  const scenario = parsed.data;
+  // ASTRO_DEMO_WEB wins over the scenario's default. scripts/tour-shots.sh sets it to whichever
+  // frontend it actually found alive — the Vite dev server or the containerized one — so the
+  // scenario does not have to name a port, and neither does the person running it.
+  if (process.env.ASTRO_DEMO_WEB) {
+    scenario.meta.baseWeb = process.env.ASTRO_DEMO_WEB;
+  }
+  return scenario;
 }
 
 // shootPage walks one page's steps in one locale, writing a PNG per step.
@@ -91,7 +101,26 @@ async function shootPage(
       if (shot.click) await a.resolve(page, shot.click).click({ timeout: 7000 });
       if (shot.scrollTo) await a.scrollTo(page, a.resolve(page, shot.scrollTo), 0);
       await page.waitForTimeout(shot.dwell);
-      await a.spotlight(page, shot.highlight ? a.resolve(page, shot.highlight) : null);
+      if (shot.highlight) {
+        const loc = a.resolve(page, shot.highlight);
+        // Bring the target into view before photographing it. Most pages are taller than the
+        // viewport, so a perfectly resolvable control (the Run button under a long form) was being
+        // ringed off-screen: the shot came out fully dimmed with the highlight nowhere in it.
+        await loc.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+        await page.waitForTimeout(200); // let smooth-scroll settle before measuring
+        // A target that is absent has no bounding box and actions.spotlight then quietly clears the
+        // highlight. Say so — an unhighlighted shot usually means the scenario never reached the
+        // state its step describes (nothing selected, a panel still collapsed).
+        const box = await loc.boundingBox().catch(() => null);
+        if (!box) {
+          console.warn(
+            `  ! ${spec.page}-${shot.step}: highlight target not visible — shot taken without focus`,
+          );
+        }
+        await a.spotlight(page, loc);
+      } else {
+        await a.spotlight(page, null);
+      }
       await page.waitForTimeout(450); // the cut-out transitions in over ~400ms
 
       const file = path.join(outDir, `${spec.page}-${shot.step}.png`);
@@ -107,18 +136,54 @@ async function shootPage(
   return written;
 }
 
+// webpEncoder resolves how to produce WebP on this host, once.
+//
+// Many ffmpeg builds — including Homebrew's default — ship WITHOUT libwebp, so `-i x.png out.webp`
+// dies with "Default encoder for format webp is probably disabled". `cwebp` (brew install webp) is
+// the common way to have it anyway, so try ffmpeg first and fall back to cwebp rather than telling
+// someone with a perfectly capable machine that they cannot generate screenshots.
+async function webpEncoder(): Promise<"ffmpeg" | "cwebp"> {
+  try {
+    const { stdout } = await pExecFile(FFMPEG, ["-hide_banner", "-encoders"]);
+    if (/\bwebp\b/.test(stdout)) return "ffmpeg";
+  } catch {
+    /* fall through to cwebp */
+  }
+  try {
+    await pExecFile("cwebp", ["-version"]);
+    return "cwebp";
+  } catch {
+    throw new Error(
+      "no WebP encoder found: this ffmpeg was built without libwebp and cwebp is not installed.\n" +
+        "  fix with:  brew install webp        (macOS)\n" +
+        "             apt install webp         (Debian/Ubuntu)",
+    );
+  }
+}
+
 // toWebp re-encodes the PNGs to bounded-width WebP and removes the originals. WebP because these are
 // committed assets: the same screenshot is roughly a quarter the size of the PNG.
+//
+// The scale always goes through ffmpeg (every build has the png/scale path) so both encoders share
+// one definition of "bound the width, never upscale"; cwebp then only encodes.
 async function toWebp(pngs: string[], width: number, quality: number): Promise<void> {
+  if (pngs.length === 0) return;
+  const encoder = await webpEncoder();
+  const scale = `scale='min(${width},iw)':-2:flags=lanczos`;
+
   for (const png of pngs) {
     const webp = png.replace(/\.png$/, ".webp");
-    await ffmpeg([
-      "-y",
-      "-i", png,
-      "-vf", `scale='min(${width},iw)':-2:flags=lanczos`,
-      "-quality", String(quality),
-      webp,
-    ]);
+    if (encoder === "ffmpeg") {
+      await ffmpeg(["-y", "-i", png, "-vf", scale, "-quality", String(quality), webp]);
+    } else {
+      const scaled = png.replace(/\.png$/, ".scaled.png");
+      await ffmpeg(["-y", "-i", png, "-vf", scale, scaled]);
+      try {
+        await pExecFile("cwebp", ["-quiet", "-q", String(quality), scaled, "-o", webp]);
+      } finally {
+        await rm(scaled, { force: true });
+      }
+    }
     await rm(png, { force: true });
   }
 }
