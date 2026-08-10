@@ -67,7 +67,8 @@ const hex = (filter: string) => FILTER_HEX[filter] ?? "#94a3b8";
 </script>
 
 <template>
-  <div v-if="bands.length" class="space-y-2">
+  <div
+    data-demo="logbook-order" v-if="bands.length" class="space-y-2">
     <div class="flex items-center justify-between text-[11px] text-slate-400">
       <span>{{ fmtClock(span.start, tz) }}</span>
       <span>{{ fmtClock(span.end, tz) }}</span>

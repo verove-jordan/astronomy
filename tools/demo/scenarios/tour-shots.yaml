@@ -1,9 +1,12 @@
 # Screenshots for the in-app page tours (frontend/src/constants/tour.ts).
 #
 # Every `page` here must be a key of TOURS, and every `step` a step of that page — the pair becomes
-# the file name the modal asks for (/tour/<locale>/<page>-<step>.webp). A step listed in TOURS with
-# no entry here simply has no picture: the modal falls back to a caption, so this file can be filled
-# in gradually.
+# the file name the modal asks for (/tour/<locale>/<page>-<step>.webp).
+#
+# EVERY step should carry a `highlight`. It is not only the focus ring: the generator scrolls the
+# target into view before shooting, so a step without one photographs the top of the page whatever
+# its text describes. Steps that need a tab switched, a row opened or a panel expanded say so with
+# `goto`/`click`/`expand` — a screenshot of the wrong tab explains nothing.
 #
 # Regenerate with `just tour-shots` (needs the app running: just up && just dev && just web).
 # Prefer a data-demo hook for `highlight`; text and css work but break more easily.
@@ -20,55 +23,75 @@ pages:
   # ---------------------------------------------------------------- Planner
   - page: tonight
     goto: /tonight
-    dwell: 1600 # the target list waits on sky + weather
+    dwell: 1800 # the target list waits on sky + weather
     steps:
       - step: targets
         highlight: { css: "main table" }
       - step: score
         highlight: { css: "main table tbody tr" }
       - step: skymap
-        highlight: { css: "main canvas" }
-      - step: weather
-        highlight: { testid: tonight-mag }
-      - step: darksky
+        highlight: { testid: tonight-skymap }
+      # The optics table lives in the selected target's detail panel, so pick a target first.
       - step: optics
+        click: { css: "main table tbody tr" }
+        highlight: { testid: tonight-optics }
+      - step: weather
+        highlight: { testid: tonight-weather }
+      # Dark-sky is the page's SECOND tab; without the click this shot was the target list again.
+      - step: darksky
+        click: { testid: tab-darksky }
+        highlight: { testid: tonight-darksky }
 
   - page: goto
     goto: /goto
-    dwell: 1200
+    dwell: 1400
     steps:
       - step: why
+        highlight: { css: "main h1" }
       - step: catalogue
         highlight: { testid: goto-catalogue }
       - step: sequence
         highlight: { testid: goto-sequence }
       - step: chart
+        highlight: { css: "main svg, main canvas" }
 
   - page: calendar
     goto: /calendar
-    dwell: 1400
+    dwell: 1600
     steps:
       - step: months
+        highlight: { css: "main" }
+      # "By type" is the second tab — the kinds/event steps describe it, so switch to it.
       - step: kinds
+        click: { testid: tab-series }
+        highlight: { css: "main" }
       - step: event
+        click: { testid: tab-series }
+        highlight: { css: "main table tbody tr, main li" }
 
   # ---------------------------------------------------------------- Capture
   - page: capture
     goto: /capture
-    dwell: 1200
+    dwell: 1600
     steps:
       - step: devices
+        highlight: { testid: capture-devices }
       - step: liveview
-        highlight: { css: "main canvas, main img" }
+        highlight: { testid: capture-liveview }
       - step: camera
+        highlight: { testid: capture-camera }
       - step: filters
+        highlight: { testid: capture-filters }
       - step: sequencer
+        highlight: { testid: capture-sequencer }
       - step: focus
+        highlight: { testid: capture-focus }
       - step: polar
+        highlight: { testid: capture-polar }
 
   - page: logbook
     goto: /logbook
-    dwell: 1000
+    dwell: 1200
     steps:
       - step: list
         highlight: { css: "main table" }
@@ -78,36 +101,44 @@ pages:
         highlight: { testid: logbook-filters }
 
   - page: logbookSession
-    goto: /logbook
-    dwell: 1000
+    # Point this at a session with REAL frames on the machine generating the shots: the frame
+    # timeline and the conditions chart render nothing for an empty or interrupted night, so
+    # clicking whichever session happens to be first produced three shots of empty panels.
+    goto: /logbook/2
+    dwell: 1600
     steps:
-      # Open the first session so the detail page has real content to photograph.
       - step: shot
-        click: { css: "main table tbody tr" }
         highlight: { testid: logbook-tally }
       - step: order
-        click: { css: "main table tbody tr" }
+        highlight: { testid: logbook-order }
       - step: conditions
-        click: { css: "main table tbody tr" }
+        highlight: { testid: logbook-conditions }
 
   - page: mosaic
     goto: /mosaic
-    dwell: 1000
+    dwell: 1200
     steps:
       - step: plan
+        highlight: { css: "main" }
+      # Panels and progress are the CAPTURE tab; the route takes it as a query param.
       - step: panels
+        goto: /mosaic?tab=capture
+        highlight: { css: "main table, main" }
       - step: progress
+        goto: /mosaic?tab=capture
+        highlight: { css: "main" }
 
   # ------------------------------------------------------- Processing hub
   - page: import
     goto: /processing/import
-    dwell: 1200
+    dwell: 1400
     steps:
       - step: browse
         highlight: { testid: browse-path }
       - step: inspect
         highlight: { testid: browse-inspect }
       - step: mapping
+        highlight: { testid: run-target }
       - step: preset
         highlight: { testid: run-preset }
       - step: mode
@@ -115,78 +146,101 @@ pages:
       - step: options
         highlight: { testid: run-params }
       - step: reuse
+        highlight: { testid: run-goal }
       - step: launch
         highlight: { testid: run-pipeline }
 
   - page: livestack
     goto: /processing/live
-    dwell: 900
+    dwell: 1200
     steps:
       - step: source
         highlight: { testid: live-source }
       - step: start
+        highlight: { testid: live-controls }
       - step: preview
+        highlight: { testid: live-controls }
       - step: finalize
+        highlight: { testid: live-controls }
 
   - page: jobs
     goto: /processing/tasks
-    dwell: 900
+    dwell: 1200
     steps:
       - step: list
-        highlight: { css: "main table, main ul" }
+        highlight: { css: "main table" }
       - step: status
+        highlight: { css: "main table tbody tr" }
       - step: open
+        highlight: { testid: job-open }
 
   - page: job
     goto: /processing/tasks
-    dwell: 900
+    dwell: 1200
     steps:
       # Open the most recent job; every step re-navigates, so each click stands alone.
       - step: progress
         click: { testid: job-open }
+        highlight: { css: "main h1" }
       - step: controls
         click: { testid: job-open }
+        highlight: { css: "main h1" }
       - step: previews
         click: { testid: job-open }
         highlight: { testid: stage-previews }
       - step: results
         click: { testid: job-open }
+        highlight: { css: "main table" }
       - step: stages
         click: { testid: job-open }
-        highlight: { testid: stage-previews }
+        highlight: { testid: stage-edit }
 
   - page: runs
     goto: /processing/runs
-    dwell: 900
+    dwell: 1200
     steps:
       - step: gallery
+        highlight: { css: "main" }
       - step: open
         highlight: { testid: run-card }
 
   - page: library
     goto: /processing/library
-    dwell: 900
+    dwell: 1200
     steps:
       - step: masters
-        highlight: { css: "main table" }
+        highlight: { testid: library-masters }
       - step: keys
         highlight: { css: "main table thead" }
       - step: mirror
+        highlight: { css: "main h1" }
 
   - page: storage
     goto: /processing/storage
-    dwell: 900
+    dwell: 1200
     steps:
+      # The sections are an accordion whose open/closed state persists in localStorage, so each step
+      # expands its own (idempotently) rather than assuming how the last visit left it.
       - step: connections
+        redact: [{ testid: s3-credentials }]
+        expand: [{ testid: accordion-connections }]
+        highlight: { testid: accordion-connections }
       - step: browse
+        redact: [{ testid: s3-credentials }]
+        expand: [{ testid: accordion-browse }]
+        highlight: { testid: accordion-browse }
       - step: free
+        redact: [{ testid: s3-credentials }]
+        expand: [{ testid: accordion-drives }]
+        highlight: { testid: accordion-drives }
       - step: backup
+        redact: [{ testid: s3-credentials }]
+        expand: [{ testid: accordion-backup }]
+        highlight: { testid: accordion-backup }
 
   # ------------------------------------------------------------------ Agent
-  - page: astroagent
-    goto: /astroagent
-    dwell: 900
-    steps:
-      - step: chat
-      - step: tools
-      - step: confirm
+  #
+  # AstroAgent is deliberately NOT shot. Without a local vision model running the page renders only
+  # "The local agent is not running", and three screenshots of an error state would teach a newcomer
+  # that the feature is broken. Its steps fall back to their captions, which describe it correctly.
+  # Re-add a page block here if you generate shots on a machine with `just run-ia-model` up.

@@ -592,7 +592,9 @@ onMounted(() => {
                   {{ t("storage.default") }}
                 </span>
               </p>
-              <p class="truncate text-xs text-slate-500">
+              <!-- Endpoint + access key id: identifying, and this page gets screenshotted for the
+                   docs/tours, so it is tagged for the generator's redaction pass. -->
+              <p class="truncate text-xs text-slate-500" data-demo="s3-credentials">
                 {{ c.endpoint || "AWS S3" }} · {{ c.region }} ·
                 {{ c.access_key_id }}
               </p>

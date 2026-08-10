@@ -85,7 +85,8 @@ const derived =
 </script>
 
 <template>
-  <div class="mt-2">
+  <div
+    data-demo="tonight-optics" class="mt-2">
     <div class="mb-1 flex flex-wrap items-baseline justify-between gap-2">
       <span class="text-xs text-slate-500 dark:text-slate-400">
         {{ t("tonight.eyepieces.title") }}

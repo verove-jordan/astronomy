@@ -161,7 +161,7 @@ const phoneColumns: Column<Row>[] = [
         {{ t("library.empty") }}
       </p>
 
-      <div v-if="rows.length" class="space-y-2">
+      <div v-if="rows.length" class="space-y-2" data-demo="library-masters">
         <h2 class="text-lg font-semibold">{{ t("library.deepskyTitle") }}</h2>
         <GenericTable :columns="columns" :rows="rows" max-height="28rem" />
       </div>

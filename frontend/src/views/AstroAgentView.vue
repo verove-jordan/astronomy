@@ -289,7 +289,7 @@ const convItemClass = (id: string) =>
       </aside>
 
       <!-- Active conversation -->
-      <section class="flex min-w-0 flex-1 flex-col gap-3">
+      <section class="flex min-w-0 flex-1 flex-col gap-3" data-demo="agent-conversation">
         <div
           ref="transcriptEl"
           :class="[card, 'h-[60vh] space-y-3 overflow-y-auto']"

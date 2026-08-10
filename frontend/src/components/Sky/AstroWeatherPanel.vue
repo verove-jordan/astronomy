@@ -132,7 +132,8 @@ const nightLabel = computed(() => verdictLabel(nightVerdict.value));
 </script>
 
 <template>
-  <div :class="card">
+  <div
+    data-demo="tonight-weather" :class="card">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex items-center gap-2">
         <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200">

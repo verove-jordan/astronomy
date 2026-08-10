@@ -35,10 +35,19 @@ const ACCENT = "#7c9cff";
 const Shot = z.object({
   step: z.string(),
   goto: z.string().optional(), // overrides the page's route for this step
-  click: Target.optional(), // one interaction to reach the state (open a tab, expand a panel)
+  // Interactions to reach the state, in this order. `click` is unconditional (switch a tab, open a
+  // row); `expand` is idempotent — it opens a collapsible ONLY if it is closed, which matters because
+  // accordion state persists in localStorage across steps, so an unconditional click would toggle a
+  // section shut exactly half the time.
+  click: Target.optional(),
+  expand: z.array(Target).optional(),
   scrollTo: Target.optional(),
   waitFor: Target.optional(),
   highlight: Target.optional(), // omitted → the whole page, no cut-out
+  // Blur these before shooting. These screenshots are generated from a REAL install and committed to
+  // the repo, so anything identifying — S3 endpoints and access-key ids, absolute home paths — must
+  // not be published along with them.
+  redact: z.array(Target).optional(),
   dwell: z.number().nonnegative().default(400), // ms to settle (charts, maps, images)
 });
 export type Shot = z.infer<typeof Shot>;
@@ -99,6 +108,15 @@ async function shootPage(
       await page.waitForTimeout(spec.dwell);
       if (shot.waitFor) await a.resolve(page, shot.waitFor).waitFor({ timeout: 8000 });
       if (shot.click) await a.resolve(page, shot.click).click({ timeout: 7000 });
+      for (const target of shot.expand ?? []) {
+        // The toggle is the section's own button; aria-expanded is the state, so this is a no-op on
+        // an already-open section rather than a close.
+        const toggle = a.resolve(page, target).locator("button[aria-expanded]").first();
+        if ((await toggle.getAttribute("aria-expanded").catch(() => null)) === "false") {
+          await toggle.click({ timeout: 5000 }).catch(() => {});
+          await page.waitForTimeout(250);
+        }
+      }
       if (shot.scrollTo) await a.scrollTo(page, a.resolve(page, shot.scrollTo), 0);
       await page.waitForTimeout(shot.dwell);
       if (shot.highlight) {
@@ -120,6 +138,16 @@ async function shootPage(
         await a.spotlight(page, loc);
       } else {
         await a.spotlight(page, null);
+      }
+      for (const target of shot.redact ?? []) {
+        const loc = a.resolve(page, target);
+        for (const el of await loc.all()) {
+          await el
+            .evaluate((n: HTMLElement) => {
+              n.style.filter = "blur(5px)";
+            })
+            .catch(() => {});
+        }
       }
       await page.waitForTimeout(450); // the cut-out transitions in over ~400ms
 

@@ -251,6 +251,7 @@ const option = computed(() => ({
 
 <template>
   <VChart
+    data-demo="logbook-conditions"
     v-if="rows.length > 1"
     class="h-72 w-full"
     :option="option"

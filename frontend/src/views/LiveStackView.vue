@@ -139,7 +139,7 @@ async function start() {
       </div>
     </div>
 
-    <div :class="card">
+    <div :class="card" data-demo="live-controls">
       <div class="flex flex-wrap items-end gap-4">
         <label class="text-sm">
           <span class="mb-1 block text-xs font-medium text-slate-500">{{

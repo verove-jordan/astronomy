@@ -647,7 +647,8 @@ const columns: Column<Row>[] = [
 </script>
 
 <template>
-  <div class="space-y-3">
+  <div
+    data-demo="tonight-darksky" class="space-y-3">
     <p class="text-sm text-slate-500 dark:text-slate-400">
       {{ t("darksky.hint") }}
     </p>
