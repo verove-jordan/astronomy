@@ -95,6 +95,39 @@ connection selection, bucket/prefix pickers, folder sync/download/**free local**
 per-folder local/S3 presence, a plain bucket file manager, backup/restore, and removable-drive
 import.
 
+## Solar system (`/solarsystem`)
+
+The system as a place you can fly around, in three dimensions, running at whatever speed you choose.
+
+Every planet is where it actually is, tilted on its real axis and turned to its real rotation angle —
+Uranus lies on its side, Venus turns backwards, Saturn's rings open and close as its 29-year orbit
+carries the tilt round. Drag to orbit, shift-drag to pan, scroll to zoom, and keep zooming: the view
+runs continuously from outside Neptune's orbit down to a body a few hundred kilometres across. Click
+a world, a label or a name in the list and the camera flies to it and follows.
+
+The **time machine** spans 1800–2050 — the years the orbital model is fitted for, and it refuses to
+leave them. Play forwards or backwards at anything from real time to a century a second, step by the
+day, type an exact instant, or press **Now**.
+
+Two controls keep it legible without making it dishonest. **Distances** compresses the radial field
+from true scale (where everything inside Jupiter is a knot at the centre) to evenly-spaced orbits;
+**Body size** inflates the worlds. Neither touches the arithmetic: positions, distances, phases,
+angular sizes and every printed number are computed at true scale, which is what keeps an eclipse
+happening at the right instant however the picture around it is stretched. A world is also never
+drawn smaller than a couple of pixels, so from out here the planets are coloured points you can find
+and click, and the true size takes over continuously as you approach.
+
+The readout gives the selected body's radius, mass, rotation period, axial tilt, distance from the
+Sun and from Earth, apparent magnitude and size, illuminated fraction, elongation, Saturn's
+ring-plane tilt, and its altitude and azimuth in your own sky. Those come from the engine
+(`GET /api/solarsystem/state`), not from the renderer; when the clock outruns the request the card
+says which instant it is describing rather than quietly showing the wrong one.
+
+Surface maps are **downloaded, not vendored** — `just download-planet-textures` fetches them into
+`work/solarsystem` (see [third-party.md](third-party.md) for the licence and attribution). Every one
+is optional: a body whose map is absent is shaded procedurally, exactly as a missing StarNet++ falls
+back to full stars.
+
 ## Capture (`/capture`)
 
 Live camera, mount and filter-wheel control, the auto-run sequencer, and — in the right-hand

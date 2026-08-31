@@ -1,7 +1,8 @@
 # The session planner
 
-Three UI pages answer "what should I shoot tonight, how do I align, and when do events happen":
-**Tonight** (`/tonight`), **GoTo** (`/goto`) and **Calendar** (`/calendar`). The observing site
+Four UI pages answer "what should I shoot tonight, how do I align, and when do events happen":
+**Tonight** (`/tonight`), **GoTo** (`/goto`), **Calendar** (`/calendar`) and **Solar system**
+(`/solarsystem`). The observing site
 (map / address / geolocation) is chosen once and shared across all three; weather and
 light-pollution overlays come from keyless public APIs by default. This page explains where every
 value comes from and what is cached versus stored.
@@ -13,6 +14,7 @@ value comes from and what is cached versus stored.
 | **Tonight** | `/tonight` | Ranks tonight's deep-sky targets for your location, gear and the moon/darkness conditions. Filters by type/score/framing, camera **or** eyepiece (visual) mode, altitude charts, a sky map with light-pollution and **animated weather layers** (self-rendered forecast grid + live rain radar, one unified time scrubber), and a meteoblue-style astro-weather panel (clouds, seeing, transparency, jet stream, Kp, air quality — with a worded "Tonight" verdict). Built-in **Polar** (polar-scope reticle for right now) and **Dark sky** (dark-site finder scoring darkness, tree-horizon openness and by-road driving distance) tabs. |
 | **GoTo** | `/goto` | Computes a well-spread, ordered set of **mount-alignment stars** for your GoTo routine — six mount profiles (SynScan / Celestron, EQ / Alt-Az), only stars your hand controller actually offers, two-phase align+calibration for Celestron EQ. Walk the sequence interactively — center/skip — and the server re-plans around your choices. Includes the mise-en-station (polar alignment) helper and an interactive "find it in the sky" map. |
 | **Calendar** | `/calendar` | An astronomical-events almanac: eclipses, moon phases, meteor showers, conjunctions, oppositions, equinoxes, ISS passes, comets… as a month calendar over a date window, or the next N of a single type — each scored for your site and gear. |
+| **Solar system** | `/solarsystem` | A real-time, explorable 3-D map of the system: every planet where it actually is, on its real axis, at its real rotation angle, with a time scrubber that runs the whole mechanism between 1800 and 2050. Distances and body sizes can be compressed for legibility without touching the arithmetic behind them. |
 
 ## Data flow
 
@@ -56,6 +58,7 @@ passes the shared observing site and the engine fans out:
 | `/api/sky/canopy/atlas` | canopy atlas status/build | ETH GlobalCanopyHeight download | disk atlas |
 | `/api/sky/weather` (+ `/grid`, `/grid/frames`, `/tiles/…`) | Astro-weather panel + animated map layers | Open-Meteo + Air-Quality + ensemble + 7Timer! + NOAA SWPC; rain radar tiles from RainViewer | mem + disk (~30 min) |
 | `/api/sky/geocode` | Site picker | OpenStreetMap Nominatim | per request |
+| `/api/solarsystem/bodies` · `/state` · `/texture` | Solar system | compiled-in body table + Standish elements + IAU rotational elements; surface maps downloaded on request | embedded + `work/solarsystem` |
 
 Every feed is **keyless by default and soft-fails**: a dead upstream falls back to the disk cache
 (even stale), then to the offline atlas / local compute / a configurable default — no `/api/sky/*`
