@@ -109,7 +109,10 @@ func TestBuildSkyAlpha_BrightTopIsSky(t *testing.T) {
 			}
 		}
 	}
-	alpha := buildSkyAlpha(im, 45, 1, 2)
+	alpha, note := buildSkyAlpha(im, 45, 1, 2, nil)
+	if note != "" {
+		t.Fatalf("a real horizon must not trip the all-sky fallback: %s", note)
+	}
 	top := alpha[2*w+w/2]     // near top row
 	bot := alpha[(h-2)*w+w/2] // near bottom row
 	if top < 0.6 {

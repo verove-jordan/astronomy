@@ -116,3 +116,38 @@ func TestCalibrateLights_NoLights(t *testing.T) {
 		t.Fatalf("no lights should return no note, got %q", note)
 	}
 }
+
+// TestPixelMath_SurvivesAMismatchedMaster: a master larger or smaller than the light must degrade,
+// never panic. A run once died here — the dimension guard was checked against ONE reference light and
+// then the master was applied to every light, so a folder holding two sensor resolutions ran the
+// subtraction off the end of the smaller plane.
+func TestPixelMath_SurvivesAMismatchedMaster(t *testing.T) {
+	tests := []struct {
+		name            string
+		lightN, masterN int
+	}{
+		{"master smaller than the light", 8, 4},
+		{"master larger than the light", 4, 8},
+		{"same size", 6, 6},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			light := fits.NewImage(tt.lightN, 1, 1)
+			for i := range light.Pix[0] {
+				light.Pix[0][i] = 0.5
+			}
+			master := fits.NewImage(tt.masterN, 1, 1)
+			for i := range master.Pix[0] {
+				master.Pix[0][i] = 0.25
+			}
+
+			subtractImage(light, master) // must not panic
+			divideImage(light, master)
+
+			// The overlapping pixels are still calibrated: (0.5 - 0.25) / 0.25 = 1.
+			if got := light.Pix[0][0]; math.Abs(float64(got)-1) > 1e-6 {
+				t.Fatalf("first pixel calibrated to %v, want 1", got)
+			}
+		})
+	}
+}

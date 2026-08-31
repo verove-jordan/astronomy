@@ -106,6 +106,12 @@ func asinhStretch(im *fits.Image, intensity, normPct, blackPct float64, perChann
 	if intensity <= 1.0 {
 		return
 	}
+	applyAsinh(im, intensity)
+}
+
+// applyAsinh is the curve itself, shared with StretchForeground so the panorama's landscape and the
+// per-panel one cannot drift apart.
+func applyAsinh(im *fits.Image, intensity float64) {
 	denom := math.Asinh(intensity)
 	for c := 0; c < im.C; c++ {
 		p := im.Pix[c]
