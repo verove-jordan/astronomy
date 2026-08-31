@@ -253,6 +253,14 @@ type Preset struct {
 	// of the channel's stacked frames (min 1).
 	CoverageMinFrac float64
 
+	// EdgeCrop trims the ragged edge off the COLOUR-COMBINE inputs (never the persisted masters):
+	// the dead wedge a drifting session leaves plus the band beside it where the stack's sky sits
+	// off its own level. Unlike CoverageCrop this is measured from the finished stack's pixels, so
+	// it needs no registration geometry and works on a single-session run — which is exactly where
+	// it was found: a 135 px drift left a 200 px skirt only 0.2% above the sky, which is +46σ to a
+	// background model, and the sky fit that followed blew a quarter of the frame to white.
+	EdgeCrop bool
+
 	// CoreSatMask repairs sensor-saturated galaxy/star cores before a MULTI-NIGHT stack: pixels at
 	// a group's post-normalization saturation ceiling are replaced from the sub-ceiling median of
 	// the nights that still see the true value (transient/satmask.go). A clipped plateau shared by
@@ -535,6 +543,7 @@ func presetFor(m Mode) Preset {
 			SeamNoiseEq:               true,    // coverage-weighted starlet fade of the noise-depth step at coverage boundaries (multi-group channels only)
 			CoverageCrop:              true,    // crop the colour combine to the cross-channel common covered field (multi-night wedges/casts; masters untouched)
 			CoverageMinFrac:           0.30,    // a cell counts as covered at ≥30% of the channel's stacked depth
+			EdgeCrop:                  true,    // trim the ragged stacking edge off the combine inputs (drift wedge + the skirt beside it; masters untouched)
 			CoreSatMask:               true,    // repair sensor-saturated cores from unsaturated nights before the multi-night stack
 			BackgroundAI:              true,    // per-channel GraXpert background extraction
 			CombinedBackgroundAI:      true,    // parity with deepsky: 2nd GraXpert pass on combined RGB → homogeneous sky
@@ -653,6 +662,7 @@ func presetFor(m Mode) Preset {
 			SeamNoiseEq:               true,    // coverage-weighted starlet fade of the noise-depth step at coverage boundaries (multi-group channels only)
 			CoverageCrop:              true,    // crop the colour combine to the cross-channel common covered field (multi-night wedges/casts; masters untouched)
 			CoverageMinFrac:           0.30,    // a cell counts as covered at ≥30% of the channel's stacked depth
+			EdgeCrop:                  true,    // trim the ragged stacking edge off the combine inputs (drift wedge + the skirt beside it; masters untouched)
 			CoreSatMask:               true,    // repair sensor-saturated cores from unsaturated nights before the multi-night stack
 			ChromaBlur:                0,       // 0: GraXpert AI denoise handles colour noise; no blur → crisp star halos
 			ChromaSmoothPx:            6,       // mean-preserving chroma smooth on the combined RGB → flattens residual colour patches (no luma cost)

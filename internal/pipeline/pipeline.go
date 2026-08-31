@@ -333,6 +333,10 @@ type Result struct {
 	// CombineCrop records the coverage-derived crop applied to the colour-combine inputs (grouped
 	// runs with CoverageCrop on): the common covered rectangle, or the honest union fallback.
 	CombineCrop *CombineCrop `json:"combine_crop,omitempty"`
+	// EdgeCrop records the ragged-stacking-edge trim of the colour-combine inputs (edgecrop.go),
+	// measured from the stack's own pixels rather than from registration geometry — so it applies to
+	// single-session runs, which carry no coverage grid. Absent when nothing needed cutting.
+	EdgeCrop *CombineCrop `json:"edge_crop,omitempty"`
 	// MosaicAssembly records a Mode "mosaic" run's panel assembly (segmentation, per-panel solves,
 	// photometric matching, canvas + seam metrics). See mosaicassemble.go.
 	MosaicAssembly *MosaicResult `json:"mosaic_assembly,omitempty"`
@@ -841,6 +845,11 @@ func combine(ctx context.Context, opts Options, res *Result, workRun, outDir str
 	// the field they ALL cover, so the colour combine never mixes regions where one channel has no
 	// data (regional casts) or none has (black wedges). Masters/aligned files stay untouched.
 	channels = applyCoverageCrop(opts, res, channels, outDir)
+	// Then the stack's own ragged edge, measured from the pixels. Complementary to the coverage
+	// crop, not a duplicate of it: coverage knows where the frames landed, this knows where the
+	// finished stack stops being sky — which reaches further (measured: 135 px of drift left a
+	// 200 px skirt). A single-session run has only this one.
+	channels = applyEdgeCrop(opts, res, channels, outDir)
 	finishAligned(ctx, opts, channels, res, workRun, outDir)
 }
 

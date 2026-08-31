@@ -432,6 +432,9 @@ export interface RunResult {
   // Coverage-derived crop applied to the colour-combine inputs (grouped runs): the common covered
   // rectangle in canvas pixels, or the honest full-field fallback (applied=false + note).
   combine_crop?: CombineCrop;
+  // Ragged-stacking-edge trim of the colour-combine inputs (edgecrop.go), measured from the stack's
+  // own pixels — so unlike combine_crop it is present on single-session runs too.
+  edge_crop?: CombineCrop;
   warnings: string[];
   // Planetary / comet lucky-imaging runs return a flat result (no `final` wrapper): the stacked
   // image outputs plus frame stats. RunResultPanels falls back to these when `final` is absent.
