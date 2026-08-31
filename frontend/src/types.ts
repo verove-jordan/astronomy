@@ -2035,6 +2035,11 @@ export interface DeviceWheelState {
   wheel?: {
     id: string;
     name: string;
+    // Which driver is behind it — "efw" for real hardware, "sim" for the simulator. The device
+    // server has always sent this; it was missing here, so the UI could not tell a simulated wheel
+    // from a real one.
+    driver?: string;
+    kind?: string;
     slots: number;
     position: number;
     moving: boolean;

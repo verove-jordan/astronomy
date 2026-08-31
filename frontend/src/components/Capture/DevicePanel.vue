@@ -52,17 +52,32 @@ function driverFor(kind: string): string {
   );
 }
 
+// Which driver is actually behind a connected device. The picker stays reachable while this is the
+// simulator: hiding it on connect is what made the simulator a dead end — it was connected by
+// default, and the only control that could have said otherwise disappeared the moment it was.
+function simulated(kind: string): boolean {
+  const driver =
+    kind === "camera"
+      ? store.camera?.caps?.driver
+      : kind === "wheel"
+        ? store.wheel?.wheel?.driver
+        : store.mount?.mount?.driver;
+  return driver === "sim";
+}
+
 const rows = computed(() => [
   {
     kind: "camera" as const,
     label: t("capture.device.camera"),
     connected: store.connected.camera,
+    simulated: simulated("camera"),
     detail: store.camera?.caps?.name ?? "",
   },
   {
     kind: "wheel" as const,
     label: t("capture.device.wheel"),
     connected: store.connected.wheel,
+    simulated: simulated("wheel"),
     detail: store.wheel?.wheel
       ? t("capture.device.wheelDetail", {
           slots: store.wheel.wheel.slots,
@@ -74,9 +89,23 @@ const rows = computed(() => [
     kind: "mount" as const,
     label: t("capture.device.mount"),
     connected: store.connected.mount,
+    simulated: simulated("mount"),
     detail: store.mount?.mount?.model ?? "",
   },
 ]);
+
+// Picking a driver while the simulator is connected swaps to it straight away. The device server
+// closes whatever it holds before opening the new driver, so making the user Disconnect first would
+// be ceremony that only ever leads to the same place.
+function onDriverChange(
+  kind: "camera" | "wheel" | "mount",
+  driver: string,
+  isConnected: boolean,
+  isSimulated: boolean,
+) {
+  chosen[kind] = driver;
+  if (isConnected && isSimulated) void connect(kind);
+}
 
 async function connect(kind: "camera" | "wheel" | "mount") {
   const driver = driverFor(kind);
@@ -123,12 +152,19 @@ async function connect(kind: "camera" | "wheel" | "mount") {
         row.detail
       }}</span>
       <select
-        v-if="!row.connected && driversFor(row.kind).length > 1"
+        v-if="(!row.connected || row.simulated) && driversFor(row.kind).length > 1"
         class="shrink-0 rounded-md border border-slate-300 bg-white px-1.5 py-1 text-xs text-slate-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-brand-800/60 dark:bg-brand-900/20 dark:text-slate-100"
         :value="driverFor(row.kind)"
         :disabled="!store.deviceStatus?.running"
         :aria-label="t('capture.device.driverFor', { device: row.label })"
-        @change="chosen[row.kind] = ($event.target as HTMLSelectElement).value"
+        @change="
+          onDriverChange(
+            row.kind,
+            ($event.target as HTMLSelectElement).value,
+            row.connected,
+            row.simulated,
+          )
+        "
       >
         <option v-for="d in driversFor(row.kind)" :key="d" :value="d">
           {{ d }}

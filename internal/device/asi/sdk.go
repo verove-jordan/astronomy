@@ -400,3 +400,42 @@ func Available() (string, error) {
 	}
 	return fmt.Sprintf("SDK loaded; %d camera(s) connected", n), nil
 }
+
+// Device names one camera the SDK can see, as discovery reports it.
+type Device struct {
+	Index int32
+	ID    int32
+	Name  string
+}
+
+// List enumerates the connected cameras WITHOUT opening any of them.
+//
+// Not opening is the whole point. Discovery is polled by the UI, and ASIOpenCamera on a camera that
+// is already mid-sequence would take it away from the exposure in flight. ASIGetCameraProperty
+// answers from the enumeration alone, so this is safe to run on a timer.
+func List() ([]Device, error) {
+	s, err := load()
+	if err != nil {
+		return nil, err
+	}
+	return listCameras(s), nil
+}
+
+// listCameras is split from List so the fake SDK can drive it with no vendor library present.
+func listCameras(s *sdk) []Device {
+	n := s.getNumOfConnectedCameras()
+	if n <= 0 || n > 64 {
+		// An implausible count means the wrong architecture; selfTest is what reports that properly.
+		return nil
+	}
+	out := make([]Device, 0, n)
+	buf := make([]byte, infoStructSize)
+	for i := int32(0); i < n; i++ {
+		if err := check(s.getCameraProperty(&buf[0], i)); err != nil {
+			continue // a camera unplugged between the count and the read must not lose the others
+		}
+		info := parseCameraInfo(buf)
+		out = append(out, Device{Index: i, ID: info.ID, Name: info.Name})
+	}
+	return out
+}
