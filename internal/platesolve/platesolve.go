@@ -57,6 +57,27 @@ type Hint struct {
 //
 // Siril solves IN PLACE, so the file is copied into a scratch directory first — a centring loop must
 // never rewrite the frames it was handed, and on a capture run those frames are the night's data.
+// openSolved finds the file Siril actually wrote for `save <name>`.
+//
+// Which extension that is comes from `setext` in the script header — it says `fits`, so Siril writes
+// `<name>.fits`. This used to look only for `<name>.fit` and therefore never found it: every solve
+// failed with "solved file unreadable: no such file or directory" AFTER Siril had already logged
+// "Siril solve succeeded", which reads like a broken image rather than a missing suffix. Accept both
+// spellings so the reader does not silently depend on a preference set three files away.
+func openSolved(dir, name string) (*fits.File, error) {
+	var firstErr error
+	for _, ext := range []string{".fits", ".fit"} {
+		f, err := fits.Open(filepath.Join(dir, name+ext))
+		if err == nil {
+			return f, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return nil, firstErr
+}
+
 func (s *Solver) Solve(ctx context.Context, path string, hint Hint) (Result, error) {
 	if s == nil || s.runner == nil {
 		return Result{}, fmt.Errorf("no Siril runner configured")
@@ -90,7 +111,7 @@ func (s *Solver) Solve(ctx context.Context, path string, hint Hint) (Result, err
 		return Result{}, fmt.Errorf("plate solve failed: %w", err)
 	}
 
-	solved, err := fits.Open(filepath.Join(work, outName+".fit"))
+	solved, err := openSolved(work, outName)
 	if err != nil {
 		return Result{}, fmt.Errorf("solved file unreadable: %w", err)
 	}
