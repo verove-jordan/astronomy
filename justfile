@@ -97,8 +97,12 @@ web:
 # It runs as its OWN process so `just dev` — which restarts the engine on every source save — can
 # never drop a USB connection mid-sequence.
 #
+# Re-running this RESTARTS it: any device server already on the port is stopped first, and waited
+# for, so a stray sidecar from an earlier session is never left blocking the start.
+#
 # Device server (simulator, or hardware with a native SDK): camera / filter wheel / mount.
 device:
+    @scripts/device-stop.sh
     go run ./cmd/astrostack device
 
 # ZWO ship no arm64 macOS library — their SDK, and their own ASIStudio, are x86_64 only. A native
@@ -106,11 +110,15 @@ device:
 # letting Rosetta run it solves that: the engine, the frontend and every bit of stacking stay native
 # arm64 and talk to it over HTTP exactly as before. This is why device I/O lives in its own process.
 #
+# Re-running this RESTARTS it, and the running server is stopped only AFTER the build succeeds —
+# a compile error must not leave you with the working sidecar killed and nothing in its place.
+#
 # Device server built as x86_64, for real ZWO hardware on an Apple-Silicon Mac.
 device-x86:
     @command -v arch >/dev/null && arch -x86_64 /usr/bin/true 2>/dev/null || \
         (echo "Rosetta 2 is not installed — run: softwareupdate --install-rosetta" && exit 1)
     GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -o bin/astrostack-x86 ./cmd/astrostack
+    @scripts/device-stop.sh
     ./bin/astrostack-x86 device
 
 device-status:
