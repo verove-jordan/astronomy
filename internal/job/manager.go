@@ -1650,10 +1650,14 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 		}
 		return r, nil
 
-	case mode.Sun:
+	case mode.Sun, mode.Eclipse:
 		// Solar: triage the folder into scale-compatible groups, ingest the best one, limb-register
 		// and stack it in windows, then finish in Go. No Siril, no plate solving and no calibration
 		// library — the Sun supplies its own registration reference in the limb.
+		//
+		// Eclipse runs the same entry point. It is the same recipe measured against two circles rather
+		// than one, and the difference is carried entirely by the preset (mode.For(Eclipse)) — so
+		// there is nothing here to keep in step.
 		r, err := pipeline.ProcessSun(ctx, pipeline.Options{
 			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir,
 			Preset: &preset, FfmpegBin: m.cfg.FfmpegBin, JobID: id,

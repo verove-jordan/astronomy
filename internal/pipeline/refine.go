@@ -47,7 +47,11 @@ func RefineExistingRun(ctx context.Context, opts Options, runDir string) (*postp
 		return refineComet(ctx, opts, outDir)
 	case mode.Planetary:
 		return refinePlanetary(ctx, opts, outDir)
-	case mode.Sun:
+	case mode.Sun, mode.Eclipse:
+		// Eclipse re-finishes exactly as Sun does — it persists the same master_wNN.fits and shares the
+		// whole finish surface. Missing from here it fell through to the deep-sky path, which went
+		// looking for channel masters that a solar run has never written and failed with a message
+		// about aligned_* files, naming the one thing that had nothing to do with it.
 		return refineSun(ctx, opts, outDir)
 	}
 
