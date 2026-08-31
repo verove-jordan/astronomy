@@ -10,7 +10,7 @@ import (
 // plus its vote count. ok is true only when the peak both spans ≥ trailVoteFrac·min(gw,gh) and
 // dominates the 99th percentile of populated bins by ≥ trailPeakRatio — the same test as
 // grade.DetectTrail. The ρ binning (round(x·cos+y·sin)+diag, diag = ceil(hypot(gw,gh))) is identical.
-func houghPeak(seeds []int, gw, gh int) (cosT, sinT, rhoVal float64, votes int, ok bool) {
+func houghPeak(seeds []int, gw, gh int, voteFrac float64) (cosT, sinT, rhoVal float64, votes int, ok bool) {
 	sin := make([]float64, trailThetaN)
 	cos := make([]float64, trailThetaN)
 	for t := 0; t < trailThetaN; t++ {
@@ -36,7 +36,7 @@ func houghPeak(seeds []int, gw, gh int) (cosT, sinT, rhoVal float64, votes int, 
 	if gh < gw {
 		minDim = gh
 	}
-	spans := float64(bestVotes) >= trailVoteFrac*float64(minDim)
+	spans := float64(bestVotes) >= voteFrac*float64(minDim)
 	dominant := float64(bestVotes) >= trailPeakRatio*percentile99(acc)
 	if !spans || !dominant {
 		return 0, 0, 0, bestVotes, false

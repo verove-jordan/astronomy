@@ -47,7 +47,7 @@ func detectOne(grid []float64, gw, gh int, plane []float32, w, h, f int, p Param
 	if len(seeds) < 16 || float64(len(seeds)) > trailMaxBrite*float64(gw*gh) {
 		return Segment{}, false
 	}
-	cosT, sinT, rhoVal, votes, ok := houghPeak(seeds, gw, gh)
+	cosT, sinT, rhoVal, votes, ok := houghPeak(seeds, gw, gh, p.voteFrac())
 	if !ok {
 		return Segment{}, false
 	}
@@ -92,6 +92,9 @@ func eraseBand(grid []float64, gw, gh int, cosT, sinT, rhoVal float64, inliers [
 // seedK is the seed-threshold multiplier: Residual clamps 0.7·K to [1.5,2.5]; Raw is fixed at 5σ.
 func seedK(p Params) float64 {
 	if p.Mode == Raw {
+		if p.RawSeedK > 0 {
+			return p.RawSeedK
+		}
 		return trailBrightK
 	}
 	k := 0.7 * p.K
