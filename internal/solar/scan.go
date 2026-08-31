@@ -60,7 +60,7 @@ type scanResult struct {
 type cropRect struct{ x, y, w, h int }
 
 // scanVideo streams a clip at reduced resolution and scores every frame.
-func scanVideo(ctx context.Context, ffmpegBin, path string, info VideoInfo, cropMargin float64) (scanResult, error) {
+func scanVideo(ctx context.Context, ffmpegBin, path string, info VideoInfo, cropMargin float64, twoBody bool) (scanResult, error) {
 	if ffmpegBin == "" {
 		ffmpegBin = "ffmpeg"
 	}
@@ -85,7 +85,7 @@ func scanVideo(ctx context.Context, ffmpegBin, path string, info VideoInfo, crop
 		_ = cmd.Wait()
 	}()
 
-	res, err := scanFrames(stdout, sw, sh, info)
+	res, err := scanFrames(stdout, sw, sh, info, twoBody)
 	if err != nil {
 		return scanResult{}, fmt.Errorf("scan %s: %w", filepath.Base(path), err)
 	}
@@ -95,11 +95,11 @@ func scanVideo(ctx context.Context, ffmpegBin, path string, info VideoInfo, crop
 }
 
 // scanFrames reads raw gray16 frames off the pipe and scores each one.
-func scanFrames(r io.Reader, w, h int, info VideoInfo) (scanResult, error) {
+func scanFrames(r io.Reader, w, h int, info VideoInfo, twoBody bool) (scanResult, error) {
 	buf := make([]byte, w*h*2)
 	im := fits.NewImage(w, h, 1)
 	var out scanResult
-	var last Limb
+	var last Pair
 	var haveLast bool
 
 	for n := 0; ; n++ {
@@ -113,15 +113,15 @@ func scanFrames(r io.Reader, w, h int, info VideoInfo) (scanResult, error) {
 		Linearize(im.Pix[0], info)
 
 		if n%limbEveryNFrames == 0 || !haveLast {
-			if l, ok := FitLimb(im); ok {
-				last, haveLast = l, true
+			if g, ok := fitGeometry(im, twoBody); ok {
+				last, haveLast = g, true
 			}
 		}
 		fs := frameScan{index: n}
 		if haveLast {
-			fs.limb, fs.ok = last, true
-			fs.score = FrameSharpness(im, last)
-			fs.level = discLevel(im, last)
+			fs.limb, fs.ok = last.Sun, true
+			fs.score = FrameSharpnessPair(im, last)
+			fs.level = discLevelPair(im, last)
 		}
 		out.frames = append(out.frames, fs)
 	}
@@ -148,21 +148,30 @@ func decodeGray16BE(src []byte, dst []float32) {
 // bound keeps limb darkening out of it, so the figure does not move when the disc drifts on the
 // sensor.
 func discLevel(im *fits.Image, l Limb) float64 {
+	return discLevelPair(im, Pair{Sun: l})
+}
+
+// discLevelPair is discLevel over the un-occluded Sun only, and on an eclipse it is the difference
+// between a transparency gate and a frame shredder.
+//
+// The gate drops frames whose level fell below 95% of the clip's clearest, on the reasoning that the
+// Sun's surface brightness does not change so a drop means something got in the way. Something DID
+// get in the way — but the Moon is not cloud, and it does not dim the Sun, it covers it. Measured
+// across the whole disc the level falls with obscuration, so on the seventeen-minute clip that spans
+// maximum the gate would read the eclipse itself as thickening cloud and throw away the deepest and
+// most interesting frames. Measured on the crescent alone the level is what it always was.
+func discLevelPair(im *fits.Image, g Pair) float64 {
+	l := g.Sun
 	if l.R <= 0 {
 		return 0
 	}
 	p := im.Pix[0]
-	r2 := (medianRadius * l.R) * (medianRadius * l.R)
+	inMask := g.visibleSunAt(medianRadius)
 	vals := make([]float32, 0, 40000)
 	step := 1 + int(l.R)/100 // ~30k samples whatever the disc's size
 	for y := 0; y < im.H; y += step {
-		dy := float64(y) - l.CY
-		if dy*dy > r2 {
-			continue
-		}
 		for x := 0; x < im.W; x += step {
-			dx := float64(x) - l.CX
-			if dx*dx+dy*dy <= r2 {
+			if inMask(x, y) {
 				vals = append(vals, p[y*im.W+x])
 			}
 		}

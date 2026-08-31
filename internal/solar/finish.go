@@ -113,8 +113,25 @@ func DefaultFinish() FinishOptions {
 
 // Finish renders a stacked linear master into a display-ready RGB image.
 func Finish(master *fits.Image, l Limb, o FinishOptions) *fits.Image {
+	return FinishPair(master, Pair{Sun: l}, o)
+}
+
+// FinishPair is Finish with an occulting body accounted for.
+//
+// The two extra steps bracket the whole recipe rather than threading through it: the occulted region
+// is filled with the disc's own radial model before anything measures "the disc", and painted back
+// to the background level after everything has. Both are no-ops when there is no occulter, so the
+// ordinary solar path through here is the arithmetic it always was. See pairfinish.go for why the
+// alternative — six masked variants, one per averaging step — was not taken.
+func FinishPair(master *fits.Image, g Pair, o FinishOptions) *fits.Image {
+	l := g.Sun
 	w, h := master.W, master.H
 	p := append([]float32(nil), master.Pix[0]...)
+	// Every average in the finish reads "the disc", and on a crescent most of the disc is Moon. They
+	// are given a predicate that says which pixels are the occulter's rather than being handed a
+	// disc with the hole painted in — see the note at the head of pairfinish.go for why the painted
+	// version was tried first and abandoned.
+	skip := occulterSkip(g)
 
 	Deflat(p, w, h, l, o.FlatStrength)
 
@@ -122,6 +139,9 @@ func Finish(master *fits.Image, l Limb, o FinishOptions) *fits.Image {
 	if o.DeconvSigma > 0 && o.DeconvIters > 0 {
 		p = RichardsonLucy(p, w, h, l, o.DeconvSigma, o.DeconvIters, sigma)
 	}
+	// The sharpening mask still covers the WHOLE disc, occulter included. The fill put a smooth,
+	// plausible surface there, and confining the starlet pass to the crescent would leave its edge
+	// unsharpened against a sharpened neighbour — a seam exactly where the eye is drawn.
 	mask := DiscMask(w, h, l, math.Max(o.ProminenceFeather, 0.004)*l.R)
 	p = StarletSharpen(p, w, h, o.Sharpen, sigma, mask)
 
@@ -129,19 +149,38 @@ func Finish(master *fits.Image, l Limb, o FinishOptions) *fits.Image {
 	// by a radial gain does not flatten it — the curve has already compressed the very differences
 	// the gain is meant to cancel, so the correction lands in the wrong place and the disc comes out
 	// washed out rather than flat.
-	FlattenLimbDarkening(p, w, h, l, o.LimbFlatten)
+	FlattenLimbDarkening(p, w, h, l, o.LimbFlatten, skip)
+
+	// THE DISC LEVEL, measured where the Sun actually is. On a crescent that is a thin annulus near
+	// the limb rather than anything inside 0.6 R, and it has to be taken after the limb-darkening
+	// flatten or it describes a dimming the tone curve is about to remove.
+	var discLevel float64
+	if g.Eclipsed() {
+		discLevel = visibleDiscLevel(p, w, h, g)
+	}
 
 	// The disc and the off-limb are then rendered separately and blended, because they differ in
 	// brightness by two orders of magnitude: a prominence is a couple of percent of the disc, and no
 	// single tone curve shows both without either burning the surface or losing the prominences.
-	disc := toneMapDisc(p, w, h, l, o.Stretch, o.Contrast)
+	disc := toneMapDisc(p, w, h, l, o.Stretch, o.Contrast, discLevel, skip)
 	// The glow goes on BEFORE the prominences so that it is a floor they stand on rather than a veil
 	// laid over them: both composite by taking the brighter of the two, so a prominence brighter than
 	// the halo survives at full strength and one fainter than it simply disappears into it, which is
 	// what a halo does in reality.
-	addDiscGlow(disc, w, h, l, o)
+	addDiscGlow(disc, w, h, l, o, skip)
 	if o.ProminenceBoost > 0 {
-		blendProminences(disc, p, w, h, l, o)
+		rendered := 0.0
+		if g.Eclipsed() {
+			rendered = MaskedMedian(disc, g.VisibleSunMask(w, h, 0))
+		}
+		blendProminences(disc, p, w, h, l, o, discLevel, rendered, skip)
+	}
+	if o.NativeMask == nil {
+		// The native ramp reads its quantiles from the same region the colour was measured over, or
+		// the two are not comparable: the measurement sampled around the disc, and a render whose
+		// quantiles came from a frame that is nine-tenths sky would put the disc's colour at the very
+		// top of the ramp and the sky's across everything else.
+		o.NativeMask = radialMask(w, h, l, nativeRegionR*l.R, nativeRegionR*l.R)
 	}
 	return applyPalette(disc, w, h, o)
 }
@@ -154,7 +193,7 @@ func Finish(master *fits.Image, l Limb, o FinishOptions) *fits.Image {
 // top of a falling edge does exactly that — it would put back, as a deliberate feature, the same
 // bright ring the prominence composite was just fixed to stop producing. Anchoring below the limb's
 // own rendering and taking a maximum makes the profile monotone by construction.
-func addDiscGlow(disc []float32, w, h int, l Limb, o FinishOptions) {
+func addDiscGlow(disc []float32, w, h int, l Limb, o FinishOptions, skip func(x, y int) bool) {
 	if o.GlowStrength <= 0 || o.GlowRadius <= 0 || l.R <= 0 {
 		return
 	}
@@ -163,7 +202,7 @@ func addDiscGlow(disc []float32, w, h int, l Limb, o FinishOptions) {
 	// measured that way the ceiling came back three times too high and the glow put the bright ring
 	// straight back.
 	lo, hi := (l.R-glowAnchorPx)/l.R, (l.R+glowAnchorPx)/l.R
-	edge := float64(imgops.Percentile(imgops.Subsample(annulusSamples(disc, w, h, l, lo, hi), 100000), 50))
+	edge := float64(imgops.Percentile(imgops.Subsample(annulusSamples(disc, w, h, l, lo, hi, skip), 100000), 50))
 	if edge <= 0 {
 		return
 	}
@@ -186,7 +225,7 @@ func addDiscGlow(disc []float32, w, h int, l Limb, o FinishOptions) {
 }
 
 // annulusSamples collects the pixels between two radius fractions.
-func annulusSamples(p []float32, w, h int, l Limb, lo, hi float64) []float32 {
+func annulusSamples(p []float32, w, h int, l Limb, lo, hi float64, skip func(x, y int) bool) []float32 {
 	var vals []float32
 	lo2, hi2 := (lo*l.R)*(lo*l.R), (hi*l.R)*(hi*l.R)
 	for y := 0; y < h; y++ {
@@ -241,7 +280,7 @@ const glowAnchorPx = 1.0
 // limb — where the background model has already removed the disc's own scattered-light skirt — it
 // reads near zero in empty sky, so the composite simply follows the disc curve down to black and
 // lifts only where a prominence really stands.
-func blendProminences(disc, linear []float32, w, h int, l Limb, o FinishOptions) {
+func blendProminences(disc, linear []float32, w, h int, l Limb, o FinishOptions, discLevel, discRendered float64, skip func(x, y int) bool) {
 	if l.R <= 0 {
 		return
 	}
@@ -260,9 +299,12 @@ func blendProminences(disc, linear []float32, w, h int, l Limb, o FinishOptions)
 	// around the whole disc, which is the most common way a solar image looks wrong. The aureole is
 	// azimuthally symmetric while prominences are not, so subtracting the off-limb radial median
 	// removes the halo and leaves the prominences standing on it.
-	halo := offLimbProfile(linear, w, h, l)
-	sky := offLimbLevel(linear, w, h, l)
-	ref := imgops.Percentile(imgops.Subsample(onDiscSamples(linear, w, h, l, 0.5), 100000), 50)
+	halo := offLimbProfile(linear, w, h, l, skip)
+	sky := offLimbLevel(linear, w, h, l, skip)
+	ref := discLevel
+	if ref <= 0 {
+		ref = float64(imgops.Percentile(imgops.Subsample(onDiscSamples(linear, w, h, l, 0.5, skip), 100000), 50))
+	}
 	if ref-sky <= 1e-9 {
 		return
 	}
@@ -271,7 +313,10 @@ func blendProminences(disc, linear []float32, w, h int, l Limb, o FinishOptions)
 	// prominence at forty percent of disc brightness comes out whiter than the disc, which is the
 	// glowing-rim look. Faint prominences, which is nearly all of them, are unaffected: the ceiling
 	// only ever clips the curve's top.
-	ceil := float64(imgops.Percentile(imgops.Subsample(onDiscSamples(disc, w, h, l, 0.5), 100000), 50))
+	ceil := discRendered
+	if ceil <= 0 {
+		ceil = float64(imgops.Percentile(imgops.Subsample(onDiscSamples(disc, w, h, l, 0.5, skip), 100000), 50))
+	}
 	if ceil <= 0 {
 		return
 	}
@@ -289,7 +334,7 @@ func blendProminences(disc, linear []float32, w, h int, l Limb, o FinishOptions)
 			// measured — it is only ever sampled from 1.0 R outward — so a disc pixel put through this
 			// curve is not merely rendered on the wrong scale, it is rendered against a background that
 			// was never measured where it sits.
-			if d < l.R {
+			if d < l.R || (skip != nil && skip(x, y)) {
 				continue
 			}
 			i := y*w + x
@@ -392,7 +437,7 @@ func (h haloProfile) evalBin(i int, ang float64) float64 {
 //
 // The median is what leaves prominences alone — they occupy a small fraction of any cell, so they
 // barely move it, while the background fills every cell and defines it.
-func offLimbProfile(p []float32, w, h int, l Limb) haloProfile {
+func offLimbProfile(p []float32, w, h int, l Limb, skip func(x, y int) bool) haloProfile {
 	prof := haloProfile{
 		lo: 1.0, hi: 1.6,
 		bins: make([]float64, haloBins),
@@ -600,7 +645,7 @@ func solveSmall(a, y []float64, n int) ([]float64, bool) {
 }
 
 // offLimbLevel estimates the sky background from an annulus beyond any prominence.
-func offLimbLevel(p []float32, w, h int, l Limb) float64 {
+func offLimbLevel(p []float32, w, h int, l Limb, skip func(x, y int) bool) float64 {
 	var vals []float32
 	for _, band := range [][2]float64{{1.30, 1.50}, {1.15, 1.30}, {1.02, 1.15}} {
 		vals = vals[:0]
@@ -623,12 +668,15 @@ func offLimbLevel(p []float32, w, h int, l Limb) float64 {
 }
 
 // onDiscSamples collects the pixels inside a radius fraction.
-func onDiscSamples(p []float32, w, h int, l Limb, frac float64) []float32 {
+func onDiscSamples(p []float32, w, h int, l Limb, frac float64, skip func(x, y int) bool) []float32 {
 	var vals []float32
 	r2 := (frac * l.R) * (frac * l.R)
 	for y := 0; y < h; y++ {
 		dy := float64(y) - l.CY
 		for x := 0; x < w; x++ {
+			if skip != nil && skip(x, y) {
+				continue
+			}
 			dx := float64(x) - l.CX
 			if dx*dx+dy*dy <= r2 {
 				vals = append(vals, p[y*w+x])
@@ -648,13 +696,22 @@ func onDiscSamples(p []float32, w, h int, l Limb, frac float64) []float32 {
 // stretch does to the Sun.
 //
 // Sky falls below the window and clamps to black, leaving the off-limb rendering to blendProminences.
-func toneMapDisc(p []float32, w, h int, l Limb, stretch, contrast float64) []float32 {
+// discLevel, when non-zero, overrides the level the curve is built around. It exists because the
+// 0.6 R sample below cannot find the Sun on a deep crescent: past about seventy percent obscuration
+// the occulter covers the disc's CENTRE, so there is no un-occluded Sun anywhere inside 0.6 R and a
+// masked sample there is empty. The curve then anchors on nothing, its window collapses, and every
+// pixel above the sky renders at full white — which is precisely the burnt crescent this produced on
+// a real 82%-obscured master.
+func toneMapDisc(p []float32, w, h int, l Limb, stretch, contrast, discLevel float64, skip func(x, y int) bool) []float32 {
 	out := make([]float32, len(p))
 	if contrast <= 0 {
 		contrast = 1
 	}
-	black := offLimbLevel(p, w, h, l)
-	ref := imgops.Percentile(imgops.Subsample(onDiscSamples(p, w, h, l, 0.6), 200000), 50)
+	black := offLimbLevel(p, w, h, l, skip)
+	ref := discLevel
+	if ref <= 0 {
+		ref = float64(imgops.Percentile(imgops.Subsample(onDiscSamples(p, w, h, l, 0.6, skip), 200000), 50))
+	}
 	span := ref - black
 	if span <= 1e-9 {
 		span = math.Max(ref, 1e-6)
@@ -718,4 +775,37 @@ func toeCurve(u, gamma float64) float64 {
 	edge := math.Pow(toeThreshold, gamma)
 	// Exponential approach to zero, matching value and staying monotone at the join.
 	return edge * math.Exp((u-toeThreshold)/toeThreshold)
+}
+
+// visibleDiscLevel is the Sun's own brightness, measured wherever the Sun still is.
+//
+// Three attempts, narrowing to nothing gracefully, because at extreme obscuration there may be very
+// little Sun left and the answer still has to be a number the tone curve can build a window around.
+// The eroded mask first, which is the honest one; then the bare geometry, for a crescent so thin
+// that the erosion consumes it; then nothing, which lets the curve fall back to its own sampling and
+// say so by rendering flat rather than by dividing by zero.
+func visibleDiscLevel(p []float32, w, h int, g Pair) float64 {
+	if v := MaskedMedian(p, g.VisibleSunMask(w, h, 0)); v > 0 {
+		return v
+	}
+	// No erosion, no feather: everything inside the solar limb and outside the occulter's own edge.
+	bare := Pair{Sun: g.Sun, Moon: Limb{CX: g.Moon.CX, CY: g.Moon.CY, R: g.Moon.R}}
+	var vals []float32
+	skip := occulterSkip(bare)
+	for y := 0; y < h; y++ {
+		dy := float64(y) - g.Sun.CY
+		for x := 0; x < w; x++ {
+			dx := float64(x) - g.Sun.CX
+			if dx*dx+dy*dy > g.Sun.R*g.Sun.R || skip(x, y) {
+				continue
+			}
+			if v := p[y*w+x]; v > 0 {
+				vals = append(vals, v)
+			}
+		}
+	}
+	if len(vals) == 0 {
+		return 0
+	}
+	return float64(imgops.Percentile(imgops.Subsample(vals, 100000), 50))
 }

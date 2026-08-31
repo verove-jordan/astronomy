@@ -221,7 +221,7 @@ func cropImage(im *fits.Image, cx, cy, half int) *fits.Image {
 func promContrast(im *fits.Image, l Limb) float64 {
 	inner := imgops.GaussianBlur(im.Pix[0], im.W, im.H, float64(bandInner))
 	outer := imgops.GaussianBlur(im.Pix[0], im.W, im.H, float64(bandOuter))
-	halo := offLimbProfile(im.Pix[0], im.W, im.H, l)
+	halo := offLimbProfile(im.Pix[0], im.W, im.H, l, nil)
 
 	const lo, hi = 1.005, 1.10
 	lo2, hi2 := (lo*l.R)*(lo*l.R), (hi*l.R)*(hi*l.R)

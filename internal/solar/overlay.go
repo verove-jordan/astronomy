@@ -22,7 +22,7 @@ import (
 
 // ProbeOverlay measures one capture file and writes a preview PNG with the fitted limb drawn over
 // it, returning the probe. dst may be empty to measure without rendering.
-func ProbeOverlay(ctx context.Context, ffmpegBin, path, dst string) (FrameProbe, error) {
+func ProbeOverlay(ctx context.Context, ffmpegBin, path, dst string, twoBody bool) (FrameProbe, error) {
 	scratch, err := os.MkdirTemp("", "solar-overlay-")
 	if err != nil {
 		return FrameProbe{}, err
@@ -50,7 +50,7 @@ func ProbeOverlay(ctx context.Context, ffmpegBin, path, dst string) (FrameProbe,
 		p = FrameProbe{Path: path, Kind: KindStill}
 		applyMeta(&p, meta)
 	}
-	measure(&p, im, scale)
+	measure(&p, im, scale, twoBody)
 	if dst == "" {
 		return p, nil
 	}

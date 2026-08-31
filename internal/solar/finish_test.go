@@ -84,7 +84,7 @@ func TestFlattenLimbDarkening(t *testing.T) {
 
 	before := radialSpread(im.Pix[0], im.W, im.H, l)
 	p := append([]float32(nil), im.Pix[0]...)
-	FlattenLimbDarkening(p, im.W, im.H, l, 1.0)
+	FlattenLimbDarkening(p, im.W, im.H, l, 1.0, nil)
 	after := radialSpread(p, im.W, im.H, l)
 
 	t.Run("flattens the radial profile", func(t *testing.T) {
@@ -102,7 +102,7 @@ func TestFlattenLimbDarkening(t *testing.T) {
 
 	t.Run("strength 0 is a no-op", func(t *testing.T) {
 		q := append([]float32(nil), im.Pix[0]...)
-		FlattenLimbDarkening(q, im.W, im.H, l, 0)
+		FlattenLimbDarkening(q, im.W, im.H, l, 0, nil)
 		assert.Equal(t, im.Pix[0], q)
 	})
 }
@@ -480,7 +480,7 @@ func TestHalo_PreservesProminences(t *testing.T) {
 		skew(im, s)
 		l, ok := FitLimb(im)
 		require.True(t, ok)
-		halo := offLimbProfile(im.Pix[0], im.W, im.H, l)
+		halo := offLimbProfile(im.Pix[0], im.W, im.H, l, nil)
 
 		// Probe finer than the model is sampled, so it is checked between its own samples too.
 		const probes = 16
@@ -511,7 +511,7 @@ func TestHalo_PreservesProminences(t *testing.T) {
 		skew(im, s)
 		l, ok := FitLimb(im)
 		require.True(t, ok)
-		halo := offLimbProfile(im.Pix[0], im.W, im.H, l)
+		halo := offLimbProfile(im.Pix[0], im.W, im.H, l, nil)
 
 		var peak float64
 		for y := 0; y < im.H; y++ {

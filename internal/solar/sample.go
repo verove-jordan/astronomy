@@ -113,7 +113,7 @@ func extractProbeFrame(ctx context.Context, ffmpegBin, path string, t float64, o
 
 // probeVideoFile measures a clip: probe its parameters, sample a few frames, and report the median
 // of their measurements so one bad sample cannot define the clip.
-func probeVideoFile(ctx context.Context, ffmpegBin, path, scratch string) FrameProbe {
+func probeVideoFile(ctx context.Context, ffmpegBin, path, scratch string, twoBody bool) FrameProbe {
 	p := FrameProbe{Path: path, Kind: KindVideo}
 	info := probeVideo(ctx, ffmpegBin, path)
 	p.Video = &info
@@ -128,17 +128,17 @@ func probeVideoFile(ctx context.Context, ffmpegBin, path, scratch string) FrameP
 		p.Err = err.Error()
 		return p
 	}
-	measureSamples(&p, frames, scale)
+	measureSamples(&p, frames, scale, twoBody)
 	return p
 }
 
 // measureSamples measures every sampled frame and keeps the median of each figure, so a single
 // cloud-crossed or mis-seeked sample cannot skew the clip's group assignment.
-func measureSamples(p *FrameProbe, frames []*fits.Image, scale float64) {
+func measureSamples(p *FrameProbe, frames []*fits.Image, scale float64, twoBody bool) {
 	probes := make([]FrameProbe, 0, len(frames))
 	for _, im := range frames {
 		var q FrameProbe
-		measure(&q, im, scale)
+		measure(&q, im, scale, twoBody)
 		if q.DiscOK {
 			probes = append(probes, q)
 		}

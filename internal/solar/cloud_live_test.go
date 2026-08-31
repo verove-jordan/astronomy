@@ -37,7 +37,7 @@ func TestCloudProfile_Live(t *testing.T) {
 			require.Greater(t, info.Frames, 0)
 
 			start := time.Now()
-			scan, err := scanVideo(ctx, "", path, info, defaultCropMargin)
+			scan, err := scanVideo(ctx, "", path, info, defaultCropMargin, false)
 			require.NoError(t, err)
 			t.Logf("%s: %d frames scanned in %s", filepath.Base(path), len(scan.frames), time.Since(start).Round(time.Second))
 

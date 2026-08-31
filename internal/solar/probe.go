@@ -73,7 +73,7 @@ const (
 const sunAngularDiameterArcsec = 1919.3
 
 // probeStill measures one still (FITS, TIFF/PNG/JPEG, or a camera raw such as iPhone DNG/HEIC).
-func probeStill(ctx context.Context, path, scratch string, meta fileMeta) FrameProbe {
+func probeStill(ctx context.Context, path, scratch string, meta fileMeta, twoBody bool) FrameProbe {
 	p := FrameProbe{Path: path, Kind: KindStill}
 	applyMeta(&p, meta)
 	im, scale, err := loadStillProbe(ctx, path, scratch, meta)
@@ -81,7 +81,7 @@ func probeStill(ctx context.Context, path, scratch string, meta fileMeta) FrameP
 		p.Err = err.Error()
 		return p
 	}
-	measure(&p, im, scale)
+	measure(&p, im, scale, twoBody)
 	return p
 }
 
@@ -121,11 +121,12 @@ func loadStillProbe(ctx context.Context, path, scratch string, meta fileMeta) (*
 
 // measure fills the measured half of a probe from a reduced-resolution plane, converting geometry
 // back to full-resolution pixels with scale.
-func measure(p *FrameProbe, im *fits.Image, scale float64) {
+func measure(p *FrameProbe, im *fits.Image, scale float64, twoBody bool) {
 	if scale <= 0 {
 		scale = 1
 	}
-	d, ok := FitLimb(im)
+	g, ok := fitGeometry(im, twoBody)
+	d := g.Sun
 	if !ok {
 		p.DiscOK = false // most often a frame zoomed past the limb; the fit refuses rather than guessing
 		return

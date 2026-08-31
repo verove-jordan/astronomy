@@ -39,6 +39,16 @@ type RadialProfile struct {
 // over them where a mean would fold them into the profile and then subtract them from the image.
 // Prominences never enter at all, living outside the disc.
 func MeasureRadialProfile(p []float32, w, h int, l Limb) RadialProfile {
+	return measureRadialProfileMasked(p, w, h, l, nil)
+}
+
+// measureRadialProfileMasked is MeasureRadialProfile ignoring the pixels a predicate rejects.
+//
+// It exists for the occulter. Limb darkening is a function of radius, so the profile is a median per
+// annulus — and on a crescent most of every annulus is Moon. Measured with it in, the profile is the
+// occulter's dark level almost everywhere, and the gain that flattens against it then over-brightens
+// the surviving Sun by whatever ratio the two happen to sit at.
+func measureRadialProfileMasked(p []float32, w, h int, l Limb, skip func(x, y int) bool) RadialProfile {
 	if l.R <= 0 {
 		return RadialProfile{}
 	}
@@ -47,6 +57,9 @@ func MeasureRadialProfile(p []float32, w, h int, l Limb) RadialProfile {
 	for y := 0; y < h; y++ {
 		dy := float64(y) - l.CY
 		for x := 0; x < w; x++ {
+			if skip != nil && skip(x, y) {
+				continue
+			}
 			dx := float64(x) - l.CX
 			b := int(math.Hypot(dx, dy) * scale)
 			if b >= 0 && b < radialBins {
@@ -126,7 +139,7 @@ func (rp RadialProfile) rawGain(frac float64) float64 {
 }
 
 // FlattenLimbDarkening divides the limb-darkening profile out of a plane, in place.
-func FlattenLimbDarkening(p []float32, w, h int, l Limb, strength float64) {
+func FlattenLimbDarkening(p []float32, w, h int, l Limb, strength float64, skip func(x, y int) bool) {
 	if strength <= 0 || l.R <= 0 {
 		return
 	}

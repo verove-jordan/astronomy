@@ -18,16 +18,16 @@ import (
 // "The stack is softer than one good frame" has at least four independent causes, and they call for
 // opposite fixes, so guessing between them is how a week disappears:
 //
-//	1. AVERAGING. A stack of N frames carries roughly the AVERAGE of their point-spread functions,
-//	   not the best one. This is not a defect — it is what stacking is — and the only cure is to
-//	   average fewer, better frames. Measured here as mean-of-kept versus best.
-//	2. RESAMPLING. Every frame is interpolated once onto the canonical raster. Cubic interpolation
-//	   is not transparent; it costs a few percent of MTF near Nyquist. Measured as N=1, which warps
-//	   the best frame and nothing else.
-//	3. MISREGISTRATION. Residual alignment error blurs the sum. It is the difference between the
-//	   measured N-frame stack and what averaging alone (cause 1) predicts.
-//	4. SELECTION. If the ranking is wrong, "the best 35%" is not the best 35%. Visible as a decay
-//	   curve that falls faster than the sorted single-frame scores do.
+//  1. AVERAGING. A stack of N frames carries roughly the AVERAGE of their point-spread functions,
+//     not the best one. This is not a defect — it is what stacking is — and the only cure is to
+//     average fewer, better frames. Measured here as mean-of-kept versus best.
+//  2. RESAMPLING. Every frame is interpolated once onto the canonical raster. Cubic interpolation
+//     is not transparent; it costs a few percent of MTF near Nyquist. Measured as N=1, which warps
+//     the best frame and nothing else.
+//  3. MISREGISTRATION. Residual alignment error blurs the sum. It is the difference between the
+//     measured N-frame stack and what averaging alone (cause 1) predicts.
+//  4. SELECTION. If the ranking is wrong, "the best 35%" is not the best 35%. Visible as a decay
+//     curve that falls faster than the sorted single-frame scores do.
 //
 // Reading the output: the N=1 row is the resampling floor, the "predicted" column is what averaging
 // alone would give, and any gap between predicted and measured is misregistration. Run with:

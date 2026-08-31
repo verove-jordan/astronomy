@@ -83,7 +83,7 @@ func TestGateTransparency(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			frames := clipScan(tt.profile)
 
-			kept, note := gateTransparency(frames, tt.floor)
+			kept, note := gateTransparency(frames, tt.floor, false)
 
 			want := len(tt.profile)
 			if tt.wantNote != "" {
@@ -112,7 +112,7 @@ func TestGateTransparency_FiresOnEquallySharpFrames(t *testing.T) {
 		frames[i].score = 0.008 // identical sharpness throughout
 	}
 
-	kept, note := gateTransparency(frames, defaultTransparencyFloor)
+	kept, note := gateTransparency(frames, defaultTransparencyFloor, false)
 
 	assert.Equal(t, len(profile)-belowCut(profile, defaultTransparencyFloor), len(kept))
 	assert.Less(t, len(kept), len(profile), "the gate must fire on transmission alone")
@@ -124,7 +124,7 @@ func TestGateTransparency_FiresOnEquallySharpFrames(t *testing.T) {
 func TestGateTransparency_JudgesAgainstTheClearestNotTheMedian(t *testing.T) {
 	profile := append(clearRun(70), dip(130, 0.88)...) // two thirds clouded: the median IS the cloud
 
-	kept, note := gateTransparency(clipScan(profile), defaultTransparencyFloor)
+	kept, note := gateTransparency(clipScan(profile), defaultTransparencyFloor, false)
 
 	assert.Contains(t, note, "cloud")
 	for _, f := range kept {
@@ -138,7 +138,7 @@ func TestGateTransparency_JudgesAgainstTheClearestNotTheMedian(t *testing.T) {
 func TestGateTransparency_KeepsTheClearestWhenMostOfTheClipIsClouded(t *testing.T) {
 	profile := append(clearRun(20), dip(180, 0.70)...)
 
-	kept, note := gateTransparency(clipScan(profile), defaultTransparencyFloor)
+	kept, note := gateTransparency(clipScan(profile), defaultTransparencyFloor, false)
 
 	assert.Equal(t, int(float64(len(profile))*(1-transparencyMaxDrop)), len(kept))
 	assert.Contains(t, note, "most of the clip")

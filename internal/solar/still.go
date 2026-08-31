@@ -73,7 +73,7 @@ func IngestStills(ctx context.Context, paths []string, opts IngestOptions) ([]Fr
 	warnings = append(warnings, bandWarn...)
 	radius := opts.TargetRadius
 	if radius <= 0 {
-		radius = sampleRadius(developed, band, linear)
+		radius = sampleRadius(developed, band, linear, opts.TwoBody)
 	}
 	if radius <= 0 {
 		return nil, warnings, fmt.Errorf("no still showed a measurable solar limb")
@@ -124,15 +124,15 @@ func developOneByOne(ctx context.Context, paths []string, devDir string, warning
 }
 
 // sampleRadius measures a few developed frames to establish the group's disc radius.
-func sampleRadius(developed []string, band Band, linear bool) float64 {
+func sampleRadius(developed []string, band Band, linear bool, twoBody bool) float64 {
 	var radii []float64
 	for i := 0; i < len(developed) && len(radii) < 5; i++ {
 		im, _, err := loadStillPlane(developed[i], band, linear)
 		if err != nil {
 			continue
 		}
-		if l, ok := FitLimb(im); ok {
-			radii = append(radii, l.R)
+		if g, ok := fitGeometry(im, twoBody); ok {
+			radii = append(radii, g.Sun.R)
 		}
 	}
 	return median(radii)
@@ -169,10 +169,11 @@ func cropStills(ctx context.Context, srcs, developed []string, side int, band Ba
 				mu.Unlock()
 				return nil
 			}
-			l, ok := FitLimb(im)
+			g, ok := fitGeometry(im, opts.TwoBody)
 			if !ok {
 				return nil // reported as a gap; triage already explains why a frame has no limb
 			}
+			l := g.Sun
 			crop := cropAround(im, l.CX, l.CY, side)
 			dst := filepath.Join(opts.WorkDir, sanitizeName(srcs[i])+".fits")
 			if err := crop.WriteFITS(dst); err != nil {
@@ -180,9 +181,11 @@ func cropStills(ctx context.Context, srcs, developed []string, side int, band Ba
 			}
 			meta := readStillMeta(srcs[i])
 			f := Frame{Path: dst, Source: srcs[i], Index: i, TimeMs: meta.TakenAtMs}
-			if fl, ok := FitLimb(crop); ok {
-				f.Limb = fl
-				f.Score = FrameSharpness(crop, fl)
+			// Re-fitted on the CROP, because everything downstream works in the cropped frame's
+			// own coordinates and a geometry measured before the crop would be offset by it.
+			if cg, ok := fitGeometry(crop, opts.TwoBody); ok {
+				f.Limb, f.Moon = cg.Sun, cg.Moon
+				f.Score = FrameSharpness(crop, cg.Sun)
 			}
 			out[i] = f
 			return nil

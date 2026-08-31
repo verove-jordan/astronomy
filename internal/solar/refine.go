@@ -97,7 +97,15 @@ func newRegRefiner(ref *fits.Image) *regRefiner {
 
 // measure returns the translation, in canonical pixels, still separating a rigidly warped frame from
 // the reference — in the same sense the distortion field uses, so it can be folded in the same way.
-func (r *regRefiner) measure(rigid *fits.Image, l Limb) (dx, dy float64) {
+//
+// occulters, when supplied, are circles in canonical coordinates whose pixels must not vote: the
+// reference's occulting body and this frame's. Correlating an eclipsed Sun without them registers
+// the MOON. It is the highest-contrast feature in the frame and the only one that travels between
+// frames, so the shift that best matches the two images is partly the Moon's own motion applied to
+// the Sun — measured on a fixture, a ten-pixel sweep collapsed to under four, meaning the Sun had
+// been dragged most of the way along with it. The failure is invisible to every whole-image metric,
+// because the result is a beautifully sharp lunar edge on a smeared Sun.
+func (r *regRefiner) measure(rigid *fits.Image, l Limb, occulters []Limb) (dx, dy float64) {
 	if r == nil || rigid == nil {
 		return 0, 0
 	}
@@ -112,11 +120,50 @@ func (r *regRefiner) measure(rigid *fits.Image, l Limb) (dx, dy float64) {
 		if radius < 8 {
 			continue
 		}
-		sx, sy := comet.AlignSeeded(ref, tgt, comet.Point{X: l.CX / f, Y: l.CY / f}, radius,
-			p.search, 0, dx/f, dy/f)
+		// The mask is rebuilt per rung, because the reduction changes and so does how far the search
+		// reaches in that rung's own pixels.
+		keep := occulterKeep(ref.W, ref.H, occulters, f, p.search+math.Abs(dx/f)+math.Abs(dy/f)+1)
+		sx, sy := comet.AlignSeededMasked(ref, tgt, comet.Point{X: l.CX / f, Y: l.CY / f}, radius,
+			p.search, 0, dx/f, dy/f, keep)
 		dx, dy = sx*f, sy*f
 	}
 	return dx, dy
+}
+
+// occulterKeep marks the pixels that may vote in the correlation: everything except the occulting
+// bodies, each grown by how far the search can slide the target beneath the reference.
+//
+// Growing by the search reach is what makes one mask enough for both images. The mask is indexed in
+// the reference's coordinates while the target is sampled at an offset, so a mask that hugged each
+// circle exactly would let the target's occulter slide under an unmasked reference pixel and vote
+// after all — quietly, and hardest at the largest offsets, which are the ones the search is trying
+// to decide between.
+func occulterKeep(w, h int, occulters []Limb, reduce, reachPx float64) []bool {
+	var keep []bool
+	for _, o := range occulters {
+		if o.R <= 0 {
+			continue
+		}
+		if keep == nil {
+			keep = make([]bool, w*h)
+			for i := range keep {
+				keep[i] = true
+			}
+		}
+		cx, cy := o.CX/reduce, o.CY/reduce
+		r := o.R/reduce + reachPx
+		r2 := r * r
+		for y := 0; y < h; y++ {
+			dy := float64(y) - cy
+			for x := 0; x < w; x++ {
+				dx := float64(x) - cx
+				if dx*dx+dy*dy <= r2 {
+					keep[y*w+x] = false
+				}
+			}
+		}
+	}
+	return keep
 }
 
 // shiftCanonical folds a translation measured in canonical pixels back into the frame's own disc

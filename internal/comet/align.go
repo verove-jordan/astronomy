@@ -34,6 +34,22 @@ func AlignToReferenceBlur(ref, target *fits.Image, center Point, radius int, max
 // caller with a known global drift passes it as the seed so the small ±maxShift search measures only the
 // local residual — letting the total shift be measured against the ORIGINAL frame, with no pre-translate.
 func AlignSeeded(ref, target *fits.Image, center Point, radius int, maxShift float64, blur int, seedX, seedY float64) (dx, dy float64) {
+	return AlignSeededMasked(ref, target, center, radius, maxShift, blur, seedX, seedY, nil)
+}
+
+// AlignSeededMasked is AlignSeeded over part of the window only: keep, when non-nil, is indexed in
+// the REFERENCE's coordinates and false wherever a pixel must not vote.
+//
+// It exists for content that moves independently of what is being registered. Correlating an
+// eclipsed Sun, the occulter is the highest-contrast feature in the frame AND the only one that
+// travels between frames, so the shift that best matches the two images is partly the Moon's motion
+// applied to the Sun. Excluding it is the difference between registering the subject and registering
+// the thing in front of it.
+//
+// The mask is stated in reference coordinates and must therefore already cover wherever the moving
+// content reaches in the TARGET across the whole search, because the target is sampled at an offset:
+// a mask that only covered the reference's copy would let the target's slide under it.
+func AlignSeededMasked(ref, target *fits.Image, center Point, radius int, maxShift float64, blur int, seedX, seedY float64, keep []bool) (dx, dy float64) {
 	if ref == nil || target == nil || ref.W != target.W || ref.H != target.H {
 		return seedX, seedY
 	}
@@ -41,22 +57,22 @@ func AlignSeeded(ref, target *fits.Image, center Point, radius int, maxShift flo
 		ref = &fits.Image{W: ref.W, H: ref.H, C: 1, Pix: [][]float32{boxBlur(ref.Pix[0], ref.W, ref.H, blur)}}
 		target = &fits.Image{W: target.W, H: target.H, C: 1, Pix: [][]float32{boxBlur(target.Pix[0], target.W, target.H, blur)}}
 	}
-	bx, by, c0 := integerPeak(ref, target, center, radius, maxShift, seedX, seedY)
-	sx := bx + parabola(zncc(ref, target, center, radius, bx-1, by), c0, zncc(ref, target, center, radius, bx+1, by))
-	sy := by + parabola(zncc(ref, target, center, radius, bx, by-1), c0, zncc(ref, target, center, radius, bx, by+1))
+	bx, by, c0 := integerPeak(ref, target, center, radius, maxShift, seedX, seedY, keep)
+	sx := bx + parabola(zncc(ref, target, center, radius, bx-1, by, keep), c0, zncc(ref, target, center, radius, bx+1, by, keep))
+	sy := by + parabola(zncc(ref, target, center, radius, bx, by-1, keep), c0, zncc(ref, target, center, radius, bx, by+1, keep))
 	return sx, sy
 }
 
 // integerPeak returns the integer offset (bx,by) maximizing ZNCC over round(seed) ± maxShift, plus that
 // peak's correlation value (for the parabolic refine).
-func integerPeak(ref, target *fits.Image, center Point, radius int, maxShift, seedX, seedY float64) (bx, by, best float64) {
+func integerPeak(ref, target *fits.Image, center Point, radius int, maxShift, seedX, seedY float64, keep []bool) (bx, by, best float64) {
 	best = -2
 	baseX, baseY := math.Round(seedX), math.Round(seedY)
 	maxI := int(maxShift)
 	for dy := -maxI; dy <= maxI; dy++ {
 		for dx := -maxI; dx <= maxI; dx++ {
 			ox, oy := baseX+float64(dx), baseY+float64(dy)
-			if c := zncc(ref, target, center, radius, ox, oy); c > best {
+			if c := zncc(ref, target, center, radius, ox, oy, keep); c > best {
 				best, bx, by = c, ox, oy
 			}
 		}
@@ -85,7 +101,7 @@ func parabola(cMinus, c0, cPlus float64) float64 {
 // zncc is the zero-mean normalized cross-correlation in [-1,1] between ref (at center) and target
 // (sampled at center shifted by (sx,sy), bilinear) over the window. A shift (sx,sy) that scores highest
 // is the one Translate(target, sx, sy) would apply to register target onto ref.
-func zncc(ref, target *fits.Image, center Point, radius int, sx, sy float64) float64 {
+func zncc(ref, target *fits.Image, center Point, radius int, sx, sy float64, keep []bool) float64 {
 	w, h := ref.W, ref.H
 	rsrc, tsrc := ref.Pix[0], target.Pix[0]
 	cx, cy := int(math.Round(center.X)), int(math.Round(center.Y))
@@ -96,6 +112,9 @@ func zncc(ref, target *fits.Image, center Point, radius int, sx, sy float64) flo
 		}
 		for x := cx - radius; x <= cx+radius; x++ {
 			if x < 0 || x >= w {
+				continue
+			}
+			if keep != nil && !keep[y*w+x] {
 				continue
 			}
 			rv := float64(rsrc[y*w+x])

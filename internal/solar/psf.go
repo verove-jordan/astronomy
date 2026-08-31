@@ -83,6 +83,22 @@ const psfOvershootFloor = 0.01
 // filament crossing it from counting: each is confined to a wedge or two, and a median over
 // seventy-two of them steps over any of that.
 func MeasurePSF(im *fits.Image, l Limb) PSF {
+	if l.R <= 0 {
+		return PSF{}
+	}
+	return MeasureEdge(im, l, edgeFalling, sunAngularDiameterArcsec/(2*l.R))
+}
+
+// MeasureEdge is MeasurePSF over any circular edge, in either direction and at a stated plate scale.
+//
+// It exists for the OCCULTER'S limb, which is the better probe of the two whenever there is one. The
+// solar limb is not a step: it carries limb darkening on the way in, a chromospheric skirt and
+// prominences on the way out, and the profile has to be read carefully to keep those from being
+// counted as blur. The Moon's edge has none of that — it is an opaque body against the Sun, so the
+// only thing that spreads it is the system. Handing back a plate scale rather than deriving one is
+// part of the same idea: the occulter's radius is not the Sun's, and 2R is only the Sun's angular
+// diameter for the Sun.
+func MeasureEdge(im *fits.Image, l Limb, dir edgeDirection, arcsecPerPx float64) PSF {
 	if im == nil || len(im.Pix) == 0 || l.R <= 0 {
 		return PSF{}
 	}
@@ -91,6 +107,11 @@ func MeasurePSF(im *fits.Image, l Limb) PSF {
 	for s := 0; s < psfSectors; s++ {
 		if !sectorProfile(im, l, s, prof) {
 			continue
+		}
+		if dir == edgeRising {
+			// A rising edge read outward is a falling edge read inward, and a width is unchanged by
+			// which way it was walked — so the one estimator serves both.
+			reverseProfile(prof)
 		}
 		sigma, over, ok := edgeWidth(prof)
 		if !ok || sigma < psfSigmaMin || sigma > psfSigmaMax {
@@ -105,9 +126,16 @@ func MeasurePSF(im *fits.Image, l Limb) PSF {
 	sigma := median(widths)
 	return PSF{
 		SigmaPx:    sigma,
-		FWHMArcsec: 2.355 * sigma * sunAngularDiameterArcsec / (2 * l.R),
+		FWHMArcsec: 2.355 * sigma * arcsecPerPx,
 		Overshoot:  median(overshoots),
 		OK:         true,
+	}
+}
+
+// reverseProfile flips an edge-spread function end for end, in place.
+func reverseProfile(v []float64) {
+	for i, j := 0, len(v)-1; i < j; i, j = i+1, j-1 {
+		v[i], v[j] = v[j], v[i]
 	}
 }
 
