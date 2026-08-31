@@ -35,7 +35,12 @@ func planCalibration(ctx context.Context, o Options) calPlan {
 	var p calPlan
 	if len(o.Frames) > 0 {
 		m := rawmeta.Read(o.Frames[0])
-		p.light = calib.PhoneKey{CameraModel: m.CameraModel, ISO: m.ISO, ExposureMs: m.ExposureMs}
+		p.light = calib.PhoneKey{
+			CameraModel: m.CameraModel, ISO: m.ISO, ExposureMs: m.ExposureMs,
+			// A linear DNG has its gain normalised already, so ISO no longer describes the sensor
+			// state and must not gate the match. See calib.PhoneKey.ISOInvariant.
+			ISOInvariant: m.LinearRaw,
+		}
 	}
 	if o.PhoneCalib != nil {
 		if masters, err := o.PhoneCalib.ListPhoneMasters(ctx); err == nil {
@@ -52,7 +57,7 @@ func planCalibration(ctx context.Context, o Options) calPlan {
 func libraryHasCandidate(p calPlan) bool {
 	for i := range p.masters {
 		m := &p.masters[i]
-		if m.ISO == p.light.ISO &&
+		if (p.light.ISOInvariant || m.ISO == p.light.ISO) &&
 			(m.CameraModel == "" || p.light.CameraModel == "" || m.CameraModel == p.light.CameraModel) {
 			return true
 		}
