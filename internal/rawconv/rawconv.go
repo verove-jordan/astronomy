@@ -240,11 +240,30 @@ func dcrawDevelop(ctx context.Context, src, dst string, opts ...string) error {
 // (`-h`) then Go downscales. PNG (not TIFF) because sips emits a JPEG-COMPRESSED TIFF when downscaling
 // which the Go image stack can't decode — PNG stays decodable by image.Decode.
 func Thumbnail(ctx context.Context, src, dst string, maxEdge int) error {
+	return thumbnail(ctx, src, dst, maxEdge, true)
+}
+
+// ThumbnailForStats develops a raw the same way but WITHOUT the developer's per-frame automatic
+// brightening, so the levels of two frames can be compared with each other.
+//
+// This distinction is not cosmetic, and it was measured. dcraw_emu auto-brightens each frame to fill
+// its range, which is right for a preview and ruinous for classification: it erases exactly the
+// between-frame level difference that tells a dark from a light. Developed that way, a real session
+// classified its 27 horizon LIGHTS as darks and its darks and bias frames as lights — the answer was
+// not merely worse, it was inverted. Since the classifier compares frames against each other, any
+// caller measuring LEVELS must use this and not Thumbnail.
+func ThumbnailForStats(ctx context.Context, src, dst string, maxEdge int) error {
+	return thumbnail(ctx, src, dst, maxEdge, false)
+}
+
+func thumbnail(ctx context.Context, src, dst string, maxEdge int, autoBrighten bool) error {
 	if _, err := exec.LookPath(sipsBin()); err == nil {
+		// sips applies the camera's own fixed rendering rather than a per-frame stretch, so its
+		// output is already comparable between frames.
 		return thumbnailSips(ctx, src, dst, maxEdge)
 	}
 	if _, err := exec.LookPath(dcrawBin()); err == nil {
-		return thumbnailDcraw(ctx, src, dst, maxEdge)
+		return thumbnailDcraw(ctx, src, dst, maxEdge, autoBrighten)
 	}
 	return fmt.Errorf("no raw developer found: install `sips` (macOS) or `dcraw_emu` from libraw-bin (Linux), or set DCRAW_BIN")
 }
@@ -264,17 +283,29 @@ func thumbnailSips(ctx context.Context, src, dst string, maxEdge int) error {
 
 // thumbnailDcraw develops the raw to a temporary TIFF (half-size when downscaling, for speed) then
 // re-encodes it as a PNG at dst so the caller's image.Decode (PNG/JPEG only) can read it.
-func thumbnailDcraw(ctx context.Context, src, dst string, maxEdge int) error {
+func thumbnailDcraw(ctx context.Context, src, dst string, maxEdge int, autoBrighten bool) error {
 	tmpTif := dst + ".dcraw.tif"
-	opts := []string{"-6", "-w"}
-	if maxEdge > 0 {
-		opts = append(opts, "-h") // half-size decode: fast; Go bounds it to maxEdge below
-	}
-	if err := dcrawDevelop(ctx, src, tmpTif, opts...); err != nil {
+	if err := dcrawDevelop(ctx, src, tmpTif, dcrawThumbArgs(maxEdge, autoBrighten)...); err != nil {
 		return err
 	}
 	defer os.Remove(tmpTif)
 	return tiffToPNG(tmpTif, dst, maxEdge)
+}
+
+// dcrawThumbArgs builds the develop options for a thumbnail.
+//
+// -W is the one that matters and the one that is easy to leave out: without it dcraw_emu stretches
+// each frame to fill its own range, which is what a preview wants and the opposite of what measuring
+// wants. Levels that have each been normalised separately cannot be compared with each other.
+func dcrawThumbArgs(maxEdge int, autoBrighten bool) []string {
+	opts := []string{"-6", "-w"}
+	if !autoBrighten {
+		opts = append(opts, "-W")
+	}
+	if maxEdge > 0 {
+		opts = append(opts, "-h") // half-size decode: fast; Go bounds it to maxEdge below
+	}
+	return opts
 }
 
 // tiffToPNG decodes a TIFF and writes it as a PNG at pngPath, bounding the longer edge to maxEdge (<=0 =

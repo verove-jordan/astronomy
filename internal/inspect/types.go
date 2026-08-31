@@ -82,6 +82,15 @@ type Frame struct {
 	// WheelTransition marks a frame whose brightness is off because the filter wheel was still
 	// moving when it was taken (the first frame of a run). The pipeline may drop these.
 	WheelTransition bool `json:"wheel_transition,omitempty"`
+	// AzDeg/AltDeg/RollDeg are where the camera was aimed, recovered from a phone's compass bearing
+	// and gravity vector (see internal/pointing). HasPointing separates "no such metadata" from a
+	// genuine zero — only phone raws carry it, and a missing tilt read as 0 would say "horizon".
+	// This is what lets a hand-framed session be split into panels, and what proves a frame shot
+	// with the camera aimed at the ground cannot be a light.
+	AzDeg       float64 `json:"az_deg,omitempty"`
+	AltDeg      float64 `json:"alt_deg,omitempty"`
+	RollDeg     float64 `json:"roll_deg,omitempty"`
+	HasPointing bool    `json:"has_pointing,omitempty"`
 	// Plate-solving hints read from the header when present (else config defaults are used).
 	FocalLenMM  float64 `json:"focal_len_mm,omitempty"`
 	PixelSizeUm float64 `json:"pixel_size_um,omitempty"`
