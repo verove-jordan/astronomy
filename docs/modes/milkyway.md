@@ -137,6 +137,38 @@ seconds).
 | `ColorCalibration` | true | SPCC on the sky — engages only with `ASTRO_NIGHTSCAPE_OSC_SENSOR` set | — |
 | `DenoiseChroma` | 0.60 (VST+DA3D) | generic-OSC-path master denoise | — |
 | `Previews` | true | preview PNGs | — |
+| `KeepMeteors` | false | search the registered frames for streaks and blend the confident meteors back into the linear sky, minus satellites and aircraft | C (`keep_meteors`) |
+
+## Meteors
+
+The sigma-clip that builds the clean sky is *right* about a meteor — it is bright, it is in one frame,
+and it is nothing like what that pixel does in the other thirty — and wrong only to discard it.
+`keep_meteors` finds the streaks in the **registered** frames (so their coordinates already mean the
+same thing as the stack's), decides which are worth keeping, and adds them to the linear sky **before**
+the grade, so they are stretched and coloured with everything else instead of pasted on afterwards.
+
+Detection is a grey-scale **opening along a line**, not a threshold and not a Hough transform: opening
+with a line-shaped element of length L deletes anything that does not contain an unbroken run of L
+pixels in the tested direction, so a star is gone at every orientation while a streak survives at its
+own. Brightness never enters into it — which is what lets it find a meteor *fainter than the stars it
+sits among*. See `internal/meteor/streak.go`.
+
+Three things it deliberately will not do:
+
+- **Paint anything short.** A component barely longer than the structuring element is the shortest
+  thing the detector can report, and in a field where the median pixel already carries a linear ridge
+  it is dominated by chance alignments. The cost is a foreshortened near-radiant meteor, knowingly
+  accepted — junk painted into the sky is worse than a meteor missed.
+- **Look at the ground.** A coastline, a rooftop or a town's light line are the strongest linear
+  structures in any frame with landscape in it; a real horizon came back as a 2932-pixel candidate.
+  Streaks are kept only where the sky/foreground mask says they lie in the sky.
+- **Trust recurrence alone.** On a wide field at a slow cadence a satellite has left the frame by the
+  next exposure, so it is single-frame too. What separates them is why the trail ENDS: a satellite is
+  flat-topped because the shutter closed on it, a meteor tapers because it burned out.
+
+Every candidate is written to `meteors.json` with the reason it was kept or dropped, so a decision can
+be argued with without re-running. Off by default: with it off a run is byte-identical to one built
+before any of this existed.
 
 ## Soft-fail fallbacks
 

@@ -240,6 +240,43 @@ func runProcess(args []string) error {
 		return nil
 	}
 
+	// nightpano: a directory holding a whole night's sweep across several pointings. The panels are
+	// segmented from the frames' own pointing metadata, so the folder need not be sorted by hand.
+	if m == mode.Nightpano {
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			return fmt.Errorf("%s expects a directory of raw stills covering several pointings: %s", m, path)
+		}
+		grd := preset.Grade
+		res, err := pipeline.ProcessNightpano(ctx, pipeline.Options{
+			InputDir:    path,
+			OutputDir:   outDir,
+			WorkDir:     workDir,
+			Runner:      runner,
+			Grade:       &grd,
+			Preset:      &preset,
+			Gimp:        gimp.New(cfg.GimpBin, cfg.GimpHost, cfg.GimpPort),
+			Graxpert:    graxRunner,
+			Starnet:     starRunner,
+			Solve:       solve,
+			Spcc:        spcc,
+			TargetHint:  *target,
+			DarkDir:     *darks,
+			FlatDir:     *flats,
+			BiasDir:     *bias,
+			CatalogDir:  cfg.SirilCatalogDir,
+			DeepStarCat: cfg.DeepStarCat,
+			OnProgress:  pipelineProgress(*verbose),
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Print(report.RunText(res))
+		if res.Final != nil {
+			maybeRenderVideo(ctx, cfg, format, res.Final.Outputs)
+		}
+		return nil
+	}
+
 	// deepsky / nebula: a directory of mono FITS frames.
 	if info, err := os.Stat(path); err != nil || !info.IsDir() {
 		return fmt.Errorf("%s mode expects a directory of FITS frames: %s", m, path)

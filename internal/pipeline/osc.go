@@ -248,6 +248,8 @@ func processNightscape(ctx context.Context, opts Options, res *Result, frames []
 		SaturationScale:       opts.Preset.Saturation,
 		HighlightCeilOverride: opts.Preset.HighlightCeil,
 		ColorCalibration:      opts.Preset.ColorCalibration,
+		Meteors:               opts.Preset.KeepMeteors,
+		FlatRadialOnly:        opts.Preset.FlatRadialOnly,
 		Solve:                 opts.Solve,
 		Spcc:                  opts.Spcc,
 		Focal35mm:             nightscape.ReadFocal35mm(lights),

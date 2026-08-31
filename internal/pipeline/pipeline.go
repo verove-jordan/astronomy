@@ -153,6 +153,10 @@ type Options struct {
 	// CatalogDir is Siril's bundled object-catalogue dir, used to resolve the target name → coords
 	// for plate-solving when the FITS header lacks RA/Dec.
 	CatalogDir string
+	// DeepStarCat is the DEEP star catalogue file (ATHYG, `just download-deepstars`). Nightpano needs
+	// it: at a 72-degree field Siril's plate solver cannot help, so panels are solved against this
+	// one by internal/skypano.
+	DeepStarCat string
 
 	// DarkDir/FlatDir/BiasDir are optional calibration-frame folders for the nightscape (milkyway)
 	// path: lights in opts.InputDir are calibrated against masters built from these before stacking.

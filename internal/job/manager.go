@@ -1566,6 +1566,26 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 		}
 		return r, nil
 
+	case mode.Nightpano:
+		// A sky panorama: every pointing stacks with the milkyway recipe, then the panels are solved
+		// against one shared lens and reprojected onto a spherical canvas. DeepStarCat is required —
+		// Siril's plate solver cannot work at a 72-degree field, so internal/skypano solves them.
+		r, err := pipeline.ProcessNightpano(ctx, pipeline.Options{
+			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
+			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
+			Solve: solve, Spcc: spcc, OpticsExplicit: p.opticsExplicit(), TargetHint: p.Target, DarkDir: p.DarkDir, FlatDir: p.FlatDir, BiasDir: p.BiasDir,
+			PhoneCalib: m.store, LibraryDir: m.cfg.LibraryDir, LibraryMirror: m.libPuller(ctx),
+			CatalogDir: m.cfg.SirilCatalogDir, DeepStarCat: m.cfg.DeepStarCat,
+			JobID: id, OnProgress: pipeProg, Steer: steer, Confirm: confirm,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if r.Final != nil {
+			r.Final.Outputs = m.appendVideo(ctx, id, format, r.Final.Outputs)
+		}
+		return r, nil
+
 	case mode.Livestack:
 		// Live stacking: watch a source, incrementally stack, and finalize through the standard deep-sky
 		// pipeline on Stop. The finalize options mirror the deepsky branch (incl. cross-session reuse) so
