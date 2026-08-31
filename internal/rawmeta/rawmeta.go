@@ -30,7 +30,13 @@ const (
 	tagPixelXDimension  = 0xA002 // SHORT/LONG main-image width, in the Exif IFD
 	tagPixelYDimension  = 0xA003 // SHORT/LONG main-image height, in the Exif IFD
 	tagFocalLength35mm  = 0xA405 // SHORT 35mm-equivalent focal length, in the Exif IFD
+	tagSubIFDs          = 0x014A // LONG offsets to the DNG sub-images, in IFD0
+	tagPhotometric      = 0x0106 // SHORT photometric interpretation
 )
+
+// photometricLinearRaw marks a DNG whose full-resolution image is already demosaiced ("linear DNG",
+// DNG spec 1.4 §4). Apple ProRAW is written this way.
+const photometricLinearRaw = 34892
 
 // exifDateTime is the Exif DateTimeOriginal layout; exifOffset is the OffsetTimeOriginal layout.
 const (
@@ -40,10 +46,11 @@ const (
 
 // TIFF field types we handle.
 const (
-	typeASCII    = 2
-	typeShort    = 3
-	typeLong     = 4
-	typeRational = 5
+	typeASCII     = 2
+	typeShort     = 3
+	typeLong      = 4
+	typeRational  = 5
+	typeSRational = 10
 )
 
 // mdlsTimeout bounds each Spotlight query so a slow/absent `mdls` never stalls a scan.
@@ -69,6 +76,24 @@ type Meta struct {
 	// used only alongside OffsetTimeOriginal; otherwise the mdls fallback (which carries an offset)
 	// fills it. Mixing the two conventions would silently mis-order a DNG against a HEIC.
 	TakenAtMs int64
+	// LatDeg/LonDeg are the capture site in signed decimal degrees, north and east positive.
+	LatDeg float64
+	LonDeg float64
+	// CompassDeg is the camera's horizontal bearing, degrees clockwise from true north.
+	CompassDeg float64
+	// Gravity is the gravity vector in device axes, in g, as Apple records it. Its z component gives
+	// the camera's altitude above the horizon and its x/y give the roll — see internal/pointing,
+	// which owns that conversion. Only Apple writes it; everything else reports HasGravity false.
+	Gravity    [3]float64
+	HasSite    bool
+	HasCompass bool
+	HasGravity bool
+	// LinearRaw marks a DNG whose full-resolution image is already demosaiced — a "linear DNG", which
+	// is how Apple writes ProRAW. It matters for calibration: such a file has already had its black
+	// level removed and its gain normalised, so two frames of the same scene at ISO 2500 and ISO 6400
+	// come out at the SAME pixel level (measured: 4% apart, not the 2.56x the ISO ratio implies).
+	// Keying a dark master on exact ISO is therefore wrong for these files — see internal/calib.
+	LinearRaw bool
 }
 
 // Read returns the metadata for path. It first parses the TIFF/EXIF IFDs directly (works for DNG and
@@ -152,7 +177,51 @@ func parseTIFF(path string) Meta {
 	if e, ok := findTag(entries, tagExifIFD); ok {
 		readExif(f, bo, int64(bo.Uint32(e.val[0:4])), &m)
 	}
+	if e, ok := findTag(entries, tagGPSIFD); ok {
+		readGPS(f, bo, int64(bo.Uint32(e.val[0:4])), &m)
+	}
+	m.LinearRaw = linearRaw(f, bo, entries)
 	return m
+}
+
+// linearRaw reports whether any of the DNG's sub-images is an already-demosaiced "linear raw". The
+// full-resolution image lives in a SubIFD, not IFD0, so the flag cannot be read without following
+// that pointer.
+func linearRaw(f *os.File, bo binary.ByteOrder, entries []ifdEntry) bool {
+	e, ok := findTag(entries, tagSubIFDs)
+	if !ok {
+		return false
+	}
+	offsets, ok := e.longs(f, bo)
+	if !ok {
+		return false
+	}
+	for _, off := range offsets {
+		sub := readIFD(f, bo, int64(off))
+		if p, ok := findTag(sub, tagPhotometric); ok && p.scalar(bo) == photometricLinearRaw {
+			return true
+		}
+	}
+	return false
+}
+
+// longs reads a LONG array, inline when it is a single value and from its offset otherwise.
+func (e ifdEntry) longs(f *os.File, bo binary.ByteOrder) ([]uint32, bool) {
+	if e.typ != typeLong || e.count == 0 || e.count > 64 {
+		return nil, false
+	}
+	if e.count == 1 {
+		return []uint32{bo.Uint32(e.val[0:4])}, true
+	}
+	buf := make([]byte, e.count*4)
+	if _, err := f.ReadAt(buf, int64(bo.Uint32(e.val[0:4]))); err != nil {
+		return nil, false
+	}
+	out := make([]uint32, e.count)
+	for i := range out {
+		out[i] = bo.Uint32(buf[i*4 : i*4+4])
+	}
+	return out, true
 }
 
 // readExif reads the ISO, exposure and pixel dimensions from the Exif sub-IFD at offset.
@@ -176,6 +245,9 @@ func readExif(f *os.File, bo binary.ByteOrder, offset int64, m *Meta) {
 	}
 	if e, ok := findTag(entries, tagFocalLength35mm); ok {
 		m.FocalLength35mm = int(e.scalar(bo))
+	}
+	if e, ok := findTag(entries, tagMakerNote); ok {
+		readAppleGravity(f, int64(bo.Uint32(e.val[0:4])), m)
 	}
 	m.TakenAtMs = exifTakenAt(entries, f, bo)
 }
