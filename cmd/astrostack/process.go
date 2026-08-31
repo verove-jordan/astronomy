@@ -49,7 +49,7 @@ func runProcess(args []string) error {
 	}
 	if fs.NArg() != 3 {
 		return fmt.Errorf("usage: astrostack process [flags] <mode> <format> <path>\n" +
-			"  modes: deepsky nebula milkyway planetary comet mosaic sun livestack\n" +
+			"  modes: deepsky nebula milkyway nightpano planetary comet mosaic sun eclipse livestack\n" +
 			"  formats: image video both")
 	}
 	m, err := mode.ParseMode(fs.Arg(0))

@@ -361,7 +361,7 @@ func applyStackPatchRaw(next mode.Preset, raw json.RawMessage) mode.Preset {
 // nightscape recipe.
 func modeHasStackKnobs(m mode.Mode) bool {
 	switch m {
-	case mode.Planetary, mode.Sun, mode.Milkyway:
+	case mode.Planetary, mode.Sun, mode.Eclipse, mode.Milkyway:
 		return false
 	}
 	return true

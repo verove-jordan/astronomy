@@ -12,10 +12,12 @@ describe("canonical mode set", () => {
       "deepsky",
       "nebula",
       "milkyway",
+      "nightpano",
       "planetary",
       "comet",
       "mosaic",
       "sun",
+      "eclipse",
     ]);
   });
 
@@ -36,6 +38,7 @@ describe("canonical mode set", () => {
 
   it("star analysis is limited to modes that have stars", () => {
     expect(STAR_MODES).not.toContain("sun");
+    expect(STAR_MODES).not.toContain("eclipse");
     expect(STAR_MODES).not.toContain("planetary");
   });
 });

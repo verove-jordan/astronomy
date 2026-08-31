@@ -12,7 +12,7 @@ import (
 )
 
 // rangeModes is every mode whose glossary the UI documents with min/max.
-var rangeModes = []mode.Mode{mode.Deepsky, mode.Planetary, mode.Comet, mode.Milkyway, mode.Sun}
+var rangeModes = []mode.Mode{mode.Deepsky, mode.Planetary, mode.Comet, mode.Milkyway, mode.Sun, mode.Eclipse, mode.Nightpano}
 
 // clampedParam applies a single-knob patch through the real apply/clamp path and returns the mode's
 // resulting value for that knob — the ground truth KnobRangesFor must mirror.

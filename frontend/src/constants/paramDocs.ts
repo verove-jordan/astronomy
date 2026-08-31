@@ -221,7 +221,32 @@ const MILKYWAY_GROUPS: ParamGroup[] = [
   {
     titleKey: "paramDocs.groups.milkywayGrade",
     hintKey: "paramDocs.groups.milkywayGradeHint",
-    keys: ["look", "brightness", "saturation_scale", "highlight_ceiling"],
+    keys: [
+      "look",
+      "brightness",
+      "saturation_scale",
+      "highlight_ceiling",
+      "keep_meteors",
+    ],
+  },
+];
+
+// Sky panorama (nightscapePatch + nightpanoPatch): every panel is stacked by the milkyway recipe, so
+// the grade knobs are the same ones; the canvas group is what only exists once there are several
+// pointings to join.
+const NIGHTPANO_GROUPS: ParamGroup[] = [
+  ...MILKYWAY_GROUPS,
+  {
+    titleKey: "paramDocs.groups.panoCanvas",
+    hintKey: "paramDocs.groups.panoCanvasHint",
+    keys: [
+      "projection",
+      "scale_deg_per_pix",
+      "group_step_deg",
+      "band_mask_lat_deg",
+      "pano_background",
+      "pano_foreground",
+    ],
   },
 ];
 
@@ -275,6 +300,22 @@ const SUN_GROUPS: ParamGroup[] = [
   },
 ];
 
+// The eclipse sheet: which phases to show and how to arrange them. Kept out of SUN_GROUPS because
+// the knobs need an occulter to mean anything, and a full-disc solar run has none.
+const SEQUENCE_GROUP: ParamGroup = {
+  titleKey: "paramDocs.groups.eclipseSequence",
+  hintKey: "paramDocs.groups.eclipseSequenceHint",
+  keys: [
+    "sequence_panels",
+    "sequence_angle_deg",
+    "sequence_spacing",
+    "site_lat",
+    "site_lon",
+  ],
+};
+
+const ECLIPSE_GROUPS: ParamGroup[] = [...SUN_GROUPS, SEQUENCE_GROUP];
+
 const GROUPS_BY_MODE: Record<string, ParamGroup[]> = {
   deepsky: DEEPSKY_GROUPS,
   nebula: DEEPSKY_GROUPS,
@@ -282,8 +323,12 @@ const GROUPS_BY_MODE: Record<string, ParamGroup[]> = {
   planetary: PLANETARY_GROUPS,
   comet: COMET_GROUPS,
   milkyway: MILKYWAY_GROUPS,
+  nightpano: NIGHTPANO_GROUPS,
   mosaic: MOSAIC_GROUPS,
   sun: SUN_GROUPS,
+  // An eclipse run is the solar recipe with a second circle in the geometry; it exposes exactly
+  // the same knob surface, so it shares the groups rather than copying them.
+  eclipse: ECLIPSE_GROUPS,
 };
 
 // groupsForMode returns the knob groups for a stacking mode (deep-sky is the fallback for any unknown).

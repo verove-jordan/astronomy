@@ -33,6 +33,9 @@ func TestServer_ModeParams(t *testing.T) {
 		{"sun", "?mode=sun", "sun",
 			[]string{"limb_flatten", "deconv_sigma", "prominence_boost", "palette", "band", "drizzle", "window_seconds"},
 			[]string{"limb_flatten", "deconv_sigma", "prominence_boost", "drizzle", "window_seconds"}},
+		{"eclipse carries the solar surface plus the phase sequence", "?mode=eclipse", "eclipse",
+			[]string{"two_body", "limb_flatten", "palette", "sequence_panels", "sequence_angle_deg", "sequence_spacing", "site_lat", "site_lon"},
+			[]string{"sequence_panels", "sequence_angle_deg", "sequence_spacing", "site_lat", "site_lon"}},
 		{"empty falls back to deepsky", "", "deepsky", []string{"color_calibration"}, []string{"saturation"}},
 		{"unknown falls back to deepsky", "?mode=bogus", "deepsky", []string{"color_calibration"}, []string{"saturation"}},
 	}

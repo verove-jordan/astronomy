@@ -92,7 +92,7 @@ plate-solving + SPCC**, download the Gaia catalogues once: `just download-catalo
 | `just setup` / `just up` / `just down` | First-run setup · start Postgres · stop the stack. |
 | `just migrate` / `just migrate-down` | Apply / roll back schema migrations (`dev` migrates on boot, so this is rarely needed). |
 | `just inspect DIR` | Print the classified inventory of a capture folder (no processing). |
-| `just process MODE FORMAT PATH` | Full auto pipeline. MODE: `deepsky`·`nebula`·`milkyway`·`planetary`·`comet`·`mosaic`·`sun`·`livestack`; FORMAT: `image`·`video`·`both`. Pass-through flags after the path (e.g. `-v --supervise`). |
+| `just process MODE FORMAT PATH` | Full auto pipeline. MODE: `deepsky`·`nebula`·`milkyway`·`planetary`·`comet`·`mosaic`·`sun`·`eclipse`·`livestack`; FORMAT: `image`·`video`·`both`. Pass-through flags after the path (e.g. `-v --supervise`). |
 | `just video FILE` | Shortcut for `process planetary video` (lucky imaging). |
 | `just refine RUNDIR` | Re-run **only** the finish (AI supervisor) on an existing run — no re-stacking. |
 | `just dev` / `just web` | Host API with hot reload · Vue dev server. |

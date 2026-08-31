@@ -53,8 +53,19 @@ type sunPatch struct {
 	BracketStops      *float64 `json:"bracket_stops,omitempty"`
 	TransparencyFloor *float64 `json:"transparency_floor,omitempty"`
 	APAlign           *bool    `json:"ap_align,omitempty"`
+	TwoBody           *bool    `json:"two_body,omitempty"`
+	BestFrames        *int     `json:"best_frames,omitempty"`
+	BestFrameGap      *float64 `json:"best_frame_gap_seconds,omitempty"`
 	APScale           *int     `json:"ap_scale,omitempty"`
 	Band              *string  `json:"band,omitempty"`
+
+	// The phase sequence. It is tier C: choosing different phases means stacking different frames.
+	SequencePanels   *int     `json:"sequence_panels,omitempty"`
+	SequenceStack    *bool    `json:"sequence_stack,omitempty"`
+	SequenceAngleDeg *float64 `json:"sequence_angle_deg,omitempty"`
+	SequenceSpacing  *float64 `json:"sequence_spacing,omitempty"`
+	SiteLat          *float64 `json:"site_lat,omitempty"`
+	SiteLon          *float64 `json:"site_lon,omitempty"`
 }
 
 // applySunParamPatch is the solar patch model.
@@ -107,7 +118,23 @@ func applySunParamPatch(working mode.Preset, raw json.RawMessage) (mode.Preset, 
 	setF(&s.BracketStops, patch.BracketStops)
 	setF(&s.TransparencyFloor, patch.TransparencyFloor)
 	setB(&s.APAlign, patch.APAlign)
+	setB(&s.TwoBody, patch.TwoBody)
+	setI(&s.BestFrames, patch.BestFrames)
+	setF(&s.BestFrameGapSeconds, patch.BestFrameGap)
 	setI(&s.APScale, patch.APScale)
+	setI(&s.SequencePanels, patch.SequencePanels)
+	setB(&s.SequenceStack, patch.SequenceStack)
+	setF(&s.SequenceAngleDeg, patch.SequenceAngleDeg)
+	setF(&s.SequenceSpacing, patch.SequenceSpacing)
+	setF(&s.SiteLatDeg, patch.SiteLat)
+	setF(&s.SiteLonDeg, patch.SiteLon)
+	// A sequence spans the whole eclipse, and the clips of an eclipse are shot at whatever
+	// magnification the phone happened to be at. Left in separate scale groups they would be
+	// stacked apart and only one of them would reach the sheet, so asking for a sequence asks for
+	// the groups to be brought onto one canonical disc.
+	if s.SequencePanels >= 3 {
+		s.RescaleGroups = true
+	}
 	if patch.Band != nil {
 		if b := solar.Band(strings.ToLower(strings.TrimSpace(*patch.Band))); isSunBand(b) {
 			s.Band = b
@@ -205,6 +232,20 @@ func clampSun(p mode.Preset) mode.Preset {
 	s.BracketStops = clampf(s.BracketStops, 0, 6)
 	s.TransparencyFloor = clampf(s.TransparencyFloor, 0, 1)
 	s.APScale = clampi(s.APScale, 0, 8)
+	s.BestFrames = clampi(s.BestFrames, 0, 200)
+	s.BestFrameGapSeconds = clampf(s.BestFrameGapSeconds, 0, 600)
+	// A sequence needs a rung either side of maximum plus maximum itself, so three is the floor;
+	// the ceiling is where neighbouring crescents stop being distinguishable at any plausible
+	// coverage. 0 stays reachable because it is how the sheet is turned off.
+	if s.SequencePanels != 0 {
+		s.SequencePanels = clampi(s.SequencePanels, 3, 21)
+	}
+	s.SequenceAngleDeg = clampf(s.SequenceAngleDeg, -90, 90)
+	if s.SequenceSpacing != 0 {
+		s.SequenceSpacing = clampf(s.SequenceSpacing, 0.5, 4)
+	}
+	s.SiteLatDeg = clampf(s.SiteLatDeg, -90, 90)
+	s.SiteLonDeg = clampf(s.SiteLonDeg, -180, 180)
 	return p
 }
 
@@ -223,7 +264,12 @@ func sunStackChanged(a, b solar.Preset) bool {
 		a.RescaleGroups != b.RescaleGroups || a.BracketMerge != b.BracketMerge ||
 		floatChanged(a.BracketStops, b.BracketStops) ||
 		floatChanged(a.TransparencyFloor, b.TransparencyFloor) ||
-		a.APAlign != b.APAlign || a.APScale != b.APScale
+		a.APAlign != b.APAlign || a.APScale != b.APScale || a.TwoBody != b.TwoBody ||
+		a.BestFrames != b.BestFrames || floatChanged(a.BestFrameGapSeconds, b.BestFrameGapSeconds) ||
+		a.SequencePanels != b.SequencePanels || a.SequenceStack != b.SequenceStack ||
+		floatChanged(a.SequenceAngleDeg, b.SequenceAngleDeg) ||
+		floatChanged(a.SequenceSpacing, b.SequenceSpacing) ||
+		floatChanged(a.SiteLatDeg, b.SiteLatDeg) || floatChanged(a.SiteLonDeg, b.SiteLonDeg)
 }
 
 // sunFinishChanged reports whether the finish would render differently.
@@ -259,7 +305,30 @@ sharpen_denoise 0..1 — suppresses noise at the finest scales before the gains 
 limb_flatten 0..1 — removes limb darkening so detail reads to the edge; 0 keeps the natural falloff
 prominence_boost 0..4 — brightness of the off-limb prominences relative to the disc
 prominence_feather 0..0.05 — how softly the disc and the off-limb rendering are blended
-palette gold|neutral|mono|inverted — the colour rendering
+best_frames 0..200 — also export this many of the sharpest individual frames, spread through the
+  clip, as finished images. A stack is not always the best picture: registration resamples every
+  frame and then averages estimates that disagree, and on a capture already near the optics' limit
+  that can cost more than averaging wins
+best_frame_gap_seconds 0..600 — the least time between two exported frames; without it the top of
+  the ranking is the same second over and over
+sequence_panels 0..21 — render the eclipse progression sheet with this many phases, from a shallow
+  bite through maximum and back out, all brought into one sky frame. 0 renders none. The number is a
+  request: which phases exist on BOTH sides of maximum belongs to the recording, so a session with a
+  gap gets the most it can pair honestly and says how many that was. Needs two_body
+sequence_stack true|false — build each panel by stacking its window as well as taking the window's
+  single sharpest frame, keeping whichever resolves the occulter's edge better. Off by default: on a
+  crescent a stack pays for registration twice and the 12 Aug clips measured 2.30 px against a single
+  frame's 1.09, with a hard seam where the occulter's swept band was recovered
+sequence_angle_deg -90..90 — the rise of the line the panels sit on, as seen; positive climbs to the
+  right, 0 lays them in a row
+sequence_spacing 0.5..4 — centre-to-centre step in solar diameters; below 1 the discs overlap
+site_lat -90..90, site_lon -180..180 — where the capture was made, east-positive. Only needed when
+  the clips carry no location tag of their own; an eclipse's phase cannot be computed without one
+two_body true|false — measure an occulting body alongside the solar limb and mask it out of
+  the stack and of every on-disc measurement. On for an eclipse; off, a crescent's boundary points
+  are fitted as one circle and the answer flips between the two bodies frame to frame
+palette gold|neutral|native|mono|inverted — the colour rendering; native measures the
+  capture's own colour off the source clip instead of choosing one
 stretch 0..1 — midtone lift; higher shows more of the faint surface detail
 contrast 0.2..3 — overall contrast
 saturation 0..2 — colour strength of the palette
