@@ -12,6 +12,7 @@ export const TOURS: Record<string, readonly string[]> = {
   tonight: ["targets", "score", "skymap", "weather", "darksky", "optics"],
   goto: ["why", "catalogue", "sequence", "chart"],
   calendar: ["months", "kinds", "event"],
+  solarsystem: ["scene", "time", "scale", "bodies", "legend"],
 
   // Capture
   capture: [

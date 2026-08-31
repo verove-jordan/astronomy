@@ -69,6 +69,24 @@ pages:
         click: { testid: tab-series }
         highlight: { css: "main table tbody tr, main li" }
 
+  # ---------------------------------------------------------------- Solar system
+  # The canvas needs a beat longer than most pages: the manifest has to land and the first frame has
+  # to be drawn before there is anything to photograph.
+  - page: solarsystem
+    goto: /solarsystem
+    dwell: 2600
+    steps:
+      - step: scene
+        highlight: { testid: solar-canvas }
+      - step: time
+        highlight: { testid: solar-time }
+      - step: scale
+        highlight: { testid: solar-layers }
+      - step: bodies
+        highlight: { testid: solar-bodies }
+      - step: legend
+        highlight: { css: "aside section, main aside" }
+
   # ---------------------------------------------------------------- Capture
   - page: capture
     goto: /capture

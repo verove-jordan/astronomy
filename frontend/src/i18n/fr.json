@@ -11,6 +11,7 @@
     "tonight": "Ce soir",
     "goto": "Alignement GoTo",
     "calendar": "Calendrier",
+    "solarSystem": "Système solaire",
     "import": "Importer",
     "livestack": "Empilement direct",
     "jobs": "Tâches",
@@ -1078,6 +1079,31 @@
     "next": "Suivant"
   },
   "tour": {
+    "solarsystem": {
+      "title": "Système solaire",
+      "steps": {
+        "scene": {
+          "title": "Le système, en trois dimensions",
+          "body": "Chaque planète est là où elle se trouve réellement en ce moment, inclinée sur son axe réel et tournée de son angle de rotation réel. Glissez pour tourner, maj+glisser pour déplacer, molette pour zoomer — et continuez : la vue va sans rupture de l'extérieur de l'orbite de Neptune jusqu'à une lune de quelques centaines de kilomètres."
+        },
+        "time": {
+          "title": "Faire tourner la machine",
+          "body": "Le curseur couvre 1800 à 2050, les années pour lesquelles le modèle orbital est ajusté. Choisissez une vitesse — du temps réel jusqu'à un siècle par seconde — et lancez-la dans les deux sens. Maintenant ramène à l'instant présent."
+        },
+        "scale": {
+          "title": "Honnête, ou lisible",
+          "body": "À l'échelle vraie, les planètes internes forment un nœud au centre et Neptune sort de l'écran. Le réglage des distances comprime le champ radial pour que tout le système tienne d'un coup d'œil, et celui des tailles gonfle les mondes eux-mêmes. Ni l'un ni l'autre ne touche au calcul : les nombres affichés restent vrais."
+        },
+        "bodies": {
+          "title": "Choisir un monde",
+          "body": "Cliquez un corps, une étiquette ou un nom dans la liste : la caméra s'y rend et le suit. Le panneau donne alors sa taille, sa masse, sa rotation, l'inclinaison de son axe, sa distance au Soleil et à la Terre, sa magnitude et sa taille apparentes, sa phase, et sa position dans votre ciel."
+        },
+        "legend": {
+          "title": "Ce qui est mesuré et ce qui est modélisé",
+          "body": "Rayons, masses et directions des pôles sont des mesures publiées. Chaque corps porte aussi une pastille indiquant la qualité de sa position — une orbite ajustée est de l'ordre de la minute d'arc, des éléments moyens d'une fraction de degré. Les sources sont listées en dessous."
+        }
+      }
+    },
     "open": "Comment fonctionne cette page",
     "help": "Aide",
     "done": "C’est compris",
@@ -3666,6 +3692,118 @@
         "label": "Par le nombre de sous-poses",
         "desc": "Pour empiler des images déjà empilées : chaque entrée compte proportionnellement au nombre de poses qui la composent."
       }
+    }
+  },
+  "solarsystem": {
+    "title": "Système solaire",
+    "subtitle": "Les planètes, leurs lunes et leurs axes réels, à leur vraie place — en direct, ou à la date que vous choisissez.",
+    "loading": "Chargement du modèle…",
+    "versionMismatch": "Le modèle du moteur ne correspond pas à cette page. Rechargez pour récupérer le nouveau.",
+    "noWebgl": "Ce navigateur n'a pas WebGL2 : le système solaire ne peut pas être dessiné.",
+    "bodies": {
+      "sun": "Soleil",
+      "mercury": "Mercure",
+      "venus": "Vénus",
+      "earth": "Terre",
+      "moon": "Lune",
+      "mars": "Mars",
+      "jupiter": "Jupiter",
+      "saturn": "Saturne",
+      "uranus": "Uranus",
+      "neptune": "Neptune",
+      "pluto": "Pluton"
+    },
+    "kinds": {
+      "star": "étoile",
+      "planet": "planète",
+      "moon": "lune",
+      "dwarf": "planète naine",
+      "comet": "comète"
+    },
+    "tiers": {
+      "fitted": "orbite ajustée",
+      "fittedHint": "Une théorie ajustée sur l'éphéméride numérique — précise à environ une minute d'arc sur toute la plage.",
+      "mean": "éléments moyens",
+      "meanHint": "La bonne période, le bon plan et la bonne phase, mais pas une éphéméride : comptez une fraction de degré.",
+      "sampled": "échantillonné",
+      "sampledHint": "Une population synthétique tirée de statistiques publiées. Aucun objet n'y est réel."
+    },
+    "time": {
+      "play": "Lecture",
+      "pause": "Pause",
+      "now": "Maintenant",
+      "liveNow": "En direct",
+      "forward": "Avant",
+      "backward": "Arrière",
+      "rate": "Vitesse",
+      "perSecond": "par seconde",
+      "when": "Quand",
+      "exact": "Instant exact",
+      "utc": "UTC",
+      "site": "local",
+      "jd": "JJ",
+      "stepBack": "Un jour en arrière",
+      "stepForward": "Un jour en avant",
+      "rates": {
+        "realtime": "temps réel",
+        "minute": "une minute",
+        "hour": "une heure",
+        "day": "un jour",
+        "week": "une semaine",
+        "month": "un mois",
+        "year": "un an"
+      }
+    },
+    "view": {
+      "title": "La vue",
+      "canvasLabel": "Carte tridimensionnelle du système solaire",
+      "distances": "Distances",
+      "distancesHint": "L'échelle vraie est honnête et presque illisible : tout ce qui est en deçà de Jupiter forme un nœud au centre. Le mode égalisé espace les orbites régulièrement. Le curseur circule entre les deux.",
+      "trueScale": "Vraie",
+      "mixed": "Mixte",
+      "compressed": "Égalisée",
+      "bodySize": "Taille des corps",
+      "moonScale": "Écartement des lunes",
+      "orbits": "Orbites",
+      "axes": "Axes",
+      "stars": "Étoiles",
+      "labels": "Étiquettes",
+      "reset": "Réinitialiser la vue",
+      "fullscreen": "Plein écran",
+      "navHint": "Glisser pour tourner · maj+glisser pour déplacer · molette pour zoomer",
+      "following": "Suit {body}"
+    },
+    "picker": {
+      "title": "Corps"
+    },
+    "info": {
+      "empty": "Survolez un monde, ou choisissez-en un dans la liste.",
+      "unpin": "Détacher",
+      "asOf": "Géométrie au {at} UTC — l'horloge devance le moteur.",
+      "orbits": "orbite autour de {body}",
+      "radius": "Rayon",
+      "mass": "Masse",
+      "rotation": "Rotation",
+      "axialTilt": "Inclinaison de l'axe",
+      "distanceSun": "Du Soleil",
+      "distanceEarth": "De la Terre",
+      "magnitude": "Magnitude",
+      "apparentSize": "Taille apparente",
+      "illuminated": "Éclairé",
+      "elongation": "Élongation",
+      "ringOpen": "Inclinaison des anneaux",
+      "altAz": "Hauteur / azimut",
+      "up": "levé",
+      "below": "sous l'horizon",
+      "retrograde": "rétrograde",
+      "days": "jours"
+    },
+    "legend": {
+      "title": "Ce qui est réel ici",
+      "warpNote": "Les positions, distances, phases et tous les nombres affichés sont calculés à l'échelle vraie. Le curseur de distance n'étire que l'IMAGE : une éclipse se produit au bon instant quelle que soit la compression.",
+      "sizeNote": "Un monde n'est jamais dessiné plus petit que quelques pixels, sinon l'écran serait vide vu d'ici. Approchez-vous et sa taille réelle prend le relais.",
+      "tierNote": "Rayons, masses et directions des pôles sont des mesures publiées. La qualité de la POSITION de chaque corps est indiquée sur sa propre pastille.",
+      "range": "Le modèle orbital est ajusté pour {from}–{to} ; le curseur ne sort pas de cette plage."
     }
   }
 }

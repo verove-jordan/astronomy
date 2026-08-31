@@ -2441,3 +2441,133 @@ export interface PolarCamState {
   busy: boolean;
   tracking: boolean;
 }
+
+// --- the solar system (GET /api/solarsystem/*) ---------------------------------------------------
+// Mirrors internal/solarsystem. The browser propagates these elements itself so the time scrubber
+// costs no round trips; utils/solarsystem.ts is the propagator and solarsystem.spec.ts pins it to
+// the engine's own numbers.
+
+export type SolarKind = "star" | "planet" | "moon" | "dwarf" | "comet";
+
+/** How a body's POSITION is obtained. Its physical facts are measurements regardless. */
+export type SolarTier = "fitted" | "mean" | "sampled";
+
+export interface SolarLibration {
+  arg0_deg: number;
+  arg_dot: number;
+  ra_amp_deg: number;
+  dec_amp_deg: number;
+  w_amp_deg: number;
+}
+
+/** IAU rotational elements: where the north pole points, and how far the prime meridian has turned. */
+export interface SolarPole {
+  ra0_deg: number;
+  ra_dot?: number;
+  dec0_deg: number;
+  dec_dot?: number;
+  w0_deg: number;
+  /** Degrees per day; negative for a retrograde rotator. */
+  w_dot: number;
+  libration?: SolarLibration;
+}
+
+export interface SolarRing {
+  inner_km: number;
+  outer_km: number;
+  texture?: string;
+  faint: boolean;
+  source: string;
+}
+
+/** One orbit, as elements plus per-day rates from an epoch. Distances are AU, angles degrees. */
+export interface SolarOrbitSpec {
+  centre: string;
+  frame: "ecliptic" | "laplace";
+  pole_ra_deg?: number;
+  pole_dec_deg?: number;
+  epoch_jd: number;
+  a_au: number;
+  a_dot?: number;
+  e: number;
+  e_dot?: number;
+  i_deg: number;
+  i_dot?: number;
+  node_deg: number;
+  node_dot?: number;
+  peri_deg: number;
+  peri_dot?: number;
+  m_deg: number;
+  n_deg: number;
+  period_days: number;
+}
+
+export interface SolarBody {
+  key: string;
+  kind: SolarKind;
+  parent?: string;
+  radius_km: number;
+  polar_radius_km?: number;
+  mass_kg?: number;
+  albedo?: number;
+  colour: string;
+  pole: SolarPole;
+  ring?: SolarRing;
+  orbit?: SolarOrbitSpec;
+  /** A built-in analytic model, for bodies no fixed element set describes well (the Moon). */
+  series?: string;
+  texture?: string;
+  tier: SolarTier;
+  source: string;
+}
+
+export interface SolarSource {
+  name: string;
+  covers: string;
+  licence: string;
+  url?: string;
+}
+
+export interface SolarManifest {
+  version: number;
+  engine: string;
+  range_from: number;
+  range_to: number;
+  au_per_km: number;
+  bodies: SolarBody[];
+  /** Texture keys this engine actually has on disk; anything absent is shaded procedurally. */
+  textures: string[];
+  sources: SolarSource[];
+}
+
+/** One body at one instant, computed by the engine — the numbers the info panel prints. */
+export interface SolarBodyState {
+  key: string;
+  kind: SolarKind;
+  helio_au: [number, number, number];
+  local_au?: [number, number, number];
+  helio_dist_au: number;
+  geo_dist_au: number;
+  ra_deg: number;
+  dec_deg: number;
+  alt_deg: number;
+  az_deg: number;
+  up: boolean;
+  airmass?: number;
+  magnitude: number;
+  angular_diameter_arcsec: number;
+  phase_angle_deg: number;
+  illum_fraction: number;
+  elongation_deg: number;
+  orientation: { pole_ra_deg: number; pole_dec_deg: number; w_deg: number };
+  axial_tilt_deg: number;
+  /** Ring-plane tilt toward Earth; 0 is edge-on. Saturn only, for now. */
+  ring_open_deg?: number;
+}
+
+export interface SolarSnapshot {
+  time_ms: number;
+  jd: number;
+  site: { lat_deg: number; lon_deg: number; elevation_m?: number };
+  bodies: SolarBodyState[];
+}

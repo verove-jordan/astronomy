@@ -11,6 +11,7 @@
     "tonight": "Tonight",
     "goto": "GoTo align",
     "calendar": "Calendar",
+    "solarSystem": "Solar system",
     "import": "Import",
     "livestack": "Live stack",
     "jobs": "Jobs",
@@ -1078,6 +1079,31 @@
     "next": "Next"
   },
   "tour": {
+    "solarsystem": {
+      "title": "Solar system",
+      "steps": {
+        "scene": {
+          "title": "The system, in three dimensions",
+          "body": "Every planet is where it actually is right now, tilted on its real axis and turned to its real rotation angle. Drag to orbit, shift-drag to pan, scroll to zoom — and keep zooming: the view runs continuously from outside Neptune's orbit down to a moon a few hundred kilometres across."
+        },
+        "time": {
+          "title": "Running the machine",
+          "body": "The scrubber spans 1800 to 2050, the years the orbital model is fitted for. Set a speed — from real time up to a century a second — and run it in either direction. Now snaps back to this instant."
+        },
+        "scale": {
+          "title": "Honest, or legible",
+          "body": "At true scale the inner planets are a knot at the centre and Neptune is off the screen. The distance control compresses the radial field so the whole system reads at once, and the body-size control inflates the worlds themselves. Neither touches the arithmetic: the numbers beside the picture stay true."
+        },
+        "bodies": {
+          "title": "Picking a world",
+          "body": "Click a body, a label, or a name in the list, and the camera flies to it and follows. The panel then gives its size, mass, rotation, axial tilt, distance from the Sun and from Earth, apparent magnitude and size, phase, and where it is in your sky right now."
+        },
+        "legend": {
+          "title": "What is measured and what is modelled",
+          "body": "Radii, masses and pole directions are published measurements. Each body also carries a chip saying how well its position is known — a fitted orbit is arcminute-class, mean elements are a fraction of a degree. The sources are listed underneath."
+        }
+      }
+    },
     "open": "How this page works",
     "help": "Help",
     "done": "Got it",
@@ -3666,6 +3692,118 @@
         "label": "By sub-count",
         "desc": "For stacking already-stacked images: each input counts in proportion to how many subs went into it."
       }
+    }
+  },
+  "solarsystem": {
+    "title": "Solar system",
+    "subtitle": "The planets, their moons and their real axes, drawn where they actually are — running now, or at any date you scrub to.",
+    "loading": "Loading the model…",
+    "versionMismatch": "The engine's solar-system model does not match this page. Reload to pick up the new one.",
+    "noWebgl": "This browser has no WebGL2, so the solar system cannot be drawn.",
+    "bodies": {
+      "sun": "Sun",
+      "mercury": "Mercury",
+      "venus": "Venus",
+      "earth": "Earth",
+      "moon": "Moon",
+      "mars": "Mars",
+      "jupiter": "Jupiter",
+      "saturn": "Saturn",
+      "uranus": "Uranus",
+      "neptune": "Neptune",
+      "pluto": "Pluto"
+    },
+    "kinds": {
+      "star": "star",
+      "planet": "planet",
+      "moon": "moon",
+      "dwarf": "dwarf planet",
+      "comet": "comet"
+    },
+    "tiers": {
+      "fitted": "fitted orbit",
+      "fittedHint": "A theory fitted to the numerical ephemeris — good to about an arcminute over the whole span.",
+      "mean": "mean elements",
+      "meanHint": "The right period, plane and phase, but not an ephemeris: expect a fraction of a degree.",
+      "sampled": "sampled",
+      "sampledHint": "A synthetic population drawn from published statistics. No object in it is real."
+    },
+    "time": {
+      "play": "Play",
+      "pause": "Pause",
+      "now": "Now",
+      "liveNow": "Live",
+      "forward": "Forward",
+      "backward": "Backward",
+      "rate": "Speed",
+      "perSecond": "per second",
+      "when": "When",
+      "exact": "Exact instant",
+      "utc": "UTC",
+      "site": "local",
+      "jd": "JD",
+      "stepBack": "Back one day",
+      "stepForward": "Forward one day",
+      "rates": {
+        "realtime": "real time",
+        "minute": "a minute",
+        "hour": "an hour",
+        "day": "a day",
+        "week": "a week",
+        "month": "a month",
+        "year": "a year"
+      }
+    },
+    "view": {
+      "title": "The view",
+      "canvasLabel": "Three-dimensional map of the solar system",
+      "distances": "Distances",
+      "distancesHint": "True scale is honest and nearly unreadable — everything inside Jupiter is a knot at the centre. Compressed spaces the orbits evenly. The slider travels between the two.",
+      "trueScale": "True",
+      "mixed": "Mixed",
+      "compressed": "Even",
+      "bodySize": "Body size",
+      "moonScale": "Satellite spread",
+      "orbits": "Orbits",
+      "axes": "Axes",
+      "stars": "Stars",
+      "labels": "Labels",
+      "reset": "Reset view",
+      "fullscreen": "Fullscreen",
+      "navHint": "Drag to orbit · shift-drag to pan · scroll to zoom",
+      "following": "Following {body}"
+    },
+    "picker": {
+      "title": "Bodies"
+    },
+    "info": {
+      "empty": "Point at a world, or pick one from the list.",
+      "unpin": "Unpin",
+      "asOf": "Geometry as of {at} UTC — the clock is outrunning the engine.",
+      "orbits": "orbits {body}",
+      "radius": "Radius",
+      "mass": "Mass",
+      "rotation": "Rotation",
+      "axialTilt": "Axial tilt",
+      "distanceSun": "From the Sun",
+      "distanceEarth": "From Earth",
+      "magnitude": "Magnitude",
+      "apparentSize": "Apparent size",
+      "illuminated": "Illuminated",
+      "elongation": "Elongation",
+      "ringOpen": "Ring tilt",
+      "altAz": "Altitude / azimuth",
+      "up": "up",
+      "below": "below",
+      "retrograde": "retrograde",
+      "days": "days"
+    },
+    "legend": {
+      "title": "What is real here",
+      "warpNote": "Positions, distances, phases and every printed number are computed at true scale. The distance slider only stretches the PICTURE, so an eclipse still happens at the right instant however the view is compressed.",
+      "sizeNote": "A world is never drawn smaller than a few pixels, or from out here the screen would be empty. Fly closer and its true size takes over.",
+      "tierNote": "Radii, masses and pole directions are published measurements. How well a body's POSITION is known is on its own chip.",
+      "range": "The orbital model is fitted for {from}–{to}; the scrubber will not leave that span."
     }
   }
 }

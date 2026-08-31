@@ -102,6 +102,33 @@ export function precessFromJ2000(
   };
 }
 
+// precessToJ2000 is the inverse rotation — matches astro/poles.go. Epoch of msUTC → J2000. Needed
+// by anything that computes in the equinox of date but has to be drawn in a fixed frame, which is
+// every body in the solar-system scene whose theory is referred to the date.
+export function precessToJ2000(
+  raDeg: number,
+  decDeg: number,
+  msUTC: number,
+): { ra: number; dec: number } {
+  const tc = (julianDate(msUTC) - J2000) / 36525;
+  const zeta = (2306.2181 * tc + 0.30188 * tc * tc + 0.017998 * tc ** 3) / 3600;
+  const z = (2306.2181 * tc + 1.09468 * tc * tc + 0.018203 * tc ** 3) / 3600;
+  const theta =
+    (2004.3109 * tc - 0.42665 * tc * tc - 0.041833 * tc ** 3) / 3600;
+  const cosD = (x: number) => Math.cos(x * DEG);
+  const sinD = (x: number) => Math.sin(x * DEG);
+  // −z takes the place of +zeta, −zeta of +z, and theta reverses.
+  const a = cosD(decDeg) * sinD(raDeg - z);
+  const b =
+    cosD(theta) * cosD(decDeg) * cosD(raDeg - z) + sinD(theta) * sinD(decDeg);
+  const c =
+    -sinD(theta) * cosD(decDeg) * cosD(raDeg - z) + cosD(theta) * sinD(decDeg);
+  return {
+    ra: norm360(Math.atan2(a, b) * RAD - zeta),
+    dec: Math.atan2(c, Math.hypot(a, b)) * RAD,
+  };
+}
+
 // tangentPlane projects (raDeg,decDeg) onto the gnomonic tangent plane at (ra0,dec0): standard
 // coordinates ξ (east-positive) / η (north-positive) in DEGREES. Mirrors astro/tangent.go — the
 // mosaic tile math — so canvas previews and Aladin hit-testing agree with the server's tiles.

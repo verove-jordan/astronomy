@@ -41,6 +41,11 @@ const router = createRouter({
       component: () => import("@/views/CalendarView.vue"),
     },
     {
+      path: "/solarsystem",
+      name: "solarsystem",
+      component: () => import("@/views/SolarSystemView.vue"),
+    },
+    {
       path: "/astroagent",
       name: "astroagent",
       component: () => import("@/views/AstroAgentView.vue"),
