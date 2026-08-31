@@ -131,6 +131,8 @@ type fakeHC struct {
 	pending  []byte
 	aligned  bool
 	slewing  bool
+	// trackMode is what the `t` query answers — the drive mode a nudge has to put back.
+	trackMode byte
 	raNow    float64
 	decNow   float64
 	failEcho bool
@@ -155,6 +157,7 @@ func newFakeHC() *fakeHC {
 		aligned: true, raNow: 10, decNow: 41,
 		pecTable: make([]int8, 88), pecIndexed: true,
 		guideRate: 128, // half sidereal, as mounts tend to ship
+		trackMode: TrackingEQNorth,
 	}
 }
 
@@ -190,7 +193,7 @@ func (f *fakeHC) replyTo(p []byte) []byte {
 		}
 		return []byte("0#")
 	case p[0] == 't':
-		return []byte{TrackingEQNorth, '#'}
+		return []byte{f.trackMode, '#'}
 	case p[0] == 'p':
 		return []byte("W#")
 	case p[0] == 'r':
@@ -432,6 +435,45 @@ func TestNudge_AlwaysStopsTheAxis(t *testing.T) {
 	last := rateFrames[len(rateFrames)-1]
 	assert.Zero(t, last[4], "the final frame must command rate zero")
 	assert.Zero(t, last[5])
+}
+
+// A nudge moves the axes with slew commands, and those stop the drive. Measured on fw 5.31: the
+// mount goes on reporting tracking:true afterwards, so nothing downstream can notice. Dither nudges
+// between subs, so failing to restore the drive trails every remaining frame of the night.
+func TestNudge_RestoresTrackingAfterTheMove(t *testing.T) {
+	hc := newFakeHC()
+	m := testMount(t, hc)
+
+	require.NoError(t, m.Nudge(context.Background(), 8, 0))
+
+	sent, ok := hc.sentPrefixed('T')
+	require.True(t, ok, "the drive must be put back after a nudge")
+	assert.Equal(t, byte(TrackingEQNorth), sent[1], "restored to the mode it was in, not a guess")
+
+	// The restore must come after the last rate command, or it re-asserts tracking and then stops it.
+	lastRate, lastTrack := -1, -1
+	for i, c := range hc.commands() {
+		if len(c) == 8 && c[0] == 'P' && c[1] == 3 {
+			lastRate = i
+		}
+		if len(c) >= 2 && c[0] == 'T' {
+			lastTrack = i
+		}
+	}
+	assert.Greater(t, lastTrack, lastRate, "tracking is restored after the axis has stopped")
+}
+
+// A drive that was deliberately off must stay off: PEC training stops it on purpose, and so does the
+// sequencer around a large slew. Restoring a mode we never saw could start a mount under someone.
+func TestNudge_LeavesAStoppedDriveStopped(t *testing.T) {
+	hc := newFakeHC()
+	hc.trackMode = TrackingOff
+	m := testMount(t, hc)
+
+	require.NoError(t, m.Nudge(context.Background(), 8, 0))
+
+	_, ok := hc.sentPrefixed('T')
+	assert.False(t, ok, "no drive command may be sent when tracking was already off")
 }
 
 func TestSetTracking(t *testing.T) {

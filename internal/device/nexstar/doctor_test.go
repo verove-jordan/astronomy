@@ -209,6 +209,16 @@ func TestDiagnose_VerdictNamesTheOneThingToDo(t *testing.T) {
 			want:   VerdictNoReply, contains: "powered by the mount",
 		},
 		{
+			// Distinct from no_reply on purpose: nothing was ever asked, so telling the user to
+			// wait for the hand controller to boot sends them after a fault that is not there.
+			name:   "the adapter opens but refuses every serial setting",
+			ports:  likely,
+			devs:   []USBDevice{prolificClaimed},
+			probes: []PortProbe{{Path: "/dev/cu.usbserial-1420", err: fmt.Errorf("open: %w", ErrPortUnconfigurable)}},
+			probed: true,
+			want:   VerdictPortUnconfigurable, contains: "refuses every serial setting",
+		},
+		{
 			name:  "a claimed bridge without probing is provisionally fine",
 			ports: likely,
 			devs:  []USBDevice{prolificClaimed},

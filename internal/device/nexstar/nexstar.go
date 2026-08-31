@@ -406,10 +406,53 @@ const guideRateArcsecPerSec = 8.0
 // takes. Small moves on a GEM are eaten by backlash, which is why the caller measures what actually
 // happened from the next frame rather than trusting this.
 func (m *Mount) Nudge(ctx context.Context, dRAArcsec, dDecArcsec float64) error {
+	// Read the drive mode BEFORE moving, and put it back afterwards.
+	//
+	// nudgeAxis moves the axes with variable-rate slew commands, and Celestron's notes warn that
+	// those conflict with tracking — see SetTracking. Measured on an AVX running firmware 5.31: a
+	// nudge leaves the drive STOPPED, while the mount happily goes on answering the `t` query with
+	// its old mode, so State() still reports tracking:true and nothing downstream notices.
+	//
+	// Dithering is the caller that makes this serious: it nudges between subs, so an unrestored
+	// drive silently trails every remaining frame of the night at the full sidereal rate — 15"/s,
+	// which is 75" of trail in a 5 s sub. The failure looks like a mount fault, not like dither.
+	mode := m.trackingModeForRestore()
+	defer m.restoreTracking(mode)
+
 	if err := m.nudgeAxis(ctx, axisAzmRA, dRAArcsec); err != nil {
 		return err
 	}
 	return m.nudgeAxis(ctx, axisAltDec, dDecArcsec)
+}
+
+// trackingModeForRestore reads the drive's current mode. It answers TrackingOff whenever the mode
+// cannot be read, because re-asserting a mode we never actually saw would be worse than leaving the
+// drive alone: it could start a mount the caller had deliberately stopped.
+func (m *Mount) trackingModeForRestore() byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.port == nil {
+		return TrackingOff
+	}
+	reply, err := m.rawLocked([]byte("t"))
+	if err != nil || len(reply) == 0 {
+		return TrackingOff
+	}
+	return reply[0]
+}
+
+// restoreTracking puts the drive back into the mode it held before a nudge. A drive that was already
+// off is left off — PEC training stops it on purpose, and so does the sequencer around a big slew.
+func (m *Mount) restoreTracking(mode byte) {
+	if mode == TrackingOff {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.port == nil {
+		return // the link went; afterReopenLocked has a queued stop to flush before anything else
+	}
+	_, _ = m.rawLocked([]byte{'T', mode})
 }
 
 func (m *Mount) nudgeAxis(ctx context.Context, axis int, arcsec float64) error {
