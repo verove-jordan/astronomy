@@ -47,9 +47,16 @@ type FinishOptions struct {
 	// blendProminences — and this knob no longer reaches it.
 	ProminenceFeather float64
 	Palette           string
-	Stretch           float64 // midtone lift
-	Contrast          float64
-	Saturation        float64
+	// NativeChroma is the colour the recording had, measured from the source clip; it is what the
+	// "native" palette renders in. Empty means the measurement was not taken or failed, and the
+	// palette falls back to gold rather than to something arbitrary.
+	NativeChroma NativeChroma `json:"native_chroma,omitempty"`
+	// NativeMask restricts where the native ramp reads the rendered plane's quantiles, so the sky —
+	// most of the pixels in a wide capture — cannot define the whole colour scale. nil uses them all.
+	NativeMask []float32 `json:"-"`
+	Stretch    float64   // midtone lift
+	Contrast   float64
+	Saturation float64
 	// BackgroundLevel is how bright the sky renders, 0..1, and BackgroundTint how much of the
 	// palette's own hue it carries — 0 neutral grey, 1 the palette's deep end at that brightness.
 	//

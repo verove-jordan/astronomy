@@ -20,15 +20,21 @@ const (
 	PaletteNeutral  = "neutral"  // white light: neutral to faintly warm
 	PaletteMono     = "mono"     // untouched greyscale
 	PaletteInverted = "inverted" // inverted greyscale, which shows filaments best
+	// PaletteNative renders in the colour the recording itself had, measured from the source clip
+	// rather than chosen (native.go). It falls back to gold when no measurement is available, because
+	// a run pointed at stills or at a clip that would not decode has nothing to measure.
+	PaletteNative = "native"
 )
 
 // Palettes lists the available renderings, in display order.
-func Palettes() []string { return []string{PaletteGold, PaletteNeutral, PaletteMono, PaletteInverted} }
+func Palettes() []string {
+	return []string{PaletteGold, PaletteNeutral, PaletteNative, PaletteMono, PaletteInverted}
+}
 
 // IsPalette reports whether name is a known palette.
 func IsPalette(name string) bool {
-	i := sort.SearchStrings([]string{PaletteGold, PaletteInverted, PaletteMono, PaletteNeutral}, name)
-	all := []string{PaletteGold, PaletteInverted, PaletteMono, PaletteNeutral}
+	all := []string{PaletteGold, PaletteInverted, PaletteMono, PaletteNative, PaletteNeutral}
+	i := sort.SearchStrings(all, name)
 	return i < len(all) && all[i] == name
 }
 
@@ -77,7 +83,13 @@ func applyPalette(p []float32, w, h int, o FinishOptions) *fits.Image {
 		return out
 	}
 	ramp, ok := paletteRamps[name]
-	if !ok {
+	if name == PaletteNative {
+		// Measured, not tabulated. It is built against THIS plane rather than stored ready-made,
+		// because the measurement is indexed by quantile and only the rendered plane knows what value
+		// each quantile landed on — see native.go.
+		ramp, ok = nativeRamp(o.NativeChroma, p, o.NativeMask), true
+	}
+	if !ok || len(ramp) < 2 {
 		ramp = paletteRamps[PaletteGold]
 	}
 	ramp = withBackground(ramp, lvl, o.BackgroundTint)
