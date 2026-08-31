@@ -1160,9 +1160,34 @@ func stretchScript(loadName, saveTif string, rmgreen, linked bool, bgLevel float
 	}
 	fmt.Fprintf(&b, "%s\n", siril.AutostretchCmd(linked, bgLevel))
 	if saveTif != "" { // "" → the caller appends its own save (the sky-chroma-flatten FITS detour)
-		fmt.Fprintf(&b, "savetif %s\n", saveTif)
+		b.WriteString(saveDisplayTif(saveTif))
 	}
 	return b.String()
+}
+
+// saveDisplayTif writes the GIMP composite's input TIFF with the colour profile ASSIGNED rather than
+// converted, so the numbers reach GIMP exactly as the stretch left them.
+//
+// Siril 1.4 is colour-managed, and `savetif` CONVERTS from the image's profile to the output's. That
+// is invisible for as long as the image carries no profile — Siril just assigns sRGB and the pixels
+// pass through — which is what every run did while the colour ladder fell to its star-field rung. The
+// first run where PCC actually landed came out washed out and pink, and the cause is one HDU:
+//
+//	HDU 2: type=0, EXTNAME=ICCProfile
+//
+// PCC attaches a profile, so savetif started converting, applying the sRGB transfer curve to already-
+// stretched data. Measured on that run: the stretched FITS sky sits at 0.061 and the TIFF handed to
+// GIMP at 0.286 — which is 0.061^(1/2.2). A whole image lifted a stop and a half.
+//
+// The washed-out sky is the obvious half. The pink is the same fault: the composite's saturation boost
+// is shadow-protected, full strength only above ~60% luminance, so at 0.06 the galaxy and star halos
+// sat under the ramp and at 0.29 they sit over it, and the residual chroma of thin colour data blooms
+// magenta exactly where the user saw it — around stars, across the galaxy, everywhere.
+//
+// icc_assign REINTERPRETS without touching pixels, so this is a no-op for a profile-less image and the
+// pre-PCC output stays byte-identical.
+func saveDisplayTif(name string) string {
+	return fmt.Sprintf("icc_assign sRGB\nsavetif %s\n", name)
 }
 
 // prepGimpInputs builds the stretched per-component TIFFs GIMP composites. The RGB base is produced
@@ -1305,7 +1330,14 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 			// residual green is real cast, not construction — task #316 shipped green stars because this
 			// gate left the star-field rung with no green removal at all. The neutralization fallback
 			// already strips green inside NeutralizeScript; the narrowband palette skips SCNR by design.
-			rmgreen = method.Calibrated()
+			// ...but NOT after PCC. SCNR is one-sided — it can only ever LOWER green — so it is only
+			// safe where a known green excess exists to remove: SPCC's balance leaves one, and the
+			// star-field rung's warm anchor means its residual green is real cast. PCC's photometric
+			// balance leaves neither, so all SCNR can do there is bias green DOWN, which puts red and
+			// blue above it and reads as magenta. On a frame whose signal rides at 1e-4 over a 0.2449
+			// pedestal that bias is not subtle: it showed up as blue landing 0.9% over green after the
+			// stretch where the two were exactly equal before it.
+			rmgreen = method.Calibrated() && method != postprocess.CalPCC
 		}
 		// Milestone: the colour-calibrated (gradient-removed) linear RGB, before the stretch.
 		capturePreview(ctx, opts, outDir, ordColorCal, stageColorCal, "", filepath.Join(outDir, "rgb_base.fits"), true)
@@ -1363,7 +1395,7 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 					notes = append(notes, n)
 				}
 			}
-			s2b := hdr + fmt.Sprintf("load rgb_base_stretch\nsavetif %s\n", base)
+			s2b := hdr + "load rgb_base_stretch\n" + saveDisplayTif(base)
 			if _, err := runner.Run(ctx, outDir, s2b, ccProg); err != nil {
 				return gimp.Inputs{}, nil, calMethod, err
 			}
