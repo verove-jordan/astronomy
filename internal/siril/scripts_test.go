@@ -531,8 +531,22 @@ func TestPhotometricCalibrateScript(t *testing.T) {
 	assert.Contains(t, s, "set core.catalogue_gaia_astro=/lib/cat/astro.dat")
 	assert.Contains(t, s, "load rgb_base")
 	assert.Contains(t, s, "platesolve 170.06,12.99 -focal=740.0 -pixelsize=3.80 -catalog=localgaia")
-	assert.Contains(t, s, "pcc\n")
+	// PCC is told the catalogue too. Bare `pcc` goes to the network ("Getting stars from online
+	// catalogue NOMAD for PCC"), which makes the rung that survives SPCC's arm64 crash depend on the
+	// internet at the moment a 40-minute run reaches its colour step; the local Gaia astrometry
+	// catalogue already installed for the solve carries the photometry PCC needs.
+	assert.Contains(t, s, "pcc -catalog=localgaia\n")
 	assert.NotContains(t, s, "spcc", "the PCC rung must not invoke SPCC")
+
+	// No local catalogue and no explicit choice: leave PCC to pick for itself (online NOMAD).
+	bare := PhotometricCalibrateScript("rgb_base", "rgb_base", SolveOptions{Coords: "170.06,12.99"})
+	assert.Contains(t, bare, "pcc\n")
+	assert.NotContains(t, bare, "-catalog=")
+
+	// An explicitly chosen catalogue wins for both commands.
+	chosen := PhotometricCalibrateScript("rgb_base", "rgb_base",
+		SolveOptions{Coords: "170.06,12.99", Catalog: "nomad", AstroCat: "/lib/cat/astro.dat"})
+	assert.Contains(t, chosen, "pcc -catalog=nomad\n")
 }
 
 func TestFlattenRegister2PassScript(t *testing.T) {

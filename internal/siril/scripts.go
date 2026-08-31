@@ -504,8 +504,8 @@ func DeconvolveLuminanceScript(master string, fwhm float64, iters, alpha int) st
 // PlanetaryFinish tunes the lucky-imaging finish (stretch / wavelet sharpen / local contrast / colour).
 // Its defaults reproduce the original hand-tuned constants; the supervised finish re-tunes these.
 type PlanetaryFinish struct {
-	Stretch    float64 // ght -D: overall hyperbolic stretch intensity
-	Highlight  float64 // ght -HP: highlight-protection point ([HP,1] stays linear, keeping bright craters intact)
+	Stretch   float64 // ght -D: overall hyperbolic stretch intensity
+	Highlight float64 // ght -HP: highlight-protection point ([HP,1] stays linear, keeping bright craters intact)
 	// ShadowLift opens the shadow tones (crater floors, the terminator side) by sliding the ght
 	// symmetry point — where the stretch is most intense — down into the shadows: SP = 0.18·(1−s) +
 	// 0.04·s. Dark tones gain slope (visible detail) instead of compressing toward black; [HP,1]
@@ -819,9 +819,25 @@ func PhotometricCalibrateScript(loadName, outName string, s SolveOptions) string
 	b.WriteString(catalogueSetCmds(s))
 	fmt.Fprintf(&b, "load %s\n", loadName)
 	b.WriteString(platesolveCmd(s) + "\n")
-	b.WriteString("pcc\n")
+	b.WriteString(pccCmd(s) + "\n")
 	fmt.Fprintf(&b, "save %s\n", outName)
 	return b.String()
+}
+
+// pccCmd is Siril `pcc` told which star catalogue to photometer against. Without a catalogue argument
+// PCC goes to the NETWORK — "Getting stars from online catalogue NOMAD for PCC" — which makes the one
+// rung that survives SPCC's arm64 crash depend on a working internet connection at exactly the moment
+// a 40-minute run reaches its colour step. The local Gaia astrometry catalogue the plate solve already
+// uses also carries the photometry PCC needs ("Getting stars from local catalogue Gaia DR3 astrometry
+// for PCC"), so when it is installed the whole colour ladder runs offline.
+func pccCmd(s SolveOptions) string {
+	switch {
+	case s.Catalog != "":
+		return "pcc -catalog=" + s.Catalog
+	case s.AstroCat != "":
+		return "pcc -catalog=localgaia"
+	}
+	return "pcc"
 }
 
 // ParityProbeScript plate-solves a single frame WITHOUT flipping it (-noflip) and saves the result, so

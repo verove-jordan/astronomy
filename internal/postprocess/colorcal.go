@@ -66,9 +66,9 @@ type ColorCalOptions struct {
 //
 // It returns a human-readable note describing which path ran and the CalMethod that established the
 // balance (SPCC/PCC/star-field are trustworthy; see CalMethod.Calibrated). The fallback note names WHY
-// SPCC was unavailable (timeout / solve error / a matched log marker) so run.json explains the ladder
-// step. Only a hard Siril failure of the last-resort fallback returns an error, so a calibration miss
-// never aborts the run.
+// EACH photometric rung was unavailable (timeout / siril error / a matched log marker) so run.json
+// explains the ladder step. Only a hard Siril failure of the last-resort fallback returns an error, so
+// a calibration miss never aborts the run.
 func ColorCalibrate(ctx context.Context, runner *siril.Runner, dir, base string, opts ColorCalOptions) (note string, method CalMethod, err error) {
 	spccReason := "unavailable"
 	if opts.Enabled {
@@ -93,6 +93,7 @@ func ColorCalibrate(ctx context.Context, runner *siril.Runner, dir, base string,
 			}
 		}
 	}
+	pccReason := "not attempted"
 	if opts.Enabled {
 		// SPCC's script died (crash/timeout/no solution) — PCC re-solves and calibrates from Gaia
 		// photometry. The SPCC script saves only AFTER its spcc line, so a mid-script failure left
@@ -103,12 +104,19 @@ func ColorCalibrate(ctx context.Context, runner *siril.Runner, dir, base string,
 		if perr == nil && res != nil && !solveFailed(res.Log) {
 			return fmt.Sprintf("PCC photometric color calibration applied (SPCC unavailable: %s)", spccReason), CalPCC, nil
 		}
+		pccReason = rungReason(res, perr)
 	}
+	// Both photometric rungs are reported from here on. Only SPCC's reason used to be, and because
+	// SPCC dies on this platform for its own reasons (an arm64 crash inside its aperture photometry),
+	// its "solve error" was read as "the plate solve failed" and hid what PCC — the rung that decides
+	// whether the colour is photometric at all — actually hit. They fail for different reasons and
+	// need different fixes: a wrong focal length breaks the solve, a missing catalogue breaks PCC.
+	ladder := fmt.Sprintf("SPCC %s, PCC %s", spccReason, pccReason)
 	if opts.Enabled && opts.StarField {
 		fitsPath := filepath.Join(dir, base+".fits")
 		if r, serr := StarFieldCalibrate(fitsPath, opts.StarCal); serr == nil && r.Applied {
-			return fmt.Sprintf("SPCC unavailable (%s) — star-field photometric fallback (gains R=%.2f B=%.2f from %d stars)",
-				spccReason, r.GainR, r.GainB, r.Stars), CalStarField, nil
+			return fmt.Sprintf("no photometric calibration (%s) — star-field fallback (gains R=%.2f B=%.2f from %d stars)",
+				ladder, r.GainR, r.GainB, r.Stars), CalStarField, nil
 		} else if serr != nil {
 			// Soft-fail into neutralization; the note keeps the miss visible.
 			note = "star-field fallback failed (" + serr.Error() + "); "
@@ -116,7 +124,7 @@ func ColorCalibrate(ctx context.Context, runner *siril.Runner, dir, base string,
 	}
 	if !opts.RemoveGreen {
 		if opts.Enabled {
-			return note + fmt.Sprintf("plate-solve/SPCC unavailable (%s) — left color uncalibrated", spccReason), CalNone, nil
+			return note + fmt.Sprintf("no photometric calibration (%s) — left color uncalibrated", ladder), CalNone, nil
 		}
 		return "", CalNone, nil
 	}
@@ -127,9 +135,27 @@ func ColorCalibrate(ctx context.Context, runner *siril.Runner, dir, base string,
 		return "", CalNone, fmt.Errorf("color neutralization: %w", nerr)
 	}
 	if opts.Enabled {
-		return note + fmt.Sprintf("plate-solve/SPCC unavailable (%s) — used background-neutralization fallback", spccReason), CalNeutralized, nil
+		return note + fmt.Sprintf("no photometric calibration (%s) — used background-neutralization fallback", ladder), CalNeutralized, nil
 	}
 	return "background-neutralization color balance", CalNeutralized, nil
+}
+
+// rungReason names why one calibration rung did not land, from the same evidence the SPCC rung is
+// judged on: a process error (crash/timeout), a missing result, or a failure marker Siril logged
+// while still exiting zero.
+func rungReason(res *siril.Result, err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case err != nil:
+		return "siril error"
+	case res == nil:
+		return "no result"
+	}
+	if m := solveMarker(res.Log); m != "" {
+		return m
+	}
+	return "no solution"
 }
 
 // solveMarker returns the first plate-solve/SPCC failure marker found in the Siril log (in case Siril
