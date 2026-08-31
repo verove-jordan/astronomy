@@ -136,6 +136,10 @@ type Options struct {
 	// Solve / Spcc are the plate-solve + SPCC inputs for color calibration (from config).
 	Solve siril.SolveOptions
 	Spcc  siril.SpccOptions
+	// OpticsExplicit marks Solve's focal length / pixel size as THIS RUN's, given on the request,
+	// rather than the engine's configured rig. When it is false the values are only a default and
+	// solveoptics.go drops them if the frames prove they came from another camera.
+	OpticsExplicit bool
 	// TargetHint is the user-declared imaging target — a catalogue name ("M66", "NGC 3628") or an
 	// explicit "RA,Dec" position — tried ahead of any header/folder-derived resolution when seeding
 	// the plate-solve (and therefore SPCC). Optional; naming of the run is never derived from it.
@@ -1013,13 +1017,23 @@ func finishWithGimp(ctx context.Context, opts Options, channels map[string]strin
 		return nil, postprocess.CalNone, err
 	}
 	deg := backgroundDegree(ctx, opts) // 0 when GraXpert already extracted the background
+	// The solver is told about the telescope in the config, which is not necessarily the one that
+	// took these frames — see solveoptics.go for the Nikon run it silently mis-solved.
+	solve, opticsWarn := solveOpticsFor(opts.Solve,
+		filepath.Join(outDir, channels[firstFilter(channels)]+".fits"), opts.OpticsExplicit)
+	if opticsWarn != "" {
+		opts.report(Progress{Line: "⚠ " + opticsWarn})
+	}
 	cc := postprocess.ColorCalOptions{
 		Enabled: opts.Preset.ColorCalibration, RemoveGreen: true, StarField: true,
-		Solve: opts.Solve, Spcc: opts.Spcc,
+		Solve: solve, Spcc: opts.Spcc,
 	}
 	in, notes, method, err := prepGimpInputs(ctx, opts, opts.Runner, channels, outDir, stretchDir, deg, cc, opts.Preset.BackgroundLevel, opts.Preset.LinkedStretch)
 	if err != nil {
 		return nil, method, err
+	}
+	if opticsWarn != "" {
+		notes = append(notes, opticsWarn)
 	}
 	final, err := finishComposite(ctx, opts, in, notes, channels, outDir)
 	return final, method, err
