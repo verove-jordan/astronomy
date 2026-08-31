@@ -31,6 +31,27 @@ func Horizontal(raDeg, decDeg, latDeg, lonDeg float64, t time.Time) (altDeg, azD
 	return alt, az
 }
 
+// Equatorial is the exact inverse of Horizontal: it converts geometric horizontal coordinates back
+// to equatorial RA/Dec (degrees, RA in [0,360)) for an observer at latDeg/lonDeg at time t. Azimuth
+// follows the same compass convention (N=0, increasing eastward), and refraction is likewise not
+// applied. This is the transform that turns a phone's compass-and-gravity reading into a place on
+// the sky, which is what lets a hand-framed session be grouped and placed without plate solving.
+func Equatorial(altDeg, azDeg, latDeg, lonDeg float64, t time.Time) (raDeg, decDeg float64) {
+	alt := altDeg * deg2rad
+	az := azDeg * deg2rad
+	lat := latDeg * deg2rad
+
+	sinDec := math.Sin(alt)*math.Sin(lat) + math.Cos(alt)*math.Cos(lat)*math.Cos(az)
+	dec := math.Asin(clamp1(sinDec))
+
+	// Hour angle in the same tan-free atan2 form Horizontal uses (both sides carry a common cos(dec)
+	// factor, which atan2 ignores), so the pair round-trips exactly and stays stable at the poles.
+	y := -math.Sin(az) * math.Cos(alt)
+	x := math.Sin(alt)*math.Cos(lat) - math.Sin(lat)*math.Cos(alt)*math.Cos(az)
+	ha := math.Atan2(y, x) * rad2deg
+	return norm360(LST(t, lonDeg) - ha), dec * rad2deg
+}
+
 // AngularSeparation returns the great-circle angle (degrees) between two equatorial positions, using
 // the haversine form, which stays accurate for the small separations that matter for target–Moon
 // distance (plain acos loses precision there).
