@@ -50,6 +50,9 @@ type sweepSolver struct {
 	j2000Pole bool
 	// nearPole aims a fixed offset from the pole instead of sweeping, for the one-frame mode.
 	nearPole *[2]float64
+	// hints records what each solve was told to look at, so a test can assert the solver is given
+	// somewhere to start rather than nothing at all.
+	hints []platesolve.Hint
 }
 
 func newSweepSolver() *sweepSolver {
@@ -58,9 +61,10 @@ func newSweepSolver() *sweepSolver {
 	return &sweepSolver{lonDeg: 2.35, haDeg: -30, decDeg: 20, stepDeg: 20}
 }
 
-func (s *sweepSolver) Solve(_ context.Context, path string, _ platesolve.Hint) (platesolve.Result, error) {
+func (s *sweepSolver) Solve(_ context.Context, path string, hint platesolve.Hint) (platesolve.Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.hints = append(s.hints, hint)
 	if s.failWith != nil {
 		return platesolve.Result{}, s.failWith
 	}
@@ -121,6 +125,37 @@ func (s *sweepSolver) hold() {
 	defer s.mu.Unlock()
 	s.haDeg -= s.stepDeg // rewind the step queued for the frame that never came
 	s.stepDeg = 0
+}
+
+func (s *sweepSolver) recordedHints() []platesolve.Hint {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]platesolve.Hint(nil), s.hints...)
+}
+
+// The FIRST frame of a session has no previous sample to hint from, so its pointing has to come from
+// the mount. Measured against Siril 1.4: given neither coordinates nor a header carrying them it
+// refuses outright — "Cannot plate solve, no target coordinates passed and image header doesn't
+// contain any either" — so the wizard could never get past step 1, on either entry point.
+func TestPolarSession_FirstSolveIsToldWhereToLook(t *testing.T) {
+	runner, _ := testRig(t)
+	ctx := context.Background()
+	mount, err := runner.client.do2(ctx) // connect the simulated mount
+	require.NoError(t, err)
+	require.True(t, mount.Connected)
+
+	solver := newSweepSolver()
+	sess := NewPolarSession(runner.client, solver)
+	t.Cleanup(sess.Stop)
+
+	require.NoError(t, sess.Start(ctx, polarOpts()))
+
+	hints := solver.recordedHints()
+	require.NotEmpty(t, hints, "the session must have solved a frame")
+	first := hints[0]
+	assert.True(t, first.HasHint, "the first solve must be given the mount's pointing")
+	assert.InDelta(t, mount.Mount.RADeg, first.RADeg, 1.0)
+	assert.InDelta(t, mount.Mount.DecDeg, first.DecDeg, 1.0)
 }
 
 func polarRig(t *testing.T) (*PolarSession, *sweepSolver) {

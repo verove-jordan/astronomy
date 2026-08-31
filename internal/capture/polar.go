@@ -158,6 +158,14 @@ type PolarSession struct {
 	lastFrame  polaralign.Frame
 	lastCorr   polaralign.Correction
 	haveLastFr bool
+	// seedRA/seedDec is where the mount says it is pointing, read once when the session starts.
+	//
+	// It exists for the FIRST frame, which has no previous sample to hint from. Siril's platesolve
+	// refuses outright when it is given neither coordinates nor a header carrying them — "no target
+	// coordinates passed and image header doesn't contain any either" — so without this the very
+	// first solve of every session failed, and the wizard could never get past step 1.
+	seedRA, seedDec float64
+	haveSeed        bool
 
 	subsMu sync.Mutex
 	subs   map[chan PolarState]bool
@@ -273,9 +281,17 @@ func (p *PolarSession) begin(ctx context.Context, opts PolarOptions, phase Polar
 
 	// Whether the drive is running changes what the target marker is pinned to, so it is read once here
 	// rather than assumed. A mount we cannot reach is not an error: alignment does not need one.
+	//
+	// The pointing is taken from the same reply and kept as the seed for the first solve. It only has
+	// to be roughly right — a mount that has not been aligned at all still knows which way it is
+	// facing to within a few degrees, and that is the difference between a two-second solve and one
+	// the solver refuses to attempt.
 	if st, err := p.client.Mount(ctx); err == nil {
 		p.mu.Lock()
 		p.state.Tracking = st.Mount.Tracking
+		if st.Connected {
+			p.seedRA, p.seedDec, p.haveSeed = st.Mount.RADeg, st.Mount.DecDeg, true
+		}
 		p.mu.Unlock()
 	}
 
@@ -544,11 +560,30 @@ func (p *PolarSession) currentSeq(ctx context.Context) (int64, error) {
 
 // waitForFrameAfter polls the device server until it writes a frame newer than seq.
 func (p *PolarSession) waitForFrameAfter(ctx context.Context, seq int64, path string) (LiveFrame, error) {
+	// Refresh the pointing once per frame, before the poll loop rather than inside it.
+	//
+	// It goes into the FILE, so a frame written here carries OBJCTRA/OBJCTDEC and can be solved on
+	// its own later — previously these were written with no pointing at all. It also refreshes the
+	// seed that solveHintLocked falls back on, which matters because the user turns the RA axis BY
+	// HAND between frames and the encoders follow: by the time frame two is taken, the position read
+	// at Start is tens of degrees stale. A solved sample still wins over this when there is one.
+	if st, err := p.client.Mount(ctx); err == nil && st.Connected {
+		p.mu.Lock()
+		p.seedRA, p.seedDec, p.haveSeed = st.Mount.RADeg, st.Mount.DecDeg, true
+		p.mu.Unlock()
+	}
+	p.mu.Lock()
+	raDeg, decDeg, haveCoord := p.seedRA, p.seedDec, p.haveSeed
+	p.mu.Unlock()
+
 	deadline := time.Now().Add(frameWaitTimeout)
 	for {
 		saved, err := p.client.SaveLiveFrame(ctx, SaveRequest{
 			Path: path, Type: "light", Object: "polar-align",
-			FocalMM: p.opts.FocalMM,
+			FocalMM:  p.opts.FocalMM,
+			RADeg:    raDeg,
+			DecDeg:   decDeg,
+			HasCoord: haveCoord,
 		})
 		if err == nil && saved.Seq > seq {
 			return saved, nil
@@ -578,6 +613,13 @@ func (p *PolarSession) solveHintLocked() platesolve.Hint {
 	if n := len(p.samples); n > 0 {
 		last := p.samples[n-1]
 		hint.RADeg, hint.DecDeg, hint.HasHint = last.RADeg, last.DecDeg, true
+		return hint
+	}
+	// No sample yet, so fall back to where the mount says it is. Solved frames are better hints than
+	// the mount, which is why they win above — but on the first frame the choice is between the
+	// mount's word and nothing, and nothing is what makes the solver give up before it starts.
+	if p.haveSeed {
+		hint.RADeg, hint.DecDeg, hint.HasHint = p.seedRA, p.seedDec, true
 	}
 	return hint
 }
