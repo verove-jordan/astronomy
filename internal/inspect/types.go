@@ -59,7 +59,7 @@ type Frame struct {
 	// Bayer and Channels together name the three states the pipeline has to tell apart, which a
 	// single flag could not: mono (Bayer=="" && Channels<=1), CFA awaiting debayer (Bayer!=""), and
 	// RGB (Channels==3). Conflating the last two is what made a debayered colour frame look mono.
-	Channels int `json:"channels,omitempty"`
+	Channels   int    `json:"channels,omitempty"`
 	Object     string `json:"object,omitempty"`
 	Instrument string `json:"instrument,omitempty"`
 	// Creator is the capture software (SWCREATE), e.g. "ASICAP" / "SharpCap". Old ASICAP writes NO
@@ -67,8 +67,8 @@ type Frame struct {
 	// its absence silently dropped the 10^(Δgain/200) factor across a g0–g450 five-night merge).
 	Creator   string `json:"creator,omitempty"`
 	Telescope string `json:"telescope,omitempty"`
-	DateObs     string `json:"date_obs,omitempty"`
-	DateObsMs   int64  `json:"date_obs_ms,omitempty"`
+	DateObs   string `json:"date_obs,omitempty"`
+	DateObsMs int64  `json:"date_obs_ms,omitempty"`
 	// Session is the capture-night key ("YYYY-MM-DD", local-noon bucketed from DateObsMs; "" when
 	// undated). Stamped at frame construction — NEVER in a later pass, because ScanCache shares
 	// frames read-only across scans. See session.go.
@@ -97,7 +97,20 @@ func (f *Frame) IsColor() bool { return f.Bayer != "" || f.Channels >= 3 }
 // NeedsDebayer reports whether the frame is still a raw CFA mosaic, so calibration has to run in
 // CFA-aware mode and demosaic afterwards (Siril `-cfa -equalize_cfa -debayer`). An already-RGB
 // frame must NOT take that path.
-func (f *Frame) NeedsDebayer() bool { return f.Bayer != "" && f.Channels < 3 }
+//
+// A CAMERA RAW qualifies on its extension alone, before the header terms are consulted, because its
+// metadata actively lies about this: finalizeRawTypes stamps Channels = 3 on every camera raw to mark
+// it one-shot-color for the paths that DEVELOP it to RGB (nightscape via sips), and a raw carries no
+// BAYERPAT card to set Bayer from. Both header terms therefore read "already RGB" for a file that is
+// in fact a mosaic — which silently produced a MONOCHROME deep-sky stack from a Nikon NEF session:
+// no -debayer was passed, the whole run averaged the Bayer mosaic, and it only surfaced at the very
+// end as `rmgreen: command is not for monochrome images`.
+func (f *Frame) NeedsDebayer() bool {
+	if isCFARaw(f.Path) {
+		return true
+	}
+	return f.Bayer != "" && f.Channels < 3
+}
 
 // ExposureSec is the exposure time in seconds.
 func (f *Frame) ExposureSec() float64 { return float64(f.ExposureMs) / 1000 }

@@ -27,6 +27,14 @@ func TestNeedsDebayer(t *testing.T) {
 		// checkerboard. When a group disagrees, take the recoverable failure.
 		{"mixed group is treated as already-RGB", []*inspect.Frame{cfa("a.fits"), rgb("b.fits")}, false},
 		{"empty group", nil, false},
+		// A DSLR set: inspect stamps Channels=3 on camera raws and they carry no BAYERPAT, so both
+		// header terms say "already RGB" for what is really a mosaic. Judging them alone sent a whole
+		// 104-sub Nikon session through the stack undemosaiced and produced a monochrome result.
+		{"nikon raw set is still a mosaic", []*inspect.Frame{rgb("/x/DSC_0001.NEF"), rgb("/x/DSC_0002.NEF")}, true},
+		{"iphone dng set is still a mosaic", []*inspect.Frame{rgb("/x/IMG_0001.dng")}, true},
+		// HEIC is one-shot-color too but arrives demosaiced — it must keep taking the RGB path.
+		{"heic set is already demosaiced", []*inspect.Frame{rgb("/x/IMG_0001.heic")}, false},
+		{"raw mixed with developed stays RGB", []*inspect.Frame{rgb("/x/a.NEF"), rgb("/x/b.tif")}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

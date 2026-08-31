@@ -21,13 +21,25 @@ var (
 	// cameraRawExts) so a folder mixing TIFF lights + FITS calibration classifies both, and mono TIFF
 	// keeps its filter instead of being force-tagged one-shot-color.
 	tiffExts = map[string]bool{".tif": true, ".tiff": true}
-	// cameraRawExts are one-shot-color camera raws (iPhone DNG/HEIC, DSLR raws such as Nikon NEF).
-	// They are surfaced as lights only when the directory holds no FITS/TIFF lights and no video, so
-	// stray outputs in a FITS capture set are never miscounted.
-	cameraRawExts = map[string]bool{
-		".dng": true, ".heic": true, ".heif": true,
+	// cfaRawExts are the camera raws that are still a Bayer MOSAIC on disk: one colour per sensor
+	// pixel, nothing interpolated yet. Siril's `convert` decodes them WITHOUT demosaicing on purpose
+	// (the deep-sky path demosaics last, inside `calibrate`, so masters divide the sensor's own pixels
+	// rather than interpolated neighbours), so a frame with one of these extensions always still needs
+	// debayering however many planes its metadata advertises — see Frame.NeedsDebayer.
+	cfaRawExts = map[string]bool{
+		".dng": true,
 		".cr2": true, ".cr3": true, ".nef": true, ".arw": true, ".raf": true,
 	}
+	// developedStillExts are camera stills that arrive ALREADY demosaiced: colour, but three
+	// interpolated planes rather than a mosaic. They are one-shot-color like the raws above and are
+	// promoted to lights on the same terms, yet debayering one would corrupt it — which is exactly why
+	// the two sets are kept apart instead of being one cameraRawExts literal.
+	developedStillExts = map[string]bool{".heic": true, ".heif": true}
+	// cameraRawExts are one-shot-color camera stills (iPhone DNG/HEIC, DSLR raws such as Nikon NEF) —
+	// the UNION of the two sets above, so neither can drift out of it. They are surfaced as lights only
+	// when the directory holds no FITS/TIFF lights and no video, so stray outputs in a FITS capture set
+	// are never miscounted.
+	cameraRawExts = mergeExts(cfaRawExts, developedStillExts)
 	// colorStillExts are already-demosaiced colour stills. They are gated exactly like cameraRawExts
 	// (promoted only when nothing else in the folder looks like a light) because that guard is what
 	// keeps an exported jpg/png preview sitting next to a FITS capture set from being stacked as a
@@ -35,6 +47,22 @@ var (
 	// though detect.go accepted them and the CLI would happily stack it.
 	colorStillExts = map[string]bool{".jpg": true, ".jpeg": true, ".png": true}
 )
+
+// mergeExts returns the union of extension sets, so a set that is really the sum of two others is
+// declared once instead of being restated (and left to drift) as a third literal.
+func mergeExts(sets ...map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for _, s := range sets {
+		for ext := range s {
+			out[ext] = true
+		}
+	}
+	return out
+}
+
+// isCFARaw reports whether a path names a camera raw that is still an undemosaiced Bayer mosaic.
+// It lives here rather than on Frame because this package owns the extension vocabulary.
+func isCFARaw(path string) bool { return cfaRawExts[strings.ToLower(filepath.Ext(path))] }
 
 // statsSample is how many center pixels to read when inferring a missing IMAGETYP from the pixel
 // curve. Large enough that a real star field shows many peaks, yet a cheap bounded center read.
