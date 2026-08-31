@@ -200,6 +200,14 @@ update-canopy-data:
 gen-skymap-data MAG="6.0":
     go run ./cmd/astrostack skymap-data --mag "{{MAG}}"
 
+# One-time download of the planet/moon surface maps the 3-D solar-system page (/solarsystem) draws
+# with, into <ASTRO_WORK_DIR>/solarsystem (~20 MB at 2k, ~200 MB at 8k). Optional and idempotent:
+# every body whose map is absent is shaded procedurally, so the page works fully without this — the
+# maps only make it photographic. RES = 2k (default) or 8k. Source: Solar System Scope, CC BY 4.0;
+# the page credits it in its legend (see docs/third-party.md).
+download-planet-textures RES="2k":
+    @scripts/download-planet-textures.sh "{{RES}}"
+
 # Rebuild the embedded deep star catalogue (internal/deepstars/catalogue/hyg_mag9.csv.gz) the
 # star-annotation endpoint uses for name labels (proper/Bayer/Flamsteed/HD). Fetches the HYG database
 # (network at generation time ONLY; same source pin as gen-skymap-data). MAG = faintest star kept.
