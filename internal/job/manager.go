@@ -547,17 +547,26 @@ func (m *Manager) lockTarget(paths ...string) func() {
 	return m.locker.Acquire(paths)
 }
 
+// maxRestartRequeues bounds how many times a restart may hand the same job back to the queue. Without a
+// bound, a job that takes the engine down WITH it is requeued on every boot and takes it down again —
+// the count lives in the resume checkpoint, so it survives the restart that caused it.
+const maxRestartRequeues = 3
+
 // Start launches n parallel worker goroutines (draining the main queue) plus one dedicated worker for
 // the sequential lane, all stopping when ctx is cancelled. The single seq worker is what makes stacked
 // "Add to queue" jobs run strictly one-at-a-time in submission order, auto-advancing.
 func (m *Manager) Start(ctx context.Context, n int) {
 	// Reconcile jobs orphaned by a previous server instance. The worker pool is in-process and does not
-	// survive a restart (notably an `air` hot-reload rebuild), so any job still "running" in the DB at
-	// boot has no live worker — mark it failed rather than leave it hanging at its last percentage.
-	if rows, err := m.store.FailRunningJobs(ctx, "interrupted by a server restart"); err != nil {
+	// survive a restart (notably a `just stack` rebuild), so any job still "running" in the DB at boot
+	// has no live worker. Put them back on the QUEUE rather than failing them: rebuilding the engine is
+	// a normal part of working on it, and a run that dies because of one costs 15-45 minutes of stacking
+	// plus 30-70 GB of stranded scratch. redispatchQueued below picks them straight back up.
+	if requeued, abandoned, err := m.store.RequeueRunningJobs(ctx, maxRestartRequeues,
+		"interrupted by a server restart — requeued",
+		fmt.Sprintf("interrupted by a server restart %d times — not retrying again", maxRestartRequeues+1)); err != nil {
 		log.Printf("astrostack: reconcile running jobs failed: %v", err)
-	} else if rows > 0 {
-		log.Printf("astrostack: reconciled %d orphaned running job(s) as failed on startup", rows)
+	} else if requeued > 0 || abandoned > 0 {
+		log.Printf("astrostack: reconciled %d orphaned running job(s): %d requeued, %d abandoned", requeued+abandoned, requeued, abandoned)
 	}
 	// Crash leftovers: a previous instance's runs never got their terminal sweep — reclaim their
 	// scratch before the workers start (a full work disk wedges the whole host, not just one run).

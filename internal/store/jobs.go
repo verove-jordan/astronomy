@@ -122,19 +122,55 @@ func (s *Store) SetJobPaused(ctx context.Context, id int64, resume, result json.
 	return err
 }
 
-// FailRunningJobs marks every job still in the "running" state as failed. Called at startup to reconcile
-// jobs orphaned by a server restart: jobs run in an in-process worker pool that does NOT survive a
-// restart (e.g. an `air` hot-reload rebuild), so any row still "running" at boot has no live worker and
-// would otherwise hang forever in the UI. Returns the number reconciled.
-func (s *Store) FailRunningJobs(ctx context.Context, errMsg string) (int64, error) {
+// RequeueRunningJobs returns every job orphaned by a restart to the QUEUE instead of failing it, and
+// reports how many were requeued and how many were given up on.
+//
+// Jobs run in an in-process worker pool that does not survive a restart, so any row still "running" at
+// boot has no live worker. Failing them was the old behaviour and it is expensive in a way that is easy
+// to underestimate: on one afternoon seven runs died this way, each losing 15 to 45 minutes of stacking
+// and stranding 30 to 70 GB of scratch, because a rebuild happens to be a normal part of working on the
+// engine. Requeued instead, a rebuild costs a restart rather than the run — and the content-keyed
+// caches (background extraction, AI denoise, colour calibration) mean the retry can skip whole stages
+// whose inputs come back byte-identical.
+//
+// The restart count lives in the resume checkpoint, which already exists for pause/resume and needs no
+// migration. It is what keeps this from becoming a loop: a job that takes the engine down WITH it would
+// otherwise be requeued forever, taking the engine down again on every boot. Past maxRestarts it fails
+// for good, saying how many restarts it saw.
+func (s *Store) RequeueRunningJobs(ctx context.Context, maxRestarts int, requeueNote, giveUpNote string) (requeued, abandoned int64, err error) {
 	now := nowMs()
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE jobs SET status=$2, error=$3, progress=0, finished_at_ms=$4, updated_at=$4 WHERE status=$1`,
-		JobRunning, JobFailed, errMsg, now)
+	// Every CASE reads `resume` as it was BEFORE this statement's SET, so all four branches agree on
+	// the same restart count. The ::bigint casts are load-bearing: without them Postgres infers $7's
+	// type from the `THEN 0` literal beside it, decides int4, and rejects a millisecond timestamp as
+	// "greater than maximum value for int4" — which would fail the reconcile on every boot.
+	rows, err := s.pool.Query(ctx, `
+		UPDATE jobs SET
+		  resume         = jsonb_set(resume, '{restarts}', to_jsonb(COALESCE((resume->>'restarts')::int, 0) + 1), true),
+		  status         = CASE WHEN COALESCE((resume->>'restarts')::int, 0) < $2 THEN $3 ELSE $4 END,
+		  error          = CASE WHEN COALESCE((resume->>'restarts')::int, 0) < $2 THEN $5 ELSE $6 END,
+		  progress       = 0,
+		  started_at_ms  = 0,
+		  finished_at_ms = CASE WHEN COALESCE((resume->>'restarts')::int, 0) < $2 THEN 0::bigint ELSE $7::bigint END,
+		  updated_at     = $7::bigint
+		WHERE status = $1
+		RETURNING status`,
+		JobRunning, maxRestarts, JobQueued, JobFailed, requeueNote, giveUpNote, now)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return tag.RowsAffected(), nil
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		if err := rows.Scan(&status); err != nil {
+			return requeued, abandoned, err
+		}
+		if status == JobQueued {
+			requeued++
+		} else {
+			abandoned++
+		}
+	}
+	return requeued, abandoned, rows.Err()
 }
 
 // GetJob returns one job by id.
