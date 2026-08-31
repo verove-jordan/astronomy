@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strings"
 
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/inspect"
@@ -33,13 +34,31 @@ func BuildOrReuseMasters(ctx context.Context, runner *siril.Runner, inv *inspect
 		warnings = append(warnings, "could not read calibration library: "+err.Error())
 		masters = nil
 	}
+	for i := range masters {
+		masters[i].FromLibrary = true
+	}
 
 	order := []inspect.FrameType{inspect.Bias, inspect.DarkFlat, inspect.Dark, inspect.Flat}
 	for _, ft := range order {
 		for _, set := range inv.SetsOfType(ft) {
-			if existing := findExisting(masters, set); existing != nil && fileExists(existing.Path) {
-				warnings = append(warnings, fmt.Sprintf("reused library master %s (%d frames)", masterByFrameType[set.Key.Type], existing.FrameCount))
+			existing := findExisting(masters, set)
+			reusable := existing != nil && fileExists(existing.Path)
+			if reusable && builtFromSet(existing, set) {
+				warnings = append(warnings, fmt.Sprintf("reused library master %s (%d frames — same source frames)",
+					masterByFrameType[set.Key.Type], existing.FrameCount))
+				existing.FromLibrary = false // the file lives in the library, but these are this run's frames
 				continue
+			}
+			// The run brought its own frames for this category and the library cannot prove its
+			// master came from them, so the run's frames win — that is the whole contract of putting
+			// darks/flats next to the lights. On a DSLR this is not a nicety: gain and offset are
+			// absent from the header, so every body and every session collide on one library key and
+			// "a master with these settings exists" says nothing about whose frames made it.
+			if reusable {
+				warnings = append(warnings, fmt.Sprintf(
+					"rebuilding the %s master from this run's %d frame(s) — the library master (%d frames) was built from different frames",
+					masterByFrameType[set.Key.Type], set.Count, existing.FrameCount))
+				masters = dropMaster(masters, existing.Path)
 			}
 			built, qc, err := buildOne(ctx, runner, set, masters, libDir, workDir, stacks, onProgress)
 			warnings = append(warnings, qc...)
@@ -69,6 +88,27 @@ func findExisting(masters []Master, set inspect.Set) *Master {
 		}
 	}
 	return nil
+}
+
+// builtFromSet reports whether the on-disk master was stacked from exactly this set's frames,
+// read from the .sig sidecar buildOne/stackPooled write beside it. A master with no sidecar
+// (built before masters recorded their pool) cannot prove anything and is rebuilt once, which
+// writes the sidecar and makes every later run cheap again.
+func builtFromSet(m *Master, set inspect.Set) bool {
+	recorded, _ := readPoolSig(strings.TrimSuffix(m.Path, ".fits") + ".sig")
+	return recorded != "" && recorded == poolSignature(framePaths(set.Frames))
+}
+
+// dropMaster removes the superseded library entry so the light matcher cannot pick it over the one
+// this run is about to build in its place (same settings, so both would match).
+func dropMaster(masters []Master, path string) []Master {
+	out := masters[:0]
+	for _, m := range masters {
+		if m.Path != path {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // masterMatchesSet reports whether a master is field-compatible with a calibration set — the reuse

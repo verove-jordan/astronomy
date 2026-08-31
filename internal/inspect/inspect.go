@@ -560,11 +560,14 @@ func addWarnings(inv *Inventory) {
 	if counts[Light] == 0 {
 		return
 	}
+	// "unless a library master matches" reads like nothing will happen, and one of the two outcomes it
+	// covers is that a master from another session gets divided into every light. Say that plainly —
+	// the run then names the file it borrowed in the channel's calibration notes (calib.borrowedNote).
 	if counts[Dark] == 0 {
-		inv.Warnings = append(inv.Warnings, "no darks found — dark calibration skipped unless a library master matches")
+		inv.Warnings = append(inv.Warnings, "no darks in this folder — a matching master from the calibration library will be used if there is one, otherwise dark calibration is skipped")
 	}
 	if counts[Flat] == 0 {
-		inv.Warnings = append(inv.Warnings, "no flats found — vignetting/dust correction skipped unless a library master matches")
+		inv.Warnings = append(inv.Warnings, "no flats in this folder — a matching master from the calibration library will be used if there is one, otherwise vignetting/dust correction is skipped")
 	}
 	if counts[Bias] == 0 && counts[Dark] == 0 {
 		inv.Warnings = append(inv.Warnings, "no bias or dark frames found — no read-noise calibration available")

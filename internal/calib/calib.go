@@ -42,6 +42,16 @@ type Master struct {
 	// never saved to the library (master_frames has no night column) and never satisfied BY a
 	// night-blind library master (see masterMatchesSet). In-memory + run.json only.
 	Session string `json:"session,omitempty"`
+	// FromLibrary marks a master that came out of the shared library rather than being stacked from
+	// calibration frames in THIS run's input folder. It is what lets the run say which of the two a
+	// light was actually calibrated with — a distinction that was invisible, and that matters most
+	// exactly where it is hardest to see: a camera publishing no GAIN/OFFSET keyword (every DSLR)
+	// puts all of its masters, from every session and every body, on one g0o0 library key.
+	//
+	// The zero value is the benign case (this run's own frames) on purpose: a master nobody has said
+	// anything about is not accused of being borrowed.
+	// In-memory + run.json only; never persisted to master_frames.
+	FromLibrary bool `json:"from_library,omitempty"`
 }
 
 // tempTolC is the sensor-temperature tolerance (°C) when matching a dark to a light.
@@ -130,6 +140,12 @@ func buildOne(ctx context.Context, runner *siril.Runner, set inspect.Set, built 
 		}
 	}
 	_ = os.RemoveAll(seqDir) // master is saved to mastersDir; drop the per-set scratch
+
+	// Record WHICH frames produced this master. Without it the library can only ask "does a master
+	// with these settings exist?", which is not the same question as "was it built from the frames
+	// this run supplied" — and on a DSLR, whose header carries no gain or offset, every camera ever
+	// used lands on the same g0o0 key. See BuildOrReuseMasters.
+	_ = os.WriteFile(outBase+".sig", []byte(formatPoolSig(poolSignature(paths), len(paths))), 0o644)
 
 	rep := set.Frames[0]
 	return Master{
