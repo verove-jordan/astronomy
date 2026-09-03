@@ -264,7 +264,13 @@ func (s *session) onSiril(step string) func(siril.Progress) {
 // marked so calibration stays CFA-aware and demosaics last — the frames must reach the live stack in
 // colour, not as a green checkerboard.
 func mastersFor(set inspect.Set, masters []calib.Master) siril.CalibMasters {
-	dark, flat, bias := calib.MatchForLight(set.Key, masters).Masters()
+	// Exclude masters shot on another sensor: Siril accepts one, skips the correction and reports
+	// success, so a live stack would quietly run uncalibrated. See calib/dims.go.
+	usable := masters
+	if len(set.Frames) > 0 {
+		usable, _ = calib.KeepMatchingDims(masters, set.Frames[0].Path)
+	}
+	dark, flat, bias := calib.MatchForLight(set.Key, usable).Masters()
 	cfa := len(set.Frames) > 0
 	for _, fr := range set.Frames {
 		if !fr.NeedsDebayer() {

@@ -192,7 +192,12 @@ func calibrateAndMergeComet(ctx context.Context, opts Options, inv *inspect.Inve
 	mergedDir = filepath.Join(workRun, "01_merged")
 	var calibrated []string
 	for _, set := range inv.SetsOfType(inspect.Light) {
-		sel := calib.MatchForLightExcluding(set.Key, masters, opts.CalibExclude, opts.ForceCalibration)
+		// Another sensor's masters leave the pool first; Siril would skip them silently. See calib/dims.go.
+		usable, dimNote := calib.KeepMatchingDims(masters, firstFramePath(set.Frames))
+		sel := calib.MatchForLightExcluding(set.Key, usable, opts.CalibExclude, opts.ForceCalibration)
+		if dimNote != "" {
+			warnings = append(warnings, "comet: "+dimNote)
+		}
 		dark, flat, bias := sel.Masters()
 		cm := siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias, BadPixelMap: calib.DefectsListFor(dark),
 			CFA: needsDebayer(set.Frames)}

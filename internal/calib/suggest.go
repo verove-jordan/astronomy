@@ -107,7 +107,16 @@ func SuggestForInventory(inv *inspect.Inventory, masters []Master, force bool) C
 		return preview
 	}
 	for _, set := range inv.SetsOfType(inspect.Light) {
-		sel := matchForLight(set.Key, masters, force)
+		// Match against the same pool the RUN uses: masters from another sensor are excluded first
+		// (see dims.go), so this preview shows what will actually be applied. They are excluded
+		// under force too — force means "apply these despite the settings mismatch", and Siril
+		// cannot apply a master of the wrong size at all, so forcing one would promise a correction
+		// that silently never happens.
+		usable, dimNote := poolFor(set, masters)
+		sel := matchForLight(set.Key, usable, force)
+		if dimNote != "" {
+			sel.Notes = append(sel.Notes, dimNote)
+		}
 		ch := CalibChannel{
 			Filter: set.Key.Filter, ExposureMs: set.Key.ExposureMs, Gain: set.Key.Gain,
 			Offset: set.Key.Offset, TempBucketC: set.Key.TempBucket, Bin: set.Key.Bin,

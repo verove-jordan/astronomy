@@ -479,7 +479,16 @@ func (c *flatCache) mastersFor(ctx context.Context, opts Options, g lightGroup,
 	masters []calib.Master, workRun string) (siril.CalibMasters, string, []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	sel := calib.MatchForLightExcluding(g.Key, masters, opts.CalibExclude, opts.ForceCalibration)
+	// Masters shot on another sensor leave the pool before the match: Siril accepts a wrong-sized
+	// master, skips that correction and still reports success, so the run would finish "calibrated"
+	// with untouched lights. Filtering the pool (not the result) keeps the fallback. See calib/dims.go.
+	light := firstFramePath(g.Frames)
+	usable, dimNote := calib.KeepMatchingDims(masters, light)
+	sel := calib.MatchForLightExcluding(g.Key, usable, opts.CalibExclude, opts.ForceCalibration)
+	var dimNotes []string
+	if dimNote != "" {
+		dimNotes = append(dimNotes, dimNote)
+	}
 	dark, flat, bias := sel.Masters()
 	// One-shot-color lights still in their raw CFA mosaic calibrate CFA-aware and demosaic at the END
 	// of calibration, never before it: debayering first interpolates every hot pixel and dust shadow
@@ -491,13 +500,23 @@ func (c *flatCache) mastersFor(ctx context.Context, opts Options, g lightGroup,
 		if flat == "" {
 			src = flatSourceNone
 		}
-		return siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias, DarkOptimize: sel.DarkOptimize, CFA: cfa}, src, nil
+		return siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias, DarkOptimize: sel.DarkOptimize, CFA: cfa}, src, dimNotes
 	}
 	// Prior session: replace the (possibly wrong-session) flat with this session's own.
 	sessionFlat, note := c.sessionFlat(ctx, opts, g, bias, workRun)
-	var notes []string
+	notes := dimNotes
 	if note != "" {
 		notes = append(notes, note)
+	}
+	// The replacement came from a DIFFERENT night's raw flats, which is also a different night's
+	// camera whenever the rig changed — size-check it exactly like a library master.
+	if sessionFlat != "" {
+		if same, known := calib.SameDims(sessionFlat, light); known && !same {
+			notes = append(notes, fmt.Sprintf(
+				"session %d: its flat was shot on another sensor (different pixel dimensions) — flat correction skipped for its frames",
+				g.SessionID))
+			sessionFlat = ""
+		}
 	}
 	src := flatSourceSession
 	if sessionFlat == "" {

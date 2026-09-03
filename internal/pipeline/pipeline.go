@@ -1731,7 +1731,14 @@ func (o Options) masterStack(mt calib.MasterType) stackalg.Options {
 
 func processChannel(ctx context.Context, opts Options, set inspect.Set, masters []calib.Master,
 	workRun, outDir string, gradeOpts grade.Options, onProgress func(siril.Progress)) ChannelResult {
-	sel := calib.MatchForLightExcluding(set.Key, masters, opts.CalibExclude, opts.ForceCalibration)
+	// Masters from another sensor leave the POOL before the match, not the Selection after it: Siril
+	// would accept a wrong-sized master, skip the correction and still report success, and striking
+	// one from the finished result would cost that role its fallback (see calib/dims.go).
+	usable, dimNote := calib.KeepMatchingDims(masters, firstFramePath(set.Frames))
+	sel := calib.MatchForLightExcluding(set.Key, usable, opts.CalibExclude, opts.ForceCalibration)
+	if dimNote != "" {
+		sel.Notes = append(sel.Notes, dimNote)
+	}
 	ch := ChannelResult{
 		Object:      set.Key.Object,
 		Filter:      set.Key.Filter,
@@ -2222,6 +2229,16 @@ func framePaths(frames []*inspect.Frame) []string {
 		out[i] = f.Path
 	}
 	return out
+}
+
+// firstFramePath is one representative frame of a set — the file whose header answers "what sensor
+// took these?" for the whole set (a set is by definition one camera at one binning). Used to size-
+// check the matched masters against the lights; "" when the set is empty.
+func firstFramePath(frames []*inspect.Frame) string {
+	if len(frames) == 0 {
+		return ""
+	}
+	return frames[0].Path
 }
 
 func dominantObject(inv *inspect.Inventory) string {
