@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -85,12 +86,12 @@ func TestExportStage_Rejects(t *testing.T) {
 	t.Run("an unknown stage is refused rather than approximated", func(t *testing.T) {
 		// "combined" is deliberately not exportable: rgb_base.fits is processed in place, so its
 		// pixels no longer hold the combined stage by the time a run finishes.
-		_, err := ExportStage(t.Context(), nil, dir, "combined", "png")
+		_, err := ExportStage(context.Background(), nil, dir, "combined", "png")
 		require.Error(t, err)
 	})
 
 	t.Run("an unsupported format is refused", func(t *testing.T) {
-		_, err := ExportStage(t.Context(), nil, dir, "final", "webp")
+		_, err := ExportStage(context.Background(), nil, dir, "final", "webp")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "png or tif")
 	})
