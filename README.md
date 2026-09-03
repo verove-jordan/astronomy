@@ -2,20 +2,26 @@
 
 **English** · [Français](README.fr.md)
 
-> Point it at a folder of astrophotography captures and it auto-sorts, grades, calibrates, stacks,
-> and finishes them into the best possible final image — and plans your next session while you're
-> at it.
+> An end-to-end astrophotography workstation: plan the night, drive the rig, then auto-sort,
+> calibrate, stack and finish what you shot — deep-sky, planetary, solar, comets, mosaics and
+> Milky Way panoramas.
 
-AstroStack inspects a capture directory, figures out **what's in it** (lights per filter, darks,
-bias/offsets, flats — and whether the camera is monochrome or one-shot colour), **discards the bad
-sub-frames** (elongated stars, trails, clouds), picks and applies the **right master calibration**
-(a cross-session library with per-pixel defect maps), then registers and stacks per channel with
-count-adaptive rejection and combines them into a finished image. It drives **Siril** for the heavy lifting and **GIMP** for the finish, with
-optional AI enhancers (**GraXpert**, **StarNet++**) and an opt-in **local vision-model supervisor**
-that critiques and re-tunes the finish. A built-in **session planner** (tonight's targets, GoTo
-alignment, events calendar, weather + light-pollution overlays) rounds out the workflow. Built for
-a Takahashi FC-100 DF + ZWO ASI 1600MM Pro mono rig, but the rig is configurable — and a DSLR or a
-one-shot-colour camera works with no extra setup.
+It started as a stacker and is now the whole night. **Plan** what is worth shooting and when,
+**drive** the camera, filter wheel and mount, **process** the captures through one of ten recipes,
+and **review** the result with its full provenance. Every step is a Go engine and a Vue web UI over
+tools that already do the hard parts well — **Siril** for the heavy lifting, **GIMP** for the
+finish, with optional **GraXpert** / **StarNet++** and an opt-in local vision model that critiques
+and re-tunes the finish.
+
+Built around a Takahashi FC-100 DF + ZWO ASI 1600MM Pro and a RedCat 51 + ASI2600MC, but the rig is
+just configuration — a DSLR, a one-shot-colour camera or an iPhone works with nothing to set up.
+
+| | | |
+|---|---|---|
+| **Plan** | Tonight's ranked targets, astro weather, dark-sky finder, GoTo alignment stars, an events almanac and a 3-D solar system | [planner.md](docs/planner.md) |
+| **Capture** | Live view, full camera control, filter wheel, auto-run sequencer, focus meter, plate-solve centring, polar alignment, session logbook | [ui.md](docs/ui.md) · [mount.md](docs/mount.md) |
+| **Process** | Ten modes over mono or colour, a cross-session calibration library, frame grading, S3 mirroring, live stacking | [pipeline.md](docs/pipeline.md) · [modes/](docs/modes/README.md) |
+| **Review** | Run gallery with full provenance, per-stage previews and full-resolution stage export, an AI finish supervisor, and a chat agent over your own data | [agent.md](docs/agent.md) |
 
 There are two ways to run it. **`just stack`** puts everything in Docker — the engine image bakes in
 Linux Siril, GIMP and GraXpert — and is the one-command path for a new machine, a server, or "just
@@ -125,15 +131,17 @@ photometric chunks).
 | `just setup` / `just up` / `just down` | Host-mode first-run setup · start Postgres · stop the stack. |
 | `just migrate` / `just migrate-down` | Apply / roll back schema migrations (`dev` migrates on boot, so this is rarely needed). |
 | `just inspect DIR` | Print the classified inventory of a capture folder (no processing). |
-| `just process MODE FORMAT PATH` | Full auto pipeline. MODE: `deepsky`·`nebula`·`milkyway`·`planetary`·`comet`·`mosaic`·`sun`·`eclipse`·`livestack`; FORMAT: `image`·`video`·`both`. Pass-through flags after the path (e.g. `-v --supervise`). |
+| `just process MODE FORMAT PATH` | Full auto pipeline. MODE: `deepsky`·`nebula`·`milkyway`·`nightpano`·`planetary`·`comet`·`mosaic`·`sun`·`eclipse`·`livestack`; FORMAT: `image`·`video`·`both`. Pass-through flags after the path (e.g. `-v --supervise`). |
 | `just video FILE` | Shortcut for `process planetary video` (lucky imaging). |
 | `just refine RUNDIR` | Re-run **only** the finish (AI supervisor) on an existing run — no re-stacking. |
 | `just dev` / `just web` | Host API with hot reload · Vue dev server. |
 | `just device` / `just device-x86` | Camera/mount/wheel server — simulator, or a real ZWO under Rosetta. |
 | `just device-status` / `just mount-doctor` | Health-check the device server · diagnose the mount USB link. |
+| `just mount-audit` / `just mount-reset` | Read back every setting stored in the mount · put back the ones this app can write. |
 | `just run-ia-model` / `just ia-model-status` | Serve the local vision model (first run downloads ~28 GB) · check it. |
 | `just download-catalogues` | Offline Gaia catalogues for plate-solving (~3 GB; `-spcc` adds photometric colour calibration). |
 | `just download-deepstars` | The 2.5M-star catalogue behind star annotation and the 3D field map. |
+| `just download-planet-textures` | Surface maps for the 3-D solar system (optional; absent → procedural shading). |
 | `just demo tour` | Record a narrated demo video of the UI ([tools/demo](tools/demo/README.md)). |
 | `just tour-shots` | Regenerate the in-app help-tour screenshots (re-run when the UI changes). |
 | `just test` / `just lint` / `just fmt` | Test · lint and type-check · auto-format. |
@@ -150,35 +158,50 @@ DSLR/mirrorless raw (NEF/CR2/CR3/ARW/RAF/DNG), a colour camera's Bayer FITS, or 
 TIFF/PNG/JPEG. It is detected while inspecting the folder and stacked as a single RGB channel, with
 calibration applied in CFA space before demosaicing. Nothing to configure.
 
-| Mode | Input | Pipeline |
-|------|-------|----------|
-| `deepsky` | mono FITS (L/R/G/B/Ha/OIII/SII), or colour | calibrate → grade → stack per channel → co-register → GIMP LRGB composite with Ha/OIII/SII emission screens (palettes: natural/HaRGB/HOO/SHO/HOS/Foraxx/mono). Colour skips the combine and finishes the RGB master directly |
-| `nebula` | mono FITS, or colour | deepsky retuned for faint emission: lenient grading, Ha-forward, star reduction |
-| `milkyway` | one-shot-color (iPhone ProRAW/HEIC, DSLR raw) | photometric develop → sky-only stack → foreground composite + graded look |
-| `planetary` | video (SER/AVI/MP4/MOV) or stills | lucky imaging: sharpness-rank → multi-point align → AP-weighted stack → deconvolve |
-| `comet` | timestamped FITS, mono or colour | dual star/comet stacks over one global alignment + auto-fit motion track |
-| `mosaic` | overlapping panels of one large object | per-panel deepsky stacks → plate-solve each → reproject onto one canvas + feathered blend |
-| `sun` | Hα or white-light video/stills | exposure-tier composite, limb-registered lucky imaging, PSF measured off the limb |
-| `livestack` | a folder/S3 prefix being written | incremental re-stack during capture, full pipeline on Stop |
+| Mode | Input | What it does |
+|------|-------|--------------|
+| [`deepsky`](docs/modes/deepsky.md) | mono FITS (L/R/G/B/Ha/OIII/SII), or colour | calibrate → grade → stack per channel → co-register → GIMP LRGB composite with Ha/OIII/SII emission screens (palettes: natural/HaRGB/HOO/SHO/HOS/Foraxx/mono). Colour finishes the RGB master directly |
+| [`nebula`](docs/modes/nebula.md) | mono FITS, or colour | deepsky retuned for faint emission: lenient grading, Ha-forward, star reduction |
+| [`milkyway`](docs/modes/milkyway.md) | one-shot colour (iPhone ProRAW/HEIC, DSLR raw) | photometric develop → sky-only stack → foreground composite + graded look; optional meteor recovery |
+| [`nightpano`](docs/modes/nightpano.md) | a hand-swept arc of pointings | each panel stacked by the milkyway recipe, then plate-solved at a 70° field, fitted to one shared lens and reprojected onto a spherical canvas |
+| [`planetary`](docs/modes/planetary.md) | video (SER/AVI/MP4/MOV) or stills | lucky imaging: sharpness-rank → multi-point align → AP-weighted stack → deconvolve |
+| [`comet`](docs/modes/comet.md) | timestamped FITS, mono or colour | dual star/comet stacks over one global alignment + auto-fit motion track |
+| [`mosaic`](docs/modes/mosaic.md) | overlapping panels of one large object | per-panel deepsky stacks → plate-solve each → reproject onto one canvas + feathered blend |
+| [`sun`](docs/modes/sun.md) | Hα or white-light video/stills | exposure-tier composite, limb-registered lucky imaging, PSF measured off the limb |
+| [`eclipse`](docs/modes/eclipse.md) | a partially eclipsed Sun | the solar recipe fitted to TWO circles, the Moon masked out of the stack and every on-disc measurement; can render the whole event as one progression sheet |
+| [`livestack`](docs/modes/livestack.md) | a folder/S3 prefix being written | incremental re-stack during capture, full pipeline on Stop |
 
 How stacking works stage by stage: [docs/pipeline.md](docs/pipeline.md) · per-mode deep dives:
 [docs/modes/](docs/modes/README.md).
 
 ## The web UI
 
-- **Planner** — [Tonight](docs/planner.md) (ranked targets, astro weather, dark-sky finder, polar
-  alignment) · GoTo (mount-alignment star sequences) · Calendar (events almanac). All from keyless
-  public data, cached, soft-fail: [docs/planner.md](docs/planner.md).
-- **Processing hub** — six tabs: Import & inspect (multi-folder inventory, **presets**, launch),
-  Live (live stacking), Tasks (jobs with SSE progress, pause/resume, per-stage rerun, the
-  supervisor panel), Runs (on-disk gallery), Library (calibration masters), Storage (S3
-  connections, sync, verified free-local, backup/restore). Page-by-page: [docs/ui.md](docs/ui.md).
-- **Capture** — live view with histogram, viewfinder and zoom; full camera control (exposure, gain,
-  offset, cooling, USB bandwidth and everything else the camera reports); filter wheel with named
-  slots; a multi-filter auto-run sequencer; a focus-quality meter; mount GoTo with plate-solve
-  centring; SER video recording and a calibration wizard.
+Page by page, with what each control means: [docs/ui.md](docs/ui.md).
+
+- **Tonight** — ranked targets for your site, gear and the moon, with altitude charts, a sky map,
+  animated weather layers, an astro-weather panel you can step night by night, a **dark-sky finder**
+  (darkness, tree horizon, driving distance) and a polar-alignment helper.
+- **GoTo** — a well-spread, ordered set of mount-alignment stars for six hand-controller profiles,
+  walked interactively; the server re-plans around what you centre or skip.
+- **Calendar** — an events almanac (eclipses, phases, showers, conjunctions, oppositions, ISS
+  passes, comets), each scored for your site and gear.
+- **Solar system** — the system in 3-D, every planet where it actually is, on its real axis, with a
+  time machine spanning 1800–2050.
+- **Capture** — live view with histogram and zoom; full camera control (exposure, gain, offset,
+  cooling, and everything else the camera reports); a filter wheel with named slots; a multi-filter
+  auto-run sequencer; a focus-quality meter; mount GoTo with plate-solve centring; SER recording; a
+  calibration wizard; and an audit that reads back everything stored in the mount.
+- **Logbook** — every session past and current: what you shot, when, through what, and under what
+  sky, with the night's conditions condensed to a score.
+- **Mosaic** — plan a tiled panel grid for a large object, then capture and stack it.
+- **Processing** — six tabs: Import & inspect (multi-folder inventory, presets, launch), Live,
+  Tasks (SSE progress, pause/resume, per-stage rerun, the supervisor panel), Runs (on-disk gallery
+  with full-resolution stage export), Library (calibration masters), Storage (S3 connections, sync,
+  verified free-local, backup/restore).
 - **AstroAgent** — a local-model chat with confirmation-gated tools over your jobs, data and sky:
   [docs/agent.md](docs/agent.md).
+
+Every page has a **help** button that opens a guided tour of that page.
 
 ### Connecting real hardware
 
@@ -218,7 +241,8 @@ servers for Claude (`siril`, vendored `gimp`). The docs are topic-organized:
 | [pipeline.md](docs/pipeline.md) | how stacking is made, stage by stage |
 | [stacking.md](docs/stacking.md) | combination methods, rejection algorithms, normalization and weighting |
 | [calibration.md](docs/calibration.md) | master library, cross-session pools, **dark defect maps**, matching rules |
-| [modes/](docs/modes/README.md) | per-mode deep dives (deepsky · nebula · milkyway · planetary · comet · livestack) |
+| [modes/](docs/modes/README.md) | per-mode deep dives — one page each for all ten modes |
+| [examples/](docs/examples/) | worked examples: a real run written up end to end, every number measured |
 | [mount.md](docs/mount.md) | the Celestron hand-controller link: wiring, the macOS driver trap, recovery, the overnight soak |
 | [storage-s3.md](docs/storage-s3.md) | S3 mirror, connections & secrets, verified frees, backup/restore |
 | [configuration.md](docs/configuration.md) | every environment variable |
