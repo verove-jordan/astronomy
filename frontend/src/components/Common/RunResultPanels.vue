@@ -762,6 +762,7 @@ const rejectedClass = (r: Row) =>
       :result="props.result"
       :editable="rerunnable"
       :photom="photomRecords"
+      :job-id="props.jobId"
       @edit="(s) => emit('rerun-stage', s)"
     />
 

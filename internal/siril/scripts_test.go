@@ -83,7 +83,11 @@ func TestLightStackScript_FullCalibration(t *testing.T) {
 	s := LightStackScript("light", CalibMasters{
 		Dark: "/m/d.fits", Flat: "/m/f.fits", Bias: "/m/b.fits",
 	}, "/out/master_L")
-	assert.Contains(t, s, "calibrate light -dark=/m/d.fits -flat=/m/f.fits -bias=/m/b.fits -cc=dark -prefix=pp_")
+	// The bias is deliberately absent from the light calibration even though a master was supplied:
+	// the dark already carries the pedestal and Siril would remove it twice. See calibrateArgs and
+	// TestCalibrateArgs_BiasNeverDoubleSubtracted; this test's subject is the calibrate → register →
+	// stack chain, which is unchanged.
+	assert.Contains(t, s, "calibrate light -dark=/m/d.fits -flat=/m/f.fits -cc=dark -prefix=pp_")
 	assert.Contains(t, s, "register pp_light")
 	assert.Contains(t, s, "stack r_pp_light rej winsorized 3 3 -norm=addscale -output_norm -out=/out/master_L")
 }
@@ -104,7 +108,9 @@ func TestCalibrateSingleScript_UsesCalibrateSingleOnTheConvertedFrame(t *testing
 		Dark: "/m/d.fits", Flat: "/m/f.fits", Bias: "/m/b.fits",
 	})
 	assert.Contains(t, s, "link light -out=.")
-	assert.Contains(t, s, "calibrate_single light_00001 -dark=/m/d.fits -flat=/m/f.fits -bias=/m/b.fits -cc=dark -prefix=pp_")
+	// No -bias here either: calibrate_single shares calibrateArgs, so the one-frame path gets the
+	// same no-double-subtraction rule. The subject of this test is the calibrate_single naming.
+	assert.Contains(t, s, "calibrate_single light_00001 -dark=/m/d.fits -flat=/m/f.fits -cc=dark -prefix=pp_")
 	assert.NotContains(t, s, "calibrate light", "the sequence form would abort on a one-image conversion")
 }
 
@@ -165,8 +171,55 @@ func TestPixelMathScript(t *testing.T) {
 
 func TestCalibrateArgs_CFAOneShotColor(t *testing.T) {
 	// One-shot-color with a full master set: CFA-aware cosmetics + flat equalization + debayer.
+	//
+	// This test used to assert that -bias was emitted here alongside -dark. That contract was the
+	// bug: Siril subtracts both from the same frame, and a master dark already carries the bias
+	// pedestal, so every light lost it twice (measured on Siril 1.4.4 — see calibrateArgs).
 	s := CalibrateOnlyScript("osc", CalibMasters{Dark: "/m/d.fits", Flat: "/m/f.fits", Bias: "/m/b.fits", CFA: true})
-	assert.Contains(t, s, "calibrate osc -dark=/m/d.fits -flat=/m/f.fits -bias=/m/b.fits -cc=dark -cfa -equalize_cfa -debayer -prefix=pp_")
+	assert.Contains(t, s, "calibrate osc -dark=/m/d.fits -flat=/m/f.fits -cc=dark -cfa -equalize_cfa -debayer -prefix=pp_")
+}
+
+func TestCalibrateArgs_BiasNeverDoubleSubtracted(t *testing.T) {
+	// Siril subtracts -bias AND -dark from the same frame. A master dark is an unnormalized exposure
+	// that already contains the bias pedestal, so the two together remove it twice — and because the
+	// constant is then divided by the flat, it returns as the flat's vignetting profile inverted, a
+	// false gradient that was as large as the whole sky signal on the first ASI2600MC run.
+	tests := []struct {
+		name     string
+		masters  CalibMasters
+		wantBias bool
+		why      string
+	}{
+		{
+			name:     "a dark carries the pedestal, so the bias is not passed too",
+			masters:  CalibMasters{Dark: "/m/d.fits", Flat: "/m/f.fits", Bias: "/m/b.fits"},
+			wantBias: false,
+			why:      "the dark already contains it",
+		},
+		{
+			name:     "with no dark the bias is the only pedestal removal",
+			masters:  CalibMasters{Flat: "/m/f.fits", Bias: "/m/b.fits"},
+			wantBias: true,
+			why:      "nothing else removes the pedestal",
+		},
+		{
+			// -opt scales the dark's THERMAL part, which it can only isolate once the bias is gone.
+			name:     "dark optimization needs both by design",
+			masters:  CalibMasters{Dark: "/m/d300.fits", Bias: "/m/b.fits", DarkOptimize: true},
+			wantBias: true,
+			why:      "-opt cannot separate the thermal signal without it",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := CalibrateOnlyScript("light", tt.masters)
+			if tt.wantBias {
+				assert.Contains(t, s, "-bias=/m/b.fits", tt.why)
+			} else {
+				assert.NotContains(t, s, "-bias=", tt.why)
+			}
+		})
+	}
 }
 
 func TestCalibrateArgs_CFANoFlatOmitsEqualize(t *testing.T) {

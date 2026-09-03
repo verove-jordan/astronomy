@@ -648,6 +648,10 @@ func ExportScript(outBase string, formats []string) string {
 	return sb.String()
 }
 
+// SaveAsCmd is saveCmd for callers outside this package (the full-resolution stage export), so the
+// format→command mapping lives in exactly one place.
+func SaveAsCmd(format, base string) string { return saveCmd(format, base) }
+
 func saveCmd(format, base string) string {
 	switch format {
 	case "png":
@@ -669,7 +673,22 @@ func calibrateArgs(m CalibMasters) []string {
 	if m.Flat != "" {
 		args = append(args, "-flat="+m.Flat)
 	}
-	if m.Bias != "" {
+	// The bias goes to the LIGHTS only when no dark carries it, or when -opt needs it.
+	//
+	// Siril subtracts -bias AND -dark from the same frame, but a master dark is an unnormalized
+	// exposure that ALREADY contains the bias pedestal, so passing both removes it twice. Measured
+	// on Siril 1.4.4 with uniform frames (light 512, dark 499, bias 499, flat 2370): `-dark -flat
+	// -bias` yields -486.0 ADU, `-dark -flat` yields +13.0 ADU — the true 13 ADU of sky. The master
+	// flat needs no help here either; it is bias-calibrated when it is built (see calib.flatBias).
+	//
+	// It is not a cosmetic pedestal error. The constant -bias is divided by the flat, so it comes
+	// back as the flat's own vignetting profile, inverted, with amplitude bias×(1/flat-1) — on the
+	// first ASI2600MC run that was ±10 ADU against 13 ADU of real sky, i.e. a false gradient as
+	// large as the signal, which background extraction then partly bakes in.
+	//
+	// -opt is the exception: dark optimization scales the dark's THERMAL part, which it can only
+	// isolate once the bias is removed, so Siril needs both there by design.
+	if m.Bias != "" && (m.Dark == "" || m.DarkOptimize) {
 		args = append(args, "-bias="+m.Bias)
 	}
 	switch {

@@ -162,6 +162,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/restart", s.restartJob)
 	mux.HandleFunc("POST /api/jobs/{id}/refine", s.refineJob)
 	mux.HandleFunc("POST /api/jobs/{id}/rerun", s.rerunJob)
+	mux.HandleFunc("GET /api/jobs/{id}/stages", s.listJobStages)
+	mux.HandleFunc("POST /api/jobs/{id}/stages/export", s.exportJobStage)
 	mux.HandleFunc("POST /api/jobs/{id}/denoise-final", s.denoiseFinalJob)
 	mux.HandleFunc("POST /api/jobs/{id}/stars", s.computeStars)
 	mux.HandleFunc("GET /api/jobs/{id}/stars", s.getStars)

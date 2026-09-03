@@ -397,6 +397,19 @@ export interface StagePreview {
   png_path: string;
 }
 
+// StageArtifact is one FULL-RESOLUTION exportable stage of a finished run. The timeline previews are
+// half-scale 8-bit PNGs; these render the preserved source at native resolution as PNG or TIFF. Only
+// stages whose source still holds what its label claims are offered — several linear intermediates
+// are processed in place, so they are omitted rather than handed back under the wrong name.
+export interface StageArtifact {
+  key: string;
+  label: string;
+  path: string;
+  linear: boolean;
+  filter?: string;
+  order: number;
+}
+
 // One auxiliary monochrome deliverable saved next to the colour final: the processed Luminance-only
 // image ("luminance") or the combined all-channel integration ("all_channels"). png/tif are also in
 // FinalResult.outputs; this typed list drives the dedicated mono viewer in RunResultPanels.

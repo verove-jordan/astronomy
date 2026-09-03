@@ -2201,6 +2201,14 @@
       "starless": "Réduction des étoiles",
       "final": "Final",
       "coverage": "Couverture"
+    },
+    "fullRes": {
+      "title": "Autres étapes",
+      "hint": "Étapes sans vignette ci-dessus — téléchargement en résolution native.",
+      "download": "Télécharger en {format}",
+      "exporting": "…",
+      "fullTitle": "Télécharger en pleine résolution ({format})",
+      "previewTitle": "Télécharger cet aperçu (demi-résolution — la source de cette étape a été retraitée sur place, il n'existe pas de version pleine résolution)"
     }
   },
   "rerun": {

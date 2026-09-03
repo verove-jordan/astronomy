@@ -2201,6 +2201,14 @@
       "starless": "Star reduction",
       "final": "Final",
       "coverage": "Coverage"
+    },
+    "fullRes": {
+      "title": "More stages",
+      "hint": "Stages with no frame above — download at full resolution.",
+      "download": "Download as {format}",
+      "exporting": "…",
+      "fullTitle": "Download at full resolution ({format})",
+      "previewTitle": "Download this preview (half resolution — this stage's source was reprocessed in place, so no full-resolution version exists)"
     }
   },
   "rerun": {
