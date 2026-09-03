@@ -2909,7 +2909,12 @@
         "likely": "probable"
       },
       "noForecastNight": "Pas encore de prévisions pour cette nuit (au-delà de l'horizon de prévision).",
-      "nightOf": "Nuit du {date}"
+      "nightOf": "Nuit du {date}",
+      "prevNight": "Nuit précédente",
+      "nextNight": "Nuit suivante",
+      "backToTonight": "Cette nuit",
+      "noPastForecast": "Aucune prévision pour les nuits déjà passées",
+      "beyondForecast": "Au-delà de l'horizon de prévision"
     },
     "site": {
       "label": "Bortle {bortle} · {sqm} mag/arcsec²",

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useWeatherStore } from "@/stores/weather";
 import { useSkyStore } from "@/stores/sky";
@@ -85,10 +85,54 @@ const outOfHorizon = computed(
     (wx.forecast?.hours?.length ?? 0) > 0,
 );
 
-// Badge label: "Tonight" for the live night, "Night of <date>" when planning another night.
+// --- night stepper -------------------------------------------------------------------------------
+// Which night is on screen, in whole nights from the one happening now. The offset is held here
+// rather than derived back out of `at`, because "which night does this instant belong to" is a
+// question only the engine can answer (it depends on the site's dusk and dawn) and asking it of a
+// timestamp we ourselves just wrote would be a second, disagreeing implementation.
+//
+// Stepping moves the planning instant by whole 24 h from NOW, and never builds a wall-clock time in
+// the site's timezone: an instant 24 h from now is inside the next night whatever the hour, whatever
+// the longitude, and across a DST change — the engine then resolves it to that night's real dusk and
+// dawn. Composing "23:00 local on day N" here instead would put a timezone calculation in the
+// browser that the server already does properly.
+const nightOffset = ref(0);
+// Open-Meteo's usable horizon. Past it the panel already has an honest "no forecast for this night
+// yet" state, so this only stops the arrow inviting a click that cannot answer.
+const MAX_NIGHTS_AHEAD = 6;
+
+// Backwards stops at the night in progress: the forecast feeds carry no history, so an earlier night
+// can only ever render empty. The button is disabled rather than hidden, so it is clear the control
+// has an end rather than having silently lost half of itself.
+const canGoBack = computed(() => nightOffset.value > 0);
+const canGoForward = computed(() => nightOffset.value < MAX_NIGHTS_AHEAD);
+
+function stepNight(delta: number): void {
+  const next = Math.min(
+    MAX_NIGHTS_AHEAD,
+    Math.max(0, nightOffset.value + delta),
+  );
+  if (next === nightOffset.value) return;
+  nightOffset.value = next;
+  // `at` omitted entirely for the live night, so the page goes back to tracking real time instead of
+  // pinning itself to the instant the user happened to press the button.
+  void sky.fetch({
+    at:
+      next === 0
+        ? undefined
+        : new Date(Date.now() + next * 864e5).toISOString(),
+  });
+}
+
+// Badge label: "Tonight" for the night in progress, "Night of <date>" for any other.
+//
+// The offset decides it, not a distance in hours. The old test — night_start within 12 h of now —
+// disagreed with the stepper for part of every day: at 06:00 tonight's dusk is still 14 h away, so
+// the badge called the CURRENT night "night of the 3rd" while the arrows read it as offset 0. The
+// stepper is the thing the user is operating, so it is the thing that gets to say.
 const nightBadgeLabel = computed(() => {
   const start = sky.darkWindow?.night_start_ms ?? 0;
-  if (!start || Math.abs(start - Date.now()) < 12 * 3.6e6)
+  if (!start || nightOffset.value === 0)
     return t("tonight.weather.tonightLabel");
   const date = new Intl.DateTimeFormat(undefined, {
     day: "2-digit",
@@ -113,10 +157,15 @@ function cell(m: WeatherMetric, h: WeatherHour) {
 }
 
 const verdictPct = computed(() => Math.round(wx.best?.verdict ?? 0));
+// The window runs to the END of its last hour. BestWindow reports end_ms as that hour's own
+// timestamp — right for the highlight test in isBest, which asks "is this hour in the window" —
+// but printing it verbatim states a span one hour shorter than the one found, and a single-hour
+// window comes out as "23:00–23:00", which reads as no time at all. The hours are hourly samples,
+// so the window closes an hour after the last of them starts.
 const bestLabel = computed(() => {
   const b = wx.best;
   if (!b) return t("tonight.weather.noWindow");
-  return `${fmtClock(b.start_ms, tz.value)}–${fmtClock(b.end_ms, tz.value)}`;
+  return `${fmtClock(b.start_ms, tz.value)}–${fmtClock(b.end_ms + 3.6e6, tz.value)}`;
 });
 
 // nightVerdict is the at-a-glance rating for tonight: the best clear window's score when there is one,
@@ -132,22 +181,61 @@ const nightLabel = computed(() => verdictLabel(nightVerdict.value));
 </script>
 
 <template>
-  <div
-    data-demo="tonight-weather" :class="card">
+  <div data-demo="tonight-weather" :class="card">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex items-center gap-2">
         <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200">
           {{ t("tonight.weather.title") }}
         </h3>
-        <span
-          v-if="hours.length"
-          class="rounded-full px-2 py-0.5 text-xs font-semibold text-white"
-          :style="{ backgroundColor: verdictColor(nightVerdict) }"
-          :title="t('tonight.weather.verdict')"
-        >
-          {{ nightBadgeLabel }} ·
-          {{ t(`tonight.weather.verdictLabel.${nightLabel}`) }}
-        </span>
+        <!-- Night stepper: the badge is the readout, the arrows either side of it move the whole
+             page (targets, chart and forecast) to the neighbouring night. -->
+        <div class="flex items-center gap-1" data-demo="tonight-weather-night">
+          <button
+            type="button"
+            class="grid h-6 w-6 place-items-center rounded-full text-slate-400 transition hover:bg-slate-200/70 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent dark:hover:bg-brand-900/40 dark:hover:text-slate-100"
+            :disabled="!canGoBack || wx.loading"
+            :title="
+              canGoBack
+                ? t('tonight.weather.prevNight')
+                : t('tonight.weather.noPastForecast')
+            "
+            :aria-label="t('tonight.weather.prevNight')"
+            @click="stepNight(-1)"
+          >
+            <span aria-hidden="true">‹</span>
+          </button>
+          <span
+            v-if="hours.length"
+            class="rounded-full px-2 py-0.5 text-xs font-semibold text-white"
+            :style="{ backgroundColor: verdictColor(nightVerdict) }"
+            :title="t('tonight.weather.verdict')"
+          >
+            {{ nightBadgeLabel }} ·
+            {{ t(`tonight.weather.verdictLabel.${nightLabel}`) }}
+          </span>
+          <button
+            type="button"
+            class="grid h-6 w-6 place-items-center rounded-full text-slate-400 transition hover:bg-slate-200/70 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent dark:hover:bg-brand-900/40 dark:hover:text-slate-100"
+            :disabled="!canGoForward || wx.loading"
+            :title="
+              canGoForward
+                ? t('tonight.weather.nextNight')
+                : t('tonight.weather.beyondForecast')
+            "
+            :aria-label="t('tonight.weather.nextNight')"
+            @click="stepNight(1)"
+          >
+            <span aria-hidden="true">›</span>
+          </button>
+          <button
+            v-if="nightOffset > 0"
+            type="button"
+            class="rounded-full px-2 py-0.5 text-xs text-slate-500 underline-offset-2 transition hover:text-slate-800 hover:underline dark:text-slate-400 dark:hover:text-slate-100"
+            @click="stepNight(-nightOffset)"
+          >
+            {{ t("tonight.weather.backToTonight") }}
+          </button>
+        </div>
       </div>
       <div v-if="wx.best" class="flex items-center gap-2 text-xs">
         <span class="text-slate-400">{{ t("tonight.weather.best") }}</span>

@@ -2909,7 +2909,12 @@
         "likely": "likely"
       },
       "noForecastNight": "No forecast for this night yet (beyond the forecast horizon).",
-      "nightOf": "Night of {date}"
+      "nightOf": "Night of {date}",
+      "prevNight": "Previous night",
+      "nextNight": "Next night",
+      "backToTonight": "Tonight",
+      "noPastForecast": "No forecast for nights already past",
+      "beyondForecast": "Beyond the forecast horizon"
     },
     "site": {
       "label": "Bortle {bortle} · {sqm} mag/arcsec²",
