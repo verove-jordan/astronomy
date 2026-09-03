@@ -20,7 +20,13 @@ setup:
     @command -v air >/dev/null || go install github.com/air-verse/air@latest
     just build-mcp
     @test -d frontend/node_modules || (cd frontend && pnpm install)
-    @echo "Setup done. Next: just up && just migrate, then just dev + just web"
+    @echo "Setup done. Check your tools with 'just doctor', then: just up, and just dev + just web"
+    @echo "(the engine migrates the database itself on boot — 'just migrate' is redundant)"
+
+# Host mode; `just stack` prints the containerized answer by running this same command in the engine.
+# Report which external tools this machine has, and what degrades without each one.
+doctor:
+    @go run ./cmd/astrostack doctor
 
 # Start Postgres (compose).
 up:
@@ -42,13 +48,19 @@ web-prod:
 stack-build:
     GIT_DESCRIBE=$(git describe --tags --always --dirty) BUILD_TIME=$(date -u +%Y-%m-%dT%H:%MZ) docker compose --profile stack build
 
-# Run the whole app in containers WITHOUT the model — db + engine + frontend (UI :${WEB_PORT_PROD:-8082}, API :${ENGINE_PORT:-8080}).
+# Safe to re-run: the preflight is idempotent and reports only what it changed. The first run
+# builds a multi-GB image (Siril/GIMP/GraXpert/GDAL) and takes 15-40 minutes.
+# Set up + build + run the whole app in containers (db + engine + frontend, no AI), then print the URL.
 stack:
+    @scripts/stack-preflight.sh
     GIT_DESCRIBE=$(git describe --tags --always --dirty) BUILD_TIME=$(date -u +%Y-%m-%dT%H:%MZ) API_UPSTREAM=engine:8080 docker compose --profile stack up -d --build
+    @scripts/stack-ready.sh
 
 # Run the whole app in containers WITH the model (Linux+GPU; needs nvidia-container-toolkit). Then: just ai-pull
 stack-ai:
+    @scripts/stack-preflight.sh
     API_UPSTREAM=engine:8080 docker compose --profile stack --profile ai up -d --build
+    @scripts/stack-ready.sh
 
 # Stop the containerized app services (engine + frontend + ai); leaves Postgres running.
 stack-down:
