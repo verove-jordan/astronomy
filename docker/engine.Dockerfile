@@ -48,6 +48,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #     "version-drift". Override the amd64 URL / arm64 PPA with --build-arg to track the host exactly.
 # Either arch ends up at /usr/local/bin/siril-cli with its catalogue dir linked at /opt/siril-catalogue.
 ARG TARGETARCH
+# BUILDARCH is buildx's architecture of the machine doing the building. Comparing the two is the
+# only way to tell a native build (where siril-cli must run) from a cross build (where it cannot).
+ARG BUILDARCH
 ARG SIRIL_VERSION=1.4.3
 ARG SIRIL_APPIMAGE_URL=https://free-astro.org/download/Siril-1.4.3-x86_64.AppImage
 ARG SIRIL_PPA=ppa:lock042/siril
@@ -86,9 +89,25 @@ RUN set -eux; \
       ln -sfn "$sirilbin" /usr/local/bin/siril-cli; \
       ln -sfn /usr/share/siril /opt/siril-catalogue; \
     fi; \
-    # Native build → this runs. Kept non-fatal so a cross-arch build (image arch ≠ host) still completes.
-    { /usr/local/bin/siril-cli --version && echo "siril-cli OK"; } || \
-      echo "WARN: siril-cli --version failed — expected only when the image arch != the build host; verify natively"
+    # Verify, and be strict about it exactly when strictness is possible.
+    #
+    # A cross-arch build genuinely cannot execute the binary it just installed ("Exec format error"),
+    # so there the failure means nothing and stays a warning. A NATIVE build has no such excuse: the
+    # binary either runs or the image is broken, and this is the most fragile step of an arm64 build
+    # (a third-party PPA has to be publishing an arm64 package). Letting that through produced the
+    # worst possible outcome — `just stack` "succeeded", and the first job died an hour later with
+    # "Siril 1.2 is too old", pointing at the pipeline rather than at the image.
+    if [ "${TARGETARCH:-amd64}" = "${BUILDARCH:-${TARGETARCH:-amd64}}" ]; then \
+      /usr/local/bin/siril-cli --version || { \
+        echo "ERROR: siril-cli was installed but will not run on this native ${TARGETARCH:-amd64} build."; \
+        echo "       On arm64 this usually means ${SIRIL_PPA} has no arm64 package for this Ubuntu release."; \
+        echo "       Point it at another one with:  docker compose build --build-arg SIRIL_PPA=<ppa> engine"; \
+        exit 1; }; \
+      echo "siril-cli OK"; \
+    else \
+      { /usr/local/bin/siril-cli --version && echo "siril-cli OK"; } || \
+        echo "WARN: siril-cli --version failed — expected for a cross-arch build (${BUILDARCH:-?} -> ${TARGETARCH:-?}); verify natively"; \
+    fi
 
 # --- GraXpert: optional AI background-extraction / denoise (soft-fails to Siril subsky when absent).
 # Installed in an isolated venv (Ubuntu 24.04 is PEP-668 externally-managed). Set --build-arg
