@@ -59,10 +59,11 @@ type Result struct {
 }
 
 var (
-	percentRe    = regexp.MustCompile(`(\d+)\s?%`)
-	logPrefix    = regexp.MustCompile(`^log:\s?`)
-	versionRe    = regexp.MustCompile(`(?i)siril\s+v?(\d+)\.(\d+)`)
-	errLocatorRe = regexp.MustCompile(`(?i)^error in line \d+`)
+	percentRe     = regexp.MustCompile(`(\d+)\s?%`)
+	logPrefix     = regexp.MustCompile(`^log:\s?`)
+	versionRe     = regexp.MustCompile(`(?i)siril\s+v?(\d+)\.(\d+)`)
+	fullVersionRe = regexp.MustCompile(`(?i)siril\s+v?(\d+\.\d+(?:\.\d+)?)`)
+	errLocatorRe  = regexp.MustCompile(`(?i)^error in line \d+`)
 )
 
 // The pipeline emits Siril 1.4 script syntax (e.g. rgbcomp -lum=/-out=, which older Siril silently
@@ -72,30 +73,47 @@ const (
 	minSirilMinor = 4
 )
 
-// Available reports whether the siril-cli binary can be found and executed.
+// Available reports whether the siril-cli binary can be found and executed, and is new enough.
 func (r *Runner) Available(ctx context.Context) error {
+	_, err := r.Version(ctx)
+	return err
+}
+
+// Version returns the Siril version string ("1.4.3", or "1.4" when no patch level is printed),
+// having already rejected anything below the 1.4 floor.
+//
+// It is split out of Available because the version is worth SHOWING, not merely gating on:
+// `astrostack doctor` and /api/environment both name it, and in the container it is the one number
+// that says which of the two Siril install paths — the pinned x86_64 AppImage or the arm64 distro
+// package — the image was built through.
+func (r *Runner) Version(ctx context.Context) (string, error) {
 	if r.bin == "" {
-		return fmt.Errorf("siril binary path is empty (set SIRIL_BIN)")
+		return "", fmt.Errorf("siril binary path is empty (set SIRIL_BIN)")
 	}
 	out, err := exec.CommandContext(ctx, r.bin, "--version").CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("run %s --version: %w", r.bin, err)
+		return "", fmt.Errorf("run %s --version: %w", r.bin, err)
 	}
 	if !strings.Contains(strings.ToLower(string(out)), "siril") {
-		return fmt.Errorf("%s did not report a Siril version", r.bin)
+		return "", fmt.Errorf("%s did not report a Siril version", r.bin)
 	}
 	m := versionRe.FindStringSubmatch(string(out))
 	if m == nil {
-		return fmt.Errorf("could not parse a Siril version from %q", strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("could not parse a Siril version from %q", strings.TrimSpace(string(out)))
 	}
 	major, _ := strconv.Atoi(m[1])
 	minor, _ := strconv.Atoi(m[2])
 	if major < minSirilMajor || (major == minSirilMajor && minor < minSirilMinor) {
-		return fmt.Errorf("Siril %d.%d is too old: the pipeline needs >= %d.%d — it emits 1.4 script "+
+		return "", fmt.Errorf("siril %d.%d is too old: the pipeline needs >= %d.%d — it emits 1.4 script "+
 			"syntax (e.g. `rgbcomp -lum=/-out=`) that older Siril silently ignores; install Siril 1.4.x",
 			major, minor, minSirilMajor, minSirilMinor)
 	}
-	return nil
+	// Prefer the full dotted version Siril printed over the two components the floor check parsed:
+	// the patch level is exactly what distinguishes the arm64 distro build from the pinned AppImage.
+	if full := fullVersionRe.FindStringSubmatch(string(out)); full != nil {
+		return full[1], nil
+	}
+	return fmt.Sprintf("%d.%d", major, minor), nil
 }
 
 // Run writes script to workDir and executes it with `siril-cli -d workDir -s script`, streaming

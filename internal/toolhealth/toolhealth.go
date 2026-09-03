@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -46,10 +47,14 @@ type PlateSolve struct {
 
 // Report is the full environment-health snapshot.
 type Report struct {
-	Siril      Tool       `json:"siril"`
-	Gimp       Tool       `json:"gimp"`
-	Graxpert   Tool       `json:"graxpert"`
-	Starnet    Tool       `json:"starnet"`
+	Siril    Tool `json:"siril"`
+	Gimp     Tool `json:"gimp"`
+	Graxpert Tool `json:"graxpert"`
+	Starnet  Tool `json:"starnet"`
+	// FFmpeg carries ffprobe's resolution in its Detail: the two always ship together, and ffprobe
+	// is looked up as ffmpeg's sibling when FFPROBE_BIN is unset, so reporting them apart would
+	// invite fixing one and leaving the other.
+	FFmpeg     Tool       `json:"ffmpeg"`
 	RawDev     Tool       `json:"raw_developer"`
 	Devices    Tool       `json:"devices"` // the camera/mount device server (a separate process)
 	LLM        Tool       `json:"llm"`
@@ -110,11 +115,17 @@ func (c *Checker) Invalidate() {
 func (c *Checker) collect(ctx context.Context) *Report {
 	r := &Report{CheckedMs: time.Now().UnixMilli()}
 
-	if err := c.siril.Available(ctx); err != nil {
+	if ver, err := c.siril.Version(ctx); err != nil {
 		r.Siril = Tool{Err: err.Error()}
 		r.Warnings = append(r.Warnings, "Siril is unavailable — no processing can run: "+err.Error())
 	} else {
-		r.Siril = Tool{OK: true}
+		r.Siril = Tool{OK: true, Detail: ver}
+	}
+
+	r.FFmpeg = c.ffmpegHealth(ctx)
+	if r.FFmpeg.Err != "" {
+		r.Warnings = append(r.Warnings, "ffmpeg not found — video output and the planetary/sun/eclipse "+
+			"frame ingest cannot run ("+r.FFmpeg.Err+")")
 	}
 
 	// GIMP: a cheap binary lookup only. Client.Available() would START the GIMP server, which a
@@ -133,6 +144,14 @@ func (c *Checker) collect(ctx context.Context) *Report {
 
 	if _, err := exec.LookPath(c.cfg.StarnetBin); err != nil {
 		r.Starnet = Tool{Err: fmt.Sprintf("starnet binary %q not found", c.cfg.StarnetBin)}
+		// Said out loud, like every other optional tool. StarNet's absence used to be reported as a
+		// bare ok:false with no warning, which is the one form the UI banner does not render — so the
+		// nebula/comet star-reduction step silently did nothing and the picture merely looked
+		// different. It is never bundled (the licence is not redistributable), so on a container run
+		// it is ALWAYS absent unless the user mounted it, which makes saying so more important here
+		// rather than less.
+		r.Warnings = append(r.Warnings, "StarNet++ not found — star reduction is skipped and the "+
+			"nebula/comet finishes keep full stars (mount it and set STARNET_BIN)")
 	} else {
 		r.Starnet = Tool{OK: true}
 	}
@@ -167,6 +186,52 @@ func (c *Checker) collect(ctx context.Context) *Report {
 		r.Warnings = append(r.Warnings, "no local plate-solve catalogue — solving needs network and SPCC colour calibration may fall back (run `just download-catalogues`)")
 	}
 	return r
+}
+
+// ffmpegHealth resolves ffmpeg and reads its version.
+//
+// It is here because ffmpeg was the one tool the pipeline treats as REQUIRED and nothing ever
+// checked: every other external binary is guarded by a LookPath somewhere, while ffmpeg is invoked
+// directly by the planetary, solar and video-output paths and fails mid-run as `ffmpeg extract: …`,
+// twenty minutes into a job. A missing ffprobe is reported alongside but is not itself an error —
+// the extractors degrade to 8-bit rather than stopping.
+func (c *Checker) ffmpegHealth(ctx context.Context) Tool {
+	bin := c.cfg.FfmpegBin
+	if bin == "" {
+		bin = "ffmpeg"
+	}
+	path, err := exec.LookPath(bin)
+	if err != nil {
+		return Tool{Err: fmt.Sprintf("ffmpeg binary %q not found", bin)}
+	}
+	detail := ffmpegVersion(ctx, path)
+	if _, err := exec.LookPath(ffprobeBin(path)); err != nil {
+		detail += " (no ffprobe — video probing degrades to 8-bit)"
+	}
+	return Tool{OK: true, Detail: detail}
+}
+
+// ffprobeBin mirrors how the video probers resolve ffprobe: FFPROBE_BIN, else ffmpeg's sibling.
+func ffprobeBin(ffmpegPath string) string {
+	if v := os.Getenv("FFPROBE_BIN"); v != "" {
+		return v
+	}
+	return filepath.Join(filepath.Dir(ffmpegPath), "ffprobe")
+}
+
+// ffmpegVersion returns just the version token from `ffmpeg -version`, whose first line reads
+// "ffmpeg version 7.1 Copyright …". A probe that will not run is not fatal here — the binary
+// resolved, which is what the pipeline needs — so this degrades to the empty string.
+func ffmpegVersion(ctx context.Context, path string) string {
+	out, err := exec.CommandContext(ctx, path, "-version").Output()
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) >= 3 && fields[0] == "ffmpeg" && fields[1] == "version" {
+		return fields[2]
+	}
+	return ""
 }
 
 // graxpertHealth reports the cached GraXpert deep-probe verdict without blocking; an unknown
