@@ -1284,10 +1284,31 @@ export interface SkyQueryEcho {
   limit: number;
 }
 
+// SkyPoint answers "what is it like HERE" for one map coordinate — the payload behind the map's hover
+// tooltip. `weather` is present only when the server already had a cached forecast for the point: the
+// endpoint never triggers an upstream fetch, because the weather cache keys on 0.01° (~1.1 km) and a
+// hover would otherwise mint a request every few pixels of pointer travel.
+export interface SkyPointWeather {
+  t_ms: number;
+  cloud_pct: number;
+  seeing_arcsec?: number;
+  temp_c?: number;
+  humidity_pct?: number;
+}
+
+export interface SkyPoint {
+  lat: number;
+  lon: number;
+  site: SiteQuality;
+  weather?: SkyPointWeather;
+  warning?: string;
+}
+
 // SiteQuality is the artificial sky brightness at the observing site (the `site` field of the sky API).
 export interface SiteQuality {
   sqm: number; // zenith brightness, mag/arcsec² (higher = darker)
   bortle: number; // 1 (pristine) … 9 (inner city)
+  bortle_f: number; // the same class, continuous: 4.24 rather than 4 (0 = unknown)
   source: string; // "api" | "atlas" | "default"
   retrieved_ms: number;
 }
@@ -1402,6 +1423,7 @@ export interface DarkSite {
   lon: number;
   sqm: number;
   bortle: number;
+  bortle_f?: number; // the class, continuous — tells two same-class sites apart (absent on an older engine)
   distance_km: number; // straight-line (great-circle) distance
   drive_km?: number; // road distance from the observer (absent = not computed)
   drive_min?: number; // estimated driving time, minutes (absent = not computed)

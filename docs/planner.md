@@ -52,13 +52,22 @@ passes the shared observing site and the engine fans out:
 | `/api/sky/events` · `/series` | Calendar | ephemeris compute + embedded showers + CelesTrak TLE + MPC comets | disk cache |
 | `/api/sky/align` (+ `/profiles`) | GoTo — alignment sequences | embedded `brightstars.csv` + hand-controller catalogs + max-spread compute | embedded |
 | `/api/sky/polar` | Polar reticle | celestial-pole geometry (compute) | — |
-| `/api/sky/lightpollution` (+ `/atlas`, `/tiles/…`) | SQM/Bortle scores + map overlay | keyed API → offline atlas → NASA GIBS VIIRS → default | mem + disk (~720 h) |
+| `/api/sky/lightpollution` (+ `/atlas`, `/tiles/…`) | SQM/Bortle scores + map overlay | offline atlas (when primary) → cache → keyed API → offline atlas → NASA GIBS VIIRS → default | mem + disk (~720 h) |
+| `/api/sky/point` | Map hover tooltip | offline atlas + the weather cache — **never** an upstream fetch | reads existing caches |
 | `/api/sky/darksites` | Dark-sky finder | light pollution × terrain elevation × **tree-canopy horizon** × **the chosen night's forecast** × OSRM driving distance | inherits caches |
 | `/api/sky/nights` | Night picker | twilight + Moon compute (no upstream) | — |
 | `/api/sky/canopy/atlas` | canopy atlas status/build | ETH GlobalCanopyHeight download | disk atlas |
 | `/api/sky/weather` (+ `/grid`, `/grid/frames`, `/tiles/…`) | Astro-weather panel + animated map layers | Open-Meteo + Air-Quality + ensemble + 7Timer! + NOAA SWPC; rain radar tiles from RainViewer | mem + disk (~30 min) |
 | `/api/sky/geocode` | Site picker | OpenStreetMap Nominatim | per request |
 | `/api/solarsystem/bodies` · `/state` · `/texture` | Solar system | compiled-in body table + Standish elements + IAU rotational elements; surface maps downloaded on request | embedded + `work/solarsystem` |
+
+**Light-pollution resolution.** The offline atlas is the djlorenz model at 120 samples/degree — 30 arcsec
+cells, about 0.9 km — bilinearly sampled, and it is read *ahead of* the caches when no keyed API is
+configured. That ordering is the point: the caches exist to spare network round-trips and key on
+coordinates rounded to ~1 km, so serving the atlas through them would round the **question** and collapse
+a village edge and the field beyond it onto one answer. Readings carry both `bortle` (the integer class
+every threshold is written against) and `bortle_f`, the same reading continuous — a site is not just "a
+4" but a 4.2, which is what makes two candidates inside one class comparable.
 
 Every feed is **keyless by default and soft-fails**: a dead upstream falls back to the disk cache
 (even stale), then to the offline atlas / local compute / a configurable default — no `/api/sky/*`

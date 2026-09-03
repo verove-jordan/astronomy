@@ -134,6 +134,7 @@ type Candidate struct {
 	Lon        float64               `json:"lon"`
 	SQM        float64               `json:"sqm"`
 	Bortle     int                   `json:"bortle"`
+	BortleF    float64               `json:"bortle_f"`            // the class, continuous — 3.7 vs 3.2 inside one class
 	DistanceKm float64               `json:"distance_km"`         // straight-line (great-circle) distance
 	DriveKm    float64               `json:"drive_km,omitempty"`  // road distance from the observer (0 = not computed)
 	DriveMin   float64               `json:"drive_min,omitempty"` // estimated driving time, minutes (0 = not computed)
@@ -189,7 +190,7 @@ func (f *Finder) Find(ctx context.Context, q Query) *Result {
 			continue
 		}
 		cand = append(cand, Candidate{
-			Lat: c.Lat, Lon: c.Lon, SQM: c.SQM, Bortle: c.Bortle,
+			Lat: c.Lat, Lon: c.Lon, SQM: c.SQM, Bortle: c.Bortle, BortleF: c.BortleF,
 			DistanceKm: round1(haversineKm(q.ObsLat, q.ObsLon, c.Lat, c.Lon)),
 		})
 	}

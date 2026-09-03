@@ -21,7 +21,7 @@ import {
   entrySelected,
 } from "@/constants/styles";
 import type { SkyEyepiece, LocationFavorite, EquipmentSetup } from "@/types";
-import { bortleColor } from "@/utils/bortle";
+import { bortleColor, bortleLabel } from "@/utils/bortle";
 import { effectiveFocalMm } from "@/utils/optics";
 
 const { t } = useI18n();
@@ -401,8 +401,8 @@ defineExpose({ setLatLon });
               <span class="text-slate-600 dark:text-slate-300">
                 {{
                   t("tonight.site.label", {
-                    bortle: store.site.bortle,
-                    sqm: store.site.sqm.toFixed(1),
+                    bortle: bortleLabel(store.site.bortle, store.site.bortle_f),
+                    sqm: store.site.sqm.toFixed(2),
                   })
                 }}
               </span>

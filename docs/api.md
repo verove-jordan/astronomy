@@ -72,6 +72,7 @@ rejects anything else); two endpoints stream Server-Sent Events (SSE).
 | `GET /api/sky/align` · `GET /api/sky/align/profiles` | GoTo alignment star sequences |
 | `GET /api/sky/geocode` | Place-name lookup |
 | `GET /api/sky/lightpollution` (+ `/atlas` GET/POST, `/tiles/{z}/{x}/{y}`) | Sky brightness point/atlas/overlay tiles |
+| `GET /api/sky/point` | Map hover readout: light pollution at one coordinate + weather **from cache only** (never fetches upstream) |
 | `GET /api/sky/darksites` | Dark-site search for one night (darkness + horizon + forecast + drive distance); `night=`, `weather=0|1`, `weather_weight=` |
 | `GET /api/sky/nights` | Upcoming observing nights (dark window, Moon) for the night picker |
 | `GET /api/sky/canopy/atlas` (GET/POST) | Tree-canopy atlas status / build |

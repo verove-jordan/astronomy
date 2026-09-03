@@ -3168,6 +3168,13 @@
         "pause": "Pause",
         "scrub": "Heure de la nuit"
       }
+    },
+    "hover": {
+      "sqmUnit": "mag/arcsec²",
+      "cloud": "Nuages",
+      "seeing": "Turbulence",
+      "temp": "Temp.",
+      "noWeather": "Pas de prévision en cache ici"
     }
   },
   "calendar": {

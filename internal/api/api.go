@@ -261,6 +261,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/backup", s.listBackups)
 	mux.HandleFunc("POST /api/backup/restore", s.restoreBackup)
 	mux.HandleFunc("GET /api/backup/appstate", s.backupAppState)
+	mux.HandleFunc("GET /api/sky/point", s.skyPoint)
 	mux.HandleFunc("GET /api/sky/lightpollution", s.lightPollution)
 	mux.HandleFunc("GET /api/sky/lightpollution/atlas", s.atlasStatus)
 	mux.HandleFunc("POST /api/sky/lightpollution/atlas", s.buildAtlas)

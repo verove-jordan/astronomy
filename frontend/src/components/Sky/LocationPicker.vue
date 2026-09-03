@@ -12,12 +12,13 @@ import {
   type LeafletEvent,
 } from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { apiGet } from "@/services/api";
+import { apiGet, skyPoint } from "@/services/api";
 import { addDarkBaseMap } from "@/utils/basemap";
 import { useMapLayers } from "@/composables/useMapLayers";
 import { useMapPinchZoom } from "@/composables/useMapPinchZoom";
 import { useWeatherStore } from "@/stores/weather";
 import { useLightPollutionStore } from "@/stores/lightpollution";
+import { bortleLabel, bortleRampColor } from "@/utils/bortle";
 import { createFrameTileLayer } from "@/composables/useFrameTileLayer";
 import { createRainviewerLayer } from "@/composables/useRainviewerLayer";
 import LightPollutionLegend from "@/components/Sky/LightPollutionLegend.vue";
@@ -26,7 +27,7 @@ import WeatherLegend from "@/components/Sky/WeatherLegend.vue";
 import RadarLegend from "@/components/Sky/RadarLegend.vue";
 import { input, btnPrimary } from "@/constants/styles";
 import { CHART_ALT_FILL } from "@/constants/colors";
-import type { GeoResult } from "@/types";
+import type { GeoResult, SkyPoint } from "@/types";
 
 // Leaflet is only reachable through the lazily-loaded /tonight route, so it stays out of the main
 // bundle. A circleMarker avoids Leaflet's default-icon asset-path issues under the bundler.
@@ -107,6 +108,93 @@ function retryTile(e: LeafletEvent) {
   );
 }
 
+// --- Hover readout -------------------------------------------------------------------------------
+// Moving the pointer over the map asks the engine what that coordinate is like. The lookup is cheap by
+// construction: light pollution comes from the local atlas, and weather only from the server's cache —
+// /api/sky/point never fetches upstream (see internal/api/point.go), so sweeping the map is free.
+//
+// Still debounced and de-duplicated: a mousemove fires per pixel. Coordinates are rounded to ~100 m
+// before they become a request, so dragging across a region issues a handful of calls rather than
+// hundreds — but not to ~1 km, which is the atlas's own cell size and would round away exactly the
+// detail the tooltip exists to show (the server no longer quantizes; the client must not either).
+const hover = ref<SkyPoint | null>(null);
+const hoverAt = ref<{ x: number; y: number } | null>(null);
+let hoverTimer: ReturnType<typeof setTimeout> | null = null;
+let hoverController: AbortController | null = null;
+let hoverKey = "";
+const hoverCache = new Map<string, SkyPoint>();
+// Capped because the key is a ~100 m cell: a long sweep across a region would otherwise accumulate
+// thousands of entries for the lifetime of the panel. Dropped wholesale rather than by LRU — a re-fetch
+// is a local atlas read, so the only cost of a miss is one cheap request.
+const HOVER_CACHE_MAX = 600;
+
+const pointKey = (lat: number, lon: number) =>
+  `${lat.toFixed(3)},${lon.toFixed(3)}`;
+
+function onMapHover(e: LeafletMouseEvent) {
+  hoverAt.value = { x: e.containerPoint.x, y: e.containerPoint.y };
+  const key = pointKey(e.latlng.lat, e.latlng.lng);
+  if (key === hoverKey) return; // same ~100 m cell: keep showing what we have
+  hoverKey = key;
+  const cached = hoverCache.get(key);
+  if (cached) {
+    hover.value = cached;
+    return;
+  }
+  if (hoverTimer) clearTimeout(hoverTimer);
+  const { lat, lng } = e.latlng;
+  hoverTimer = setTimeout(() => {
+    hoverController?.abort();
+    hoverController = new AbortController();
+    skyPoint(lat, lng, hoverController.signal)
+      .then((p) => {
+        if (hoverCache.size >= HOVER_CACHE_MAX) hoverCache.clear();
+        hoverCache.set(key, p);
+        if (hoverKey === key) hover.value = p;
+      })
+      .catch(() => {
+        /* a hover readout is never worth surfacing an error for */
+      });
+  }, 140);
+}
+
+function onMapLeave() {
+  if (hoverTimer) clearTimeout(hoverTimer);
+  hoverController?.abort();
+  hoverKey = "";
+  hover.value = null;
+  hoverAt.value = null;
+}
+
+// The tooltip follows the cursor but is flipped back inside the map near the right/bottom edges, so it
+// never spills out of the square container.
+const hoverStyle = computed(() => {
+  const at = hoverAt.value;
+  const el = mapEl.value;
+  if (!at || !el) return {};
+  const flipX = at.x > el.clientWidth - 190;
+  const flipY = at.y > el.clientHeight - 110;
+  return {
+    left: `${at.x + (flipX ? -12 : 12)}px`,
+    top: `${at.y + (flipY ? -12 : 12)}px`,
+    transform: `translate(${flipX ? "-100%" : "0"}, ${flipY ? "-100%" : "0"})`,
+  };
+});
+
+// --- Selected-site reading ------------------------------------------------------------------------
+// The legend below the map marks the SELECTED location's Bortle class, so the colour ramp reads as a
+// measurement of where you are pointing rather than a static key.
+const siteBortle = ref<number | null>(null);
+async function refreshSiteBortle(lat: number, lon: number) {
+  try {
+    const p = await skyPoint(lat, lon);
+    // bortle_f is the same reading undegraded; fall back to the integer class for an older engine.
+    siteBortle.value = p.site?.bortle_f || p.site?.bortle || null;
+  } catch {
+    siteBortle.value = null;
+  }
+}
+
 onMounted(() => {
   const el = mapEl.value;
   if (!el) return;
@@ -165,6 +253,9 @@ onMounted(() => {
   lmap.on("click", (e: LeafletMouseEvent) =>
     emit("pick", e.latlng.lat, e.latlng.lng),
   );
+  lmap.on("mousemove", onMapHover);
+  lmap.on("mouseout", onMapLeave);
+  void refreshSiteBortle(props.lat, props.lon);
 
   // Trackpad gestures: ⌘/ctrl+wheel zooms about the cursor (velocity-sensitive); plain wheel pans.
   detachWheel = useMapPinchZoom(el, () => lmap);
@@ -196,6 +287,8 @@ onBeforeUnmount(() => {
   weather.pause(); // stop the animation interval so it doesn't keep mutating the store after we leave /tonight
   lpStore.stopPolling(); // stop the LP build-status poll if a download was still in progress
   if (lpMoveTimer) clearTimeout(lpMoveTimer);
+  if (hoverTimer) clearTimeout(hoverTimer);
+  hoverController?.abort();
   if (rvRefreshTimer) clearInterval(rvRefreshTimer);
   rvRefreshTimer = null;
   lmap?.remove();
@@ -464,6 +557,7 @@ watch(
     marker.setLatLng([lat, lon]);
     lmap.setView([lat, lon]);
     maybeFetchWeather(true); // refetch the weather cube for the new site (if a grid layer is on)
+    void refreshSiteBortle(lat, lon); // the legend marks the selected site's class
   },
 );
 
@@ -547,6 +641,62 @@ function choose(r: GeoResult) {
         class="relative z-0 aspect-square w-full overflow-hidden rounded-md border border-slate-200 dark:border-slate-700"
         :aria-label="t('tonight.location.map')"
       />
+      <!-- Hover readout: what the pointer is over. Bortle/SQM always (local atlas); weather only when
+           the server already had it cached, so sweeping the map never costs an upstream request. -->
+      <div
+        v-if="hover && hoverAt"
+        class="pointer-events-none absolute z-[500] w-44 rounded-md border border-slate-700 bg-slate-900/95 p-2 text-[11px] text-slate-100 shadow-lg"
+        :style="hoverStyle"
+        data-testid="map-hover"
+      >
+        <div class="flex items-center gap-1.5">
+          <span
+            class="inline-block h-3 w-3 shrink-0 rounded-sm ring-1 ring-white/30"
+            :style="{
+              backgroundColor: bortleRampColor(
+                hover.site.bortle_f || hover.site.bortle,
+              ),
+            }"
+          />
+          <span class="font-semibold">
+            {{ t("tonight.layers.bortle") }}
+            {{ bortleLabel(hover.site.bortle, hover.site.bortle_f) }}
+          </span>
+          <span class="text-slate-400">
+            {{
+              hover.site.sqm
+                ? `${hover.site.sqm.toFixed(2)} ${t("tonight.hover.sqmUnit")}`
+                : ""
+            }}
+          </span>
+        </div>
+        <div class="mt-1 text-slate-400">
+          {{ hover.lat.toFixed(3) }}, {{ hover.lon.toFixed(3) }}
+        </div>
+        <div v-if="hover.weather" class="mt-1 space-y-0.5">
+          <div>
+            {{ t("tonight.hover.cloud") }}:
+            <span class="font-medium text-slate-100">
+              {{ Math.round(hover.weather.cloud_pct) }}%
+            </span>
+          </div>
+          <div v-if="hover.weather.seeing_arcsec">
+            {{ t("tonight.hover.seeing") }}:
+            <span class="font-medium text-slate-100">
+              {{ hover.weather.seeing_arcsec.toFixed(1) }}″
+            </span>
+          </div>
+          <div v-if="hover.weather.temp_c">
+            {{ t("tonight.hover.temp") }}:
+            <span class="font-medium text-slate-100">
+              {{ Math.round(hover.weather.temp_c) }} °C
+            </span>
+          </div>
+        </div>
+        <div v-else class="mt-1 italic text-slate-500">
+          {{ t("tonight.hover.noWeather") }}
+        </div>
+      </div>
       <!-- Download-on-demand: when the light-pollution overlay is on but the viewed area isn't in the
            offline atlas, offer to download it (unioned with existing coverage). Overlaid on the map. -->
       <div
@@ -619,7 +769,10 @@ function choose(r: GeoResult) {
       </span>
     </div>
     <WeatherTimeline v-if="anyAnimatedEnabled()" />
-    <LightPollutionLegend v-if="isEnabled('lightPollution')" />
+    <LightPollutionLegend
+      v-if="isEnabled('lightPollution')"
+      :bortle="siteBortle"
+    />
     <WeatherLegend
       v-for="o in enabledWeatherLayers"
       :key="o.id"

@@ -12,11 +12,14 @@ type Bbox struct {
 	MinLat, MinLon, MaxLat, MaxLon float64
 }
 
-// Cell is one sampled grid point: its location and resolved sky brightness.
+// Cell is one sampled grid point: its location and resolved sky brightness. Bortle is the integer class
+// every threshold is written against; BortleF is the same reading continuous, so two cells inside one
+// class can still be told apart (see SiteQuality).
 type Cell struct {
 	Lat, Lon float64
 	SQM      float64
 	Bortle   int
+	BortleF  float64
 }
 
 // ScanArea samples sky brightness on an nx×ny grid spanning bbox and returns every cell where a value
@@ -45,7 +48,10 @@ func (p *Provider) ScanArea(ctx context.Context, bbox Bbox, nx, ny int) []Cell {
 				continue
 			}
 			sqm = clampf(sqm, 14.0, pristineSQM)
-			out = append(out, Cell{Lat: lat, Lon: lon, SQM: round2(sqm), Bortle: sqmToBortle(sqm)})
+			out = append(out, Cell{
+				Lat: lat, Lon: lon, SQM: round2(sqm),
+				Bortle: sqmToBortle(sqm), BortleF: round2(sqmToBortleF(sqm)),
+			})
 		}
 	}
 	return out

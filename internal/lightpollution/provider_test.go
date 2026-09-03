@@ -2,6 +2,7 @@ package lightpollution
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -94,4 +95,51 @@ func TestProvider_FetchTile_ProxiesAndCaches(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, path1, path2)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&hits), "second fetch should hit the disk cache")
+}
+
+// With no keyed API configured the atlas is the primary source, and it must be read at the coordinate
+// asked for — NOT through the ~1 km cache key. Two points inside one cache cell but at different places
+// on the sky-brightness gradient have to come back different; collapsing them onto one value is exactly
+// the precision loss the ladder's step 0 exists to avoid.
+func TestProvider_At_AtlasKeepsSubCacheCellPrecision(t *testing.T) {
+	// A steep west→east gradient: SQM 22 (pristine) at lon 0, 17 (inner city) at lon 1.
+	atlasBin := writeAtlas(t, atlasMeta{
+		Rows: 2, Cols: 2, LatMin: 0, LatMax: 1, LonMin: 0, LonMax: 1, Unit: "sqm", NoData: -1,
+	}, []float32{22, 17, 22, 17})
+
+	p := New(&config.Config{
+		WorkDir: t.TempDir(), DataDir: t.TempDir(), SkyDefaultSQM: 19.0,
+		LightPollutionAtlas: atlasBin,
+	})
+
+	// Both round to the same cacheKey ("+0.50_+0.50"), so a cached answer would be identical.
+	require.Equal(t, cacheKey(0.5, 0.500), cacheKey(0.5, 0.504))
+	a, _ := p.At(context.Background(), 0.5, 0.500)
+	b, _ := p.At(context.Background(), 0.5, 0.504)
+	assert.Equal(t, "atlas", a.Source)
+	assert.NotEqual(t, a.SQM, b.SQM, "two points in one cache cell must not share one atlas reading")
+	assert.Greater(t, a.SQM, b.SQM, "brightness rises eastward, so the eastern point is less dark")
+}
+
+// BortleF carries the resolution the integer class throws away, and the badge shows them together — the
+// swatch coloured on Bortle, the text printed from BortleF. So the fraction must always sit within half a
+// class of the integer, or the pair reads as a contradiction. (Their rounding agreement away from the
+// exact class boundaries is pinned in TestSqmToBortleF_RoundsToDiscrete; at a boundary the half-integer
+// is a genuine tie and either neighbour is honest.)
+func TestSiteQuality_BortleFAgreesWithClass(t *testing.T) {
+	for sqm := 17.0; sqm <= 22.0; sqm += 0.01 {
+		sq := newSiteQuality(sqm, "atlas")
+		require.GreaterOrEqual(t, sq.BortleF, 1.0)
+		require.LessOrEqual(t, sq.BortleF, 9.0)
+		assert.LessOrEqualf(t, math.Abs(sq.BortleF-float64(sq.Bortle)), 0.5+1e-9,
+			"SQM %.2f: class %d vs fractional %.2f", sqm, sq.Bortle, sq.BortleF)
+	}
+}
+
+// Inside one class the fraction still moves — otherwise it adds a decimal point and no information.
+func TestSiteQuality_BortleFVariesInsideAClass(t *testing.T) {
+	dark, bright := newSiteQuality(21.6, "atlas"), newSiteQuality(21.3, "atlas")
+	require.Equal(t, 4, dark.Bortle)
+	require.Equal(t, 4, bright.Bortle)
+	assert.Less(t, dark.BortleF, bright.BortleF)
 }
