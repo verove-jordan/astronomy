@@ -10,6 +10,7 @@
 //	astrostack device                 run the device server (camera / filter wheel / mount)
 //	astrostack mount <sub>            diagnose, probe or soak-test the hand-controller link
 //	astrostack migrate                apply database migrations
+//	astrostack doctor                 report which external tools are present and what is degraded
 package main
 
 import (
@@ -45,6 +46,8 @@ func main() {
 		err = runMount(os.Args[2:])
 	case "migrate":
 		err = runMigrate(os.Args[2:])
+	case "doctor":
+		err = runDoctor(os.Args[2:])
 	case "lightpollution-atlas":
 		err = runLightPollutionAtlas(os.Args[2:])
 	case "skymap-data":
@@ -81,6 +84,7 @@ Usage:
   astrostack device                  run the device server (camera / filter wheel / mount)
   astrostack mount <sub>             hand-controller link: doctor | probe | soak
   astrostack migrate                 apply database migrations
+  astrostack doctor                  report which external tools are present, and what degrades without them
   astrostack lightpollution-atlas    build the offline light-pollution atlas (djlorenz model)
   astrostack skymap-data             build the frontend star + constellation dataset (skymap.json)
   astrostack deepstars-data          build the embedded deep star catalogue (internal/deepstars)
