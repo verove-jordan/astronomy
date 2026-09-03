@@ -43,7 +43,21 @@ func computeNight(prm Params, dark astro.DarkWindow) nightCtx {
 		return a
 	}
 
-	midnight := astro.SolarMidnight(prm.At, lat, lon)
+	// Anchor on the DARK WINDOW's own midnight, not on a fresh SolarMidnight(prm.At).
+	//
+	// The two disagree for half of every day, and the disagreement is not subtle.
+	// astro.SolarMidnight returns the anti-transit NEAREST the instant it is handed, so any time
+	// between roughly dawn and mid-afternoon it returns LAST night's midnight — at noon on the 3rd it
+	// answers 00:00 on the 3rd, which belongs to the night of the 2nd. astro.NightWindow already
+	// handles exactly that (it rolls forward when the instant is past the window's dawn), and its
+	// result is passed in here; recomputing threw that work away.
+	//
+	// The visible fault: at midday the chart window, the weather panel's hour filter and the
+	// "night of" badge were all framed on the night that ended THIS MORNING, while the best-clear-
+	// window came from astro.NightWindow and described the night ahead. The panel read "Nuit du
+	// 02/09" at noon on the 3rd, over hours from a night nobody can observe any more, with a
+	// degenerate best window because the two halves disagreed about which night was being described.
+	midnight := astro.SolarMidnight(dark.Start.Add(dark.End.Sub(dark.Start)/2), lat, lon)
 	var nc nightCtx
 	for _, c := range astro.AltitudeCrossings(sunAlt, midnight.Add(-12*time.Hour), midnight.Add(12*time.Hour), 5*time.Minute, sunHorizonDeg) {
 		if !c.Rising && !c.Time.After(midnight) {
