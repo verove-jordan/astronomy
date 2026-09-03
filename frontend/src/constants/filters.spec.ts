@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   FILTERS,
   NARROWBAND,
+  COLOR_FILTER,
+  isColorFilter,
   isNarrowband,
   filterRank,
   compareFilters,
@@ -29,6 +31,33 @@ describe("canonical filter set", () => {
       expect(FILTER_HEX[f], `hex for ${f}`).toBeTruthy();
       expect(filterChip[f], `chip class for ${f}`).toBeTruthy();
     }
+  });
+});
+
+describe("one-shot-colour sentinel", () => {
+  // Mirrors internal/filters.Color and filters.IsColor (Go).
+  it("names the colour channel RGB", () => {
+    expect(COLOR_FILTER).toBe("RGB");
+  });
+
+  it("recognises every spelling a capture program writes for 'no filter, colour'", () => {
+    for (const s of ["RGB", "rgb", "OSC", "Color", "colour", "Bayer"])
+      expect(isColorFilter(s), s).toBe(true);
+  });
+
+  it("does not treat an unknown filter as colour", () => {
+    // An empty name means the filter is not known yet, NOT that the frame is colour — reading it as
+    // colour would make every unlabeled monochrome capture look like a one-shot-colour session.
+    for (const s of ["", "   ", "L", "Ha", "Baader"])
+      expect(isColorFilter(s), s).toBe(false);
+  });
+
+  it("keeps the colour channel out of the wheel", () => {
+    // It must never join FILTERS: it would take a wheel rank, get a narrowband answer and claim a
+    // slot in the emission-screen tables, none of which mean anything for a colour sensor.
+    expect([...FILTERS]).not.toContain(COLOR_FILTER);
+    expect(isNarrowband(COLOR_FILTER)).toBe(false);
+    expect(filterRank(COLOR_FILTER)).toBe(FILTERS.length);
   });
 });
 

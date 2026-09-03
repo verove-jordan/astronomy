@@ -1,4 +1,12 @@
 import type { Scene3DBillboard, Scene3DManifest, Scene3DShape } from "@/types";
+import {
+  perspective,
+  projectToScreen,
+  type Mat4,
+  type Viewport,
+} from "@/utils/mat4";
+import { IMAGE_FRAME, type Orbit } from "@/utils/orbitcam";
+import * as cam from "@/utils/orbitcam";
 
 // Pure geometry and decoding for the 3D field map. Everything the WebGL renderer needs that is not
 // a GL call lives here, because happy-dom has no WebGL context — anything left inside the draw loop
@@ -6,6 +14,11 @@ import type { Scene3DBillboard, Scene3DManifest, Scene3DShape } from "@/types";
 //
 // The engine did all the astronomy. What arrives is a unit direction and a distance per star; this
 // module only decides where that lands on screen.
+//
+// The matrix and orbit-camera maths moved to mat4.ts and orbitcam.ts when the solar-system map
+// needed the same camera in a scene whose up axis is different. They are re-exported from here so
+// this module's callers — and its spec — are unaffected; the field map binds IMAGE_FRAME, the
+// convention where +Y runs DOWN the photograph's rows.
 
 // --- the binary star field ---------------------------------------------------------------------
 
@@ -249,30 +262,14 @@ export function linearPosition(
 
 // --- matrices ------------------------------------------------------------------------------------
 
-export type Mat4 = Float32Array;
-
-export function identity(): Mat4 {
-  // prettier-ignore
-  return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
-}
-
-// perspective builds the projection that reproduces the run's own camera. It takes the half-field
-// TANGENTS rather than a field-of-view angle so the manifest's numbers go in untouched — the engine
-// measured them off the plate solution, and converting to degrees and back only loses precision.
-export function perspective(
-  tanHalfW: number,
-  tanHalfH: number,
-  near: number,
-  far: number,
-): Mat4 {
-  const m = new Float32Array(16);
-  m[0] = 1 / tanHalfW;
-  m[5] = 1 / tanHalfH;
-  m[10] = -(far + near) / (far - near);
-  m[11] = -1;
-  m[14] = -(2 * far * near) / (far - near);
-  return m;
-}
+export {
+  identity,
+  multiply,
+  perspective,
+  projectToScreen,
+  type Mat4,
+  type Viewport,
+} from "@/utils/mat4";
 
 // fitPerspective builds the projection for one scene, fitted to the CANVAS it will be drawn on.
 //
@@ -300,6 +297,21 @@ export function fitPerspective(
   far = 1000,
   tanScale = 1,
 ): Mat4 {
+  const { tw, th } = fitTanHalf(m, canvasAspect, tanScale);
+  return perspective(tw, th, near, far);
+}
+
+// fitTanHalf is the pair of half-field tangents fitPerspective ends up using — the corrections above,
+// without the matrix.
+//
+// Split out because the galaxy shader needs the VERTICAL one: it sizes each point by the angle the
+// patch of Galaxy it stands for actually subtends, and reading the field of view off a second
+// expression is how a renderer ends up disagreeing with its own projection.
+export function fitTanHalf(
+  m: Scene3DManifest,
+  canvasAspect: number,
+  tanScale = 1,
+): { tw: number; th: number } {
   const { width, height } = m.image;
   const kx = width > 1 ? width / (width - 1) : 1;
   const ky = height > 1 ? height / (height - 1) : 1;
@@ -312,103 +324,30 @@ export function fitPerspective(
     if (canvasAspect > imageAspect) tw = th * canvasAspect;
     else th = tw / canvasAspect;
   }
-  return perspective(tw, th, near, far);
-}
-
-export function multiply(a: Mat4, b: Mat4): Mat4 {
-  const out = new Float32Array(16);
-  for (let c = 0; c < 4; c++) {
-    for (let r = 0; r < 4; r++) {
-      let s = 0;
-      for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k];
-      out[c * 4 + r] = s;
-    }
-  }
-  return out;
+  return { tw, th };
 }
 
 // Orbit is the camera: a target to look at, a distance from it, and two angles. The default —
 // target on the scene's reference plane, no rotation — puts the eye at the origin, which is Earth,
 // which is where the photograph was taken from.
-export interface Orbit {
-  target: [number, number, number];
-  distance: number;
-  yaw: number;
-  pitch: number;
-  roll: number;
-}
+export { PITCH_LIMIT, type Orbit } from "@/utils/orbitcam";
 
 export function defaultOrbit(): Orbit {
   return { target: [0, 0, Z_REF], distance: Z_REF, yaw: 0, pitch: 0, roll: 0 };
 }
-
-// PITCH_LIMIT stops the camera passing through the poles, where the up vector flips and the view
-// rolls over unpredictably under the pointer.
-export const PITCH_LIMIT = Math.PI / 2 - 0.01;
 
 // viewMatrix builds the world→eye transform for an orbit.
 //
 // Scene Y points DOWN, because the image's y axis does: the engine's basis runs along the
 // picture's own rows. So the camera's up vector is −Y, not +Y. Getting that backwards does not
 // look broken — it silently mirrors the whole field left-to-right, and the 3D view then opens from
-// a picture that is not the run's.
+// a picture that is not the run's. That is the whole of what IMAGE_FRAME says.
 export function viewMatrix(o: Orbit): Mat4 {
-  const eye = eyePosition(o);
-  const f = normalize([
-    o.target[0] - eye[0],
-    o.target[1] - eye[1],
-    o.target[2] - eye[2],
-  ]);
-  const up: [number, number, number] = [Math.sin(o.roll), -Math.cos(o.roll), 0];
-  let s = normalize(cross(f, up));
-  if (!Number.isFinite(s[0])) s = [1, 0, 0];
-  const u = cross(s, f);
-
-  const m = new Float32Array(16);
-  m[0] = s[0];
-  m[4] = s[1];
-  m[8] = s[2];
-  m[1] = u[0];
-  m[5] = u[1];
-  m[9] = u[2];
-  m[2] = -f[0];
-  m[6] = -f[1];
-  m[10] = -f[2];
-  m[12] = -dot(s, eye);
-  m[13] = -dot(u, eye);
-  m[14] = dot(f, eye);
-  m[15] = 1;
-  return m;
+  return cam.viewMatrix(o, IMAGE_FRAME);
 }
 
 export function eyePosition(o: Orbit): [number, number, number] {
-  const cp = Math.cos(o.pitch);
-  return [
-    o.target[0] + o.distance * cp * Math.sin(o.yaw),
-    o.target[1] - o.distance * Math.sin(o.pitch),
-    o.target[2] - o.distance * cp * Math.cos(o.yaw),
-  ];
-}
-
-function dot(a: readonly number[], b: readonly number[]): number {
-  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}
-
-function cross(
-  a: readonly number[],
-  b: readonly number[],
-): [number, number, number] {
-  return [
-    a[1] * b[2] - a[2] * b[1],
-    a[2] * b[0] - a[0] * b[2],
-    a[0] * b[1] - a[1] * b[0],
-  ];
-}
-
-function normalize(v: readonly number[]): [number, number, number] {
-  const n = Math.hypot(v[0], v[1], v[2]);
-  if (!(n > 0)) return [0, 0, 0];
-  return [v[0] / n, v[1] / n, v[2] / n];
+  return cam.eyePosition(o, IMAGE_FRAME);
 }
 
 // --- physical space ------------------------------------------------------------------------------
@@ -470,60 +409,33 @@ export function panOrbit(
   viewportHeight: number,
   tanHalfH: number,
 ): Orbit {
-  if (!(viewportHeight > 0)) return o;
-  // Screen height at the target's distance, in scene units — one pixel is this much world.
-  const perPx = (2 * tanHalfH * o.distance) / viewportHeight;
-  const cp = Math.cos(o.pitch);
-  const sp = Math.sin(o.pitch);
-  const cy = Math.cos(o.yaw);
-  const sy = Math.sin(o.yaw);
-  // The camera's own right and up axes, matching viewMatrix (scene Y points down).
-  const right: [number, number, number] = [cy, 0, sy];
-  const up: [number, number, number] = [-sy * sp, -cp, cy * sp];
-  // The field follows the pointer on BOTH axes, and the opposite signs are what achieve that rather
-  // than a typo: the whole rig translates, so a fixed world point picks up −Δ in camera axes, and
-  // screen +y points DOWN while `up` points up the screen. Identical signs is the version that
-  // drags left-right correctly and up-down backwards, which is exactly how this read before.
-  const alongRight = -dxPx * perPx;
-  const alongUp = dyPx * perPx;
-  return {
-    ...o,
-    target: [
-      o.target[0] + alongRight * right[0] + alongUp * up[0],
-      o.target[1] + alongRight * right[1] + alongUp * up[1],
-      o.target[2] + alongRight * right[2] + alongUp * up[2],
-    ],
-  };
+  return cam.panOrbit(o, dxPx, dyPx, viewportHeight, tanHalfH, IMAGE_FRAME);
 }
 
-// ZOOM_* shape how a gesture becomes a distance change.
-export const ZOOM_BASE = 0.0016; // exponent per pixel of a slow, deliberate gesture
-export const ZOOM_VELOCITY_GAIN = 0.9; // how much a fast flick is amplified
-export const ZOOM_MAX_VELOCITY = 6; // px/ms beyond which extra speed buys nothing
+// ZOOM_* shape how a gesture becomes a distance change; zoomExponent turns one wheel or pinch event
+// into a multiplier for the orbit distance, with the gain rising with how fast the gesture moves.
+export {
+  applyZoom,
+  MAX_ORBIT_DISTANCE,
+  MIN_ORBIT_DISTANCE,
+  ZOOM_BASE,
+  ZOOM_MAX_VELOCITY,
+  ZOOM_VELOCITY_GAIN,
+  zoomExponent,
+} from "@/utils/orbitcam";
 
-// zoomExponent turns one wheel or pinch event into a multiplier for the orbit distance, with the
-// gain rising with how FAST the gesture is moving.
+// maxOrbitDistance is how far the camera may pull back, given how far away the FARTHEST THING IN THE
+// SCENE is (in scene units).
 //
-// A single fixed exponent per pixel cannot serve both jobs: small enough to place the camera
-// precisely and it takes a dozen swipes to cross three decades of scale; large enough to cross them
-// and fine positioning is impossible. Scaling with gesture velocity gives both — ease the wheel and
-// it creeps, flick it and it covers the field.
-export function zoomExponent(deltaY: number, dtMs: number): number {
-  const speed = dtMs > 0 ? Math.abs(deltaY) / dtMs : ZOOM_MAX_VELOCITY;
-  const gain = 1 + ZOOM_VELOCITY_GAIN * Math.min(ZOOM_MAX_VELOCITY, speed);
-  return deltaY * ZOOM_BASE * gain;
-}
-
-export const MIN_ORBIT_DISTANCE = 0.004;
-export const MAX_ORBIT_DISTANCE = 400;
-
-export function applyZoom(o: Orbit, exponent: number): Orbit {
-  const d = o.distance * Math.exp(exponent);
-  return {
-    ...o,
-    distance: Math.min(MAX_ORBIT_DISTANCE, Math.max(MIN_ORBIT_DISTANCE, d)),
-  };
-}
+// A fixed ceiling cannot serve both spaces. The warped view spans five units end to end, so 400 is
+// already eighty times more room than it can use. The galaxy view measures in kiloparsecs, and a run
+// that caught a galaxy at seven megaparsecs needs seven thousand units just to have the thing in
+// front of the lens — let alone to see it and the Milky Way in one frame. Capping that at 400 is why
+// zooming out used to stop with the far object still off screen.
+//
+// ORBIT_HEADROOM is how much further than the farthest object the eye may go: enough to look back at
+// everything from outside it, and no further, so the zoom-out does not run off into empty space.
+export { maxOrbitDistance, ORBIT_HEADROOM } from "@/utils/orbitcam";
 
 // --- motion --------------------------------------------------------------------------------------
 
@@ -567,38 +479,6 @@ export function radialSign(s: StarRecord): number {
 }
 
 // --- projection & picking ------------------------------------------------------------------------
-
-export interface Viewport {
-  width: number;
-  height: number;
-}
-
-// projectToScreen maps a scene position to canvas pixels, or null when it falls behind the camera.
-// Shared by the picker and by any label the overlay draws, so a click can never land somewhere the
-// star is not drawn.
-export function projectToScreen(
-  pos: readonly [number, number, number],
-  viewProj: Mat4,
-  vp: Viewport,
-): [number, number] | null {
-  const x =
-    viewProj[0] * pos[0] +
-    viewProj[4] * pos[1] +
-    viewProj[8] * pos[2] +
-    viewProj[12];
-  const y =
-    viewProj[1] * pos[0] +
-    viewProj[5] * pos[1] +
-    viewProj[9] * pos[2] +
-    viewProj[13];
-  const w =
-    viewProj[3] * pos[0] +
-    viewProj[7] * pos[1] +
-    viewProj[11] * pos[2] +
-    viewProj[15];
-  if (!(w > 1e-9)) return null;
-  return [((x / w) * 0.5 + 0.5) * vp.width, (0.5 - (y / w) * 0.5) * vp.height];
-}
 
 export interface PickOptions {
   near: number;
@@ -671,6 +551,30 @@ export interface BillboardQuad {
 // rather than the field axis (an object near the frame edge would otherwise render visibly skewed),
 // and it is sized so it subtends exactly the angle its footprint does in the picture — so at depth
 // zero it lands back on top of the pixels it was cut from.
+/**
+ * billboardDirection is the unit line of sight an object lies on, in scene coordinates.
+ *
+ * Derived from the footprint's centre and the run's own lens by exactly the relation billboardQuad
+ * places the quad with, so the direction an object is FLOWN toward can never disagree with the pixels
+ * it is drawn from.
+ */
+export function billboardDirection(
+  b: Scene3DBillboard,
+  m: Scene3DManifest,
+): [number, number, number] | null {
+  const { width, height } = m.image;
+  if (!(width > 1) || !(height > 1)) return null;
+  const perPxX = (2 * m.camera.tan_half_w) / (width - 1);
+  const perPxY = (2 * m.camera.tan_half_h) / (height - 1);
+  const v: [number, number, number] = [
+    (b.x - (width - 1) / 2) * perPxX,
+    (b.y - (height - 1) / 2) * perPxY,
+    1,
+  ];
+  const n = Math.hypot(v[0], v[1], v[2]);
+  return n > 0 ? [v[0] / n, v[1] / n, v[2] / n] : null;
+}
+
 export function billboardQuad(
   b: Scene3DBillboard,
   m: Scene3DManifest,

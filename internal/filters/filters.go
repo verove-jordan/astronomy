@@ -20,6 +20,34 @@ var Canonical = []string{"L", "R", "G", "B", "Ha", "OIII", "SII"}
 // (continuum subtraction, RBF flatten, wash gate, tinted screen layer) and the narrowband palettes.
 var Narrowband = []string{"Ha", "OIII", "SII"}
 
+// Color is the canonical label for a one-shot-color channel — a frame that carries all three
+// primaries at once (a Bayer CFA sensor, a DSLR raw, an already-debayered RGB still) rather than one
+// band behind a wheel position. It is deliberately NOT a member of Canonical: adding it there would
+// give it a wheel rank, an IsNarrowband answer and a slot in the emission-screen tables, none of
+// which mean anything for a colour sensor. Use it wherever a channel needs a name and the source is
+// one-shot color.
+const Color = "RGB"
+
+// colorAliases are the spellings a capture program writes into a FILTER card (or a folder name) to
+// say "no filter — this is colour". They are the negative space of the wheel: seeing one is evidence
+// that there is no filter wheel in the train.
+var colorAliases = map[string]bool{"rgb": true, "osc": true, "color": true, "colour": true, "bayer": true}
+
+// IsColor reports whether a filter name explicitly denotes one-shot color. An empty name is NOT
+// colour — it is simply unknown, and the inventory decides what it is from the pixels and headers.
+func IsColor(raw string) bool {
+	return colorAliases[strings.ToLower(strings.TrimSpace(raw))]
+}
+
+// IsMono reports whether a filter name denotes a single band, i.e. real filter-wheel evidence. An
+// empty name and every colour alias are not mono; anything else is (including a custom filter the
+// user has not mapped yet). This is the one table that answers "does this session have a wheel?" —
+// it used to live in internal/inspect and was a fourth copy of the filter vocabulary.
+func IsMono(raw string) bool {
+	f := strings.TrimSpace(raw)
+	return f != "" && !IsColor(f)
+}
+
 // List returns a copy of Canonical, so callers can sort or append without mutating the package var.
 func List() []string { return append([]string(nil), Canonical...) }
 

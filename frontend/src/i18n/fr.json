@@ -11,6 +11,7 @@
     "tonight": "Ce soir",
     "goto": "Alignement GoTo",
     "calendar": "Calendrier",
+    "solarSystem": "Système solaire",
     "import": "Importer",
     "livestack": "Empilement direct",
     "jobs": "Tâches",
@@ -868,7 +869,9 @@
       "transfer": "Transfert",
       "backup": "Sauvegarde",
       "mosaic": "Mosaïque (panneaux)",
-      "sun": "Soleil (Hα / lumière blanche)"
+      "nightpano": "Panorama du ciel (plusieurs visées)",
+      "sun": "Soleil (Hα / lumière blanche)",
+      "eclipse": "Éclipse (solaire partielle)"
     },
     "formats": {
       "image": "Image",
@@ -884,6 +887,11 @@
     "palette": "Palette de couleurs",
     "paletteNeeds": "nécessite {filters}",
     "brightness": "Luminosité",
+    "projection": "Projection",
+    "scale_deg_per_pix": "Échelle de la toile",
+    "group_step_deg": "Pas de visée",
+    "band_mask_lat_deg": "Largeur de bande",
+    "pano_background": "Fond de la toile",
     "brightnesses": {
       "darker": "Plus sombre",
       "balanced": "Équilibré",
@@ -924,7 +932,8 @@
     "paramsCheckboxNote": "Le SPCC, la réduction de bruit et « Hα sur la nébulosité » sont gérés par les cases à cocher ci-dessus.",
     "mosaic": "Canevas union (multi-nuits, garder tout le champ de chaque nuit)",
     "mosaicHint": "Les traitements multi-nuits couvrent l'UNION des champs de toutes les sessions au lieu de rogner au cadre de la nuit d'ancrage — une image plus grande, aucun pixel perdu. Le final est rogné à la zone où chaque canal a de vraies données (params : mosaic_fill).",
-    "sunHint": "Indiquez le dossier de capture complet. Le traitement mesure le disque solaire dans chaque fichier et regroupe ce qui peut réellement être empilé — zooms, résolutions et expositions différents sont triés automatiquement, et le regroupement est enregistré dans triage.json à côté du résultat."
+    "sunHint": "Indiquez le dossier de capture complet. Le traitement mesure le disque solaire dans chaque fichier et regroupe ce qui peut réellement être empilé — zooms, résolutions et expositions différents sont triés automatiquement, et le regroupement est enregistré dans triage.json à côté du résultat.",
+    "eclipseHint": "Un Soleil partiellement éclipsé. La Lune est mesurée comme un second cercle puis exclue de l'empilement, afin que le croissant soit recalé sur le Soleil et non sur l'astre que l'ajustement aurait choisi. Visez un seul clip ou le dossier entier."
   },
   "reuse": {
     "title": "Réutiliser des données antérieures",
@@ -1077,6 +1086,358 @@
     "previous": "Précédent",
     "next": "Suivant"
   },
+  "tour": {
+    "solarsystem": {
+      "title": "Système solaire",
+      "steps": {
+        "scene": {
+          "title": "Le système, en trois dimensions",
+          "body": "Chaque planète est là où elle se trouve réellement en ce moment, inclinée sur son axe réel et tournée de son angle de rotation réel. Glissez pour tourner, maj+glisser pour déplacer, molette pour zoomer — et continuez : la vue va sans rupture de l'extérieur de l'orbite de Neptune jusqu'à une lune de quelques centaines de kilomètres."
+        },
+        "time": {
+          "title": "Faire tourner la machine",
+          "body": "Le curseur couvre 1800 à 2050, les années pour lesquelles le modèle orbital est ajusté. Choisissez une vitesse — du temps réel jusqu'à un siècle par seconde — et lancez-la dans les deux sens. Maintenant ramène à l'instant présent."
+        },
+        "scale": {
+          "title": "Honnête, ou lisible",
+          "body": "À l'échelle vraie, les planètes internes forment un nœud au centre et Neptune sort de l'écran. Le réglage des distances comprime le champ radial pour que tout le système tienne d'un coup d'œil, et celui des tailles gonfle les mondes eux-mêmes. Ni l'un ni l'autre ne touche au calcul : les nombres affichés restent vrais."
+        },
+        "bodies": {
+          "title": "Choisir un monde",
+          "body": "Cliquez un corps, une étiquette ou un nom dans la liste : la caméra s'y rend et le suit. Le panneau donne alors sa taille, sa masse, sa rotation, l'inclinaison de son axe, sa distance au Soleil et à la Terre, sa magnitude et sa taille apparentes, sa phase, et sa position dans votre ciel."
+        },
+        "legend": {
+          "title": "Ce qui est mesuré et ce qui est modélisé",
+          "body": "Rayons, masses et directions des pôles sont des mesures publiées. Chaque corps porte aussi une pastille indiquant la qualité de sa position — une orbite ajustée est de l'ordre de la minute d'arc, des éléments moyens d'une fraction de degré. Les sources sont listées en dessous."
+        }
+      }
+    },
+    "open": "Comment fonctionne cette page",
+    "help": "Aide",
+    "done": "C’est compris",
+    "title": "{page} — visite guidée",
+    "stepOf": "Étape {n} sur {total}",
+    "noShot": "Pas encore de capture d’écran pour cette étape — lancez `just tour-shots` pour les générer.",
+    "tonight": {
+      "title": "Ce soir",
+      "steps": {
+        "targets": {
+          "title": "Que photographier ce soir",
+          "body": "La liste classe les objets du ciel profond pour votre site et cette nuit-là : à quelle hauteur chacun culmine, combien de temps il y reste, à quelle distance passe la Lune et à quel point votre ciel est lumineux. En haut de la liste se trouve simplement ce que vous avez le plus de chances de réussir."
+        },
+        "score": {
+          "title": "Pourquoi ce score",
+          "body": "Chaque score se décompose, pour que vous puissiez le contester. Une galaxie qui culmine à 25° reste une cible difficile quelle que soit la limpidité du ciel, et une pleine Lune à 20° coûte plus cher qu’un voile nuageux."
+        },
+        "skymap": {
+          "title": "La carte du ciel",
+          "body": "Sélectionner une cible l’entoure d’un cercle sur la carte : vous voyez où elle sera réellement — derrière le toit du voisin, ou bien placée au sud. Types, tailles et noms usuels viennent du catalogue OpenNGC."
+        },
+        "weather": {
+          "title": "Météo astronomique",
+          "body": "Nuages, turbulence, transparence, humidité et vent pour les nuits à venir, issus de plusieurs modèles. La turbulence est déduite du cisaillement du vent plutôt que reprise d’un indice générique, ce qui colle nettement mieux à la réalité."
+        },
+        "darksky": {
+          "title": "Trouver un site plus sombre",
+          "body": "Choisissez une nuit et l’outil classe les sites autour de vous, en arbitrant entre obscurité et dégagement du ciel cette nuit-là. Il évalue aussi l’horizon boisé et la vraie distance par la route — un site parfait à trois heures de voiture n’est pas un site."
+        },
+        "optics": {
+          "title": "Votre optique",
+          "body": "Focale, réducteur, Barlow et oculaires alimentent les champs calculés et l’aperçu de cadrage, pour que le plan corresponde au matériel que vous sortirez vraiment."
+        }
+      }
+    },
+    "goto": {
+      "title": "Alignement GoTo",
+      "steps": {
+        "why": {
+          "title": "À quoi sert cette page",
+          "body": "Une monture GoTo ne pointe juste qu’une fois qu’elle sait où elle se trouve. Cette page choisit les étoiles d’alignement à votre place et montre exactement ce que votre raquette attend, dans son propre ordre."
+        },
+        "catalogue": {
+          "title": "Les étoiles de votre raquette",
+          "body": "Les raquettes Celestron et SynScan ont chacune leur liste d’étoiles d’alignement, et elles ne concordent pas. Choisissez la vôtre : la page ne proposera que des étoiles que cette raquette sait accepter."
+        },
+        "sequence": {
+          "title": "La séquence d’alignement",
+          "body": "Les étoiles sont choisies visibles maintenant, bien réparties dans le ciel et assez brillantes pour être trouvées au chercheur. Un alignement Celestron en deux temps (align puis calibration) est détaillé pas à pas."
+        },
+        "chart": {
+          "title": "Trouver l’étoile",
+          "body": "Ouvrez la carte pour situer l’étoile dans sa constellation — la partie réellement difficile quand son nom ne vous évoque encore rien."
+        }
+      }
+    },
+    "calendar": {
+      "title": "Calendrier du ciel",
+      "steps": {
+        "months": {
+          "title": "Ce qui arrive",
+          "body": "Éclipses, occultations, conjonctions, pluies d’étoiles filantes, comètes et passages de l’ISS, calculés localement pour votre site plutôt que récupérés d’un flux — donc valables hors ligne et corrects pour l’endroit où vous êtes."
+        },
+        "kinds": {
+          "title": "Filtrer par type",
+          "body": "Presque chaque nuit propose quelque chose. Filtrez sur ce pour quoi vous vous lèveriez vraiment, et lisez le reste à tête reposée."
+        },
+        "event": {
+          "title": "Un événement en détail",
+          "body": "Heures dans votre fuseau, hauteur au moment où il se produit, et à quel point il est favorable depuis chez vous. Une éclipse qui culmine sous l’horizon reste listée — en le disant clairement."
+        }
+      }
+    },
+    "capture": {
+      "title": "Acquisition",
+      "steps": {
+        "devices": {
+          "title": "Connecter le matériel",
+          "body": "Caméra, roue à filtres et monture se connectent ici. Un simulateur complet est toujours disponible : vous pouvez apprendre toute la page au chaud, sans rien brancher. Sur un Mac Apple Silicon, une vraie caméra ZWO passe par le serveur x86 (`just device-x86`) — ZWO ne publie aucune bibliothèque arm64."
+        },
+        "liveview": {
+          "title": "La vue en direct",
+          "body": "Une image rafraîchie en continu avec histogramme, viseur et zoom. C’est ici que vous vérifiez le cadrage et la cohérence de la pose avant de lancer une séquence."
+        },
+        "camera": {
+          "title": "Réglages caméra",
+          "body": "Pose, gain, offset, refroidissement, bande passante USB — tout ce que la caméra déclare savoir faire. Ces valeurs sont écrites dans l’en-tête FITS de chaque image, ce qui permettra plus tard d’associer les bons maîtres de calibration."
+        },
+        "filters": {
+          "title": "Emplacements de la roue",
+          "body": "Nommez chaque emplacement physique d’après le filtre qui s’y trouve. Cette correspondance vous appartient : une roue à cinq positions change d’une session à l’autre, et le numéro seul ne dit rien à l’empileur."
+        },
+        "sequencer": {
+          "title": "Le séquenceur automatique",
+          "body": "Construisez un plan — tant de poses de ce filtre à cette durée, puis le suivant — et laissez-le dérouler la nuit. Les images arrivent dans des dossiers par filtre, avec le filtre dans le nom et dans l’en-tête."
+        },
+        "focus": {
+          "title": "La mise au point",
+          "body": "L’indicateur mesure la taille des étoiles (diamètre à demi-flux) image après image. Tournez jusqu’à ce que le nombre cesse de descendre : c’est bien plus fiable que de juger la netteté à l’œil."
+        },
+        "polar": {
+          "title": "Mise en station à la caméra",
+          "body": "Mesure où pointe réellement l’axe polaire en astrométrant des images pendant que vous tournez l’axe d’ascension droite À LA MAIN entre chacune. C’est justement parce que vous le tournez vous-même que cela fonctionne sur une monture sans la moindre électronique. La monture n’est jamais commandée."
+        }
+      }
+    },
+    "logbook": {
+      "title": "Journal",
+      "steps": {
+        "list": {
+          "title": "Toutes vos nuits",
+          "body": "Une ligne par session : ce que vous avez photographié, combien de temps, à travers quels filtres, et sous quel ciel. C’est là-dessus que se prend réellement une décision d’empilement plus tard."
+        },
+        "score": {
+          "title": "La note du ciel",
+          "body": "Un seul chiffre de 0 à 100 par nuit : la médiane des verdicts météo horaires déjà calculés pendant l’acquisition. Les sessions antérieures à cette fonction affichent « non enregistré » — la météo nécessaire n’a pas d’archive, elle ne pourra jamais être reconstituée."
+        },
+        "filters": {
+          "title": "Retrouver une session",
+          "body": "Filtrez par objet et par date pour répondre à « combien de temps ai-je au total sur cette cible, et quelle part en vaut la peine ? » avant de décider de la refaire."
+        }
+      }
+    },
+    "logbookSession": {
+      "title": "Détail de session",
+      "steps": {
+        "shot": {
+          "title": "Ce qui a été acquis",
+          "body": "Nombre d’images et intégration par filtre et par type, avec les plages de pose, de gain et de température du capteur. Une plage se réduit à une valeur unique quand rien n’a bougé en cours de route."
+        },
+        "order": {
+          "title": "Ordre d’acquisition",
+          "body": "Une bande par filtre sur la nuit, une marque par pose. Alignée avec le graphe des conditions en dessous, elle répond à « la série de luminance s’est-elle terminée avant les nuages, ou la moitié vient-elle de la mauvaise heure ? »"
+        },
+        "conditions": {
+          "title": "Le ciel de cette nuit-là",
+          "body": "Nuages, turbulence, transparence, humidité, vent, distance à la Lune, hauteur de la cible et luminosité du ciel, heure par heure. Le comparateur superpose la prévision faite au départ et ce qui a ensuite été mesuré."
+        }
+      }
+    },
+    "mosaic": {
+      "title": "Mosaïque",
+      "steps": {
+        "plan": {
+          "title": "Planifier une mosaïque",
+          "body": "Indiquez l’objet et l’étendue de ciel à couvrir : le planificateur dispose des panneaux qui se recouvrent pour votre champ — avec assez de recouvrement pour pouvoir les raccorder ensuite."
+        },
+        "panels": {
+          "title": "Les panneaux",
+          "body": "Chaque panneau est un pointage à réaliser. Le plan mémorise sa position, ce qui permet ensuite de tous les reprojeter sur une même toile au lieu de le deviner à partir des images seules."
+        },
+        "progress": {
+          "title": "Les enchaîner",
+          "body": "Les panneaux se cochent au fur et à mesure, sur autant de nuits qu’il faudra. Empilez la mosaïque dès qu’il y en a assez — ceux qui manquent rendent simplement la toile plus petite."
+        }
+      }
+    },
+    "import": {
+      "title": "Import et analyse",
+      "steps": {
+        "browse": {
+          "title": "Désigner vos acquisitions",
+          "body": "Parcourez le dossier de captures (ainsi que les disques amovibles et les miroirs S3) et sélectionnez un ou plusieurs dossiers. Plusieurs nuits d’une même cible peuvent être sélectionnées ensemble : elles seront fusionnées en un seul traitement."
+        },
+        "inspect": {
+          "title": "Ce qu’il y a dedans",
+          "body": "L’analyse lit chaque fichier et détermine sa nature : poses par filtre, darks, flats, offsets. Elle s’appuie d’abord sur les en-têtes FITS, puis sur les noms de fichiers et de dossiers, puis sur les pixels eux-mêmes. Les acquisitions couleur — reflex ou caméra couleur — sont reconnues ici et empilées comme un unique canal RVB."
+        },
+        "mapping": {
+          "title": "Corriger l’attribution des canaux",
+          "body": "Quand une acquisition ne porte aucun nom de filtre, ils sont déduits du signal, et cette déduction est affichée avec sa confiance. Si elle s’est trompée, corrigez-la ici : rien en aval ne discutera."
+        },
+        "preset": {
+          "title": "Les préréglages",
+          "body": "Partez d’une recette adaptée au sujet — galaxie faible, amas d’étoiles, nébuleuse en émission, palette bande étroite, Lune, planète, comète. Un préréglage ne fait que pré-remplir : tout reste modifiable, et vous pouvez enregistrer les vôtres."
+        },
+        "mode": {
+          "title": "Mode et sortie",
+          "body": "Le mode détermine toute la recette : deepsky, nebula, milkyway, planetary, comet, mosaic ou sun. La sortie est une image, une vidéo, ou les deux."
+        },
+        "options": {
+          "title": "Les réglages",
+          "body": "Calibration colorimétrique, débruitage, traitement de la bande étroite, palette, algorithme d’empilement et les paramètres avancés propres au mode. Chacun est enregistré avec le traitement : vous saurez toujours ce qui a produit une image donnée."
+        },
+        "reuse": {
+          "title": "Les nuits précédentes sur la même cible",
+          "body": "Les sessions antérieures du même objet sont retrouvées automatiquement et intégrées, chacune calibrée avec ses propres maîtres. Décochez celles que vous ne voulez pas."
+        },
+        "launch": {
+          "title": "Lancer",
+          "body": "« Lancer » démarre tout de suite ; « Ajouter à la file » met en attente dans une file strictement séquentielle. Dans les deux cas cela devient une tâche que vous pouvez suivre, mettre en pause et reprendre."
+        }
+      }
+    },
+    "livestack": {
+      "title": "Empilement en direct",
+      "steps": {
+        "source": {
+          "title": "Quoi surveiller",
+          "body": "Désignez le dossier dans lequel écrit votre logiciel d’acquisition — ou un préfixe S3. Chaque nouvelle pose est prise au vol."
+        },
+        "start": {
+          "title": "Démarrer",
+          "body": "Les images sont calibrées et ajoutées à la pile à mesure qu’elles arrivent : vous voyez l’image se creuser au fil de la nuit au lieu d’attendre le matin pour découvrir que cela n’a pas marché."
+        },
+        "preview": {
+          "title": "La pile qui grandit",
+          "body": "L’aperçu est un vrai empilement, pas une pose isolée — de quoi juger le cadrage, la mise au point et si la cible sort tout simplement."
+        },
+        "finalize": {
+          "title": "Arrêter et finaliser",
+          "body": "L’arrêt lance le traitement complet sur tout ce qui a été collecté : recalage propre, notation, empilement et finition complète. L’aperçu était la répétition ; ceci est le résultat."
+        }
+      }
+    },
+    "jobs": {
+      "title": "Tâches",
+      "steps": {
+        "list": {
+          "title": "Tout ce que vous avez lancé",
+          "body": "Les tâches en cours et l’historique complet, les plus récentes d’abord, avec les paramètres de lancement de chacune."
+        },
+        "status": {
+          "title": "Ce que veulent dire les états",
+          "body": "En cours, en pause, terminée, échouée ou annulée. « En pause » est un vrai point de reprise : une tâche arrêtée en plein empilement conserve les canaux déjà faits et repart de là plutôt que de tout recommencer."
+        },
+        "open": {
+          "title": "Ouvrir une tâche",
+          "body": "Ouvrez n’importe quelle tâche pour la suivre en direct, ou pour en relire le résultat complet longtemps après."
+        }
+      }
+    },
+    "job": {
+      "title": "Détail de tâche",
+      "steps": {
+        "progress": {
+          "title": "Suivre un traitement",
+          "body": "Progression en direct : l’étape en cours, le processeur et la mémoire réellement consommés par l’outil qui travaille, et un journal déroulant. Un empilement est long — c’est ainsi qu’on distingue « ça travaille » de « c’est bloqué »."
+        },
+        "controls": {
+          "title": "Pause et annulation",
+          "body": "La pause enregistre un point de reprise. L’annulation arrête le traitement, et une annulation pendant la finition conserve le résultat partiel plutôt que de jeter la nuit."
+        },
+        "previews": {
+          "title": "Des aperçus en cours de route",
+          "body": "Un aperçu est enregistré après chaque étape importante : vous voyez apparaître l’empilement, les canaux recalés puis la finition, au lieu d’attendre une seule image à la fin."
+        },
+        "results": {
+          "title": "Lire le résultat",
+          "body": "Statistiques par canal (images reçues, images empilées, maîtres retenus), graphes de qualité image par image, avertissements, et la liste complète des paramètres utilisés. Si un traitement vous déçoit, la raison est presque toujours là."
+        },
+        "stages": {
+          "title": "Changer d’avis",
+          "body": "Chaque étape est une carte dont vous pouvez modifier les paramètres et relancer à partir de là — souvent bien moins coûteux que tout refaire. « Affiner » ne relance que la finition ; la vue 3D ouvre le champ en volume pour tout traitement astrométré."
+        }
+      }
+    },
+    "runs": {
+      "title": "Traitements",
+      "steps": {
+        "gallery": {
+          "title": "Les résultats sur disque",
+          "body": "Tous les traitements présents sur le disque, indépendamment de la base : tout ce qui possède un run.json est ici. Les résultats survivent à une réinitialisation de la base."
+        },
+        "open": {
+          "title": "En rouvrir un",
+          "body": "Ouvrir un traitement reconstruit les mêmes panneaux que la page de tâche : image finale, statistiques par canal, aperçus et paramètres l’ayant produit."
+        }
+      }
+    },
+    "library": {
+      "title": "Bibliothèque de calibration",
+      "steps": {
+        "masters": {
+          "title": "Vos maîtres",
+          "body": "Darks, flats, offsets et dark-flats, construits une fois et réutilisés d’une session à l’autre. C’est pour cela qu’un traitement ultérieur ne vous redemande pas de refaire vos images de calibration."
+        },
+        "keys": {
+          "title": "Comment un maître est retenu",
+          "body": "Les maîtres sont indexés par gain, offset, binning, pose et température du capteur. Un traitement n’utilise qu’un maître qui correspond vraiment à ses poses — un maître incompatible est écarté, jamais appliqué."
+        },
+        "mirror": {
+          "title": "Garder une copie sur S3",
+          "body": "Copiez la bibliothèque sur S3 et les maîtres correspondants seront rapatriés automatiquement s’ils manquent en local — libérer de la place ne vous coûte donc pas votre calibration."
+        }
+      }
+    },
+    "storage": {
+      "title": "Stockage",
+      "steps": {
+        "connections": {
+          "title": "Connecter un S3",
+          "body": "Point d’accès, clé et secret. Le secret est chiffré avant d’être enregistré, et n’est jamais réaffiché ni renvoyé au navigateur."
+        },
+        "browse": {
+          "title": "Local et distant côte à côte",
+          "body": "Chaque dossier indique s’il existe en local, sur S3, ou les deux — vous savez donc toujours ce que libérer coûterait réellement."
+        },
+        "free": {
+          "title": "Libérer de l’espace",
+          "body": "La libération vérifie que chaque fichier est bien présent sur S3 AVANT de supprimer la copie locale, et abandonne tout le dossier si une vérification échoue. Les aperçus et résultats libérés s’ouvrent quand même : ils basculent sur S3 de façon transparente."
+        },
+        "backup": {
+          "title": "Sauvegarde et restauration",
+          "body": "Sauvegarde la base et l’état côté navigateur (favoris, configurations, conversations). Les secrets de votre .env sont volontairement exclus. Restaurer la base est destructif : cela remplace ce qui s’y trouve."
+        }
+      }
+    },
+    "astroagent": {
+      "title": "AstroAgent",
+      "steps": {
+        "chat": {
+          "title": "Un modèle local sur vos données",
+          "body": "Posez des questions sur vos acquisitions, vos traitements, le ciel et votre matériel. Le modèle tourne sur votre machine — rien n’est envoyé ailleurs."
+        },
+        "tools": {
+          "title": "Il peut aller voir",
+          "body": "Il peut lire vos inventaires et vos traitements, consulter le ciel de ce soir, et analyser une image que vous lui joignez pour en faire une critique mesurée plutôt qu’un avis vague."
+        },
+        "confirm": {
+          "title": "Rien ne se fait sans vous",
+          "body": "Toute action qui modifierait quelque chose — lancer un traitement, réajuster une finition — demande confirmation. Les traitements supervisés apparaissent aussi ici comme des conversations que vous pouvez orienter pendant qu’ils travaillent."
+        }
+      }
+    }
+  },
   "import": {
     "title": "Importer & inspecter",
     "hint": "Naviguez jusqu’à un dossier de captures, puis lancez le traitement automatique.",
@@ -1156,6 +1517,8 @@
     "lights": "Poses",
     "integration": "Intégration totale",
     "filters": "Filtres",
+    "colorOsc": "Couleur (capteur RVB)",
+    "colorMixed": "Mono + couleur mélangés",
     "frameTypes": "Types d’images",
     "title": "Capture",
     "subtitle": "Caméra, roue à filtres et monture — visée en direct, mise au point et série auto.",
@@ -1371,7 +1734,45 @@
       "mountClock": "L'horloge de la monture indique {utc} (UTC)",
       "padLabel": "Pavé directionnel de la monture",
       "padHint": "Cliquez ici, puis maintenez les flèches — deux à la fois pour un déplacement en diagonale. Échap arrête.",
-      "simulatedHint": "Connecté au simulateur, qui n'a ni site ni horloge. Choisissez ci-dessous le port de la raquette pour passer à la vraie monture."
+      "simulatedHint": "Connecté au simulateur, qui n'a ni site ni horloge. Choisissez ci-dessous le port de la raquette pour passer à la vraie monture.",
+      "notConnected": "Aucune monture n'est connectée.",
+      "auditTitle": "Ce qui est enregistré dans la monture",
+      "auditHint": "Lu directement dans la monture. Les réglages vivent sur deux cartes : la raquette garde le site, l'horloge et l'alignement ; les cartes moteur gardent la table d'erreur périodique et les vitesses d'autoguidage, et les conservent même si la raquette est changée.",
+      "auditRead": "Lire la monture",
+      "auditReading": "Lecture…",
+      "auditHandController": "Raquette",
+      "auditMotorControllers": "Cartes moteur",
+      "auditModel": "Modèle",
+      "auditFirmware": "Micrologiciel",
+      "auditMotorFirmware": "Micrologiciel moteur",
+      "auditSite": "Site",
+      "auditClock": "Horloge",
+      "auditDrive": "Entraînement",
+      "auditGuideRate": "Vitesse d'autoguidage",
+      "auditPec": "Table d'erreur périodique",
+      "auditPecEmpty": "{bins} cases, toutes à zéro — aucune correction enregistrée",
+      "auditPecStored": "{bins} cases, pic {peak} unités ({rate}\"/s) — déplace l'ascension droite de {swing}\" par tour de vis sans fin",
+      "auditPecDrift": "et ajoute {net}\" de dérive par tour",
+      "auditPecPlayback": "Lecture demandée pour la dernière fois par l'application : {state} (impossible d'interroger la monture)",
+      "auditNotReadable": "illisible",
+      "auditSkew": "{skew} s par rapport à ce Mac",
+      "auditDisagree": "les deux moteurs ne concordent pas",
+      "auditStale": "Lu {when}",
+      "resetTitle": "Remettre ce que l'application peut écrire",
+      "resetHint": "Ce n'est pas une remise à zéro d'usine — cela n'annule que ce qu'AstroStack sait écrire, et vérifie chaque changement en le relisant. Le menu Utilitaires ▸ Réglages d'usine de la raquette efface davantage, y compris des choses qu'aucune commande série n'atteint, mais ne dit rien de ce qu'il a fait. Relisez la monture ensuite pour le savoir.",
+      "resetPec": "Effacer la table d'erreur périodique (écrire des zéros, vérifier chaque case)",
+      "resetPlayback": "Arrêter la lecture de la courbe enregistrée",
+      "resetGuideRate": "Régler les deux moteurs à la moitié du sidéral",
+      "resetSite": "Réécrire le site",
+      "resetClock": "Réécrire l'horloge",
+      "resetTracking": "Activer le suivi sidéral",
+      "resetPreview": "Aperçu",
+      "resetApply": "Appliquer",
+      "resetApplying": "Application…",
+      "resetDryRun": "Rien n'a été envoyé. Vérifiez la liste, puis appuyez sur Appliquer.",
+      "resetBackup": "Réglages actuels de la monture enregistrés dans {path}",
+      "resetNothing": "Choisissez au moins un élément à remettre.",
+      "resetConfirm": "Ceci écrit dans la monture et ne peut pas être annulé d'ici. Les réglages actuels ont d'abord été enregistrés dans un fichier. Continuer ?"
     },
     "tracking": {
       "title": "Suivi de la monture",
@@ -1800,6 +2201,14 @@
       "starless": "Réduction des étoiles",
       "final": "Final",
       "coverage": "Couverture"
+    },
+    "fullRes": {
+      "title": "Autres étapes",
+      "hint": "Étapes sans vignette ci-dessus — téléchargement en résolution native.",
+      "download": "Télécharger en {format}",
+      "exporting": "…",
+      "fullTitle": "Télécharger en pleine résolution ({format})",
+      "previewTitle": "Télécharger cet aperçu (demi-résolution — la source de cette étape a été retraitée sur place, il n'existe pas de version pleine résolution)"
     }
   },
   "rerun": {
@@ -1950,12 +2359,16 @@
       "cometStackHint": "ré-empile depuis les poses calibrées (plus lent)",
       "milkywayGrade": "Étalonnage",
       "milkywayGradeHint": "recalcule le paysage nocturne en quelques secondes",
+      "panoCanvas": "Toile",
+      "panoCanvasHint": "comment les visées sont assemblées en un seul ciel",
       "mosaicAssembly": "Assemblage des panneaux",
       "mosaicAssemblyHint": "Comment les panneaux empilés sont placés, appariés photométriquement et fondus sur le canevas unique. Modifier ces réglages ré-assemble la mosaïque.",
       "sunFinish": "Finition et accentuation",
       "sunFinishHint": "re-rend l'image en quelques secondes",
       "sunStack": "Ingestion, recalage et empilement",
       "sunStackHint": "relit les trames sources (plus lent)",
+      "eclipseSequence": "Séquence des phases d'éclipse",
+      "eclipseSequenceHint": "toute l'éclipse sur une planche ; relit les trames sources",
       "stackAlgo": "Algorithme d'empilement",
       "stackAlgoHint": "Palier C · réempile depuis les poses brutes (minutes)",
       "cometStackAlgo": "Empilement centré comète",
@@ -1974,10 +2387,10 @@
     "highlight_knee": "Seuil où commence le plafond d'étoiles sur l'image finale — empêche le cœur des étoiles brillantes de saturer au blanc.",
     "highlight_ceil": "Jusqu'où sous le blanc le cœur des étoiles brillantes est plafonné (avec highlight_knee). Plus bas = cœurs plus colorés, moins cramés.",
     "crop_frac": "Fraction rognée sur chaque bord pour retirer les bandes de bord d'empilement (dithering).",
-    "palette": "Rendu colorimétrique : gold (Hα), neutral (lumière blanche), mono ou inverted.",
+    "palette": "Rendu colorimétrique : gold (Hα), neutral (lumière blanche), native (mesuré sur votre propre enregistrement), mono ou inverted.",
     "color_calibration": "Calibration photométrique des couleurs (SPCC) pour des teintes d'étoiles/nébuleuses naturelles ; repli sur un équilibre neutre hors ligne.",
     "linked_stretch": "Étire tous les canaux ensemble pour préserver l'équilibre de couleur calibré (vs par canal, qui reteinte).",
-    "background_level": "Luminosité cible du fond de ciel pour l'auto-étirement. Plus bas = ciel plus sombre.",
+    "background_level": "Luminosité du ciel. 0 = noir pur ; vers 0,05 on retrouve le socle chaud de la plupart des images solaires publiées.",
     "stretch_headroom": "Plafonne le cœur des étoiles brillantes sous le blanc AVANT l'étirement pour qu'elles gardent leur couleur au lieu de cramer. 0 = désactivé ; plus bas = plus de protection.",
     "background_degree": "Degré du polynôme Siril utilisé pour modéliser et soustraire le fond de ciel / gradient.",
     "combined_background_ai": "Deuxième passe d'extraction de gradient sur le RVB combiné — retire le gradient à grande échelle / ciel brun que la passe par canal laisse.",
@@ -2004,7 +2417,7 @@
     "earthshine_feather": "Marge de protection du terminateur pour le fondu de lumière cendrée, en fraction du rayon du disque (0,002–0,02, défaut 0,006) : plus grand éloigne le rehaussement du bord éclairé — la surface éclairée n'est jamais modifiée, quelle que soit la valeur.",
     "true_lum": "Les rendus couleur réimposent la luminance exacte du L net (déconvolué) après la composition RVB (corrige la fuite de luminance de rgbcomp de Siril qui adoucit l'image finale). Activé par défaut ; à désactiver seulement en cas d'artefacts de couleur.",
     "best_percent": "Sélection « lucky imaging » : ne garde que ce % des poses les plus nettes avant l'empilement. Plus bas = plus strict.",
-    "ap_align": "Alignement multi-points (planétaire) — corrige les distorsions locales de turbulence sur le disque, pas seulement un décalage global.",
+    "ap_align": "Corriger la distorsion atmosphérique par une grille de points d'alignement plutôt que par une seule transformation rigide. L'atmosphère ne déplace pas le disque comme un objet rigide : sans cela, l'empilement moyenne chaque détail avec des copies légèrement décalées de lui-même.",
     "double_stack": "Seconde passe d'alignement sur le premier master empilé (référence peu bruitée, distorsion moyennée) avec une grille de points d'alignement bien plus dense — la « double stack reference » d'AutoStakkert. Plus net, ~1,7× plus lent.",
     "calibrate": "Applique la calibration dark/flat aux poses (masters construits depuis les dossiers darks/flats/offsets de la capture, ou réutilisés depuis la bibliothèque). Supprime ombres de poussière, vignettage et taches de couleur ; ignorée automatiquement si rien ne correspond.",
     "deconv_fwhm": "Largeur de la PSF de déconvolution (pixels) — à régler près de la taille du flou pour récupérer du détail. 0 = désactivé.",
@@ -2012,7 +2425,11 @@
     "bracket_merge": "Empiler séparément les expositions distantes d'au moins un diaphragme, puis les composer en un maître à grande dynamique — les détails du disque de l'exposition qui les tient, les protubérances de celle qui les a enregistrées. Désactivé, une séance en fourchette est ramenée à un seul niveau et seule l'exposition la plus claire est rendue.",
     "bracket_stops": "Écart minimal de luminosité du disque, en diaphragmes, à partir duquel deux captures comptent comme des expositions distinctes. En deçà, c'est une même exposition qui dérive ; au-delà, c'est une fourchette délibérée.",
     "transparency_floor": "Écarter les images derrière lesquelles un nuage est passé, sous cette fraction de la meilleure transmission du plan. Un nuage n'est pas un problème de netteté : il ajoute un voile que la moyenne n'enlève pas, et la normalisation qui suit amplifie ce voile avec le signal, si bien qu'il arrive à l'empilement en paraissant correctement exposé. 0 désactive le filtre.",
-    "ap_align": "Corriger la distorsion atmosphérique par une grille de points d'alignement plutôt que par une seule transformation rigide. L'atmosphère ne déplace pas le disque comme un objet rigide : sans cela, l'empilement moyenne chaque détail avec des copies légèrement décalées de lui-même.",
+    "sequence_panels": "Compose la planche de progression de l'éclipse : ce nombre de phases, d'une première morsure jusqu'au maximum puis au retour, toutes ramenées dans un même repère céleste. 0 n'en compose aucune. Le nombre est une demande, pas une promesse — les phases présentes des DEUX côtés du maximum dépendent de l'enregistrement, donc une session comportant un trou reçoit le plus de panneaux qu'elle peut apparier honnêtement, et le dit. Rien n'est jamais reflété ni interpolé.",
+    "sequence_angle_deg": "Inclinaison de la ligne sur laquelle les panneaux sont posés, telle qu'on la voit : positive, elle monte vers la droite ; 0 les aligne en rangée.",
+    "sequence_spacing": "Pas entre les centres de deux panneaux, en diamètres solaires, pour que le réglage garde le même sens quelle que soit la taille de rendu des disques. En dessous de 1 les disques se chevauchent.",
+    "site_lat": "Latitude du lieu de prise de vue. Nécessaire seulement si les clips ne portent pas leur propre balise de position — un téléphone en écrit une, la plupart des appareils photo non — et la phase d'une éclipse ne peut pas être calculée sans elle.",
+    "site_lon": "Longitude du lieu de prise de vue, positive vers l'est. Voir la note sur la latitude.",
     "ap_scale": "Réduction appliquée à l'image avant de MESURER le champ de distorsion. 1 mesure à pleine résolution, ce qu'exige l'amplitude du champ — après l'ajustement du limbe il ne reste que quelques pixels à mesurer, et une trame réduite ne peut pas représenter cette réponse : elle renvoie du bruit. Les valeurs plus grandes sont plus rapides et adoucissent progressivement le bord du disque.",
     "deconv_iters": "Itérations de déconvolution. Plus élevé accentue davantage et fait sonner le limbe plus tôt.",
     "deconv_alpha": "Régularisation de la déconvolution — plus élevé supprime bruit/halos, plus bas est plus agressif.",
@@ -2020,6 +2437,13 @@
     "align_points": "Nombre total de points de référence utilisés pour corriger la distorsion atmosphérique (à la AutoStakkert). Arrondi à une grille N×N, N = √valeur borné à 10–48 par axe (100–2304 au total). 0 = automatique (cellules ~120 px, jusqu'à 32×32). Plus de points suivent des ondulations plus fines mais coûtent du CPU (re-stack) ; le bouton d'estimation du formulaire de lancement suggère une valeur adaptée à votre image.",
     "per_frame_starnet": "Lance StarNet++ sur chaque pose avant l'empilement de la comète (champs denses). Plus lent, mais retrait d'étoiles plus propre.",
     "look": "Style de rendu : natural (fidèle, doux), iphone (plus chaud, plus contrasté, ciel plus profond) ou deepsky (audacieux, dramatique, forte saturation).",
+    "projection": "Quelle toile céleste dessiner : stéréographique conserve la forme des étoiles et rend le ciel tel qu'on le regarde ; galactique étale la Voie lactée en bande horizontale ; altaz dessine l'arche telle qu'elle se dressait au-dessus du sol à un instant donné (le milieu de la séance) ; les deux écrit les deux premières, toutes les écrit toutes les trois.",
+    "scale_deg_per_pix": "Échelle de la toile en degrés par pixel. Les panneaux eux-mêmes sont à environ 0,02 : descendre bien en dessous de 0,03 ajoute des pixels, pas du détail.",
+    "group_step_deg": "De combien deux poses consécutives peuvent bouger sur le ciel avant de compter comme une nouvelle visée. À augmenter si une visée a été coupée en deux, à baisser si deux visées ont été fusionnées.",
+    "band_mask_lat_deg": "Latitude galactique en deçà de laquelle les pixels comptent comme la bande de la Voie lactée et non comme le fond du ciel. La bande est le sujet : y mesurer le niveau et la couleur du ciel la ramènerait au gris.",
+    "pano_background": "Retire le dôme de ciel résiduel de la toile assemblée par un polynôme de bas degré ajusté hors de la bande. Désactivé, la toile reste photométriquement brute.",
+    "pano_foreground": "Compose le paysage sous l'arche, pris sur le panneau visé le plus bas — le seul où figure du sol. Ne s'applique qu'à la toile altaz : les autres projections n'ont pas d'horizon pour l'accueillir. Le sol est placé en faisant pivoter la caméra de ce panneau autour du pôle céleste, de l'angle correspondant au temps écoulé entre sa prise de vue et l'instant représenté par l'arche.",
+    "keep_meteors": "Réintègre dans le ciel les météores rejetés par l'écrêtage sigma, en laissant de côté les satellites et les avions. L'écrêtage a raison de voir un météore comme une valeur aberrante, il a seulement tort de le jeter. Chaque candidat est consigné dans meteors.json avec la raison de sa conservation ou de son rejet. Désactivé, le traitement reste identique.",
     "brightness": "Niveau cible du fond de ciel. Plus bas = ciel plus sombre ; plus haut relève le cœur de la Voie lactée.",
     "saturation_scale": "Module la saturation propre au style choisi. 1 = tel que conçu ; en dessous de 1 atténue les couleurs criardes ; jusqu'à 2 pour plus.",
     "highlight_ceiling": "Plafond de luminosité du cœur de la Voie lactée. Plus bas = cœur plus sombre et mieux protégé ; 0 garde celui du style.",
@@ -2054,7 +2478,6 @@
     "limb_flatten": "Retire l'assombrissement centre-bord pour lire le détail jusqu'au limbe. 0 conserve la chute naturelle.",
     "prominence_boost": "Luminosité des protubérances hors limbe par rapport au disque. 0 les masque.",
     "prominence_feather": "Douceur du fondu entre disque et hors-limbe, en fraction du rayon.",
-    "background_level": "Luminosité du ciel. 0 = noir pur ; vers 0,05 on retrouve le socle chaud de la plupart des images solaires publiées.",
     "background_tint": "Part de la couleur de la palette portée par le ciel : 0 gris neutre, 1 ambre pleine.",
     "glow_strength": "Luminosité du halo autour du disque, en fraction de ce que rend le limbe lui-même. 0 le désactive.",
     "glow_radius": "Portée de ce halo au-delà du limbe, en fraction du rayon du disque.",
@@ -2161,8 +2584,9 @@
     "starSize": "Taille des étoiles",
     "starSizeHint": "Taille de tracé des étoiles",
     "openView": "Prendre du recul",
-    "openViewHint": "Écarte la caméra de l'axe de visée — depuis la Terre, la scène ressemble à la photo quelle que soit la profondeur",
+    "openViewHint": "Cadre tout ce que contient la scène et le regarde de côté — la Galaxie si ce calque est actif, sinon le volume propre de ce champ. L'objectif s'ouvre avec lui : le cône d'un champ est bien plus profond que large, et l'objectif qui a photographié sa pointe ne peut pas regarder le long de son axe.",
     "resetView": "Retour sur Terre",
+    "resetViewHint": "Retour à la photo : l'œil sur Terre, dans l'axe de visée, avec l'objectif de la prise de vue.",
     "layerStars": "Étoiles",
     "layerObjects": "Objets",
     "layerField": "Champ de vision",
@@ -2241,9 +2665,12 @@
     "galaxy": "Voie lactée",
     "galaxyHint": "Dessine la Galaxie autour de ce champ, à l'échelle et à l'orientation réelles. Nécessite les repères célestes de l'image, absents des anciens traitements.",
     "galaxyZoom": "Reculer",
-    "galaxyZoomHint": "Volez depuis votre propre champ jusqu'à la Galaxie entière. Rien n'est exagéré — à l'autre bout, votre champ n'est vraiment qu'un mince rayon.",
+    "galaxyGain": "Luminosité de la Galaxie",
+    "galaxyGainHint": "Exposition des étoiles de la Galaxie. La structure ne change pas : c'est le tirage, pas le négatif.",
+    "galaxyZoomHint": "Volez depuis l'intérieur de votre champ jusqu'à la Galaxie entière — et au-delà lorsque le traitement a capté quelque chose de plus lointain, jusqu'à les cadrer tous les deux à l'échelle réelle. Rien n'est exagéré.",
     "galaxyUnavailable": "Ce traitement n'a pas enregistré l'orientation du ciel : impossible de placer la Galaxie autour.",
-    "galaxyModelled": "Le disque, le bulbe et les bras sont un MODÈLE (Reid et al. 2019) ; les distances de vos étoiles sont mesurées.",
+    "galaxyModelled": "Disque, bulbe, barre, bras et halo sont un MODÈLE échantillonné depuis la littérature (bras de Reid et al. 2019, barre de Wegg & Gerhard, disque de Bland-Hawthorn & Gerhard) ; les distances de vos étoiles sont mesurées.",
+    "galaxyNoDust": "La poussière n'est pas modélisée : l'extinction dépend de la position de l'œil, donc les bandes sombres d'une photographie sont absentes. Ce qui est dessiné, c'est le contraste de densité lui-même.",
     "galaxyMirrored": "Ce champ a été photographié à travers un renvoi coudé : l'image — et la Galaxie qui y est dessinée — est en miroir."
   },
   "refine": {
@@ -2528,7 +2955,12 @@
         "likely": "probable"
       },
       "noForecastNight": "Pas encore de prévisions pour cette nuit (au-delà de l'horizon de prévision).",
-      "nightOf": "Nuit du {date}"
+      "nightOf": "Nuit du {date}",
+      "prevNight": "Nuit précédente",
+      "nextNight": "Nuit suivante",
+      "backToTonight": "Cette nuit",
+      "noPastForecast": "Aucune prévision pour les nuits déjà passées",
+      "beyondForecast": "Au-delà de l'horizon de prévision"
     },
     "site": {
       "label": "Bortle {bortle} · {sqm} mag/arcsec²",
@@ -2744,6 +3176,13 @@
         "pause": "Pause",
         "scrub": "Heure de la nuit"
       }
+    },
+    "hover": {
+      "sqmUnit": "mag/arcsec²",
+      "cloud": "Nuages",
+      "seeing": "Turbulence",
+      "temp": "Temp.",
+      "noWeather": "Pas de prévision en cache ici"
     }
   },
   "calendar": {
@@ -3333,6 +3772,118 @@
         "label": "Par le nombre de sous-poses",
         "desc": "Pour empiler des images déjà empilées : chaque entrée compte proportionnellement au nombre de poses qui la composent."
       }
+    }
+  },
+  "solarsystem": {
+    "title": "Système solaire",
+    "subtitle": "Les planètes, leurs lunes et leurs axes réels, à leur vraie place — en direct, ou à la date que vous choisissez.",
+    "loading": "Chargement du modèle…",
+    "versionMismatch": "Le modèle du moteur ne correspond pas à cette page. Rechargez pour récupérer le nouveau.",
+    "noWebgl": "Ce navigateur n'a pas WebGL2 : le système solaire ne peut pas être dessiné.",
+    "bodies": {
+      "sun": "Soleil",
+      "mercury": "Mercure",
+      "venus": "Vénus",
+      "earth": "Terre",
+      "moon": "Lune",
+      "mars": "Mars",
+      "jupiter": "Jupiter",
+      "saturn": "Saturne",
+      "uranus": "Uranus",
+      "neptune": "Neptune",
+      "pluto": "Pluton"
+    },
+    "kinds": {
+      "star": "étoile",
+      "planet": "planète",
+      "moon": "lune",
+      "dwarf": "planète naine",
+      "comet": "comète"
+    },
+    "tiers": {
+      "fitted": "orbite ajustée",
+      "fittedHint": "Une théorie ajustée sur l'éphéméride numérique — précise à environ une minute d'arc sur toute la plage.",
+      "mean": "éléments moyens",
+      "meanHint": "La bonne période, le bon plan et la bonne phase, mais pas une éphéméride : comptez une fraction de degré.",
+      "sampled": "échantillonné",
+      "sampledHint": "Une population synthétique tirée de statistiques publiées. Aucun objet n'y est réel."
+    },
+    "time": {
+      "play": "Lecture",
+      "pause": "Pause",
+      "now": "Maintenant",
+      "liveNow": "En direct",
+      "forward": "Avant",
+      "backward": "Arrière",
+      "rate": "Vitesse",
+      "perSecond": "par seconde",
+      "when": "Quand",
+      "exact": "Instant exact",
+      "utc": "UTC",
+      "site": "local",
+      "jd": "JJ",
+      "stepBack": "Un jour en arrière",
+      "stepForward": "Un jour en avant",
+      "rates": {
+        "realtime": "temps réel",
+        "minute": "une minute",
+        "hour": "une heure",
+        "day": "un jour",
+        "week": "une semaine",
+        "month": "un mois",
+        "year": "un an"
+      }
+    },
+    "view": {
+      "title": "La vue",
+      "canvasLabel": "Carte tridimensionnelle du système solaire",
+      "distances": "Distances",
+      "distancesHint": "L'échelle vraie est honnête et presque illisible : tout ce qui est en deçà de Jupiter forme un nœud au centre. Le mode égalisé espace les orbites régulièrement. Le curseur circule entre les deux.",
+      "trueScale": "Vraie",
+      "mixed": "Mixte",
+      "compressed": "Égalisée",
+      "bodySize": "Taille des corps",
+      "moonScale": "Écartement des lunes",
+      "orbits": "Orbites",
+      "axes": "Axes",
+      "stars": "Étoiles",
+      "labels": "Étiquettes",
+      "reset": "Réinitialiser la vue",
+      "fullscreen": "Plein écran",
+      "navHint": "Glisser pour tourner · maj+glisser pour déplacer · molette pour zoomer",
+      "following": "Suit {body}"
+    },
+    "picker": {
+      "title": "Corps"
+    },
+    "info": {
+      "empty": "Survolez un monde, ou choisissez-en un dans la liste.",
+      "unpin": "Détacher",
+      "asOf": "Géométrie au {at} UTC — l'horloge devance le moteur.",
+      "orbits": "orbite autour de {body}",
+      "radius": "Rayon",
+      "mass": "Masse",
+      "rotation": "Rotation",
+      "axialTilt": "Inclinaison de l'axe",
+      "distanceSun": "Du Soleil",
+      "distanceEarth": "De la Terre",
+      "magnitude": "Magnitude",
+      "apparentSize": "Taille apparente",
+      "illuminated": "Éclairé",
+      "elongation": "Élongation",
+      "ringOpen": "Inclinaison des anneaux",
+      "altAz": "Hauteur / azimut",
+      "up": "levé",
+      "below": "sous l'horizon",
+      "retrograde": "rétrograde",
+      "days": "jours"
+    },
+    "legend": {
+      "title": "Ce qui est réel ici",
+      "warpNote": "Les positions, distances, phases et tous les nombres affichés sont calculés à l'échelle vraie. Le curseur de distance n'étire que l'IMAGE : une éclipse se produit au bon instant quelle que soit la compression.",
+      "sizeNote": "Un monde n'est jamais dessiné plus petit que quelques pixels, sinon l'écran serait vide vu d'ici. Approchez-vous et sa taille réelle prend le relais.",
+      "tierNote": "Rayons, masses et directions des pôles sont des mesures publiées. La qualité de la POSITION de chaque corps est indiquée sur sa propre pastille.",
+      "range": "Le modèle orbital est ajusté pour {from}–{to} ; le curseur ne sort pas de cette plage."
     }
   }
 }

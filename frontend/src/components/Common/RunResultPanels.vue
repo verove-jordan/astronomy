@@ -684,7 +684,9 @@ const rejectedClass = (r: Row) =>
           "
         >
           {{ t("stars.identified", { n: identifiedStars }) }}
-          <template v-if="stars?.solve?.star_catalog === 'embedded'"> ⚠</template>
+          <template v-if="stars?.solve?.star_catalog === 'embedded'">
+            ⚠</template
+          >
         </span>
         <span
           v-if="stars && !stars.solved"
@@ -760,6 +762,7 @@ const rejectedClass = (r: Row) =>
       :result="props.result"
       :editable="rerunnable"
       :photom="photomRecords"
+      :job-id="props.jobId"
       @edit="(s) => emit('rerun-stage', s)"
     />
 

@@ -97,6 +97,14 @@ func (p paletteResolved) screenOnly(filter string) bool {
 // any fallback. A nil/empty/unknown palette is "natural".
 func resolvePalette(p *mode.Preset, channels map[string]string) (paletteResolved, string) {
 	has := func(f string) bool { _, ok := channels[f]; return ok }
+	// One-shot color has no filters to map. Every entry in paletteSpecs is written in terms of filter
+	// names (Ha→R, OIII→G …), so the fallback chain below would find none of them present, walk all the
+	// way to "mono", and throw the colour away. A colour run passes its single RGB channel through —
+	// UNLESS it is a duo-band capture that has been split into real emission channels (duoband.go),
+	// which is exactly the case the filter-name chain below was written for.
+	if isColorRun(p) && !duobandMapped(p, has) {
+		return colorPalette(), ""
+	}
 	want := "natural"
 	if p != nil {
 		if s := strings.ToLower(strings.TrimSpace(p.Palette)); s != "" {
@@ -191,4 +199,13 @@ func substituteFilters(expr string, channels map[string]string) string {
 		}
 	}
 	return expr
+}
+
+// duobandMapped reports whether a colour run carries the emission channels its requested narrowband
+// palette needs — the one case where a one-shot-colour run follows the ordinary filter-name chain
+// instead of passing through. The split only ever adds Hα and [OIII] (a duo-band filter passes no
+// [SII]), so a request for sho/hos is satisfiable here only through the chain's own fallback to hoo,
+// which resolvePalette reports in its note.
+func duobandMapped(p *mode.Preset, has func(string) bool) bool {
+	return wantsNarrowbandPalette(p) && has("Ha") && has("OIII")
 }

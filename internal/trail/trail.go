@@ -27,6 +27,31 @@ const (
 type Params struct {
 	Mode Mode
 	K    float64
+	// VoteFrac overrides how much of the frame a line must span to be accepted, as a fraction of the
+	// pooled grid's shorter side. 0 keeps trailVoteFrac.
+	//
+	// The default is tuned for SATELLITE trails, which cross the whole field. A meteor does not: on a
+	// real panel they span roughly a tenth of the frame, so the default silently refuses every one of
+	// them — the detector returns nothing at all rather than something poor. Lower it to hunt short
+	// streaks, and expect more false lines for it.
+	VoteFrac float64
+	// RawSeedK overrides the Raw-mode seed threshold (median + k·sigma of the pooled grid). 0 keeps
+	// trailBrightK.
+	//
+	// Raw mode deliberately IGNORES K — seedK returns the constant — so RawParams(k) takes a k and
+	// discards it, and a caller sweeping k sees the identical answer every time. That is fine for the
+	// satellite pass it was written for and useless for anything fainter or brighter, so the override
+	// is a separate field: changing what K means in Raw mode would silently move every existing
+	// caller.
+	RawSeedK float64
+}
+
+// voteFrac is the span requirement this pass should use.
+func (p Params) voteFrac() float64 {
+	if p.VoteFrac > 0 {
+		return p.VoteFrac
+	}
+	return trailVoteFrac
 }
 
 // DefaultParams returns Residual-mode parameters (median-subtracted planes).

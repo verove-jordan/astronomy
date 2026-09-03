@@ -12,6 +12,13 @@ export interface Frame {
   has_temp: boolean;
   width: number;
   height: number;
+  // Colour-filter-array pattern (e.g. "GRBG") for a one-shot-color frame still in its raw Bayer
+  // mosaic; absent for monochrome and for already-debayered frames.
+  bayer?: string;
+  // Plane count: 1 for monochrome and for undebayered CFA, 3 for an already-demosaiced RGB frame.
+  // Absent means undetermined (read as 1). With `bayer` this names the three states the pipeline
+  // distinguishes — mono, CFA awaiting debayer, and RGB.
+  channels?: number;
   object?: string;
   date_obs?: string;
   date_obs_ms?: number;
@@ -34,6 +41,9 @@ export interface SetKey {
   bin: number;
   // Capture night of a per-night set — present only on multi-night scans, and only for lights/flats.
   session?: string;
+  // True for a one-shot-color set. Colour and monochrome frames never share a set: nothing could
+  // stack them together or calibrate one with the other's master.
+  color?: boolean;
 }
 
 export interface FrameSet {
@@ -65,6 +75,10 @@ export interface Inventory {
   videos: Frame[];
   warnings: string[];
   channel_detection?: ChannelDetection;
+  // How the capture records colour, decided from its lights: "mono" (a filter wheel, stacked per
+  // filter and combined), "osc" (one-shot color, stacked as a single RGB channel), or "mixed" (both
+  // in one folder, which no single run can stack).
+  color_model?: "mono" | "osc" | "mixed";
   // Per-capture-night summary (sorted by night, undated bucket last); absent when nothing is dated.
   sessions?: SessionInfo[];
 }
@@ -383,6 +397,19 @@ export interface StagePreview {
   png_path: string;
 }
 
+// StageArtifact is one FULL-RESOLUTION exportable stage of a finished run. The timeline previews are
+// half-scale 8-bit PNGs; these render the preserved source at native resolution as PNG or TIFF. Only
+// stages whose source still holds what its label claims are offered — several linear intermediates
+// are processed in place, so they are omitted rather than handed back under the wrong name.
+export interface StageArtifact {
+  key: string;
+  label: string;
+  path: string;
+  linear: boolean;
+  filter?: string;
+  order: number;
+}
+
 // One auxiliary monochrome deliverable saved next to the colour final: the processed Luminance-only
 // image ("luminance") or the combined all-channel integration ("all_channels"). png/tif are also in
 // FinalResult.outputs; this typed list drives the dedicated mono viewer in RunResultPanels.
@@ -418,6 +445,9 @@ export interface RunResult {
   // Coverage-derived crop applied to the colour-combine inputs (grouped runs): the common covered
   // rectangle in canvas pixels, or the honest full-field fallback (applied=false + note).
   combine_crop?: CombineCrop;
+  // Ragged-stacking-edge trim of the colour-combine inputs (edgecrop.go), measured from the stack's
+  // own pixels — so unlike combine_crop it is present on single-session runs too.
+  edge_crop?: CombineCrop;
   warnings: string[];
   // Planetary / comet lucky-imaging runs return a flat result (no `final` wrapper): the stacked
   // image outputs plus frame stats. RunResultPanels falls back to these when `final` is absent.
@@ -1267,10 +1297,31 @@ export interface SkyQueryEcho {
   limit: number;
 }
 
+// SkyPoint answers "what is it like HERE" for one map coordinate — the payload behind the map's hover
+// tooltip. `weather` is present only when the server already had a cached forecast for the point: the
+// endpoint never triggers an upstream fetch, because the weather cache keys on 0.01° (~1.1 km) and a
+// hover would otherwise mint a request every few pixels of pointer travel.
+export interface SkyPointWeather {
+  t_ms: number;
+  cloud_pct: number;
+  seeing_arcsec?: number;
+  temp_c?: number;
+  humidity_pct?: number;
+}
+
+export interface SkyPoint {
+  lat: number;
+  lon: number;
+  site: SiteQuality;
+  weather?: SkyPointWeather;
+  warning?: string;
+}
+
 // SiteQuality is the artificial sky brightness at the observing site (the `site` field of the sky API).
 export interface SiteQuality {
   sqm: number; // zenith brightness, mag/arcsec² (higher = darker)
   bortle: number; // 1 (pristine) … 9 (inner city)
+  bortle_f: number; // the same class, continuous: 4.24 rather than 4 (0 = unknown)
   source: string; // "api" | "atlas" | "default"
   retrieved_ms: number;
 }
@@ -1385,6 +1436,7 @@ export interface DarkSite {
   lon: number;
   sqm: number;
   bortle: number;
+  bortle_f?: number; // the class, continuous — tells two same-class sites apart (absent on an older engine)
   distance_km: number; // straight-line (great-circle) distance
   drive_km?: number; // road distance from the observer (absent = not computed)
   drive_min?: number; // estimated driving time, minutes (absent = not computed)
@@ -2021,6 +2073,11 @@ export interface DeviceWheelState {
   wheel?: {
     id: string;
     name: string;
+    // Which driver is behind it — "efw" for real hardware, "sim" for the simulator. The device
+    // server has always sent this; it was missing here, so the UI could not tell a simulated wheel
+    // from a real one.
+    driver?: string;
+    kind?: string;
     slots: number;
     position: number;
     moving: boolean;
@@ -2058,6 +2115,91 @@ export interface MountDiagnosis {
   chip?: string;
   ports: { path: string; label: string; likely: boolean }[];
   scan_error?: string;
+}
+
+// What is actually stored inside the mount, read back over the serial link.
+//
+// The split into hand controller and motor controllers is not cosmetic. Site, clock, tracking mode
+// and the alignment model live in the hand controller; the periodic-error table and the autoguide
+// rates live on the motor boards, one per axis, and survive a hand controller being swapped. That is
+// why a "factory reset" clears different things depending on which firmware is asked.
+export interface MountAudit {
+  at_ms: number;
+  port?: string;
+  identity: {
+    model: string;
+    model_code: number;
+    firmware: string;
+    ra_motor_firmware?: string;
+    dec_motor_firmware?: string;
+    motor_err?: string;
+  };
+  site: { read: boolean; lat_deg: number; lon_deg: number; err?: string };
+  clock: {
+    read: boolean;
+    utc: string;
+    offset_hours: number;
+    dst: boolean;
+    skew_sec: number;
+    err?: string;
+  };
+  drive: {
+    read: boolean;
+    tracking: boolean;
+    tracking_rate: string;
+    aligned: boolean;
+    pier_side?: string;
+    err?: string;
+  };
+  guide: {
+    read: boolean;
+    ra_units: number;
+    dec_units: number;
+    ra_fraction: number;
+    dec_fraction: number;
+    // Whether the declination motor could be read separately at all — the simulator, and any driver
+    // exposing only the single-axis rate, answers for right ascension alone.
+    both_axes: boolean;
+    mismatch: boolean;
+    err?: string;
+  };
+  pec: {
+    supported: boolean;
+    read: boolean;
+    err?: string;
+    bins: number;
+    worm_period_sec: number;
+    bin_sec: number;
+    lsb_arcsec_per_sec: number;
+    indexed: boolean;
+    current_bin: number;
+    curve?: number[];
+    all_zero: boolean;
+    peak_units: number;
+    peak_rate_arcsec_per_sec: number;
+    swing_arcsec: number;
+    net_arcsec_per_rev: number;
+    // What the driver last COMMANDED, not a reading: the protocol cannot be asked whether the mount
+    // is replaying its table.
+    playback_commanded: boolean;
+  };
+  link?: MountLinkHealth;
+  notes?: string[];
+}
+
+export interface MountRestoreAction {
+  item: string;
+  detail: string;
+  applied: boolean;
+  err?: string;
+}
+
+export interface MountRestoreResult {
+  dry_run: boolean;
+  backup_path?: string;
+  before: MountAudit;
+  after?: MountAudit;
+  actions: MountRestoreAction[];
 }
 
 export interface DeviceMountState {
@@ -2418,4 +2560,134 @@ export interface PolarCamState {
   error?: string;
   busy: boolean;
   tracking: boolean;
+}
+
+// --- the solar system (GET /api/solarsystem/*) ---------------------------------------------------
+// Mirrors internal/solarsystem. The browser propagates these elements itself so the time scrubber
+// costs no round trips; utils/solarsystem.ts is the propagator and solarsystem.spec.ts pins it to
+// the engine's own numbers.
+
+export type SolarKind = "star" | "planet" | "moon" | "dwarf" | "comet";
+
+/** How a body's POSITION is obtained. Its physical facts are measurements regardless. */
+export type SolarTier = "fitted" | "mean" | "sampled";
+
+export interface SolarLibration {
+  arg0_deg: number;
+  arg_dot: number;
+  ra_amp_deg: number;
+  dec_amp_deg: number;
+  w_amp_deg: number;
+}
+
+/** IAU rotational elements: where the north pole points, and how far the prime meridian has turned. */
+export interface SolarPole {
+  ra0_deg: number;
+  ra_dot?: number;
+  dec0_deg: number;
+  dec_dot?: number;
+  w0_deg: number;
+  /** Degrees per day; negative for a retrograde rotator. */
+  w_dot: number;
+  libration?: SolarLibration;
+}
+
+export interface SolarRing {
+  inner_km: number;
+  outer_km: number;
+  texture?: string;
+  faint: boolean;
+  source: string;
+}
+
+/** One orbit, as elements plus per-day rates from an epoch. Distances are AU, angles degrees. */
+export interface SolarOrbitSpec {
+  centre: string;
+  frame: "ecliptic" | "laplace";
+  pole_ra_deg?: number;
+  pole_dec_deg?: number;
+  epoch_jd: number;
+  a_au: number;
+  a_dot?: number;
+  e: number;
+  e_dot?: number;
+  i_deg: number;
+  i_dot?: number;
+  node_deg: number;
+  node_dot?: number;
+  peri_deg: number;
+  peri_dot?: number;
+  m_deg: number;
+  n_deg: number;
+  period_days: number;
+}
+
+export interface SolarBody {
+  key: string;
+  kind: SolarKind;
+  parent?: string;
+  radius_km: number;
+  polar_radius_km?: number;
+  mass_kg?: number;
+  albedo?: number;
+  colour: string;
+  pole: SolarPole;
+  ring?: SolarRing;
+  orbit?: SolarOrbitSpec;
+  /** A built-in analytic model, for bodies no fixed element set describes well (the Moon). */
+  series?: string;
+  texture?: string;
+  tier: SolarTier;
+  source: string;
+}
+
+export interface SolarSource {
+  name: string;
+  covers: string;
+  licence: string;
+  url?: string;
+}
+
+export interface SolarManifest {
+  version: number;
+  engine: string;
+  range_from: number;
+  range_to: number;
+  au_per_km: number;
+  bodies: SolarBody[];
+  /** Texture keys this engine actually has on disk; anything absent is shaded procedurally. */
+  textures: string[];
+  sources: SolarSource[];
+}
+
+/** One body at one instant, computed by the engine — the numbers the info panel prints. */
+export interface SolarBodyState {
+  key: string;
+  kind: SolarKind;
+  helio_au: [number, number, number];
+  local_au?: [number, number, number];
+  helio_dist_au: number;
+  geo_dist_au: number;
+  ra_deg: number;
+  dec_deg: number;
+  alt_deg: number;
+  az_deg: number;
+  up: boolean;
+  airmass?: number;
+  magnitude: number;
+  angular_diameter_arcsec: number;
+  phase_angle_deg: number;
+  illum_fraction: number;
+  elongation_deg: number;
+  orientation: { pole_ra_deg: number; pole_dec_deg: number; w_deg: number };
+  axial_tilt_deg: number;
+  /** Ring-plane tilt toward Earth; 0 is edge-on. Saturn only, for now. */
+  ring_open_deg?: number;
+}
+
+export interface SolarSnapshot {
+  time_ms: number;
+  jd: number;
+  site: { lat_deg: number; lon_deg: number; elevation_m?: number };
+  bodies: SolarBodyState[];
 }

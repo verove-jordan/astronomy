@@ -1,0 +1,1639 @@
+{
+  "note": "Written by internal/solarsystem/golden_test.go; read by frontend/src/utils/solarsystem.spec.ts. Regenerate with: go test ./internal/solarsystem -run Golden -update",
+  "manifest": {
+    "version": 1,
+    "engine": "(pinned)",
+    "range_from": 1800,
+    "range_to": 2050,
+    "au_per_km": 6.684587122268446e-9,
+    "bodies": [
+      {
+        "key": "sun",
+        "kind": "star",
+        "radius_km": 695700,
+        "mass_kg": 1.98892e+30,
+        "colour": "#FFF3D6",
+        "pole": {
+          "ra0_deg": 286.13,
+          "dec0_deg": 63.87,
+          "w0_deg": 84.176,
+          "w_dot": 14.1844
+        },
+        "texture": "sun",
+        "tier": "fitted",
+        "source": "IAU 2015 nominal values / JPL planetary fact sheets; IAU WGCCRE 2015 rotational elements (mean terms)"
+      },
+      {
+        "key": "mercury",
+        "kind": "planet",
+        "radius_km": 2439.7,
+        "mass_kg": 3.3011e+23,
+        "albedo": 0.142,
+        "colour": "#8C8680",
+        "pole": {
+          "ra0_deg": 281.0103,
+          "ra_dot": -0.0328,
+          "dec0_deg": 61.4155,
+          "dec_dot": -0.0049,
+          "w0_deg": 329.5988,
+          "w_dot": 6.1385108
+        },
+        "orbit": {
+          "centre": "sun",
+          "frame": "ecliptic",
+          "epoch_jd": 2451545,
+          "a_au": 0.38709927,
+          "a_dot": 1.0130047912388775e-11,
+          "e": 0.20563593,
+          "e_dot": 5.218343600273786e-10,
+          "i_deg": 7.00497902,
+          "i_dot": -1.62833401779603e-7,
+          "node_deg": 48.33076593,
+          "node_dot": -0.0000034316443531827513,
+          "peri_deg": 29.12703035,
+          "peri_dot": 0.000007825262149212869,
+          "m_deg": 174.79252722,
+          "n_deg": 4.092334391098151,
+          "period_days": 87.96925644194627
+        },
+        "texture": "mercury",
+        "tier": "fitted",
+        "source": "IAU 2015 nominal values / JPL planetary fact sheets; IAU WGCCRE 2015 rotational elements (mean terms)"
+      },
+      {
+        "key": "venus",
+        "kind": "planet",
+        "radius_km": 6051.8,
+        "mass_kg": 4.8675e+24,
+        "albedo": 0.689,
+        "colour": "#E6C58C",
+        "pole": {
+          "ra0_deg": 272.76,
+          "dec0_deg": 67.16,
+          "w0_deg": 160.2,
+          "w_dot": -1.4813688
+        },
+        "orbit": {
+          "centre": "sun",
+          "frame": "ecliptic",
+          "epoch_jd": 2451545,
+          "a_au": 0.72333566,
+          "a_dot": 1.0677618069815195e-10,
+          "e": 0.00677672,
+          "e_dot": -1.124435318275154e-9,
+          "i_deg": 3.39467605,
+          "i_dot": -2.1598904859685147e-8,
+          "node_deg": 76.67984255,
+          "node_dot": -0.0000076028522929500345,
+          "peri_deg": 54.92262462999999,
+          "peri_dot": 0.000007676316769336072,
+          "m_deg": 50.37663232,
+          "n_deg": 1.6021303957289528,
+          "period_days": 224.70080116586078
+        },
+        "texture": "venus",
+        "tier": "fitted",
+        "source": "IAU 2015 nominal values / JPL planetary fact sheets; IAU WGCCRE 2015 rotational elements (mean terms)"
+      },
+      {
+        "key": "earth",
+        "kind": "planet",
+        "radius_km": 6378.137,
+        "polar_radius_km": 6356.752,
+        "mass_kg": 5.97237e+24,
+        "albedo": 0.306,
+        "colour": "#4B7BB5",
+        "pole": {
+          "ra0_deg": 0,
+          "ra_dot": -0.641,
+          "dec0_deg": 90,
+          "dec_dot": -0.557,
+          "w0_deg": 190.147,
+          "w_dot": 360.9856235
+        },
+        "orbit": {
+          "centre": "sun",
+          "frame": "ecliptic",
+          "epoch_jd": 2451545,
+          "a_au": 1.00000261,
+          "a_dot": 1.538672142368241e-10,
+          "e": 0.01671123,
+          "e_dot": -1.2024640657084188e-9,
+          "i_deg": -0.00001531,
+          "i_dot": -3.5446078028747434e-7,
+          "node_deg": 0,
+          "peri_deg": 102.93768193,
+          "peri_dot": 0.000008850749897330594,
+          "m_deg": -2.4731102699999923,
+          "n_deg": 0.9856002512298425,
+          "period_days": 365.25636713062755
+        },
+        "texture": "earth",
+        "tier": "fitted",
+        "source": "IAU 2015 nominal values / JPL planetary fact sheets; IAU WGCCRE 2015 rotational elements (mean terms)"
+      },
+      {
+        "key": "moon",
+        "kind": "moon",
+        "parent": "earth",
+        "radius_km": 1737.4,
+        "mass_kg": 7.342e+22,
+        "albedo": 0.136,
+        "colour": "#9A968E",
+        "pole": {
+          "ra0_deg": 269.9949,
+          "ra_dot": 0.0031,
+          "dec0_deg": 66.5392,
+          "dec_dot": 0.013,
+          "w0_deg": 38.3213,
+          "w_dot": 13.17635815
+        },
+        "series": "moon_aa",
+        "texture": "moon",
+        "tier": "fitted",
+        "source": "IAU 2015 nominal values / JPL planetary fact sheets; IAU WGCCRE 2015 rotational elements (mean terms); motion: Astronomical Almanac low-precision series"
+      },
+      {
+        "key": "mars",
+        "kind": "planet",
+        "radius_km": 3396.19,
+        "polar_radius_km": 3376.2,
+        "mass_kg": 6.4171e+23,
+        "albedo": 0.17,
+        "colour": "#C1502E",
+        "pole": {
+          "ra0_deg": 317.68143,
+          "ra_dot": -0.1061,
+          "dec0_deg": 52.8865,
+          "dec_dot": -0.0609,
+          "w0_deg": 176.63,
+          "w_dot": 350.89198226
+        },
+        "orbit": {
+          "centre": "sun",
+          "frame": "ecliptic",
+          "epoch_jd": 2451545,
+          "a_au": 1.52371034,
+          "a_dot": 5.056810403832991e-10,
+          "e": 0.0933941,
+          "e_dot": 2.1579739904175222e-9,
+          "i_deg": 1.84969142,
+          "i_dot": -2.2262313483915126e-7,
+          "node_deg": 49.55953891,
+          "node_dot": -0.000008010223956194387,
+          "peri_deg": -73.5031685,
+          "peri_dot": 0.000020177530732375084,
+          "m_deg": 19.390197540000003,
+          "n_deg": 0.5240207604136893,
+          "period_days": 686.9797315332721
+        },
+        "texture": "mars",
+        "tier": "fitted",
+        "source": "IAU 2015 nominal values / JPL planetary fact sheets; IAU WGCCRE 2015 rotational elements (mean terms)"
+      },
+      {
+        "key": "jupiter",
+        "kind": "planet",
+        "radius_km": 71492,
+        "polar_radius_km": 66854,
+        "mass_kg": 1.8982e+27,
+        "albedo": 0.538,
+        "colour": "#C9A87C",
+        "pole": {
+          "ra0_deg": 268.056595,
+          "ra_dot": -0.006499,
+          "dec0_deg": 64.495303,
+          "dec_dot": 0.002413,
+          "w0_deg": 284.95,
+          "w_dot": 870.536
+        },
+        "ring": {
+          "inner_km": 122500,
+          "outer_km": 129000,
+          "faint": true,
+          "source": "Jupiter main ring, Ockert-Bell et al. 1999"
+        },
+        "orbit": {
+          "centre": "sun",
+          "frame": "ecliptic",
+          "epoch_jd": 2451545,
+          "a_au": 5.202887,
+          "a_dot": -3.17782340862423e-9,
+          "e": 0.04838624,
+          "e_dot": -3.628473648186174e-9,
+          "i_deg": 1.30439695,
+          "i_dot": -5.0298151950718684e-8,
+          "node_deg": 100.47390909,
+          "node_dot": 0.000005604135797399042,
+          "peri_deg": -85.74542926000001,
+          "peri_dot": 2.1452758384668002e-7,
+          "m_deg": 19.66796068,
+          "n_deg": 0.0830810020826831,
+          "period_days": 4332.81712752323
+        },
+        "texture": "jupiter",
+        "tier": "fitted",
+        "source": "IAU 2015 nominal values / JPL planetary fact sheets; IAU WGCCRE 2015 rotational elements (mean terms)"
+      },
+      {
+        "key": "saturn",
+        "kind": "planet",
+        "radius_km": 60268,
+        "polar_radius_km": 54364,
+        "mass_kg": 5.6834e+26,
+        "albedo": 0.499,
+        "colour": "#E0CFA0",
+        "pole": {
+          "ra0_deg": 40.589,
+          "ra_dot": -0.036,
+          "dec0_deg": 83.537,
+          "dec_dot": -0.004,
+          "w0_deg": 38.9,
+          "w_dot": 810.7939024
+        },
+        "ring": {
+          "inner_km": 74500,
+          "outer_km": 136780,
+          "texture": "saturn_ring",
+          "faint": false,
+          "source": "ring radii, NASA/JPL Cassini"
+        },
+        "orbit": {
+          "centre": "sun",
+          "frame": "ecliptic",
+          "epoch_jd": 2451545,
+          "a_au": 9.53667594,
+          "a_dot": -3.4239561943874055e-8,
+          "e": 0.05386179,
+          "e_dot": -1.3960574948665299e-8,
+          "i_deg": 2.48599187,
+          "i_dot": 5.30072553045859e-8,
+          "node_deg": 113.66242448,
+          "node_dot": -0.000007903571252566737,
+          "peri_deg": -21.063546169999995,
+          "peri_dot": -0.0000035672613278576307,
+          "m_deg": -42.64463408,
+          "n_deg": 0.03348152208542095,
+          "period_days": 10755.884336133118
+        },
+        "texture": "saturn",
+        "tier": "fitted",
+        "source": "IAU 2015 nominal values / JPL planetary fact sheets; IAU WGCCRE 2015 rotational elements (mean terms)"
+      },
+      {
+        "key": "uranus",
+        "kind": "planet",
+        "radius_km": 25559,
+        "polar_radius_km": 24973,
+        "mass_kg": 8.681e+25,
+        "albedo": 0.488,
+        "colour": "#A8DCE0",
+        "pole": {
+          "ra0_deg": 257.311,
+          "dec0_deg": -15.175,
+          "w0_deg": 203.81,
+          "w_dot": -501.1600928
+        },
+        "ring": {
+          "inner_km": 41800,
+          "outer_km": 51150,
+          "faint": true,
+          "source": "ε ring and inner system, Elliot et al. 1978"
+        },
+        "orbit": {
+          "centre": "sun",
+          "frame": "ecliptic",
+          "epoch_jd": 2451545,
+          "a_au": 19.18916464,
+          "a_dot": -5.371006160164271e-8,
+          "e": 0.04725744,
+          "e_dot": -1.203832991101985e-9,
+          "i_deg": 0.77263783,
+          "i_dot": -6.651307323750856e-8,
+          "node_deg": 74.01692503,
+          "node_dot": 0.000001161009993155373,
+          "peri_deg": 96.93735127000001,
+          "peri_dot": 0.000010010867077344285,
+          "m_deg": 142.28382821000002,
+          "n_deg": 0.011720026695140315,
+          "period_days": 30687.401443598257
+        },
+        "texture": "uranus",
+        "tier": "fitted",
+        "source": "IAU 2015 nominal values / JPL planetary fact sheets; IAU WGCCRE 2015 rotational elements (mean terms)"
+      },
+      {
+        "key": "neptune",
+        "kind": "planet",
+        "radius_km": 24764,
+        "polar_radius_km": 24341,
+        "mass_kg": 1.02413e+26,
+        "albedo": 0.442,
+        "colour": "#4B70DD",
+        "pole": {
+          "ra0_deg": 299.36,
+          "dec0_deg": 43.46,
+          "w0_deg": 253.18,
+          "w_dot": 536.3128492,
+          "libration": {
+            "arg0_deg": 357.85,
+            "arg_dot": 52.316,
+            "ra_amp_deg": 0.7,
+            "dec_amp_deg": -0.51,
+            "w_amp_deg": -0.48
+          }
+        },
+        "ring": {
+          "inner_km": 41900,
+          "outer_km": 62933,
+          "faint": true,
+          "source": "Adams ring and inner arcs, Voyager 2"
+        },
+        "orbit": {
+          "centre": "sun",
+          "frame": "ecliptic",
+          "epoch_jd": 2451545,
+          "a_au": 30.06992276,
+          "a_dot": 7.198083504449007e-9,
+          "e": 0.00859048,
+          "e_dot": 1.3976728268309377e-9,
+          "i_deg": 1.77004347,
+          "i_dot": 9.684325804243669e-9,
+          "node_deg": 131.78422574,
+          "node_dot": -1.3926461327857632e-7,
+          "peri_deg": -86.81946347000002,
+          "peri_dot": -0.000008687967145790554,
+          "m_deg": -100.08479196,
+          "n_deg": 0.005989921092128679,
+          "period_days": 60189.65901627789
+        },
+        "texture": "neptune",
+        "tier": "fitted",
+        "source": "IAU 2015 nominal values / JPL planetary fact sheets; IAU WGCCRE 2015 rotational elements (mean terms)"
+      },
+      {
+        "key": "pluto",
+        "kind": "dwarf",
+        "radius_km": 1188.3,
+        "mass_kg": 1.303e+22,
+        "albedo": 0.52,
+        "colour": "#CBB8A2",
+        "pole": {
+          "ra0_deg": 132.993,
+          "dec0_deg": -6.163,
+          "w0_deg": 302.695,
+          "w_dot": 56.3625225
+        },
+        "orbit": {
+          "centre": "sun",
+          "frame": "ecliptic",
+          "epoch_jd": 2451545,
+          "a_au": 39.48211675,
+          "a_dot": -8.650513347022587e-9,
+          "e": 0.2488273,
+          "e_dot": 1.4154688569472965e-9,
+          "i_deg": 17.14001206,
+          "i_dot": 1.3190965092402465e-9,
+          "node_deg": 110.30393684,
+          "node_dot": -3.2401971252566735e-7,
+          "peri_deg": 113.76497945,
+          "peri_dot": -7.883531827515401e-7,
+          "m_deg": 14.860122039999993,
+          "n_deg": 0.0039766854091718,
+          "period_days": 90552.98361143227
+        },
+        "texture": "pluto",
+        "tier": "fitted",
+        "source": "IAU 2015 nominal values / JPL planetary fact sheets; IAU WGCCRE 2015 rotational elements (mean terms)"
+      }
+    ],
+    "textures": null,
+    "sources": [
+      {
+        "name": "JPL Solar System Dynamics — approximate positions of the major planets",
+        "covers": "planet and Pluto orbits, 1800–2050",
+        "licence": "public domain (NASA/JPL-Caltech)",
+        "url": "https://ssd.jpl.nasa.gov/planets/approx_pos.html"
+      },
+      {
+        "name": "IAU/IAG Working Group on Cartographic Coordinates and Rotational Elements (2015)",
+        "covers": "pole directions, axial tilts and rotation rates",
+        "licence": "published report"
+      },
+      {
+        "name": "IAU 2015 nominal values and the JPL planetary fact sheets",
+        "covers": "radii, masses and albedos",
+        "licence": "public domain (NASA/JPL-Caltech)"
+      },
+      {
+        "name": "Astronomical Almanac low-precision formulae",
+        "covers": "the Moon's position and distance",
+        "licence": "published tables"
+      },
+      {
+        "name": "HYG v4.1 (astronexus) + Stellarium constellation lines",
+        "covers": "the background star field",
+        "licence": "CC BY-SA 4.0 / GPL"
+      }
+    ]
+  },
+  "epochs": [
+    {
+      "iso": "2000-01-01T12:00:00Z",
+      "jd": 2451545,
+      "bodies": {
+        "earth": {
+          "helio_au": [
+            -0.17717124910462528,
+            0.9672144849669473,
+            -2.5844929400887544e-7
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 0,
+          "pole_dec_deg": 90,
+          "w_deg": 190.14699999999993
+        },
+        "jupiter": {
+          "helio_au": [
+            3.9983209397841457,
+            2.945710911068507,
+            -0.10171781461585172
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 268.056595,
+          "pole_dec_deg": 64.495303,
+          "w_deg": 284.95000000000005
+        },
+        "mars": {
+          "helio_au": [
+            1.3906677476780214,
+            -0.013391064158331,
+            -0.034461259223305785
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 317.68143,
+          "pole_dec_deg": 52.8865,
+          "w_deg": 176.63
+        },
+        "mercury": {
+          "helio_au": [
+            -0.1300886203989979,
+            -0.4472923366020917,
+            -0.024598819714780926
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 281.0103,
+          "pole_dec_deg": 61.4155,
+          "w_deg": 329.5988
+        },
+        "moon": {
+          "helio_au": [
+            -0.179121455955182,
+            0.9653774322551503,
+            0.0002437057995267639
+          ],
+          "local_au": [
+            -0.0019502068505567144,
+            -0.0018370527117970335,
+            0.00024396424882077277
+          ],
+          "pole_ra_deg": 269.9949,
+          "pole_dec_deg": 66.5392,
+          "w_deg": 38.32130000000001
+        },
+        "neptune": {
+          "helio_au": [
+            16.804762811918888,
+            -24.99270986023978,
+            0.1274032100866324
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 299.33373895877264,
+          "pole_dec_deg": 42.95035902184485,
+          "w_deg": 253.1980075711274
+        },
+        "pluto": {
+          "helio_au": [
+            -9.883030192253404,
+            -27.9635954201623,
+            5.851153745541138
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 132.993,
+          "pole_dec_deg": -6.163,
+          "w_deg": 302.69499999999994
+        },
+        "saturn": {
+          "helio_au": [
+            6.414784487255078,
+            6.545667464903091,
+            -0.3691467728543546
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 40.589,
+          "pole_dec_deg": 83.537,
+          "w_deg": 38.89999999999998
+        },
+        "sun": {
+          "helio_au": [
+            0,
+            0,
+            0
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 286.13,
+          "pole_dec_deg": 63.87,
+          "w_deg": 84.17599999999999
+        },
+        "uranus": {
+          "helio_au": [
+            14.425465882509512,
+            -13.737645725717428,
+            -0.23803312037558916
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 257.311,
+          "pole_dec_deg": -15.175,
+          "w_deg": 203.80999999999995
+        },
+        "venus": {
+          "helio_au": [
+            -0.7183163556380717,
+            -0.03270666163612091,
+            0.041015624348294956
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 272.76,
+          "pole_dec_deg": 67.16,
+          "w_deg": 160.20000000000005
+        }
+      }
+    },
+    {
+      "iso": "1800-01-01T00:00:00Z",
+      "jd": 2378496.5,
+      "bodies": {
+        "earth": {
+          "helio_au": [
+            -0.22500129734346738,
+            0.9571028670362883,
+            0.00043227352624776086
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 1.2819736755646818,
+          "pole_dec_deg": 91.11397712525667,
+          "w_deg": 11.828760251402855
+        },
+        "jupiter": {
+          "helio_au": [
+            -0.035253038913626945,
+            5.130627463490299,
+            -0.01968081817450259
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 268.06959273310065,
+          "pole_dec_deg": 64.49047709909652,
+          "w_deg": 55.95400000363588
+        },
+        "mars": {
+          "helio_au": [
+            -1.0961691605694128,
+            -1.1095878035879425,
+            0.004248569455956394
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 317.89362564271045,
+          "pole_dec_deg": 53.008297498973306,
+          "w_deg": 43.66388038918376
+        },
+        "mercury": {
+          "helio_au": [
+            -0.21102457313205522,
+            0.25048702580924415,
+            0.039873833780034194
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 281.0758986529774,
+          "pole_dec_deg": 61.425299798767966,
+          "w_deg": 120.59262619999936
+        },
+        "moon": {
+          "helio_au": [
+            -0.222400738419296,
+            0.9566259435345141,
+            0.00025333107832602967
+          ],
+          "local_au": [
+            0.0026005589241713937,
+            -0.00047692350177419476,
+            -0.00017894244792173117
+          ],
+          "pole_ra_deg": 269.98870012731004,
+          "pole_dec_deg": 66.51320053388089,
+          "w_deg": 165.12297972501256
+        },
+        "neptune": {
+          "helio_au": [
+            -20.307645584730594,
+            -22.501191695854494,
+            0.9309278019400671
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 298.68980524498755,
+          "pole_dec_deg": 43.60723451646547,
+          "w_deg": 44.47477591782808
+        },
+        "pluto": {
+          "helio_au": [
+            36.331519306548266,
+            -16.70818476224822,
+            -8.716897190620784
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 132.993,
+          "pole_dec_deg": -6.163,
+          "w_deg": 64.97015875019133
+        },
+        "saturn": {
+          "helio_au": [
+            -5.665529684666164,
+            7.122661068608212,
+            0.09717726792143463
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 40.66099852156057,
+          "pole_dec_deg": 83.54499983572896,
+          "w_deg": 320.52053359895945
+        },
+        "sun": {
+          "helio_au": [
+            0,
+            0,
+            0
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 286.13,
+          "pole_dec_deg": 63.87,
+          "w_deg": 15.032600000035018
+        },
+        "uranus": {
+          "helio_au": [
+            -18.261972762690913,
+            0.9856432908186754,
+            0.24184846986192912
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 257.311,
+          "pole_dec_deg": -15.175,
+          "w_deg": 76.84890079498291
+        },
+        "venus": {
+          "helio_au": [
+            -0.6146879264768932,
+            0.36999508577072715,
+            0.04042878221105239
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 272.76,
+          "pole_dec_deg": 67.16,
+          "w_deg": 11.968786800003727
+        }
+      }
+    },
+    {
+      "iso": "1899-12-31T18:30:00Z",
+      "jd": 2415020.2708333335,
+      "bodies": {
+        "earth": {
+          "helio_au": [
+            -0.1929341139750431,
+            0.9641313064717043,
+            0.00021759798738756208
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 0.6409952469769538,
+          "pole_dec_deg": 90.556995869838,
+          "w_deg": 288.0156022552401
+        },
+        "jupiter": {
+          "helio_au": [
+            -3.0194901635432934,
+            -4.460231486723581,
+            0.08587845208634554
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 268.06309395180983,
+          "pole_dec_deg": 64.49289001789244,
+          "w_deg": 113.32016680389643
+        },
+        "mars": {
+          "helio_au": [
+            0.43206693732469414,
+            -1.3536701211302817,
+            -0.03902306406218853
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 317.78752921326713,
+          "pole_dec_deg": 52.947399548425736,
+          "w_deg": 302.01119874976575
+        },
+        "mercury": {
+          "helio_au": [
+            -0.3885007848599499,
+            -0.156985865059181,
+            0.022955169005634483
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 281.04309975678757,
+          "pole_dec_deg": 61.42039996366644,
+          "w_deg": 42.15434334264137
+        },
+        "moon": {
+          "helio_au": [
+            -0.19293005524942888,
+            0.9616690727932048,
+            0.0002587068166719023
+          ],
+          "local_au": [
+            0.000004058725614218931,
+            -0.002462233678499483,
+            0.00004110882928434022
+          ],
+          "pole_ra_deg": 269.9918000229865,
+          "pole_dec_deg": 66.52620009639516,
+          "w_deg": 95.40846825100016
+        },
+        "neptune": {
+          "helio_au": [
+            1.5191716042261731,
+            29.831511532311424,
+            -0.6492089870460369
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 298.79036320920034,
+          "pole_dec_deg": 43.16359235082376,
+          "w_deg": 252.00497482717037
+        },
+        "pluto": {
+          "helio_au": [
+            10.30027311984011,
+            45.15029111886933,
+            -7.813543989422055
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 132.993,
+          "pole_dec_deg": -6.163,
+          "w_deg": 156.8255373525899
+        },
+        "saturn": {
+          "helio_au": [
+            -0.3411884827140995,
+            -10.046738030901412,
+            0.1904628225781871
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 40.624999733059546,
+          "pole_dec_deg": 83.54099997033995,
+          "w_deg": 331.20485536009073
+        },
+        "sun": {
+          "helio_au": [
+            0,
+            0,
+            0
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 286.13,
+          "pole_dec_deg": 63.87,
+          "w_deg": 42.80760833551176
+        },
+        "uranus": {
+          "helio_au": [
+            -6.476572091705672,
+            -17.84573669790292,
+            0.017563873563216446
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 257.311,
+          "pole_dec_deg": -15.175,
+          "w_deg": 20.468661453574896
+        },
+        "venus": {
+          "helio_au": [
+            0.6986635253158284,
+            -0.19809331944695716,
+            -0.04303578896262606
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 272.76,
+          "pole_dec_deg": 67.16,
+          "w_deg": 266.79421594976884
+        }
+      }
+    },
+    {
+      "iso": "1969-07-20T20:17:00Z",
+      "jd": 2440423.345138889,
+      "bodies": {
+        "earth": {
+          "helio_au": [
+            0.4823721965170599,
+            -0.8942984102598445,
+            -0.00006129252430357629
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 0.19518085601566806,
+          "pole_dec_deg": 90.16960333354248,
+          "w_deg": 152.6326099699363
+        },
+        "jupiter": {
+          "helio_au": [
+            -5.357496643052265,
+            -1.015086869067017,
+            0.12421167661222272
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 268.0585739085542,
+          "pole_dec_deg": 64.49456825521753,
+          "w_deg": 324.01382770575583
+        },
+        "mars": {
+          "helio_au": [
+            0.21639212894298707,
+            -1.4209819885979886,
+            -0.035085023858881445
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 317.7137368468381,
+          "pole_dec_deg": 52.90504370379306,
+          "w_deg": 77.1097731278278
+        },
+        "mercury": {
+          "helio_au": [
+            -0.10540029089425698,
+            0.2958450211167628,
+            0.03383808874640608
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 281.0202874135371,
+          "pole_dec_deg": 61.41699202214427,
+          "w_deg": 99.20032119643292
+        },
+        "moon": {
+          "helio_au": [
+            0.4797854021790404,
+            -0.8947047489269947,
+            -0.00012161112707908097
+          ],
+          "local_au": [
+            -0.0025867943380195077,
+            -0.0004063386671502299,
+            -0.00006031860277550468
+          ],
+          "pole_ra_deg": 269.993956067623,
+          "pole_dec_deg": 66.53524157390295,
+          "w_deg": 15.413629310409306
+        },
+        "neptune": {
+          "helio_au": [
+            -15.995908267359038,
+            -25.7425697085375,
+            0.8986239551411374
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 299.14275964310696,
+          "pole_dec_deg": 42.97518149036323,
+          "w_deg": 46.922583241946995
+        },
+        "pluto": {
+          "helio_au": [
+            -30.476679138638097,
+            2.668840968120098,
+            8.529266260306112
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 132.993,
+          "pole_dec_deg": -6.163,
+          "w_deg": 218.1726533860201
+        },
+        "saturn": {
+          "helio_au": [
+            7.8078162297795055,
+            4.96496439283166,
+            -0.39699769657327655
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 40.59996179534565,
+          "pole_dec_deg": 83.53821797726063,
+          "w_deg": 308.9540137257427
+        },
+        "sun": {
+          "helio_au": [
+            0,
+            0,
+            0
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 286.13,
+          "pole_dec_deg": 63.87,
+          "w_deg": 10.174788054369856
+        },
+        "uranus": {
+          "helio_au": [
+            -18.25909906911755,
+            -1.2634740248651217,
+            0.23223275281408431
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 257.311,
+          "pole_dec_deg": -15.175,
+          "w_deg": 53.3922840571031
+        },
+        "venus": {
+          "helio_au": [
+            0.7241715547305276,
+            0.038635290516024226,
+            -0.041293355502443486
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 272.76,
+          "pole_dec_deg": 67.16,
+          "w_deg": 75.47251561845769
+        }
+      }
+    },
+    {
+      "iso": "2024-02-29T06:45:00Z",
+      "jd": 2460369.78125,
+      "bodies": {
+        "earth": {
+          "helio_au": [
+            -0.9299777669000826,
+            0.3414257918115406,
+            -0.00001873122906219719
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": -0.15487158880903493,
+          "pole_dec_deg": 89.86542359599589,
+          "w_deg": 169.3087823591195
+        },
+        "jupiter": {
+          "helio_au": [
+            3.157343775628403,
+            3.8699574424435466,
+            -0.08674754036930145
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 268.0550247808804,
+          "pole_dec_deg": 64.49588600334447,
+          "w_deg": 174.72024999931455
+        },
+        "mars": {
+          "helio_au": [
+            0.5510642997693167,
+            -1.3017061608889962,
+            -0.04079438331650718
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 317.65579524871663,
+          "pole_dec_deg": 52.871785991016424,
+          "w_deg": 1.6158233806490898
+        },
+        "mercury": {
+          "helio_au": [
+            0.35818527858050386,
+            -0.11098479165763137,
+            -0.04192368095366687
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 281.00237521355234,
+          "pole_dec_deg": 61.414316114219716,
+          "w_deg": 140.6138107624938
+        },
+        "moon": {
+          "helio_au": [
+            -0.9322022496845158,
+            0.33999645936702216,
+            -0.0000708609764821847
+          ],
+          "local_au": [
+            -0.002224482784433191,
+            -0.0014293324445184272,
+            -0.0000521297474199875
+          ],
+          "pole_ra_deg": 269.995648988963,
+          "pole_dec_deg": 66.54234092145789,
+          "w_deg": 36.799645404695184
+        },
+        "neptune": {
+          "helio_au": [
+            29.845151307484027,
+            -1.6063104180620094,
+            -0.6546927619904381
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 299.4874451517122,
+          "pole_dec_deg": 42.95852383939168,
+          "w_deg": 176.66836327593774
+        },
+        "pluto": {
+          "helio_au": [
+            17.36862050272058,
+            -30.29097328515777,
+            -1.7826335495116674
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 132.993,
+          "pole_dec_deg": -6.163,
+          "w_deg": 169.62676070310408
+        },
+        "saturn": {
+          "helio_au": [
+            9.094772814791959,
+            -3.3942340180484036,
+            -0.30293115862271186
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 40.58030206365503,
+          "pole_dec_deg": 83.53603356262835,
+          "w_deg": 117.72751384973526
+        },
+        "sun": {
+          "helio_au": [
+            0,
+            0,
+            0
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 286.13,
+          "pole_dec_deg": 63.87,
+          "w_deg": 338.40316250000615
+        },
+        "uranus": {
+          "helio_au": [
+            12.077066172008589,
+            15.431911712214543,
+            -0.0992376452039323
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 257.311,
+          "pole_dec_deg": -15.175,
+          "w_deg": 175.61981029994786
+        },
+        "venus": {
+          "helio_au": [
+            0.13617242678036853,
+            -0.7144575539702683,
+            -0.017669253324435263
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 272.76,
+          "pole_dec_deg": 67.16,
+          "w_deg": 47.44438942499983
+        }
+      }
+    },
+    {
+      "iso": "2026-08-13T21:30:00Z",
+      "jd": 2461266.3958333335,
+      "bodies": {
+        "earth": {
+          "helio_au": [
+            0.7848455186454705,
+            -0.6406189010203288,
+            0.00003869895501618575
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": -0.17060683721195802,
+          "pole_dec_deg": 89.85175037702487,
+          "w_deg": 194.2831861912273
+        },
+        "jupiter": {
+          "helio_au": [
+            -3.2045856650872016,
+            4.20681556676498,
+            0.054216652343275246
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 268.0548652436271,
+          "pole_dec_deg": 64.4959452375947,
+          "w_deg": 229.99316680058837
+        },
+        "mars": {
+          "helio_au": [
+            0.740588381699936,
+            1.300025495183456,
+            0.009084151103501014
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 317.65319070916036,
+          "pole_dec_deg": 52.8702910196783,
+          "w_deg": 336.48429249273613
+        },
+        "mercury": {
+          "helio_au": [
+            0.08350997794818997,
+            0.2955591251525567,
+            0.016495058233078126
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 281.0015700401551,
+          "pole_dec_deg": 61.41419582916952,
+          "w_deg": 244.4921139926155
+        },
+        "moon": {
+          "helio_au": [
+            0.7825158291397087,
+            -0.6396663635516554,
+            0.000006391305172814543
+          ],
+          "local_au": [
+            -0.0023296895057617136,
+            0.0009525374686734311,
+            -0.000032307649843371206
+          ],
+          "pole_ra_deg": 269.99572508766823,
+          "pole_dec_deg": 66.54266004506046,
+          "w_deg": 330.91451791975123
+        },
+        "neptune": {
+          "helio_au": [
+            29.844699494001276,
+            1.2237157867934247,
+            -0.712962901642158
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 299.5028397044731,
+          "pole_dec_deg": 42.960730875859824,
+          "w_deg": 82.57962886523455
+        },
+        "pluto": {
+          "helio_au": [
+            19.833713745660447,
+            -29.426549023516273,
+            -2.5882052379824865
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 132.993,
+          "pole_dec_deg": -6.163,
+          "w_deg": 305.086387665011
+        },
+        "saturn": {
+          "helio_au": [
+            9.318339806621287,
+            1.515070393363847,
+            -0.3971704991115587
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 40.579418336755644,
+          "pole_dec_deg": 83.53593537075064,
+          "w_deg": 247.36448355857283
+        },
+        "sun": {
+          "helio_au": [
+            0,
+            0,
+            0
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 286.13,
+          "pole_dec_deg": 63.87,
+          "w_deg": 96.34305833553663
+        },
+        "uranus": {
+          "helio_au": [
+            9.097112100066134,
+            17.184865038810287,
+            -0.054131293289132236
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 257.311,
+          "pole_dec_deg": -15.175,
+          "w_deg": 108.17202105559409
+        },
+        "venus": {
+          "helio_au": [
+            0.09275955572163501,
+            -0.7212714630599059,
+            -0.015262505316203037
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 272.76,
+          "pole_dec_deg": 67.16,
+          "w_deg": 159.22752004976974
+        }
+      }
+    },
+    {
+      "iso": "2050-12-31T23:59:00Z",
+      "jd": 2470172.4993055556,
+      "bodies": {
+        "earth": {
+          "helio_au": [
+            -0.1671754980649524,
+            0.9690288340023596,
+            -0.00011192901082430957
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": -0.3269056004068758,
+          "pole_dec_deg": 89.71593382304738,
+          "w_deg": 9.598061803728342
+        },
+        "jupiter": {
+          "helio_au": [
+            -4.46254007235934,
+            2.9720912753509654,
+            0.08739849582673236
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 268.05328055460683,
+          "pole_dec_deg": 64.49653361343805,
+          "w_deg": 353.685461146757
+        },
+        "mars": {
+          "helio_au": [
+            1.0041630516137485,
+            1.0661387135499214,
+            -0.002219460079535441
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 317.6273197282322,
+          "pole_dec_deg": 52.855441417995664,
+          "w_deg": 256.7858731774613
+        },
+        "mercury": {
+          "helio_au": [
+            -0.3926321796565586,
+            -0.04034613352790179,
+            0.032687804055217
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 280.99357222512737,
+          "pole_dec_deg": 61.413001033631836,
+          "w_deg": 194.70446414552862
+        },
+        "moon": {
+          "helio_au": [
+            -0.16936259882799232,
+            0.9705171863313051,
+            -0.00032787013690352624
+          ],
+          "local_au": [
+            -0.0021871007630399003,
+            0.001488352328945471,
+            -0.00021594112607921669
+          ],
+          "pole_ra_deg": 269.9964809787227,
+          "pole_dec_deg": 66.54582991077268,
+          "w_deg": 320.9235888768453
+        },
+        "neptune": {
+          "helio_au": [
+            16.4500625843049,
+            24.851762177223467,
+            -0.890873871701315
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 299.6506276501907,
+          "pole_dec_deg": 42.996033513080214,
+          "w_deg": 60.20674601010978
+        },
+        "pluto": {
+          "helio_au": [
+            37.954851196886516,
+            -14.361399270109938,
+            -9.442112979679868
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 132.993,
+          "pole_dec_deg": -6.163,
+          "w_deg": 75.54372811154462
+        },
+        "saturn": {
+          "helio_au": [
+            6.326647001043482,
+            -7.656276983266699,
+            -0.11928726513181272
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 40.570640247091035,
+          "pole_dec_deg": 83.53496002745456,
+          "w_deg": 21.753904711455107
+        },
+        "sun": {
+          "helio_au": [
+            0,
+            0,
+            0
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 286.13,
+          "pole_dec_deg": 63.87,
+          "w_deg": 64.07714972278336
+        },
+        "uranus": {
+          "helio_au": [
+            -18.094335924788076,
+            2.600411817110079,
+            0.24386248447316597
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 257.311,
+          "pole_dec_deg": -15.175,
+          "w_deg": 4.5293958224356174
+        },
+        "venus": {
+          "helio_au": [
+            -0.5935653854712034,
+            0.4030890658910586,
+            0.03980309554143954
+          ],
+          "local_au": [
+            0,
+            0,
+            0
+          ],
+          "pole_ra_deg": 272.76,
+          "pole_dec_deg": 67.16,
+          "w_deg": 286.00370672827194
+        }
+      }
+    }
+  ]
+}

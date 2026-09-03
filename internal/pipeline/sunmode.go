@@ -13,6 +13,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/buildinfo"
 	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/fsutil"
+	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/postprocess"
 	"github.com/verove-jordan/astronomy/internal/solar"
 	"github.com/verove-jordan/astronomy/internal/videoout"
@@ -37,8 +38,12 @@ func ProcessSun(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 	preset := solar.DefaultPreset()
+	modeName := string(mode.Sun)
 	if opts.Preset != nil {
 		preset = opts.Preset.Sun
+		if opts.Preset.Mode != "" {
+			modeName = string(opts.Preset.Mode)
+		}
 	}
 	runID := time.Now().UTC().Format("20060102_150405")
 	object := sunObject(opts.InputDir)
@@ -56,7 +61,12 @@ func ProcessSun(ctx context.Context, opts Options) (*Result, error) {
 	}
 	opts.PriorObject = object
 
-	const sunSteps = 6
+	// The sequence is a seventh step when it is on, so the progress bar does not stall at 6/6 for
+	// the several minutes a sheet of panels takes.
+	sunSteps := 6
+	if preset.WantsSequence() {
+		sunSteps = 7
+	}
 	opts.report(Progress{Step: "inspecting the capture", Index: 1, Total: sunSteps})
 	report, err := solar.Triage(ctx, opts.InputDir, preset.TriageOpts(opts.FfmpegBin))
 	if err != nil {
@@ -81,7 +91,28 @@ func ProcessSun(ctx context.Context, opts Options) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sun: %w", err)
 	}
-	sunPreview(opts, res, outDir, ordSunFrame, "frame", frames[0].Path, frames[0].Limb, preset)
+	// The recording's own colour, measured before anything is rendered. It is a property of the
+	// SOURCE, so it is taken from the clip rather than from the master — by the time a master exists
+	// the colour has been through a mono stack and there is none left to measure.
+	if preset.WantsNativeColour() {
+		if ch, nerr := measureNativeColour(ctx, group, opts.FfmpegBin); nerr != nil {
+			res.Warnings = append(res.Warnings,
+				"sun: native colour: "+nerr.Error()+" — falling back to the gold palette")
+			preset.Finish.Palette = solar.PaletteGold
+		} else {
+			preset.Finish.NativeChroma = ch
+			opts.report(Progress{Step: "ingesting frames", Index: 2, Total: sunSteps,
+				Line: "measured the capture's own colour for the finish"})
+		}
+	}
+
+	sunPreview(opts, res, outDir, ordSunFrame, "frame", frames[0].Path,
+		solar.Pair{Sun: frames[0].Limb, Moon: frames[0].Moon}, preset)
+
+	if n := exportBestFrames(opts, frames, preset, outDir, object); n > 0 {
+		opts.report(Progress{Step: "ingesting frames", Index: 2, Total: sunSteps,
+			Line: fmt.Sprintf("exported the %d sharpest frames, spread through the clip, to frames/", n)})
+	}
 
 	// A bracketed group is split here and stays split all the way to the composite. Exposure tiers
 	// are normalised, windowed and stacked apart from each other because every one of those steps
@@ -131,7 +162,7 @@ func ProcessSun(ctx context.Context, opts Options) (*Result, error) {
 	}
 	preset.Finish = fin
 
-	final, ferr := finishSun(opts, hero, preset, outDir, object)
+	final, ferr := finishSun(opts, hero, preset, outDir, object, modeName)
 	if ferr != nil {
 		return nil, fmt.Errorf("sun: %w", ferr)
 	}
@@ -154,6 +185,11 @@ func ProcessSun(ctx context.Context, opts Options) (*Result, error) {
 		} else {
 			res.Final.Outputs = append(res.Final.Outputs, out)
 		}
+	}
+	if preset.WantsSequence() {
+		opts.report(Progress{Step: "rendering the phase sequence", Index: 7, Total: sunSteps})
+		res.Warnings = append(res.Warnings,
+			renderPhaseSequence(ctx, opts, group, frames, preset, outDir, object, res, 7, sunSteps)...)
 	}
 	res.StagePreviews = collectStagePreviews(outDir)
 	writeRunJSON(outDir, res)
@@ -207,7 +243,7 @@ func reportTriage(opts Options, rep *solar.Report, total int) {
 
 // sunPreview renders and registers one milestone preview. A failure here is never fatal: a missing
 // thumbnail must not cost a run that otherwise succeeded.
-func sunPreview(opts Options, res *Result, outDir string, ord int, stage, framePath string, limb solar.Limb, p solar.Preset) {
+func sunPreview(opts Options, res *Result, outDir string, ord int, stage, framePath string, g solar.Pair, p solar.Preset) {
 	dir := filepath.Join(outDir, "previews")
 	if err := fsutil.EnsureDir(dir); err != nil {
 		return
@@ -228,8 +264,8 @@ func sunPreview(opts Options, res *Result, outDir string, ord int, stage, frameP
 		// a single frame at the finish's fallback deconvolution width and the stack at its measured
 		// one and the timeline reports a difference the pipeline invented — which reads, wrongly and
 		// convincingly, as the stack having thrown detail away.
-		fin, _, _ := solar.ResolveFinish(mono, limb, p.Finish)
-		img = solar.Finish(mono, limb, fin)
+		fin, _, _ := solar.ResolveFinish(mono, g.Sun, p.Finish)
+		img = solar.FinishPair(mono, g, fin)
 	default:
 		return
 	}
@@ -262,8 +298,14 @@ type sunTier struct {
 type sunHero struct {
 	Master *fits.Image
 	Limb   solar.Limb
-	Note   string
+	// Moon is the occulting body on the same raster, R=0 when there is none. Without it the finish
+	// treats the hole the stack left as a very dark piece of Sun.
+	Moon solar.Limb
+	Note string
 }
+
+// pair is the hero's geometry as the finish wants it.
+func (h *sunHero) pair() solar.Pair { return solar.Pair{Sun: h.Limb, Moon: h.Moon} }
 
 // buildSunTiers assigns the ingested frames to their exposure tiers.
 //
@@ -440,7 +482,7 @@ func stackTiers(ctx context.Context, opts Options, tiers []sunTier, p solar.Pres
 			tiers[t].Masters = append(tiers[t].Masters, sunWindowMaster{Stack: st, Path: path, Window: w})
 			opts.report(Progress{Step: "stacking", Index: 4, Total: total,
 				Line: fmt.Sprintf("%s — %d frames stacked", label, st.Frames)})
-			sunPreview(opts, res, outDir, ordSunWindow+20*t+i, sunPreviewStage(t, i), path, st.Limb, p)
+			sunPreview(opts, res, outDir, ordSunWindow+20*t+i, sunPreviewStage(t, i), path, st.Pair(), p)
 		}
 	}
 	return warnings
@@ -502,8 +544,8 @@ func heroMaster(opts Options, tiers []sunTier, outDir string, res *Result, p sol
 	if lead == nil {
 		return nil, warnings
 	}
-	hero := &sunHero{Master: lead.Stack.Master, Limb: lead.Stack.Limb,
-		Note: fmt.Sprintf("%d frames stacked, disc ⌀%.0f px", lead.Stack.Frames, 2*lead.Stack.Limb.R)}
+	hero := &sunHero{Master: lead.Stack.Master, Limb: lead.Stack.Limb, Moon: lead.Stack.Moon,
+		Note: sunHeroNote(lead.Stack)}
 	if len(best) < 2 {
 		return hero, warnings
 	}
@@ -525,10 +567,13 @@ func heroMaster(opts Options, tiers []sunTier, outDir string, res *Result, p sol
 	if err := merged.Master.WriteFITS(path); err != nil {
 		warnings = append(warnings, "sun: exposure composite: persist: "+err.Error())
 	} else {
-		sunPreview(opts, res, outDir, ordSunComposite, "composite", path, merged.Limb, p)
+		sunPreview(opts, res, outDir, ordSunComposite, "composite", path,
+			solar.Pair{Sun: merged.Limb, Moon: lead.Stack.Moon}, p)
 	}
 	res.Bracket = merged.Tiers
-	return &sunHero{Master: merged.Master, Limb: merged.Limb,
+	// The composite is built on the brightest tier's raster, so that tier's occulter is the one that
+	// describes it.
+	return &sunHero{Master: merged.Master, Limb: merged.Limb, Moon: lead.Stack.Moon,
 		Note: fmt.Sprintf("%d exposures composited over %.1f stops, disc ⌀%.0f px",
 			len(best), sunTierSpanStops(tiers), 2*merged.Limb.R)}, warnings
 }
@@ -553,18 +598,18 @@ func sharpestMaster(t sunTier) *sunWindowMaster {
 }
 
 // finishSun renders the hero master and returns the run result.
-func finishSun(opts Options, hero *sunHero, p solar.Preset, outDir, object string) (*postprocess.Result, error) {
+func finishSun(opts Options, hero *sunHero, p solar.Preset, outDir, object, modeName string) (*postprocess.Result, error) {
 	if hero == nil {
 		return nil, fmt.Errorf("no master to finish")
 	}
-	img := solar.Finish(hero.Master, hero.Limb, p.Finish)
+	img := solar.FinishPair(hero.Master, hero.pair(), p.Finish)
 	base := filepath.Join(outDir, object+"_stack")
 	outs, err := writeSunImage(img, base)
 	if err != nil {
 		return nil, err
 	}
 	return &postprocess.Result{
-		Mode:     "sun",
+		Mode:     modeName,
 		Channels: []string{string(p.Band)},
 		Outputs:  outs,
 		Notes:    []string{hero.Note},
@@ -583,7 +628,7 @@ func renderTimelapse(ctx context.Context, opts Options, masters []sunWindowMaste
 		return "", err
 	}
 	for i, m := range masters {
-		img := solar.Finish(m.Stack.Master, m.Stack.Limb, p.Finish)
+		img := solar.FinishPair(m.Stack.Master, m.Stack.Pair(), p.Finish)
 		if _, err := writeSunImage(img, filepath.Join(seqDir, fmt.Sprintf("f_%04d", i+1))); err != nil {
 			return "", err
 		}
@@ -626,4 +671,69 @@ func writeTriage(outDir string, rep *solar.Report, res *Result) {
 	if err := os.WriteFile(filepath.Join(outDir, "triage.json"), blob, 0o644); err != nil {
 		res.Warnings = append(res.Warnings, "sun: triage report: "+err.Error())
 	}
+}
+
+// sunHeroNote describes what the hero master is made of, naming the occulter when there is one.
+func sunHeroNote(st *solar.StackResult) string {
+	if st.Moon.R <= 0 {
+		return fmt.Sprintf("%d frames stacked, disc ⌀%.0f px", st.Frames, 2*st.Limb.R)
+	}
+	return fmt.Sprintf("%d frames stacked, disc ⌀%.0f px, occulter ⌀%.0f px covering %.0f%%",
+		st.Frames, 2*st.Limb.R, 2*st.Moon.R, 100*solar.OverlapFraction(st.Limb, st.Moon))
+}
+
+// measureNativeColour reads the recording's colour off the first video the chosen group holds.
+//
+// One source, not all of them: a group is by construction one optical configuration at one scale, so
+// its members were shot through the same train and share a colour. Averaging several would only add
+// the risk that a clip shot at a different exposure drags the hue.
+func measureNativeColour(ctx context.Context, g solar.Group, ffmpegBin string) (solar.NativeChroma, error) {
+	for _, m := range g.Members {
+		if m.Rejected || m.Kind != solar.KindVideo || m.Video == nil {
+			continue
+		}
+		return solar.MeasureNativeChroma(ctx, ffmpegBin, m.Path, *m.Video)
+	}
+	return solar.NativeChroma{}, fmt.Errorf("no video in the chosen group to measure")
+}
+
+// exportBestFrames renders a spread of the sharpest individual frames at their own resolution.
+//
+// Each is finished against its OWN measured geometry and its own point spread function, not the
+// run's. That is the whole point of exporting them: a frame is not a small stack, and deconvolving
+// one at the master's width would blur the sharp ones and over-correct the soft ones — the very
+// comparison these exist to let a person make.
+func exportBestFrames(opts Options, frames []solar.Frame, p solar.Preset, outDir, object string) int {
+	if p.BestFrames <= 0 || len(frames) == 0 {
+		return 0
+	}
+	dir := filepath.Join(outDir, "frames")
+	if err := fsutil.EnsureDir(dir); err != nil {
+		return 0
+	}
+	picks := solar.SelectSpread(frames, p.BestFrames, int64(p.BestFrameGapSeconds*1000))
+	n := 0
+	for i, f := range picks {
+		im, err := fits.ReadImage(f.Path)
+		if err != nil {
+			continue
+		}
+		mono := &fits.Image{W: im.W, H: im.H, C: 1, Pix: [][]float32{im.Pix[0]}}
+		g := solar.Pair{Sun: f.Limb, Moon: f.Moon}
+		fin, psf, _ := solar.ResolveFinish(mono, g.Sun, p.Finish)
+		// A frame whose edge cannot be measured does not get exported, however well it scored.
+		// The sharpness metric and the limb measurement can disagree, and when they do it is the
+		// metric that is wrong: on the 12 Aug clip one frame scored twice everything else while its
+		// point spread function came back unmeasurable — a frame that is not a picture of the Sun
+		// still has band-pass energy, and plenty of it.
+		if !psf.OK {
+			continue
+		}
+		base := filepath.Join(dir, fmt.Sprintf("%s_best%02d", object, i+1))
+		if _, err := writeSunImage(solar.FinishPair(mono, g, fin), base); err != nil {
+			continue
+		}
+		n++
+	}
+	return n
 }

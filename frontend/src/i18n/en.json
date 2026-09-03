@@ -11,6 +11,7 @@
     "tonight": "Tonight",
     "goto": "GoTo align",
     "calendar": "Calendar",
+    "solarSystem": "Solar system",
     "import": "Import",
     "livestack": "Live stack",
     "jobs": "Jobs",
@@ -868,7 +869,9 @@
       "transfer": "Transfer",
       "backup": "Backup",
       "mosaic": "Mosaic (tiled panels)",
-      "sun": "Sun (Hα / white light)"
+      "nightpano": "Sky panorama (many pointings)",
+      "sun": "Sun (Hα / white light)",
+      "eclipse": "Eclipse (partial solar)"
     },
     "formats": {
       "image": "Image",
@@ -884,6 +887,11 @@
     "palette": "Colour palette",
     "paletteNeeds": "needs {filters}",
     "brightness": "Brightness",
+    "projection": "Projection",
+    "scale_deg_per_pix": "Canvas scale",
+    "group_step_deg": "Pointing step",
+    "band_mask_lat_deg": "Band width",
+    "pano_background": "Canvas background",
     "brightnesses": {
       "darker": "Darker",
       "balanced": "Balanced",
@@ -924,7 +932,8 @@
     "paramsCheckboxNote": "SPCC, noise reduction & Hα-on-nebulosity are controlled by the checkboxes above.",
     "mosaic": "Union canvas (multi-night, keep every night's full field)",
     "mosaicHint": "Multi-night runs land on the UNION of all sessions' footprints instead of cropping to the anchor night's frame — a bigger image, no pixel lost. The final is trimmed to the area where every channel has real data (params: mosaic_fill).",
-    "sunHint": "Point this at the whole capture folder. The run measures the solar disc in every file and groups what can actually be stacked together — different zooms, resolutions and exposures are sorted out for you, and the grouping is saved as triage.json beside the result."
+    "sunHint": "Point this at the whole capture folder. The run measures the solar disc in every file and groups what can actually be stacked together — different zooms, resolutions and exposures are sorted out for you, and the grouping is saved as triage.json beside the result.",
+    "eclipseHint": "A partially eclipsed Sun. The Moon is measured as a second circle and masked out of the stack, so the crescent registers on the Sun rather than on whichever body the fit happened to lock onto. Point it at one clip or at the whole folder."
   },
   "reuse": {
     "title": "Reuse prior data",
@@ -1077,6 +1086,358 @@
     "previous": "Previous",
     "next": "Next"
   },
+  "tour": {
+    "solarsystem": {
+      "title": "Solar system",
+      "steps": {
+        "scene": {
+          "title": "The system, in three dimensions",
+          "body": "Every planet is where it actually is right now, tilted on its real axis and turned to its real rotation angle. Drag to orbit, shift-drag to pan, scroll to zoom — and keep zooming: the view runs continuously from outside Neptune's orbit down to a moon a few hundred kilometres across."
+        },
+        "time": {
+          "title": "Running the machine",
+          "body": "The scrubber spans 1800 to 2050, the years the orbital model is fitted for. Set a speed — from real time up to a century a second — and run it in either direction. Now snaps back to this instant."
+        },
+        "scale": {
+          "title": "Honest, or legible",
+          "body": "At true scale the inner planets are a knot at the centre and Neptune is off the screen. The distance control compresses the radial field so the whole system reads at once, and the body-size control inflates the worlds themselves. Neither touches the arithmetic: the numbers beside the picture stay true."
+        },
+        "bodies": {
+          "title": "Picking a world",
+          "body": "Click a body, a label, or a name in the list, and the camera flies to it and follows. The panel then gives its size, mass, rotation, axial tilt, distance from the Sun and from Earth, apparent magnitude and size, phase, and where it is in your sky right now."
+        },
+        "legend": {
+          "title": "What is measured and what is modelled",
+          "body": "Radii, masses and pole directions are published measurements. Each body also carries a chip saying how well its position is known — a fitted orbit is arcminute-class, mean elements are a fraction of a degree. The sources are listed underneath."
+        }
+      }
+    },
+    "open": "How this page works",
+    "help": "Help",
+    "done": "Got it",
+    "title": "{page} — guided tour",
+    "stepOf": "Step {n} of {total}",
+    "noShot": "No screenshot for this step yet — run `just tour-shots` to generate them.",
+    "tonight": {
+      "title": "Tonight",
+      "steps": {
+        "targets": {
+          "title": "What is worth shooting tonight",
+          "body": "The list ranks deep-sky objects for your site and this night: how high each one climbs, how long it stays there, how close the Moon comes to it, and how bright your sky is. The top of the list is simply what you have the best chance of photographing well."
+        },
+        "score": {
+          "title": "Why an object scored what it did",
+          "body": "Every score breaks down into its parts, so you can disagree with it. A galaxy that peaks at 25° is a hard target no matter how clear the night is, and a full Moon 20° away costs more than a thin layer of cloud."
+        },
+        "skymap": {
+          "title": "The sky map",
+          "body": "Selecting a target rings it on the map, so you can see where it will actually be — behind your neighbour's roof, or nicely placed in the south. Object types, sizes and common names come from the OpenNGC catalogue."
+        },
+        "weather": {
+          "title": "Astronomy weather",
+          "body": "Cloud, seeing, transparency, humidity and wind for the coming nights, from several forecast models. Seeing is derived from wind shear rather than taken from a generic index, which tracks reality noticeably better."
+        },
+        "darksky": {
+          "title": "Finding a darker site",
+          "body": "Pick a night and the finder ranks spots around you, trading darkness against how clear that particular night will be there. It also scores the tree horizon and the real driving distance by road — a perfect dark site three hours away is not a dark site."
+        },
+        "optics": {
+          "title": "Your optics",
+          "body": "Focal length, reducer, barlow and eyepieces feed the field-of-view figures and the framing preview, so the plan matches the equipment you will actually take outside."
+        }
+      }
+    },
+    "goto": {
+      "title": "GoTo alignment",
+      "steps": {
+        "why": {
+          "title": "What this page is for",
+          "body": "A GoTo mount only points accurately after it knows where it is. This page picks the alignment stars for you and shows exactly what your hand controller expects, in its own order."
+        },
+        "catalogue": {
+          "title": "Your hand controller's own stars",
+          "body": "Celestron and SynScan controllers each carry their own alignment-star list, and they do not agree. Choose yours and the page only ever offers stars that controller can actually be told to use."
+        },
+        "sequence": {
+          "title": "The alignment sequence",
+          "body": "Stars are chosen to be visible now, well separated across the sky, and bright enough to find in a finder. A two-phase Celestron alignment (align, then calibrate) is laid out step by step."
+        },
+        "chart": {
+          "title": "Finding the star",
+          "body": "Open the chart to see where the star sits relative to its constellation — the part that is genuinely hard when the name means nothing to you yet."
+        }
+      }
+    },
+    "calendar": {
+      "title": "Sky calendar",
+      "steps": {
+        "months": {
+          "title": "What is coming",
+          "body": "Eclipses, occultations, conjunctions, meteor showers, comets and ISS passes, computed locally for your site rather than fetched from a feed — so it works offline and stays correct for where you are."
+        },
+        "kinds": {
+          "title": "Filtering by kind",
+          "body": "Most nights hold something. Filter to the kinds you would actually get out of bed for, then read the rest at leisure."
+        },
+        "event": {
+          "title": "One event in full",
+          "body": "Times in your own timezone, altitude at the moment it happens, and how favourable it is from your site. An eclipse that peaks below the horizon is still listed — with that stated plainly."
+        }
+      }
+    },
+    "capture": {
+      "title": "Capture",
+      "steps": {
+        "devices": {
+          "title": "Connecting your gear",
+          "body": "Camera, filter wheel and mount connect here. A full simulator is always available, so you can learn the whole page indoors before any hardware is plugged in. On an Apple-Silicon Mac a real ZWO camera needs the x86 device server (`just device-x86`) — ZWO publish no arm64 library."
+        },
+        "liveview": {
+          "title": "The live view",
+          "body": "A continuously refreshed frame with a histogram, a viewfinder and zoom. This is where you confirm the target is framed and the exposure is sane before committing to a sequence."
+        },
+        "camera": {
+          "title": "Camera control",
+          "body": "Exposure, gain, offset, cooling, USB bandwidth — everything the camera reports it can do. Values are written into the FITS header of every frame, which is what lets the stacker match calibration masters later."
+        },
+        "filters": {
+          "title": "Filter wheel slots",
+          "body": "Name each physical slot for the filter currently in it. This mapping is yours to set because a five-slot wheel gets swapped between sessions, and the slot number alone means nothing to the stacker."
+        },
+        "sequencer": {
+          "title": "The auto-run sequencer",
+          "body": "Build a plan — so many subs of this filter at this exposure, then the next — and let it run the night. Frames land in per-filter folders with the filter in the filename and the header."
+        },
+        "focus": {
+          "title": "Focusing",
+          "body": "The focus meter measures star size (half-flux diameter) frame by frame. Turn the focuser until the number stops falling; that is a far more reliable signal than judging sharpness by eye."
+        },
+        "polar": {
+          "title": "Polar alignment from the camera",
+          "body": "Measures where your mount's polar axis really points by plate-solving frames as you turn the RA axis BY HAND between them. Turning it yourself is what makes this work on a mount with no electronics at all. It never commands the mount."
+        }
+      }
+    },
+    "logbook": {
+      "title": "Logbook",
+      "steps": {
+        "list": {
+          "title": "Every night you have shot",
+          "body": "One row per session: what you shot, for how long, through which filters, and how good the sky was. This is what a later stacking decision is actually made from."
+        },
+        "score": {
+          "title": "The sky score",
+          "body": "A single 0–100 figure per night, which is the median of the hourly weather verdicts already computed at capture time. Sessions captured before this shipped show 'not recorded' — the weather it needed has no archive, so it can never be filled in afterwards."
+        },
+        "filters": {
+          "title": "Finding a session again",
+          "body": "Filter by object and date to answer 'how much total time do I have on this target, and how much of it is any good?' before deciding whether to shoot it again."
+        }
+      }
+    },
+    "logbookSession": {
+      "title": "Session detail",
+      "steps": {
+        "shot": {
+          "title": "What was shot",
+          "body": "Frame counts and integration per filter and frame type, with the exposure, gain and sensor-temperature ranges. A range collapses to one value when nothing changed mid-run."
+        },
+        "order": {
+          "title": "Capture order",
+          "body": "One band per filter across the night, a mark per sub. Lined up with the conditions chart below, this answers 'did the luminance set finish before the cloud arrived, or is half of it from the bad hour?'"
+        },
+        "conditions": {
+          "title": "The sky that night",
+          "body": "Cloud, seeing, transparency, humidity, wind, Moon distance, target altitude and sky brightness, hour by hour. Toggle the overlay to compare the forecast made at the start against what was then measured."
+        }
+      }
+    },
+    "mosaic": {
+      "title": "Mosaic",
+      "steps": {
+        "plan": {
+          "title": "Planning a mosaic",
+          "body": "Give the object and how much sky you want to cover, and the planner lays out overlapping panels for your field of view — with enough overlap for the panels to be matched and blended later."
+        },
+        "panels": {
+          "title": "The panels",
+          "body": "Each panel is a pointing to capture. The plan records where each one goes, so the stacker can reproject them all onto one canvas afterwards instead of guessing from the images alone."
+        },
+        "progress": {
+          "title": "Working through them",
+          "body": "Panels are ticked off as they are captured, across as many nights as it takes. Stack the mosaic once enough panels are done — missing ones simply leave the canvas smaller."
+        }
+      }
+    },
+    "import": {
+      "title": "Import & inspect",
+      "steps": {
+        "browse": {
+          "title": "Point it at your captures",
+          "body": "Browse the capture directory (plus removable drives and S3 mirrors) and select one or more folders. Several nights of the same target can be selected together — they will be merged into one run."
+        },
+        "inspect": {
+          "title": "What is in there",
+          "body": "Inspect reads every file and works out what it is: lights per filter, darks, flats, bias. It uses the FITS headers first, then filenames and folder names, then the pixels themselves. One-shot-colour captures — a DSLR raw or a colour camera — are detected here and stacked as a single RGB channel."
+        },
+        "mapping": {
+          "title": "Correcting the channel mapping",
+          "body": "When a capture carries no filter names, they are inferred from the signal, and that inference is shown with its confidence. If it guessed wrong, override it here — nothing downstream will argue."
+        },
+        "preset": {
+          "title": "Presets",
+          "body": "Start from a recipe that suits the subject — faint galaxy, star cluster, emission nebula, narrowband palette, moon, planet, comet. A preset only prefills the form; every value stays editable, and you can save your own."
+        },
+        "mode": {
+          "title": "Mode and output",
+          "body": "The mode decides the whole recipe: deepsky, nebula, milkyway, planetary, comet, mosaic or sun. Output is an image, a video, or both."
+        },
+        "options": {
+          "title": "The knobs",
+          "body": "Colour calibration, denoise, narrowband handling, palette, stacking algorithm and the per-mode advanced parameters. Every one of them is recorded with the run, so you can always see what produced a given image."
+        },
+        "reuse": {
+          "title": "Earlier nights on the same target",
+          "body": "Previous sessions of the same object are found automatically and folded in, each one calibrated with its own masters. Deselect any you do not want."
+        },
+        "launch": {
+          "title": "Launching",
+          "body": "Run pipeline starts immediately; Add to queue appends to a strictly sequential lane. Either way it becomes a job you can watch, pause and resume on the Tasks page."
+        }
+      }
+    },
+    "livestack": {
+      "title": "Live stacking",
+      "steps": {
+        "source": {
+          "title": "What to watch",
+          "body": "Point it at the folder your capture software is writing into — or an S3 prefix. It picks up each new sub as it lands."
+        },
+        "start": {
+          "title": "Starting",
+          "body": "Frames are calibrated and added to the stack as they arrive, so you see the image deepen through the night instead of waiting until morning to find out it did not work."
+        },
+        "preview": {
+          "title": "The growing stack",
+          "body": "The preview is a real stack, not a single frame — enough to judge framing, focus and whether the target is showing at all."
+        },
+        "finalize": {
+          "title": "Stop & finalize",
+          "body": "Stopping runs the full pipeline over everything collected: proper registration, grading, stacking and the complete finish. The live preview was the rehearsal; this is the result."
+        }
+      }
+    },
+    "jobs": {
+      "title": "Tasks",
+      "steps": {
+        "list": {
+          "title": "Everything you have run",
+          "body": "Running jobs and the full history, newest first, with the parameters each was launched with."
+        },
+        "status": {
+          "title": "What the states mean",
+          "body": "Running, paused, done, failed or cancelled. Paused is a real checkpoint — a job parked mid-stack keeps its finished channels and resumes from there rather than starting again."
+        },
+        "open": {
+          "title": "Opening a job",
+          "body": "Open any job to follow it live, or to read the full result long after it finished."
+        }
+      }
+    },
+    "job": {
+      "title": "Job detail",
+      "steps": {
+        "progress": {
+          "title": "Following a run",
+          "body": "Live progress over a streaming connection: the current step, the CPU and memory of the tool actually running, and a rolling log. Stacking is long — this is how you tell 'working hard' from 'stuck'."
+        },
+        "controls": {
+          "title": "Pause and cancel",
+          "body": "Pause parks a resumable checkpoint. Cancel stops the run, and a cancel during finishing keeps whatever partial result exists rather than throwing the night away."
+        },
+        "previews": {
+          "title": "Previews as it goes",
+          "body": "A preview is saved after each major milestone, so you can see the stack, the aligned channels and the finish appear rather than waiting for a single image at the end."
+        },
+        "results": {
+          "title": "Reading the result",
+          "body": "Per-channel statistics (frames in, frames stacked, which masters matched), per-frame quality charts, warnings, and the full list of parameters used. If a run disappointed you, the reason is almost always here."
+        },
+        "stages": {
+          "title": "Changing your mind",
+          "body": "Each milestone is a card whose parameters you can edit and re-run from — usually far cheaper than starting over. Refine re-runs only the finish; the 3D view opens the field as a volume for any run that plate-solved."
+        }
+      }
+    },
+    "runs": {
+      "title": "Runs",
+      "steps": {
+        "gallery": {
+          "title": "Results on disk",
+          "body": "Every run found on disk, independent of the database — anything with a run.json is here. Results survive a database reset."
+        },
+        "open": {
+          "title": "Reopening one",
+          "body": "Opening a run rebuilds the same result panels as the job page: final image, per-channel statistics, previews and the parameters that produced it."
+        }
+      }
+    },
+    "library": {
+      "title": "Calibration library",
+      "steps": {
+        "masters": {
+          "title": "Your master frames",
+          "body": "Darks, flats, bias and dark-flats, built once and reused across sessions. This is why a later run does not need you to re-shoot calibration frames."
+        },
+        "keys": {
+          "title": "How a master gets matched",
+          "body": "Masters are keyed by gain, offset, binning, exposure and sensor temperature. A run only uses a master that genuinely matches its lights — a mismatched one is dropped rather than applied."
+        },
+        "mirror": {
+          "title": "Keeping a copy on S3",
+          "body": "Copy the library to S3 and matched masters are pulled back automatically when they are missing locally — so freeing disk space does not cost you your calibration."
+        }
+      }
+    },
+    "storage": {
+      "title": "Storage",
+      "steps": {
+        "connections": {
+          "title": "Connecting S3",
+          "body": "Endpoint, access key and secret. The secret is encrypted before it is stored and is never shown again or sent back to the browser."
+        },
+        "browse": {
+          "title": "Local and remote side by side",
+          "body": "Each folder shows whether it exists locally, on S3, or both — so you always know what freeing something would actually cost you."
+        },
+        "free": {
+          "title": "Freeing local disk",
+          "body": "Freeing verifies every file is present on S3 BEFORE deleting the local copy, and aborts the whole folder if any check fails. Freed previews and results still open — they fall back to S3 transparently."
+        },
+        "backup": {
+          "title": "Backup and restore",
+          "body": "Backs up the database and browser-side state (favourites, setups, agent chats). Secrets in your .env are deliberately excluded. Restoring the database is destructive — it replaces what is there."
+        }
+      }
+    },
+    "astroagent": {
+      "title": "AstroAgent",
+      "steps": {
+        "chat": {
+          "title": "A local model over your data",
+          "body": "Ask about your captures, runs, sky and equipment. The model runs on your own machine — nothing is sent anywhere."
+        },
+        "tools": {
+          "title": "It can look things up",
+          "body": "It can read your inventories and runs, check tonight's sky, and attach an image for a measured critique rather than a vague opinion."
+        },
+        "confirm": {
+          "title": "Nothing happens without you",
+          "body": "Every action that would change something — launching a run, re-tuning a finish — asks first. Supervised runs also appear here as conversations you can steer while they work."
+        }
+      }
+    }
+  },
   "import": {
     "title": "Import & inspect",
     "hint": "Browse to a capture folder, then run the automatic pipeline.",
@@ -1156,6 +1517,8 @@
     "lights": "Light frames",
     "integration": "Total integration",
     "filters": "Filters",
+    "colorOsc": "One-shot colour",
+    "colorMixed": "Mixed mono + colour",
     "frameTypes": "Frame types",
     "title": "Capture",
     "subtitle": "Camera, filter wheel and mount — live view, focus and the auto-run.",
@@ -1371,7 +1734,45 @@
       "mountClock": "The mount's clock now reads {utc} (UTC)",
       "padLabel": "Mount direction pad",
       "padHint": "Click here, then hold the arrow keys — two at once for a diagonal. Esc stops.",
-      "simulatedHint": "Connected to the simulator, which has no site or clock. Pick the hand controller's port below to switch to the real mount."
+      "simulatedHint": "Connected to the simulator, which has no site or clock. Pick the hand controller's port below to switch to the real mount.",
+      "notConnected": "No mount is connected.",
+      "auditTitle": "What's stored in the mount",
+      "auditHint": "Read straight off the mount. Settings live on two boards: the hand controller holds the site, clock and alignment; the motor controllers hold the periodic-error table and the autoguide rates, and keep them when the hand controller is swapped.",
+      "auditRead": "Read the mount",
+      "auditReading": "Reading…",
+      "auditHandController": "Hand controller",
+      "auditMotorControllers": "Motor controllers",
+      "auditModel": "Model",
+      "auditFirmware": "Firmware",
+      "auditMotorFirmware": "Motor firmware",
+      "auditSite": "Site",
+      "auditClock": "Clock",
+      "auditDrive": "Drive",
+      "auditGuideRate": "Autoguide rate",
+      "auditPec": "Periodic-error table",
+      "auditPecEmpty": "{bins} bins, all zero — no correction stored",
+      "auditPecStored": "{bins} bins, peak {peak} units ({rate}\"/s) — swings RA by {swing}\" per worm revolution",
+      "auditPecDrift": "and adds {net}\" of drift per revolution",
+      "auditPecPlayback": "Playback last commanded by this app: {state} (the mount cannot be asked)",
+      "auditNotReadable": "not readable",
+      "auditSkew": "{skew}s vs this Mac",
+      "auditDisagree": "the two motors disagree",
+      "auditStale": "Read {when}",
+      "resetTitle": "Put back what this app can write",
+      "resetHint": "Not a factory reset — it undoes only what AstroStack is able to write, and proves each change by reading it back. The hand controller's own Menu ▸ Utilities ▸ Factory Settings clears more, including things no serial command can reach, but tells you nothing about what it did. Read the mount again afterwards to find out.",
+      "resetPec": "Erase the periodic-error table (write zeros, verify every bin)",
+      "resetPlayback": "Stop replaying the stored curve",
+      "resetGuideRate": "Set both motors to half sidereal",
+      "resetSite": "Rewrite the site",
+      "resetClock": "Rewrite the clock",
+      "resetTracking": "Set sidereal tracking",
+      "resetPreview": "Preview",
+      "resetApply": "Apply",
+      "resetApplying": "Applying…",
+      "resetDryRun": "Nothing was sent. Review the list, then press Apply.",
+      "resetBackup": "Saved the mount's current settings to {path}",
+      "resetNothing": "Choose at least one thing to put back.",
+      "resetConfirm": "This writes to the mount and cannot be undone from here. The current settings have been saved to a file first. Continue?"
     },
     "tracking": {
       "title": "Mount tracking",
@@ -1800,6 +2201,14 @@
       "starless": "Star reduction",
       "final": "Final",
       "coverage": "Coverage"
+    },
+    "fullRes": {
+      "title": "More stages",
+      "hint": "Stages with no frame above — download at full resolution.",
+      "download": "Download as {format}",
+      "exporting": "…",
+      "fullTitle": "Download at full resolution ({format})",
+      "previewTitle": "Download this preview (half resolution — this stage's source was reprocessed in place, so no full-resolution version exists)"
     }
   },
   "rerun": {
@@ -1950,12 +2359,16 @@
       "cometStackHint": "re-stacks from the calibrated frames (slower)",
       "milkywayGrade": "Grade",
       "milkywayGradeHint": "re-renders the nightscape in seconds",
+      "panoCanvas": "Canvas",
+      "panoCanvasHint": "how the pointings are joined into one sky",
       "mosaicAssembly": "Panel assembly",
       "mosaicAssemblyHint": "How the stacked panels are placed, photometrically matched and blended onto the one canvas. Changing these re-assembles the mosaic.",
       "sunFinish": "Finish & sharpening",
       "sunFinishHint": "re-renders the image in seconds",
       "sunStack": "Ingest, registration & stacking",
       "sunStackHint": "re-reads the source frames (slower)",
+      "eclipseSequence": "Eclipse phase sequence",
+      "eclipseSequenceHint": "the whole eclipse on one sheet; re-reads the source frames",
       "stackAlgo": "Stacking algorithm",
       "stackAlgoHint": "Tier C · re-stacks from the raw frames (minutes)",
       "cometStackAlgo": "Comet-aligned stack",
@@ -1974,10 +2387,10 @@
     "highlight_knee": "Where the star-safe highlight cap begins on the final image — keeps bright star cores from clipping to white.",
     "highlight_ceil": "How far below white bright star cores are capped (with highlight_knee). Lower = cores stay more coloured, less burnt.",
     "crop_frac": "Fraction trimmed off each edge to drop the ragged dithered stacking-edge bands.",
-    "palette": "Colour rendering: gold (Hα), neutral (white light), mono, or inverted.",
+    "palette": "Colour rendering: gold (Hα), neutral (white light), native (measured from your own recording), mono, or inverted.",
     "color_calibration": "Photometric colour calibration (SPCC) for natural star/nebula hues; falls back to a neutral balance when offline.",
     "linked_stretch": "Stretches all channels together to preserve the calibrated colour balance (vs per-channel, which re-tints).",
-    "background_level": "Target sky-background brightness for the auto-stretch. Lower = a darker sky.",
+    "background_level": "How bright the sky renders. 0 is pure black; around 0.05 gives the warm pedestal most published solar images have.",
     "stretch_headroom": "Caps bright star cores this far below white BEFORE the stretch so they keep colour instead of burning. 0 = off; lower = more protection.",
     "background_degree": "Degree of the Siril polynomial used to model and subtract the sky background/gradient.",
     "combined_background_ai": "A second gradient-extraction pass on the combined RGB — removes the large-scale gradient / brown sky the per-channel pass leaves.",
@@ -2004,7 +2417,7 @@
     "earthshine_feather": "Terminator protection margin of the earthshine blend, as a fraction of the disc radius (0.002–0.02, default 0.006): larger keeps the lift farther from the lit edge — the lit surface itself is never touched at any value.",
     "true_lum": "Colour runs re-impose the sharp, deconvolved L as the exact output luminance after the RGB compose (fixes Siril's rgbcomp luminance leak that softens the final image). Default on; disable only if colour artefacts appear.",
     "best_percent": "Lucky-imaging frame selection: keep only this % of the sharpest frames before stacking. Lower = stricter.",
-    "ap_align": "Multi-point (planetary) alignment — corrects local seeing distortion across the disk, not just a global shift.",
+    "ap_align": "Correct atmospheric distortion with a grid of alignment points instead of one rigid transform. The atmosphere does not displace the disc as a rigid object, so without this the stack averages every feature against slightly shifted copies of itself.",
     "double_stack": "Second alignment pass onto the first stacked master (a low-noise, distortion-averaged reference) with a much denser alignment-point grid — AutoStakkert's double-stack reference. Sharper, ~1.7× slower.",
     "calibrate": "Applies master dark/flat calibration to the frames (masters built from the capture's own dark/flat/offset folders, or reused from the library). Removes dust shadows, vignetting and colour blotches; skipped automatically when nothing matches.",
     "deconv_fwhm": "Deconvolution PSF width (pixels) — set near the blur size to recover detail. 0 = off.",
@@ -2012,7 +2425,11 @@
     "bracket_merge": "Stack exposures shot a stop or more apart separately, then composite them into one high-dynamic-range master — disc detail from the exposure that holds it, prominences from the one that recorded them. Off, a bracketed session is normalised onto one level and only its brightest exposure is rendered.",
     "bracket_stops": "How far apart two captures' disc brightness must be, in stops, before they count as separate exposures. Below this they are one exposure drifting; above it they are a deliberate bracket.",
     "transparency_floor": "Drop frames a cloud passed in front of, below this fraction of the clip's clearest transmission. A cloud is not a sharpness problem: it adds a veil that averaging cannot remove, and normalisation afterwards scales that veil up with the signal so it reaches the stack looking correctly exposed. 0 turns the gate off.",
-    "ap_align": "Correct atmospheric distortion with a grid of alignment points instead of one rigid transform. The atmosphere does not displace the disc as a rigid object, so without this the stack averages every feature against slightly shifted copies of itself.",
+    "sequence_panels": "Render the eclipse progression sheet: this many phases, stepping from a shallow bite through maximum and back out, all brought into one sky frame. 0 renders none. The number is a request, not a promise — which phases exist on BOTH sides of maximum belongs to the recording, so a session with a gap in it gets the most panels it can pair honestly and says how many that was. Nothing is ever mirrored or interpolated.",
+    "sequence_angle_deg": "The rise of the line the panels sit on, as it is seen: positive climbs to the right, 0 lays them in a row.",
+    "sequence_spacing": "Centre-to-centre step between panels, in solar diameters, so it means the same thing whatever size the discs end up rendered at. Below 1 the discs overlap.",
+    "site_lat": "Latitude the capture was made at. Only needed when the clips carry no location tag of their own — a phone writes one, most cameras do not — and an eclipse's phase cannot be computed without it.",
+    "site_lon": "Longitude the capture was made at, east-positive. See the latitude note.",
     "ap_scale": "How much the frame is reduced before the distortion field is measured. 1 measures at full resolution, which is what the field's amplitude requires — after the limb fit only a few pixels are left to measure, so a reduced raster cannot represent the answer and returns noise instead. Larger values are faster and progressively soften the outer disc.",
     "deconv_iters": "Deconvolution iterations. More sharpens further and rings at the limb sooner.",
     "deconv_alpha": "Deconvolution regularisation — higher suppresses noise/ringing, lower is more aggressive.",
@@ -2020,6 +2437,13 @@
     "align_points": "Total number of stacking reference points used to correct atmospheric-wave distortion (AutoStakkert-style). Snapped to an N×N grid, N = √value clamped to 10–48 per axis (100–2304 total). 0 = automatic (~120 px cells, up to 32×32). More points track finer seeing waves but cost CPU (re-stack); the estimator button in the run form suggests a value from your image.",
     "per_frame_starnet": "Runs StarNet++ on every frame before the comet stack (denser fields). Slower, but cleaner star removal.",
     "look": "Render style: natural (faithful, soft), iphone (warmer, punchier, deeper sky) or deepsky (bold, dramatic, high saturation).",
+    "projection": "Which sky canvas to draw: stereographic keeps star shapes and renders the sky as you look up at it; galactic lays the Milky Way out as a level band; altaz draws the arch as it stood over the ground at one instant (the middle of the session); both writes the first two, all writes all three.",
+    "scale_deg_per_pix": "Canvas scale in degrees per pixel. The panels themselves are about 0.02, so going much finer than 0.03 buys pixels rather than detail — a star cannot be placed more precisely than the plate solution's own residual.",
+    "group_step_deg": "How far consecutive frames may move on the sky before they count as a new pointing. Raise it when a drifting session split one pointing in two; lower it when two real pointings were merged.",
+    "band_mask_lat_deg": "Galactic latitude inside which canvas pixels count as the Milky Way band rather than background sky. The band is the subject: measuring the sky's own level and colour inside it would neutralise the Milky Way to grey.",
+    "pano_background": "Remove the residual sky dome from the assembled canvas with a low-order polynomial fitted outside the band. Off keeps the canvas photometrically raw.",
+    "pano_foreground": "Composite the landscape under the arch, taken from whichever panel was aimed lowest — the only one with any ground in it. Applies to the altaz canvas only: the other projections have no horizon to stand it on. The ground is placed by turning that panel's camera about the celestial pole by the time between when it was shot and the instant the arch is drawn for.",
+    "keep_meteors": "Blend the meteors the sigma-clip rejected back into the sky, and leave the satellites and aircraft out. The clip is right that a meteor is an outlier and wrong only to discard it. Every candidate is recorded in meteors.json with the reason it was kept or dropped. Off keeps the run identical to one built without it.",
     "brightness": "Target sky-background level. Lower = a darker sky; higher lifts the Milky-Way core.",
     "saturation_scale": "Scales the chosen look's own saturation. 1 = as designed; below 1 tames neon colour; up to 2 for more.",
     "highlight_ceiling": "The Milky-Way core's brightness ceiling. Lower = a dimmer, better-protected core; 0 keeps the look's own.",
@@ -2054,7 +2478,6 @@
     "limb_flatten": "Removes limb darkening so detail reads all the way to the edge. 0 keeps the natural falloff.",
     "prominence_boost": "Brightness of the off-limb prominences relative to the disc. 0 hides them.",
     "prominence_feather": "How softly the disc and off-limb renderings blend across the limb, as a fraction of the radius.",
-    "background_level": "How bright the sky renders. 0 is pure black; around 0.05 gives the warm pedestal most published solar images have.",
     "background_tint": "How much of the palette's own colour the sky carries: 0 neutral grey, 1 full amber.",
     "glow_strength": "Brightness of the halo around the disc, as a fraction of what the limb itself renders at. 0 turns it off.",
     "glow_radius": "How far that halo reaches beyond the limb, as a fraction of the disc radius.",
@@ -2161,8 +2584,9 @@
     "starSize": "Star size",
     "starSizeHint": "How big the star sprites are drawn",
     "openView": "Fly out",
-    "openViewHint": "Swing the camera off the line of sight — from Earth the scene looks like the photo at any depth",
+    "openViewHint": "Frame everything the scene holds and look into it from one side — the Galaxy when that layer is on, this field's own volume otherwise. The lens opens with it: a field's cone is far deeper than it is wide, and the lens that photographed its tip cannot see along it.",
     "resetView": "Back to Earth",
+    "resetViewHint": "Back to the photograph: the eye at Earth, looking down the barrel through the run's own lens.",
     "layerStars": "Stars",
     "layerObjects": "Objects",
     "layerField": "Field of view",
@@ -2241,9 +2665,12 @@
     "galaxy": "Milky Way",
     "galaxyHint": "Draw the Galaxy around this field, at true scale and orientation. Needs the image's sky anchors, which older runs do not carry.",
     "galaxyZoom": "Zoom out",
-    "galaxyZoomHint": "Fly from inside your own field out to the whole Galaxy. Nothing is exaggerated — at the far end your field really is a thin ray.",
+    "galaxyGain": "Galaxy brightness",
+    "galaxyGainHint": "How brightly the Galaxy's stars are exposed. The structure does not change — this is the print, not the negative.",
+    "galaxyZoomHint": "Fly from inside your own field out to the whole Galaxy — and on past it when the run caught something further out, until both are in frame at true scale. Nothing is exaggerated.",
     "galaxyUnavailable": "This run has no recorded sky orientation, so the Galaxy cannot be placed around it.",
-    "galaxyModelled": "Disc, bulge and arms are a MODEL (Reid et al. 2019); your stars' distances are measured.",
+    "galaxyModelled": "Disc, bulge, bar, arms and halo are a MODEL sampled from published structure (Reid et al. 2019 arms, Wegg & Gerhard bar, Bland-Hawthorn & Gerhard disc); your stars' distances are measured.",
+    "galaxyNoDust": "Dust is not modelled: extinction depends on where the eye stands, so the dark lanes a photograph shows are absent. What is drawn is the density contrast itself.",
     "galaxyMirrored": "This field was shot through a star diagonal, so the picture — and the Galaxy drawn in it — is mirrored."
   },
   "refine": {
@@ -2528,7 +2955,12 @@
         "likely": "likely"
       },
       "noForecastNight": "No forecast for this night yet (beyond the forecast horizon).",
-      "nightOf": "Night of {date}"
+      "nightOf": "Night of {date}",
+      "prevNight": "Previous night",
+      "nextNight": "Next night",
+      "backToTonight": "Tonight",
+      "noPastForecast": "No forecast for nights already past",
+      "beyondForecast": "Beyond the forecast horizon"
     },
     "site": {
       "label": "Bortle {bortle} · {sqm} mag/arcsec²",
@@ -2744,6 +3176,13 @@
         "pause": "Pause",
         "scrub": "Hour of night"
       }
+    },
+    "hover": {
+      "sqmUnit": "mag/arcsec²",
+      "cloud": "Cloud",
+      "seeing": "Seeing",
+      "temp": "Temp",
+      "noWeather": "No cached forecast here"
     }
   },
   "calendar": {
@@ -3333,6 +3772,118 @@
         "label": "By sub-count",
         "desc": "For stacking already-stacked images: each input counts in proportion to how many subs went into it."
       }
+    }
+  },
+  "solarsystem": {
+    "title": "Solar system",
+    "subtitle": "The planets, their moons and their real axes, drawn where they actually are — running now, or at any date you scrub to.",
+    "loading": "Loading the model…",
+    "versionMismatch": "The engine's solar-system model does not match this page. Reload to pick up the new one.",
+    "noWebgl": "This browser has no WebGL2, so the solar system cannot be drawn.",
+    "bodies": {
+      "sun": "Sun",
+      "mercury": "Mercury",
+      "venus": "Venus",
+      "earth": "Earth",
+      "moon": "Moon",
+      "mars": "Mars",
+      "jupiter": "Jupiter",
+      "saturn": "Saturn",
+      "uranus": "Uranus",
+      "neptune": "Neptune",
+      "pluto": "Pluto"
+    },
+    "kinds": {
+      "star": "star",
+      "planet": "planet",
+      "moon": "moon",
+      "dwarf": "dwarf planet",
+      "comet": "comet"
+    },
+    "tiers": {
+      "fitted": "fitted orbit",
+      "fittedHint": "A theory fitted to the numerical ephemeris — good to about an arcminute over the whole span.",
+      "mean": "mean elements",
+      "meanHint": "The right period, plane and phase, but not an ephemeris: expect a fraction of a degree.",
+      "sampled": "sampled",
+      "sampledHint": "A synthetic population drawn from published statistics. No object in it is real."
+    },
+    "time": {
+      "play": "Play",
+      "pause": "Pause",
+      "now": "Now",
+      "liveNow": "Live",
+      "forward": "Forward",
+      "backward": "Backward",
+      "rate": "Speed",
+      "perSecond": "per second",
+      "when": "When",
+      "exact": "Exact instant",
+      "utc": "UTC",
+      "site": "local",
+      "jd": "JD",
+      "stepBack": "Back one day",
+      "stepForward": "Forward one day",
+      "rates": {
+        "realtime": "real time",
+        "minute": "a minute",
+        "hour": "an hour",
+        "day": "a day",
+        "week": "a week",
+        "month": "a month",
+        "year": "a year"
+      }
+    },
+    "view": {
+      "title": "The view",
+      "canvasLabel": "Three-dimensional map of the solar system",
+      "distances": "Distances",
+      "distancesHint": "True scale is honest and nearly unreadable — everything inside Jupiter is a knot at the centre. Compressed spaces the orbits evenly. The slider travels between the two.",
+      "trueScale": "True",
+      "mixed": "Mixed",
+      "compressed": "Even",
+      "bodySize": "Body size",
+      "moonScale": "Satellite spread",
+      "orbits": "Orbits",
+      "axes": "Axes",
+      "stars": "Stars",
+      "labels": "Labels",
+      "reset": "Reset view",
+      "fullscreen": "Fullscreen",
+      "navHint": "Drag to orbit · shift-drag to pan · scroll to zoom",
+      "following": "Following {body}"
+    },
+    "picker": {
+      "title": "Bodies"
+    },
+    "info": {
+      "empty": "Point at a world, or pick one from the list.",
+      "unpin": "Unpin",
+      "asOf": "Geometry as of {at} UTC — the clock is outrunning the engine.",
+      "orbits": "orbits {body}",
+      "radius": "Radius",
+      "mass": "Mass",
+      "rotation": "Rotation",
+      "axialTilt": "Axial tilt",
+      "distanceSun": "From the Sun",
+      "distanceEarth": "From Earth",
+      "magnitude": "Magnitude",
+      "apparentSize": "Apparent size",
+      "illuminated": "Illuminated",
+      "elongation": "Elongation",
+      "ringOpen": "Ring tilt",
+      "altAz": "Altitude / azimuth",
+      "up": "up",
+      "below": "below",
+      "retrograde": "retrograde",
+      "days": "days"
+    },
+    "legend": {
+      "title": "What is real here",
+      "warpNote": "Positions, distances, phases and every printed number are computed at true scale. The distance slider only stretches the PICTURE, so an eclipse still happens at the right instant however the view is compressed.",
+      "sizeNote": "A world is never drawn smaller than a few pixels, or from out here the screen would be empty. Fly closer and its true size takes over.",
+      "tierNote": "Radii, masses and pole directions are published measurements. How well a body's POSITION is known is on its own chip.",
+      "range": "The orbital model is fitted for {from}–{to}; the scrubber will not leave that span."
     }
   }
 }

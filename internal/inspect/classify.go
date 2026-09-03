@@ -93,14 +93,15 @@ const (
 func classifyByStats(stats []frameStat) []FrameType {
 	floor := darkFloor(stats)
 	starry := starryExposures(stats)
+	exposed, hasExposed := exposedLevel(stats)
 	out := make([]FrameType, len(stats))
 	for i, s := range stats {
-		out[i] = classifyOneStat(s, floor, starry)
+		out[i] = classifyOneStat(s, floor, exposed, hasExposed, starry)
 	}
 	return out
 }
 
-func classifyOneStat(s frameStat, floor float64, starryExp map[int64]bool) FrameType {
+func classifyOneStat(s frameStat, floor, exposed float64, hasExposed bool, starryExp map[int64]bool) FrameType {
 	if !s.hasStats {
 		return Light // no measured curve → never guess a calibration type; keep the frame as signal
 	}
@@ -111,6 +112,8 @@ func classifyOneStat(s frameStat, floor float64, starryExp map[int64]bool) Frame
 		return Flat
 	case isBiasCurve(s, floor):
 		return Bias
+	case hasExposed && s.median >= exposed:
+		return Light // recorded a scene: whatever it is, a shutter that saw light is not a dark
 	case starryExp[s.exposureMs]:
 		return Dark // starless, yet real lights exist at this exposure → this is a matching dark
 	default:
@@ -118,10 +121,64 @@ func classifyOneStat(s frameStat, floor float64, starryExp map[int64]bool) Frame
 	}
 }
 
+// Level test thresholds. They give the classifier a second, independent way to recognise a light,
+// for frames where counting point sources cannot work.
+const (
+	// exposedMinFrac places the cut a quarter of the way from the batch's darkest frame to its
+	// brightest — far from both, since the two populations sit at opposite ends.
+	exposedMinFrac = 0.25
+	// exposedMinRatio is how many times brighter the batch's brightest frame must be than its
+	// darkest before the test is used at all. It is deliberately steep: a median is only a fair
+	// stand-in for "saw a scene" when the frames that saw nothing sat at essentially zero. A
+	// deep-sky light whose signal lives in a small bright corner has a DARK median, and on a gentler
+	// threshold this rule would read the batch backwards.
+	exposedMinRatio = 20
+)
+
+// exposedLevel returns the median above which a frame is taken to have recorded a scene, and
+// whether the batch supports that judgement.
+//
+// It exists because star counting fails on wide-field frames. A 24 mm phone frame downscaled for
+// classification renders the whole Milky Way as a smooth glow: real 10-second lights of the sea
+// horizon measured 0 to 9 peaks, straddling the 8 needed to be called a light, so a third of one
+// panel was labelled DARK and would have been subtracted from its own siblings. Their brightness
+// was never in doubt — median 0.28 against a dark floor of 0.000.
+//
+// The reference is the batch's brightest frame, so a batch that also holds flats raises the bar and
+// the test simply goes quiet. That is the safe direction: this rule can only add lights, never
+// remove them.
+func exposedLevel(stats []frameStat) (float64, bool) {
+	lo, hi := math.MaxFloat64, -math.MaxFloat64
+	for _, s := range stats {
+		if !s.hasStats {
+			continue
+		}
+		lo = math.Min(lo, s.median)
+		hi = math.Max(hi, s.median)
+	}
+	if hi <= 0 || lo > hi {
+		return 0, false
+	}
+	if hi < exposedMinRatio*lo {
+		return 0, false
+	}
+	return lo + exposedMinFrac*(hi-lo), true
+}
+
 // hasStars reports whether a frame shows point sources or bright structure (a light), via the peak
 // count or the bright-pixel fraction (the latter catches nebulosity-rich narrowband with sparse stars).
+//
+// The peak count is a threshold ABOVE the noise and needs a noise estimate to mean anything. On a
+// frame at the true black floor the robust spread is exactly zero, that threshold collapses onto the
+// median, and every ripple of read noise becomes a peak: a capped-lens phone bias measured 75 of
+// them and was called a light. The bright-pixel fraction has no such problem — it is a proportion,
+// so a frame that is 11% bright region still reads as structure however flat its median is, which
+// is why only the peak test is gated.
 func hasStars(s frameStat) bool {
-	return s.peaks >= lightMinPeaks || s.brightFrac >= lightMinBright
+	if s.brightFrac >= lightMinBright {
+		return true
+	}
+	return s.mad > 0 && s.peaks >= lightMinPeaks
 }
 
 // starryExposures is the set of exposure times that have at least one star/structure-bearing frame —

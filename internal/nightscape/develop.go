@@ -105,9 +105,16 @@ func encodeSRGB(v float64) float64 {
 	return 1.055*math.Pow(v, 1.0/2.4) - 0.055
 }
 
-// orient applies a final display orientation to an upright result. mode is "auto" (ensure portrait
+// Orient applies a final display orientation to an upright result. mode is "auto" (ensure portrait
 // with the bright sky on top — robust for nightscapes), "none", or an explicit transform built from
 // a rotation token (cw|ccw|180) optionally suffixed with "-flip" (horizontal mirror), e.g. "cw-flip".
+//
+// It is exported because the run persists the mode it chose to grade.orient, and anything that wants
+// to line a PRE-orientation layer (lin_sky, lin_fg, sky_alpha) up with the ORIENTED stack has to
+// apply the very same transform. Re-deriving it would be a copy that can silently disagree, and a
+// mask that disagrees with its image is worse than no mask at all.
+func Orient(im *fits.Image, mode string) *fits.Image { return orient(im, mode) }
+
 func orient(im *fits.Image, mode string) *fits.Image {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode == "" || mode == "auto" {

@@ -5,6 +5,7 @@ import { useI18n } from "vue-i18n";
 import { useBrowseStore } from "@/stores/browse";
 import { useJobsStore } from "@/stores/jobs";
 import FileBrowser from "@/components/Common/FileBrowser.vue";
+import HelpButton from "@/components/Common/HelpButton.vue";
 import { btnPrimary, btnGhost, card, input } from "@/constants/styles";
 
 // The live-stacking start form. It only collects the source + exposure, creates a "livestack" job and
@@ -73,7 +74,10 @@ async function start() {
 <template>
   <div class="space-y-6">
     <div>
-      <h1 class="text-2xl font-semibold">{{ t("livestack.title") }}</h1>
+      <div class="flex items-center gap-2">
+        <h1 class="text-2xl font-semibold">{{ t("livestack.title") }}</h1>
+        <HelpButton />
+      </div>
       <p class="text-sm text-slate-500 dark:text-slate-400">
         {{ t("livestack.hint") }}
       </p>
@@ -89,7 +93,7 @@ async function start() {
         </button>
       </div>
 
-      <div v-if="sourceKind === 'local'" class="space-y-3">
+      <div v-if="sourceKind === 'local'" class="space-y-3" data-demo="live-source">
         <p class="text-xs text-slate-400">{{ t("livestack.pickFolder") }}</p>
         <FileBrowser
           :path="browseStore.path"
@@ -135,7 +139,7 @@ async function start() {
       </div>
     </div>
 
-    <div :class="card">
+    <div :class="card" data-demo="live-controls">
       <div class="flex flex-wrap items-end gap-4">
         <label class="text-sm">
           <span class="mb-1 block text-xs font-medium text-slate-500">{{

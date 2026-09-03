@@ -83,7 +83,11 @@ func TestLightStackScript_FullCalibration(t *testing.T) {
 	s := LightStackScript("light", CalibMasters{
 		Dark: "/m/d.fits", Flat: "/m/f.fits", Bias: "/m/b.fits",
 	}, "/out/master_L")
-	assert.Contains(t, s, "calibrate light -dark=/m/d.fits -flat=/m/f.fits -bias=/m/b.fits -cc=dark -prefix=pp_")
+	// The bias is deliberately absent from the light calibration even though a master was supplied:
+	// the dark already carries the pedestal and Siril would remove it twice. See calibrateArgs and
+	// TestCalibrateArgs_BiasNeverDoubleSubtracted; this test's subject is the calibrate → register →
+	// stack chain, which is unchanged.
+	assert.Contains(t, s, "calibrate light -dark=/m/d.fits -flat=/m/f.fits -cc=dark -prefix=pp_")
 	assert.Contains(t, s, "register pp_light")
 	assert.Contains(t, s, "stack r_pp_light rej winsorized 3 3 -norm=addscale -output_norm -out=/out/master_L")
 }
@@ -104,7 +108,9 @@ func TestCalibrateSingleScript_UsesCalibrateSingleOnTheConvertedFrame(t *testing
 		Dark: "/m/d.fits", Flat: "/m/f.fits", Bias: "/m/b.fits",
 	})
 	assert.Contains(t, s, "link light -out=.")
-	assert.Contains(t, s, "calibrate_single light_00001 -dark=/m/d.fits -flat=/m/f.fits -bias=/m/b.fits -cc=dark -prefix=pp_")
+	// No -bias here either: calibrate_single shares calibrateArgs, so the one-frame path gets the
+	// same no-double-subtraction rule. The subject of this test is the calibrate_single naming.
+	assert.Contains(t, s, "calibrate_single light_00001 -dark=/m/d.fits -flat=/m/f.fits -cc=dark -prefix=pp_")
 	assert.NotContains(t, s, "calibrate light", "the sequence form would abort on a one-image conversion")
 }
 
@@ -165,8 +171,55 @@ func TestPixelMathScript(t *testing.T) {
 
 func TestCalibrateArgs_CFAOneShotColor(t *testing.T) {
 	// One-shot-color with a full master set: CFA-aware cosmetics + flat equalization + debayer.
+	//
+	// This test used to assert that -bias was emitted here alongside -dark. That contract was the
+	// bug: Siril subtracts both from the same frame, and a master dark already carries the bias
+	// pedestal, so every light lost it twice (measured on Siril 1.4.4 — see calibrateArgs).
 	s := CalibrateOnlyScript("osc", CalibMasters{Dark: "/m/d.fits", Flat: "/m/f.fits", Bias: "/m/b.fits", CFA: true})
-	assert.Contains(t, s, "calibrate osc -dark=/m/d.fits -flat=/m/f.fits -bias=/m/b.fits -cc=dark -cfa -equalize_cfa -debayer -prefix=pp_")
+	assert.Contains(t, s, "calibrate osc -dark=/m/d.fits -flat=/m/f.fits -cc=dark -cfa -equalize_cfa -debayer -prefix=pp_")
+}
+
+func TestCalibrateArgs_BiasNeverDoubleSubtracted(t *testing.T) {
+	// Siril subtracts -bias AND -dark from the same frame. A master dark is an unnormalized exposure
+	// that already contains the bias pedestal, so the two together remove it twice — and because the
+	// constant is then divided by the flat, it returns as the flat's vignetting profile inverted, a
+	// false gradient that was as large as the whole sky signal on the first ASI2600MC run.
+	tests := []struct {
+		name     string
+		masters  CalibMasters
+		wantBias bool
+		why      string
+	}{
+		{
+			name:     "a dark carries the pedestal, so the bias is not passed too",
+			masters:  CalibMasters{Dark: "/m/d.fits", Flat: "/m/f.fits", Bias: "/m/b.fits"},
+			wantBias: false,
+			why:      "the dark already contains it",
+		},
+		{
+			name:     "with no dark the bias is the only pedestal removal",
+			masters:  CalibMasters{Flat: "/m/f.fits", Bias: "/m/b.fits"},
+			wantBias: true,
+			why:      "nothing else removes the pedestal",
+		},
+		{
+			// -opt scales the dark's THERMAL part, which it can only isolate once the bias is gone.
+			name:     "dark optimization needs both by design",
+			masters:  CalibMasters{Dark: "/m/d300.fits", Bias: "/m/b.fits", DarkOptimize: true},
+			wantBias: true,
+			why:      "-opt cannot separate the thermal signal without it",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := CalibrateOnlyScript("light", tt.masters)
+			if tt.wantBias {
+				assert.Contains(t, s, "-bias=/m/b.fits", tt.why)
+			} else {
+				assert.NotContains(t, s, "-bias=", tt.why)
+			}
+		})
+	}
 }
 
 func TestCalibrateArgs_CFANoFlatOmitsEqualize(t *testing.T) {
@@ -175,11 +228,17 @@ func TestCalibrateArgs_CFANoFlatOmitsEqualize(t *testing.T) {
 	assert.NotContains(t, s, "-equalize_cfa")
 }
 
-func TestCalibrateArgs_CFAWithoutMastersEmitsNothing(t *testing.T) {
-	// CFA only makes sense when there is a master to apply; with none, calibrate is skipped entirely.
+func TestCalibrateArgs_CFAWithoutMastersStillDebayers(t *testing.T) {
+	// This test previously asserted that CFA with no masters emitted NOTHING. That was safe only
+	// while no uncalibrated one-shot-color frames could reach this path; now that every mode stacks
+	// colour, the common first-time case is a DSLR session with no darks or flats at all, and
+	// skipping calibrate entirely left the mosaic undemosaiced — a green checkerboard all the way
+	// through registration and stacking. The demosaic pass must run even with nothing to apply.
 	s := CalibrateOnlyScript("osc", CalibMasters{CFA: true})
-	assert.NotContains(t, s, "calibrate")
-	assert.NotContains(t, s, "-cfa")
+	assert.Contains(t, s, "calibrate osc -debayer -prefix=pp_")
+	// -cfa/-equalize_cfa still make no sense with no master to make CFA-aware.
+	assert.NotContains(t, s, "-cfa ")
+	assert.NotContains(t, s, "-equalize_cfa")
 }
 
 func TestCalibrateArgs_MonoUnaffectedByCFAField(t *testing.T) {
@@ -525,8 +584,22 @@ func TestPhotometricCalibrateScript(t *testing.T) {
 	assert.Contains(t, s, "set core.catalogue_gaia_astro=/lib/cat/astro.dat")
 	assert.Contains(t, s, "load rgb_base")
 	assert.Contains(t, s, "platesolve 170.06,12.99 -focal=740.0 -pixelsize=3.80 -catalog=localgaia")
-	assert.Contains(t, s, "pcc\n")
+	// PCC is told the catalogue too. Bare `pcc` goes to the network ("Getting stars from online
+	// catalogue NOMAD for PCC"), which makes the rung that survives SPCC's arm64 crash depend on the
+	// internet at the moment a 40-minute run reaches its colour step; the local Gaia astrometry
+	// catalogue already installed for the solve carries the photometry PCC needs.
+	assert.Contains(t, s, "pcc -catalog=localgaia\n")
 	assert.NotContains(t, s, "spcc", "the PCC rung must not invoke SPCC")
+
+	// No local catalogue and no explicit choice: leave PCC to pick for itself (online NOMAD).
+	bare := PhotometricCalibrateScript("rgb_base", "rgb_base", SolveOptions{Coords: "170.06,12.99"})
+	assert.Contains(t, bare, "pcc\n")
+	assert.NotContains(t, bare, "-catalog=")
+
+	// An explicitly chosen catalogue wins for both commands.
+	chosen := PhotometricCalibrateScript("rgb_base", "rgb_base",
+		SolveOptions{Coords: "170.06,12.99", Catalog: "nomad", AstroCat: "/lib/cat/astro.dat"})
+	assert.Contains(t, chosen, "pcc -catalog=nomad\n")
 }
 
 func TestFlattenRegister2PassScript(t *testing.T) {

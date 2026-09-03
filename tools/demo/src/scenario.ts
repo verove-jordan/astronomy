@@ -144,7 +144,13 @@ export async function loadScenario(path: string): Promise<Scenario> {
       .join("\n");
     throw new Error(`invalid scenario ${path}:\n${issues}`);
   }
-  return parsed.data;
+  // ASTRO_DEMO_WEB / ASTRO_DEMO_API override the scenario's own defaults. scripts/demo.sh sets the
+  // first to whichever frontend it found alive (dev server or the containerized one), so a scenario
+  // never has to hard-code a port and a recording never fails for pointing at the wrong one.
+  const scenario = parsed.data;
+  if (process.env.ASTRO_DEMO_WEB) scenario.meta.baseWeb = process.env.ASTRO_DEMO_WEB;
+  if (process.env.ASTRO_DEMO_API) scenario.meta.baseApi = process.env.ASTRO_DEMO_API;
+  return scenario;
 }
 
 // True when any step launches a live job; otherwise the recorder uses meta-level fallbackRun.

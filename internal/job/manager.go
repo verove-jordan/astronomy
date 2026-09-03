@@ -231,6 +231,14 @@ type RunRequest struct {
 	FlatDir    string `json:"flat_dir,omitempty"`
 	BiasDir    string `json:"bias_dir,omitempty"`
 
+	// FocalMM / PixelUm are THIS session's optics, overriding the engine's configured rig for plate
+	// solving (and therefore SPCC colour calibration). Needed whenever the frames were not shot on
+	// the configured telescope: a camera lens has no focal length in the FITS header, so without
+	// this a DSLR session is solved at the configured scale and cannot solve at all. Either may be
+	// given alone — an unset pixel size falls back to the frame's own XPIXSZ.
+	FocalMM float64 `json:"focal_mm,omitempty"`
+	PixelUm float64 `json:"pixel_um,omitempty"`
+
 	// Comet (mode "comet") optional manual comet position override: the comet's pixel coordinates in the
 	// first (X1,Y1) and last (X2,Y2) star-aligned frame. All four > 0 → override; otherwise auto-detect.
 	CometX1 float64 `json:"comet_x1,omitempty"`
@@ -481,6 +489,11 @@ func (r RunRequest) inputRoots() []string {
 	return []string{r.Path}
 }
 
+// opticsExplicit reports whether the run declared the optics it was actually shot with, rather than
+// inheriting the engine's configured rig. The pipeline never second-guesses a declared answer; an
+// inherited one it checks against the frames' own header (pipeline/solveoptics.go).
+func (r RunRequest) opticsExplicit() bool { return r.FocalMM > 0 || r.PixelUm > 0 }
+
 // reuseSessions converts the request's session allow-list to the set the planner expects: nil means
 // "all discovered sessions", a populated set restricts to the chosen ids.
 func (r RunRequest) reuseSessions() map[int64]bool {
@@ -547,17 +560,26 @@ func (m *Manager) lockTarget(paths ...string) func() {
 	return m.locker.Acquire(paths)
 }
 
+// maxRestartRequeues bounds how many times a restart may hand the same job back to the queue. Without a
+// bound, a job that takes the engine down WITH it is requeued on every boot and takes it down again —
+// the count lives in the resume checkpoint, so it survives the restart that caused it.
+const maxRestartRequeues = 3
+
 // Start launches n parallel worker goroutines (draining the main queue) plus one dedicated worker for
 // the sequential lane, all stopping when ctx is cancelled. The single seq worker is what makes stacked
 // "Add to queue" jobs run strictly one-at-a-time in submission order, auto-advancing.
 func (m *Manager) Start(ctx context.Context, n int) {
 	// Reconcile jobs orphaned by a previous server instance. The worker pool is in-process and does not
-	// survive a restart (notably an `air` hot-reload rebuild), so any job still "running" in the DB at
-	// boot has no live worker — mark it failed rather than leave it hanging at its last percentage.
-	if rows, err := m.store.FailRunningJobs(ctx, "interrupted by a server restart"); err != nil {
+	// survive a restart (notably a `just stack` rebuild), so any job still "running" in the DB at boot
+	// has no live worker. Put them back on the QUEUE rather than failing them: rebuilding the engine is
+	// a normal part of working on it, and a run that dies because of one costs 15-45 minutes of stacking
+	// plus 30-70 GB of stranded scratch. redispatchQueued below picks them straight back up.
+	if requeued, abandoned, err := m.store.RequeueRunningJobs(ctx, maxRestartRequeues,
+		"interrupted by a server restart — requeued",
+		fmt.Sprintf("interrupted by a server restart %d times — not retrying again", maxRestartRequeues+1)); err != nil {
 		log.Printf("astrostack: reconcile running jobs failed: %v", err)
-	} else if rows > 0 {
-		log.Printf("astrostack: reconciled %d orphaned running job(s) as failed on startup", rows)
+	} else if requeued > 0 || abandoned > 0 {
+		log.Printf("astrostack: reconciled %d orphaned running job(s): %d requeued, %d abandoned", requeued+abandoned, requeued, abandoned)
 	}
 	// Crash leftovers: a previous instance's runs never got their terminal sweep — reclaim their
 	// scratch before the workers start (a full work disk wedges the whole host, not just one run).
@@ -1330,6 +1352,18 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 		}
 	}
 	solve, spcc := postprocess.SolveSpccFromConfig(m.cfg)
+	// A run that declares its own optics overrides the configured rig — and says so, which is what
+	// keeps the pipeline from second-guessing it against the frames' header (see solveoptics.go).
+	if p.FocalMM > 0 {
+		solve.FocalMM = p.FocalMM
+	}
+	if p.PixelUm > 0 {
+		solve.PixelUm = p.PixelUm
+	}
+	if p.opticsExplicit() {
+		m.publish(Event{JobID: id, Line: fmt.Sprintf("optics for this run: %.0f mm, %.2f µm pixels (%.2f arcsec/px)",
+			solve.FocalMM, solve.PixelUm, 206.265*solve.PixelUm/max(solve.FocalMM, 1e-9))})
+	}
 	gclient := gimp.New(m.cfg.GimpBin, m.cfg.GimpHost, m.cfg.GimpPort)
 	graxRunner := graxpert.New(m.cfg.GraxpertBin, m.cfg.GraxpertURL).SetDefaults(m.cfg.GraxpertGPU, m.cfg.GraxpertBatch) // optional; skipped when binary absent
 	starRunner := starnet.New(m.cfg.StarnetBin)                                                                          // optional; skipped when binary absent
@@ -1520,9 +1554,29 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
 			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner, DenoiseScale: m.cfg.DenoiseScale, ChannelParallel: m.cfg.ChannelParallel,
 			Supervisor: superRunner, JobID: id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal, // opt-in local-AI-agent finish
-			Solve: solve, Spcc: spcc, TargetHint: p.Target, DarkDir: p.DarkDir, FlatDir: p.FlatDir, BiasDir: p.BiasDir,
+			Solve: solve, Spcc: spcc, OpticsExplicit: p.opticsExplicit(), TargetHint: p.Target, DarkDir: p.DarkDir, FlatDir: p.FlatDir, BiasDir: p.BiasDir,
 			PhoneCalib: m.store, LibraryDir: m.cfg.LibraryDir, LibraryMirror: m.libPuller(ctx),
 			CatalogDir: m.cfg.SirilCatalogDir, OnProgress: pipeProg, Steer: steer, Confirm: confirm,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if r.Final != nil {
+			r.Final.Outputs = m.appendVideo(ctx, id, format, r.Final.Outputs)
+		}
+		return r, nil
+
+	case mode.Nightpano:
+		// A sky panorama: every pointing stacks with the milkyway recipe, then the panels are solved
+		// against one shared lens and reprojected onto a spherical canvas. DeepStarCat is required —
+		// Siril's plate solver cannot work at a 72-degree field, so internal/skypano solves them.
+		r, err := pipeline.ProcessNightpano(ctx, pipeline.Options{
+			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
+			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner,
+			Solve: solve, Spcc: spcc, OpticsExplicit: p.opticsExplicit(), TargetHint: p.Target, DarkDir: p.DarkDir, FlatDir: p.FlatDir, BiasDir: p.BiasDir,
+			PhoneCalib: m.store, LibraryDir: m.cfg.LibraryDir, LibraryMirror: m.libPuller(ctx),
+			CatalogDir: m.cfg.SirilCatalogDir, DeepStarCat: m.cfg.DeepStarCat,
+			JobID: id, OnProgress: pipeProg, Steer: steer, Confirm: confirm,
 		})
 		if err != nil {
 			return nil, err
@@ -1547,7 +1601,7 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 			Supervisor: superRunner,                                                          // opt-in local-AI-agent finish (nil → standard finish)
 			JobID:      id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal, // persist supervised iterations against this job
 			Library: m.store, LibraryDir: m.cfg.LibraryDir, LibraryMirror: m.libPuller(ctx), OnProgress: pipeProg, Steer: steer, Confirm: confirm,
-			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, TargetHint: p.Target, CatalogDir: m.cfg.SirilCatalogDir,
+			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, OpticsExplicit: p.opticsExplicit(), TargetHint: p.Target, CatalogDir: m.cfg.SirilCatalogDir,
 			Catalog: m.store,
 		}
 		if m.cfg.ReuseEnabled && !p.ReuseDisabled {
@@ -1584,7 +1638,7 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
 			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner, DenoiseScale: m.cfg.DenoiseScale, ChannelParallel: m.cfg.ChannelParallel,
 			Supervisor: superRunner, JobID: id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal, // opt-in local-AI-agent finish
-			Solve: solve, Spcc: spcc, CatalogDir: m.cfg.SirilCatalogDir, FilterMapping: p.FilterMap,
+			Solve: solve, Spcc: spcc, OpticsExplicit: p.opticsExplicit(), CatalogDir: m.cfg.SirilCatalogDir, FilterMapping: p.FilterMap,
 			Catalog: m.store, CalibExclude: p.CalibExclude, ForceCalibration: p.ForceCalibration,
 			OnProgress: pipeProg, Steer: steer, Confirm: confirm,
 		})
@@ -1596,10 +1650,14 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 		}
 		return r, nil
 
-	case mode.Sun:
+	case mode.Sun, mode.Eclipse:
 		// Solar: triage the folder into scale-compatible groups, ingest the best one, limb-register
 		// and stack it in windows, then finish in Go. No Siril, no plate solving and no calibration
 		// library — the Sun supplies its own registration reference in the limb.
+		//
+		// Eclipse runs the same entry point. It is the same recipe measured against two circles rather
+		// than one, and the difference is carried entirely by the preset (mode.For(Eclipse)) — so
+		// there is nothing here to keep in step.
 		r, err := pipeline.ProcessSun(ctx, pipeline.Options{
 			InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir,
 			Preset: &preset, FfmpegBin: m.cfg.FfmpegBin, JobID: id,
@@ -1622,7 +1680,7 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 			Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: graxRunner, Starnet: starRunner, DenoiseScale: m.cfg.DenoiseScale, ChannelParallel: m.cfg.ChannelParallel,
 			Supervisor: superRunner, JobID: id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal,
 			Library: m.store, LibraryDir: m.cfg.LibraryDir, LibraryMirror: m.libPuller(ctx),
-			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, TargetHint: p.Target, CatalogDir: m.cfg.SirilCatalogDir,
+			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, OpticsExplicit: p.opticsExplicit(), TargetHint: p.Target, CatalogDir: m.cfg.SirilCatalogDir,
 			Catalog: m.store, CalibExclude: p.CalibExclude, ExcludeSets: p.ExcludeSets, ForceCalibration: p.ForceCalibration,
 			OnProgress: pipeProg, Steer: steer, Confirm: confirm,
 		}
@@ -1649,7 +1707,7 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 			Supervisor: superRunner,                                                          // opt-in local-AI-agent finish (nil → standard finish)
 			JobID:      id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal, // persist supervised iterations against this job
 			Library: m.store, LibraryDir: m.cfg.LibraryDir, LibraryMirror: m.libPuller(ctx), OnProgress: pipeProg, Steer: steer, Confirm: confirm,
-			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, TargetHint: p.Target, CatalogDir: m.cfg.SirilCatalogDir,
+			FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, OpticsExplicit: p.opticsExplicit(), TargetHint: p.Target, CatalogDir: m.cfg.SirilCatalogDir,
 			Catalog:          m.store, // always record the run so its frames become reusable
 			CalibExclude:     p.CalibExclude,
 			ExcludeSets:      p.ExcludeSets,
@@ -1716,7 +1774,7 @@ func (m *Manager) executeRefine(ctx context.Context, id int64, p RunRequest, pre
 		OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
 		Preset: &preset, Gimp: gclient, Graxpert: grax, Starnet: star, DenoiseScale: m.cfg.DenoiseScale,
 		Supervisor: super, JobID: id, FinishIterStore: m.store, FinishPriors: m.priors(), Goal: p.Goal,
-		Solve: solve, Spcc: spcc, TargetHint: p.Target, CatalogDir: m.cfg.SirilCatalogDir, OnProgress: pipeProg,
+		Solve: solve, Spcc: spcc, OpticsExplicit: p.opticsExplicit(), TargetHint: p.Target, CatalogDir: m.cfg.SirilCatalogDir, OnProgress: pipeProg,
 		Steer: steer, Confirm: confirm,
 	}
 	final, err := pipeline.RefineExistingRun(ctx, opts, p.Refine.RunDir)
@@ -1765,7 +1823,7 @@ func (m *Manager) executeRerun(ctx context.Context, id int64, p RunRequest, pres
 		InputDir: p.Path, InputDirs: p.inputRoots(), OutputDir: m.cfg.OutputDir, WorkDir: m.cfg.WorkDir, Runner: m.runner,
 		Grade: &grd, Preset: &preset, Gimp: gclient, Graxpert: grax, Starnet: star, DenoiseScale: m.cfg.DenoiseScale,
 		JobID: id, Library: m.store, LibraryDir: m.cfg.LibraryDir, OnProgress: pipeProg,
-		FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, TargetHint: p.Target, CatalogDir: m.cfg.SirilCatalogDir,
+		FilterMapping: p.FilterMap, Solve: solve, Spcc: spcc, OpticsExplicit: p.opticsExplicit(), TargetHint: p.Target, CatalogDir: m.cfg.SirilCatalogDir,
 		Catalog: m.store, CalibExclude: p.CalibExclude, ForceCalibration: p.ForceCalibration,
 	}
 	if m.cfg.ReuseEnabled && !p.ReuseDisabled {

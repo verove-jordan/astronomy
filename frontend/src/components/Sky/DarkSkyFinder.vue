@@ -30,7 +30,7 @@ import NightPicker from "@/components/Sky/NightPicker.vue";
 import IconCar from "@/components/Icons/IconCar.vue";
 import IconCloud from "@/components/Icons/IconCloud.vue";
 import { btnPrimary, btnGhost, input, checkbox } from "@/constants/styles";
-import { bortleColor } from "@/utils/bortle";
+import { bortleColor, bortleLabel } from "@/utils/bortle";
 import { formatTimestamp } from "@/utils/format";
 import {
   dewRiskColor,
@@ -504,7 +504,9 @@ function formatDriveMin(min: number): string {
 
 // Map hover tooltip: the key at-a-glance stats for a candidate.
 function markerTip(c: DarkSite): string {
-  const lines = [`Bortle ${c.bortle} · SQM ${c.sqm.toFixed(1)}`];
+  const lines = [
+    `Bortle ${bortleLabel(c.bortle, c.bortle_f)} · SQM ${c.sqm.toFixed(2)}`,
+  ];
   if (c.horizon)
     lines.push(
       `${t("darksky.openness")} ${Math.round(c.horizon.openness_pct)}% · ${t("darksky.south")} ${Math.round(c.horizon.south_openness_pct)}%`,
@@ -528,7 +530,9 @@ const rows = computed<Row[]>(() =>
     idx: i, // stable identity → correlates a row with its marker across sorting/selection
     n: i + 1,
     coords: `${c.lat.toFixed(3)}, ${c.lon.toFixed(3)}`,
-    bortle: c.bortle,
+    // The continuous class, so the column both reads and SORTS at the resolution the atlas has: a
+    // shortlist of "Bortle 3" sites is otherwise unordered inside the class it was filtered on.
+    bortle: c.bortle_f || c.bortle,
     sqm: c.sqm,
     openness: c.horizon?.openness_pct ?? null,
     south: c.horizon?.south_openness_pct ?? null,
@@ -647,7 +651,7 @@ const columns: Column<Row>[] = [
 </script>
 
 <template>
-  <div class="space-y-3">
+  <div data-demo="tonight-darksky" class="space-y-3">
     <p class="text-sm text-slate-500 dark:text-slate-400">
       {{ t("darksky.hint") }}
     </p>
@@ -950,7 +954,7 @@ const columns: Column<Row>[] = [
           :style="{ backgroundColor: bortleColor(Number(value)) }"
           :title="`Bortle ${value}`"
         />
-        <span class="ml-1.5 align-middle">{{ value }}</span>
+        <span class="ml-1.5 align-middle">{{ Number(value).toFixed(1) }}</span>
       </template>
       <template #cell-sky="{ row }">
         <span

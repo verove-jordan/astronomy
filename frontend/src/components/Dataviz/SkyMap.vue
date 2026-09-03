@@ -244,7 +244,8 @@ function onClick(p: any) {
 </script>
 
 <template>
-  <div>
+  <div
+    data-demo="tonight-skymap">
     <VChart :option="option" autoresize class="h-96 w-full" @click="onClick" />
     <!-- Night playbar: scrub target positions across the selected night. -->
     <div

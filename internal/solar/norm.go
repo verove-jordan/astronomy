@@ -37,7 +37,7 @@ func Normalize(frames []Frame) ([]string, error) {
 		if err != nil {
 			return warnings, fmt.Errorf("normalize: %w", err)
 		}
-		c, ok := photom.MeasureImageMasked(im, onDiscMask(f.Limb))
+		c, ok := photom.MeasureImageMasked(im, Pair{Sun: f.Limb, Moon: f.Moon}.visibleSunAt(medianRadius))
 		if !ok {
 			warnings = append(warnings, fmt.Sprintf("%s: no on-disc curve, left unnormalised", f.Path))
 			continue
@@ -73,6 +73,12 @@ func Normalize(frames []Frame) ([]string, error) {
 // onDiscMask restricts a measurement to the solar disc. Measuring the whole frame would let the
 // sky — most of the pixels in a wide capture — dominate the percentiles and normalise the
 // background instead of the subject.
+//
+// Normalize itself uses the two-body form (Pair.visibleSunAt), because on an eclipse the occulter is
+// most of "the disc" and its share GROWS through the session. Mapping each frame's percentiles onto
+// the group median with the Moon counted in would therefore be normalising the eclipse away: two
+// frames minutes apart differ mostly in how much Moon they contain, and the LUT would dutifully
+// stretch one onto the other.
 func onDiscMask(l Limb) func(x, y int) bool {
 	if l.R <= 0 {
 		return func(int, int) bool { return true }

@@ -181,6 +181,125 @@ func TestIsOSCDir(t *testing.T) {
 	})
 }
 
+// TestScan_ColorModel covers the four ways a capture can be colour and the two ways it can be mono,
+// because "is this one-shot color?" used to be answerable only from a BAYERPAT card — so a developed
+// DSLR raw, a debayered RGB FITS and a colour TIFF all read as monochrome and were stacked as
+// luminance (or, in the web UI, silently dropped).
+func TestScan_ColorModel(t *testing.T) {
+	tests := []struct {
+		name      string
+		seed      func(t *testing.T, dir string)
+		want      ColorModel
+		wantLight int // lights the scan must surface
+	}{
+		{
+			name: "mono filter wheel",
+			seed: func(t *testing.T, dir string) {
+				fitstest.Write(t, dir, "l.fits", 8, 8, 1200, map[string]string{"IMAGETYP": "'Light'", "FILTER": "'L'"})
+				fitstest.Write(t, dir, "r.fits", 8, 8, 1200, map[string]string{"IMAGETYP": "'Light'", "FILTER": "'R'"})
+			},
+			want: ColorMono, wantLight: 2,
+		},
+		{
+			name: "Bayer CFA FITS",
+			seed: func(t *testing.T, dir string) {
+				fitstest.Write(t, dir, "a.fits", 8, 8, 1200, map[string]string{"IMAGETYP": "'Light'", "BAYERPAT": "'RGGB'"})
+			},
+			want: ColorOSC, wantLight: 1,
+		},
+		{
+			name: "already-debayered RGB FITS carries no BAYERPAT",
+			seed: func(t *testing.T, dir string) {
+				fitstest.WriteRGB(t, dir, "rgb.fits", 8, 8, 1200, 1100, 900, map[string]string{"IMAGETYP": "'Light'"})
+			},
+			want: ColorOSC, wantLight: 1,
+		},
+		{
+			name: "colour TIFF still",
+			seed: func(t *testing.T, dir string) { writeTestTIFF(t, filepath.Join(dir, "light_0001.tif"), true) },
+			want: ColorOSC, wantLight: 1,
+		},
+		{
+			name: "mono TIFF still keeps the mono path",
+			seed: func(t *testing.T, dir string) { writeTestTIFF(t, filepath.Join(dir, "light_0001.tif"), false) },
+			want: ColorMono, wantLight: 1,
+		},
+		{
+			name: "colour JPEGs are ingested, not ignored",
+			seed: func(t *testing.T, dir string) {
+				writeTestJPEG(t, filepath.Join(dir, "light_0001.jpg"))
+				writeTestJPEG(t, filepath.Join(dir, "light_0002.jpg"))
+			},
+			want: ColorOSC, wantLight: 2,
+		},
+		{
+			name: "mono lights beside colour lights is mixed",
+			seed: func(t *testing.T, dir string) {
+				fitstest.Write(t, dir, "l.fits", 8, 8, 1200, map[string]string{"IMAGETYP": "'Light'", "FILTER": "'L'"})
+				fitstest.WriteRGB(t, dir, "rgb.fits", 8, 8, 1200, 1100, 900, map[string]string{"IMAGETYP": "'Light'"})
+			},
+			want: ColorMixed, wantLight: 2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tt.seed(t, dir)
+			inv, err := Scan(context.Background(), dir)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, inv.ColorModel)
+			var lights int
+			for _, fr := range inv.Frames {
+				if fr.Type == Light {
+					lights++
+				}
+			}
+			assert.Equal(t, tt.wantLight, lights, "lights surfaced by the scan")
+		})
+	}
+}
+
+// TestScan_RawsBesideCalibrationFITS pins the promotion guard: a DSLR session that keeps its darks as
+// FITS beside the NEFs used to make every raw invisible, because a single non-light FITS was enough
+// to suppress the whole camera-raw promotion.
+func TestScan_RawsBesideCalibrationFITS(t *testing.T) {
+	dir := t.TempDir()
+	fitstest.Write(t, dir, "dark_0.fits", 8, 8, 800, map[string]string{"IMAGETYP": "'Dark'"})
+	// A .dng we cannot develop in a unit test still classifies by name/extension as a light.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "DSC_0001.dng"), []byte("not a real raw"), 0o644))
+
+	inv, err := Scan(context.Background(), dir)
+	require.NoError(t, err)
+	var lights, darks int
+	for _, fr := range inv.Frames {
+		switch fr.Type {
+		case Light:
+			lights++
+		case Dark:
+			darks++
+		}
+	}
+	assert.Equal(t, 1, lights, "the raw must be promoted even though a calibration FITS is present")
+	assert.Equal(t, 1, darks)
+	assert.Equal(t, ColorOSC, inv.ColorModel)
+}
+
+// TestSetKey_ColorSeparatesMixedSets guards the grouping dimension: a mono and a colour light at the
+// same exposure/gain/temperature must never land in one set, because nothing downstream could stack
+// them together or calibrate one with the other's master.
+func TestSetKey_ColorSeparatesMixedSets(t *testing.T) {
+	dir := t.TempDir()
+	cards := map[string]string{"IMAGETYP": "'Light'", "GAIN": "139", "OFFSET": "21", "EXPOINUS": "60000000"}
+	fitstest.Write(t, dir, "mono.fits", 8, 8, 1200, cards)
+	fitstest.WriteRGB(t, dir, "colour.fits", 8, 8, 1200, 1100, 900, cards)
+
+	inv, err := Scan(context.Background(), dir)
+	require.NoError(t, err)
+	sets := inv.SetsOfType(Light)
+	require.Len(t, sets, 2, "identical exposure/gain but different colour models must not merge")
+	assert.NotEqual(t, sets[0].Key.Color, sets[1].Key.Color)
+}
+
 func TestScan_ClassifiesAndGroups(t *testing.T) {
 	dir := t.TempDir()
 	mk := func(name, imagetyp, filter, exptime string, pixel uint16) {

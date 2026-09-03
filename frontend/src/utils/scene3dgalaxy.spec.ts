@@ -1,19 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { newBasis } from "@/utils/skyframe";
-import { R_SUN_KPC } from "@/utils/galaxy";
+import { DISC_EDGE_KPC, R_SUN_KPC } from "@/utils/galaxy";
 import {
   GALAXY_FRAME_HALF_KPC,
   GALAXY_VANTAGE_ELEVATION_DEG,
   GALAXY_VANTAGE_KPC,
+  OUTER_FRAME_HALF,
+  OUTER_STANDOFF,
   buildGalaxyLines,
-  buildGalaxyMesh,
+  decadeLadderKpc,
   frameSpanPc,
   galacticToScene,
-  galaxyDistance,
-  galaxyOrbit,
+  galaxyMaxOrbitDistance,
   galaxyTanScale,
+  galaxyView,
+  journeyEndKpc,
+  journeySplit,
+  type JourneyContext,
 } from "@/utils/scene3dgalaxy";
-import { eyePosition } from "@/utils/scene3d";
+import { MAX_ORBIT_DISTANCE, eyePosition } from "@/utils/scene3d";
 import type { SkyFrame } from "@/types";
 
 const M42_FRAME: SkyFrame = {
@@ -30,7 +35,7 @@ const basis = () => {
   if (!b) throw new Error("basis");
   return b;
 };
-const ctx = () => {
+const ctx = (): JourneyContext => {
   const m = galacticToScene(basis());
   const unit = (v: readonly number[]) => {
     const n = Math.hypot(v[0], v[1], v[2]);
@@ -44,10 +49,20 @@ const ctx = () => {
   };
 };
 
+// M51's real distance, from output/M51/20260722_191432 — the case that made the zoom-out ceiling a bug.
+const M51_PC = 7052000;
+const farCtx = (): JourneyContext => ({
+  ...ctx(),
+  medianPc: 388,
+  farthestPc: M51_PC,
+  // Straight down the barrel, which is where a run's target actually is.
+  toFarthest: [0, 0, 1],
+});
+
 describe("the journey", () => {
   it("starts with the eye exactly at Earth, through the run's own lens", () => {
     // The anchor: at zoom zero the galaxy view IS the photograph, so the toggle never jumps.
-    const v = galaxyOrbit(0, ctx());
+    const v = galaxyView(0, ctx());
     expect(v.tanScale).toBeCloseTo(1, 12);
     expect(v.orbit.yaw).toBeCloseTo(0, 12);
     expect(v.orbit.pitch).toBeCloseTo(0, 12);
@@ -57,7 +72,7 @@ describe("the journey", () => {
   });
 
   it("ends outside the disc with the whole Galaxy framed", () => {
-    const v = galaxyOrbit(1, ctx());
+    const v = galaxyView(1, ctx());
     expect(v.orbit.distance).toBeCloseTo(GALAXY_VANTAGE_KPC, 6);
     // The lens opened just far enough to frame the disc from there.
     expect(v.tanScale * TAN_H * GALAXY_VANTAGE_KPC).toBeCloseTo(
@@ -70,37 +85,30 @@ describe("the journey", () => {
     // sixteen degrees BELOW the galactic plane — because pitch is measured against the photograph's
     // axes, which have nothing to do with the Galaxy. A test that cannot tell those apart cannot
     // catch the only thing that matters about a vantage.
-    const c = ctx();
-    const eye = eyePosition(v.orbit);
-    const gcPos = c.toGalacticCentre.map((x) => x * R_SUN_KPC) as [
-      number,
-      number,
-      number,
-    ];
-    const rel: [number, number, number] = [
-      eye[0] - gcPos[0],
-      eye[1] - gcPos[1],
-      eye[2] - gcPos[2],
-    ];
-    const len = Math.hypot(rel[0], rel[1], rel[2]);
-    const alongPole =
-      (rel[0] * c.toNorthPole[0] +
-        rel[1] * c.toNorthPole[1] +
-        rel[2] * c.toNorthPole[2]) /
-      len;
-    const elevationDeg = (Math.asin(alongPole) * 180) / Math.PI;
-    expect(elevationDeg).toBeCloseTo(GALAXY_VANTAGE_ELEVATION_DEG, 0);
+    expect(elevationAtDeg(v.orbit, ctx())).toBeCloseTo(
+      GALAXY_VANTAGE_ELEVATION_DEG,
+      0,
+    );
   });
 
   it("moves monotonically, so the slider never doubles back", () => {
-    let d = 0;
-    let s = 0;
-    for (let t = 0; t <= 1.0001; t += 0.05) {
-      const v = galaxyOrbit(t, ctx());
-      expect(v.orbit.distance).toBeGreaterThanOrEqual(d - 1e-9);
-      expect(v.tanScale).toBeGreaterThanOrEqual(s - 1e-9);
-      d = v.orbit.distance;
-      s = v.tanScale;
+    // The two things that must only ever grow are how far the eye stands off and how much sky is in
+    // frame — that is what "zoom out" means to whoever is dragging the slider.
+    //
+    // Not the lens: on the outer leg it narrows slightly, because the standoff has to grow a little
+    // faster than the pair it is framing. The frame span still grows by two hundred-fold across that
+    // leg, so the movement reads as one continuous pull-back.
+    for (const c of [ctx(), farCtx()]) {
+      let d = 0;
+      let span = 0;
+      for (let t = 0; t <= 1.0001; t += 0.02) {
+        const v = galaxyView(t, c);
+        expect(v.orbit.distance).toBeGreaterThanOrEqual(d - 1e-9);
+        const s = frameSpanPc(t, c, 0.0115);
+        expect(s).toBeGreaterThanOrEqual(span * (1 - 1e-9));
+        d = v.orbit.distance;
+        span = s;
+      }
     }
   });
 
@@ -115,15 +123,123 @@ describe("the journey", () => {
 
   it("clamps a nonsense slider instead of losing the camera", () => {
     for (const t of [-5, 2, Number.NaN]) {
-      const v = galaxyOrbit(t, ctx());
+      const v = galaxyView(t, ctx());
       expect(Number.isFinite(v.orbit.distance)).toBe(true);
       expect(Number.isFinite(v.tanScale)).toBe(true);
       expect(v.orbit.distance).toBeGreaterThan(0);
     }
-    expect(galaxyDistance(0.5, 0)).toBeGreaterThan(0);
-    expect(galaxyTanScale(0.5, 0)).toBeGreaterThan(0);
+    expect(galaxyTanScale(0.5, { ...ctx(), tanHalfH: 0 })).toBeGreaterThan(0);
   });
 });
+
+describe("the journey past the Galaxy", () => {
+  // The bug: the journey stopped at the 35 kpc galactic vantage whatever the run held, so a field whose
+  // target is seven megaparsecs out could never be seen with the Milky Way — and the manual zoom-out was
+  // capped at 400 kpc, seventeen times too near.
+  it("ends at the Galaxy when nothing in the scene reaches past it", () => {
+    expect(journeyEndKpc(ctx())).toBe(GALAXY_VANTAGE_KPC);
+    expect(journeySplit(ctx())).toBe(1);
+    // An object INSIDE the disc does not extend the journey either: it is already framed.
+    const inside: JourneyContext = {
+      ...ctx(),
+      farthestPc: 8000,
+      toFarthest: [0, 0, 1],
+    };
+    expect(journeyEndKpc(inside)).toBe(GALAXY_VANTAGE_KPC);
+  });
+
+  it("flies out far enough to see the Milky Way and a distant galaxy together", () => {
+    const c = farCtx();
+    const end = journeyEndKpc(c);
+    expect(end).toBeCloseTo(OUTER_STANDOFF * (M51_PC / 1000), 6);
+    const v = galaxyView(1, c);
+    expect(v.orbit.distance).toBeCloseTo(end, 3);
+
+    // The object and the Sun must BOTH be inside the frame — which is the whole point of going out
+    // there, and what standing at the galactic vantage could never do.
+    const half = v.tanScale * TAN_H * v.orbit.distance;
+    expect(half).toBeGreaterThan(0.5 * (M51_PC / 1000));
+    expect(half).toBeCloseTo(OUTER_FRAME_HALF * (M51_PC / 1000), 3);
+  });
+
+  it("still passes through the Galaxy on the way out", () => {
+    const c = farCtx();
+    const split = journeySplit(c);
+    // Log-proportional: not a sliver of the slider, and not most of it.
+    expect(split).toBeGreaterThan(0.25);
+    expect(split).toBeLessThan(0.75);
+    const atGalaxy = galaxyView(split, c);
+    expect(atGalaxy.orbit.distance).toBeCloseTo(GALAXY_VANTAGE_KPC, 3);
+    expect(elevationAtDeg(atGalaxy.orbit, c)).toBeCloseTo(
+      GALAXY_VANTAGE_ELEVATION_DEG,
+      0,
+    );
+  });
+
+  it("raises the manual zoom-out ceiling to match", () => {
+    expect(galaxyMaxOrbitDistance(ctx())).toBe(MAX_ORBIT_DISTANCE);
+    // Far enough to hold the whole journey, so the wheel can go wherever the slider can.
+    expect(galaxyMaxOrbitDistance(farCtx())).toBeGreaterThan(
+      journeyEndKpc(farCtx()),
+    );
+  });
+
+  it("keeps the Milky Way in frame at every point of the way out", () => {
+    // The bug: with the pivot easing linearly toward the midpoint while the camera pulled back
+    // logarithmically, the middle of the slider showed empty space — the pivot had run 360 kpc down the
+    // line of sight with the camera 62 kpc behind it and 45 kpc of frame, so the Galaxy was four hundred
+    // kiloparsecs off screen and M51 was still megaparsecs away.
+    const c = farCtx();
+    for (let t = journeySplit(c); t <= 1.0001; t += 0.02) {
+      const v = galaxyView(Math.min(1, t), c);
+      const eye = eyePosition(v.orbit);
+      const toTarget = sub(v.orbit.target, eye);
+      const toGalaxy = sub([0, 0, 0], eye);
+      const cos =
+        dot(toTarget, toGalaxy) / (norm(toTarget) * norm(toGalaxy) || 1);
+      const offAxisDeg = (Math.acos(Math.min(1, cos)) * 180) / Math.PI;
+      const halfAngleDeg = (Math.atan(v.tanScale * TAN_H) * 180) / Math.PI;
+      expect(offAxisDeg).toBeLessThan(halfAngleDeg);
+    }
+  });
+
+  it("looks at the pair side-on rather than down the line joining them", () => {
+    const c = farCtx();
+    const v = galaxyView(1, c);
+    const eye = eyePosition(v.orbit);
+    // The eye must be well off the Sun-to-object axis; standing on it would stack them in one spot and
+    // show no separation at all.
+    const alongAxis = eye[0] * 0 + eye[1] * 0 + eye[2] * 1;
+    const len = Math.hypot(eye[0], eye[1], eye[2]);
+    expect(Math.abs(alongAxis) / len).toBeLessThan(0.5);
+  });
+});
+
+type V3 = readonly [number, number, number] | readonly number[];
+const sub = (a: V3, b: V3): [number, number, number] => [
+  a[0] - b[0],
+  a[1] - b[1],
+  a[2] - b[2],
+];
+const dot = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const norm = (a: V3) => Math.hypot(a[0], a[1], a[2]);
+
+/** elevationAtDeg is how far above the GALACTIC plane the eye stands, seen from the galactic centre. */
+function elevationAtDeg(
+  orbit: ReturnType<typeof galaxyView>["orbit"],
+  c: JourneyContext,
+): number {
+  const eye = eyePosition(orbit);
+  const gc = c.toGalacticCentre.map((x) => x * R_SUN_KPC);
+  const rel = [eye[0] - gc[0], eye[1] - gc[1], eye[2] - gc[2]];
+  const len = Math.hypot(rel[0], rel[1], rel[2]);
+  const alongPole =
+    (rel[0] * c.toNorthPole[0] +
+      rel[1] * c.toNorthPole[1] +
+      rel[2] * c.toNorthPole[2]) /
+    len;
+  return (Math.asin(alongPole) * 180) / Math.PI;
+}
 
 describe("the galactic transform", () => {
   it("is orthogonal and uniformly scaled", () => {
@@ -157,38 +273,39 @@ describe("the galactic transform", () => {
   });
 });
 
-describe("the mesh", () => {
-  it("fits the 16-bit index space and has no NaN", () => {
-    const mesh = buildGalaxyMesh(galacticToScene(basis()));
-    const verts = mesh.positions.length / 3;
-    expect(verts).toBeGreaterThan(1000);
-    expect(verts).toBeLessThan(65536);
-    for (const i of mesh.indices) expect(i).toBeLessThan(verts);
-    expect(mesh.indices.length % 3).toBe(0);
-    for (const v of mesh.positions) expect(Number.isFinite(v)).toBe(true);
-    for (const c of mesh.colors) {
-      expect(Number.isFinite(c)).toBe(true);
-      expect(c).toBeGreaterThanOrEqual(0);
-    }
-  });
-
-  it("stays inside the drawn disc", () => {
-    const mesh = buildGalaxyMesh(galacticToScene(basis()));
-    // Everything is within a disc radius of the galactic centre, which sits R_SUN from the origin.
-    for (let i = 0; i < mesh.positions.length; i += 3) {
-      const r = Math.hypot(
-        mesh.positions[i],
-        mesh.positions[i + 1],
-        mesh.positions[i + 2],
-      );
-      expect(r).toBeLessThan(R_SUN_KPC + 16);
-    }
-  });
-
-  it("draws reference rings and the Sun-centre line", () => {
+describe("the reference rings", () => {
+  it("draws whole segments with a colour each, and no NaN", () => {
     const lines = buildGalaxyLines(galacticToScene(basis()));
     expect(lines.positions.length).toBeGreaterThan(0);
     expect(lines.positions.length % 6).toBe(0); // whole segments
     expect(lines.colors.length).toBe(lines.positions.length);
+    for (const v of lines.positions) expect(Number.isFinite(v)).toBe(true);
+  });
+
+  it("stays inside the drawn disc when the scene does", () => {
+    const lines = buildGalaxyLines(galacticToScene(basis()));
+    for (let i = 0; i < lines.positions.length; i += 3) {
+      const r = Math.hypot(
+        lines.positions[i],
+        lines.positions[i + 1],
+        lines.positions[i + 2],
+      );
+      expect(r).toBeLessThan(R_SUN_KPC + DISC_EDGE_KPC + 1);
+    }
+  });
+
+  it("adds a decade ladder out to a distant object", () => {
+    // Without it the far end of the journey is two bright patches on black with no way to tell whether
+    // they are a kiloparsec or a megaparsec apart.
+    expect(decadeLadderKpc(0)).toEqual([]);
+    expect(decadeLadderKpc(DISC_EDGE_KPC)).toEqual([]);
+    expect(decadeLadderKpc(M51_PC / 1000)).toEqual([100, 1000, 10000]);
+    // The object itself lands inside the outermost ring, not on it.
+    const ladder = decadeLadderKpc(M51_PC / 1000);
+    expect(ladder[ladder.length - 1]).toBeGreaterThan(M51_PC / 1000);
+
+    const far = buildGalaxyLines(galacticToScene(basis()), M51_PC);
+    const near = buildGalaxyLines(galacticToScene(basis()));
+    expect(far.positions.length).toBeGreaterThan(near.positions.length);
   });
 });

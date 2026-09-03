@@ -38,9 +38,14 @@ func ProcessComet(ctx context.Context, opts Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	// NB: comet mode keeps every filtered light — unlike the deep-sky path it does NOT ExcludeBayer,
-	// because older ASICAP mono captures carry a spurious BAYERPAT yet are shot through a filter wheel
-	// (mono-per-filter, not one-shot-colour). A genuine OSC comet is out of scope for v1.
+	// Comet mode keeps every light, mono or colour. It never needed the deep-sky path's Bayer veto:
+	// the spurious-BAYERPAT case (an older ASICAP capture of a MONO camera behind a filter wheel) is
+	// resolved during inspection, so a pattern that survives to here is real. A one-shot-color comet
+	// stacks as a single RGB channel — the dual star/comet stack and the motion track work on whole
+	// frames and never look at the filter — so it needs nothing beyond CFA-aware calibration below.
+	if inv.ColorModel == inspect.ColorOSC {
+		markColorPreset(opts.Preset)
+	}
 
 	workAbs, err := filepath.Abs(opts.WorkDir)
 	if err != nil {
@@ -187,9 +192,15 @@ func calibrateAndMergeComet(ctx context.Context, opts Options, inv *inspect.Inve
 	mergedDir = filepath.Join(workRun, "01_merged")
 	var calibrated []string
 	for _, set := range inv.SetsOfType(inspect.Light) {
-		sel := calib.MatchForLightExcluding(set.Key, masters, opts.CalibExclude, opts.ForceCalibration)
+		// Another sensor's masters leave the pool first; Siril would skip them silently. See calib/dims.go.
+		usable, dimNote := calib.KeepMatchingDims(masters, firstFramePath(set.Frames))
+		sel := calib.MatchForLightExcluding(set.Key, usable, opts.CalibExclude, opts.ForceCalibration)
+		if dimNote != "" {
+			warnings = append(warnings, "comet: "+dimNote)
+		}
 		dark, flat, bias := sel.Masters()
-		cm := siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias, BadPixelMap: calib.DefectsListFor(dark)}
+		cm := siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias, BadPixelMap: calib.DefectsListFor(dark),
+			CFA: needsDebayer(set.Frames)}
 		// The night token keeps two per-night sets of one filter+exposure (multi-night scan) in
 		// separate dirs — without it their calibrated frames would silently mix in one sequence.
 		setDir := filepath.Join(workRun, "cal_"+sanitize(set.Key.Filter)+"_"+fmt.Sprint(set.Key.ExposureMs)+nightToken(set.Key.Session))
@@ -197,7 +208,7 @@ func calibrateAndMergeComet(ctx context.Context, opts Options, inv *inspect.Inve
 			warnings = append(warnings, "comet: link "+set.Key.Filter+": "+err.Error())
 			continue
 		}
-		if _, err := opts.Runner.Run(ctx, setDir, siril.CalibrateOnlyScript("light", cm), nil); err != nil {
+		if _, err := opts.Runner.Run(ctx, setDir, siril.CalibrateOnlyScriptWith("light", cm, seqIngest(set.Frames)), nil); err != nil {
 			warnings = append(warnings, "comet: calibrate "+set.Key.Filter+": "+err.Error())
 			continue
 		}

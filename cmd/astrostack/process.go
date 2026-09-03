@@ -11,7 +11,6 @@ import (
 	"github.com/verove-jordan/astronomy/internal/config"
 	"github.com/verove-jordan/astronomy/internal/gimp"
 	"github.com/verove-jordan/astronomy/internal/graxpert"
-	"github.com/verove-jordan/astronomy/internal/inspect"
 	"github.com/verove-jordan/astronomy/internal/llm"
 	"github.com/verove-jordan/astronomy/internal/mode"
 	"github.com/verove-jordan/astronomy/internal/pipeline"
@@ -50,7 +49,8 @@ func runProcess(args []string) error {
 	}
 	if fs.NArg() != 3 {
 		return fmt.Errorf("usage: astrostack process [flags] <mode> <format> <path>\n" +
-			"  modes: deepsky nebula milkyway planetary comet    formats: image video both")
+			"  modes: deepsky nebula milkyway nightpano planetary comet mosaic sun eclipse livestack\n" +
+			"  formats: image video both")
 	}
 	m, err := mode.ParseMode(fs.Arg(0))
 	if err != nil {
@@ -197,15 +197,15 @@ func runProcess(args []string) error {
 		return nil
 	}
 
-	// One-shot-color: milkyway mode, or a deepsky/nebula directory that turns out to be Bayer CFA FITS
-	// (an older OSC capture). Both debayer through the OSC pipeline, finished with the chosen mode's preset.
-	useOSC := m == mode.Milkyway
-	if !useOSC && (m == mode.Deepsky || m == mode.Nebula) {
-		if info, err := os.Stat(path); err == nil && info.IsDir() && inspect.IsOSCDir(path) {
-			useOSC = true
-		}
-	}
-	if useOSC {
+	// Milky-Way nightscapes take the dedicated one-shot-color recipe (develop → sky stack → foreground
+	// composite), which is a genuinely different pipeline rather than a filter variant.
+	//
+	// Every OTHER mode now stacks colour through its own pipeline, which detects one-shot color from
+	// the inventory and runs it as a single RGB channel. This used to divert a colour deepsky/nebula
+	// folder here via inspect.IsOSCDir, which meant the CLI and the web UI ran different code for the
+	// same input — and the CLI's diversion skipped the calibration library, plate-solving, SPCC and the
+	// layered finish that the deep-sky path applies.
+	if m == mode.Milkyway {
 		if info, err := os.Stat(path); err != nil || !info.IsDir() {
 			return fmt.Errorf("%s expects a directory of color images (OSC FITS, or iPhone DNG/HEIC/jpg/png/tif): %s", m, path)
 		}
@@ -229,6 +229,43 @@ func runProcess(args []string) error {
 			BiasDir:    *bias,
 			CatalogDir: cfg.SirilCatalogDir,
 			OnProgress: pipelineProgress(*verbose),
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Print(report.RunText(res))
+		if res.Final != nil {
+			maybeRenderVideo(ctx, cfg, format, res.Final.Outputs)
+		}
+		return nil
+	}
+
+	// nightpano: a directory holding a whole night's sweep across several pointings. The panels are
+	// segmented from the frames' own pointing metadata, so the folder need not be sorted by hand.
+	if m == mode.Nightpano {
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			return fmt.Errorf("%s expects a directory of raw stills covering several pointings: %s", m, path)
+		}
+		grd := preset.Grade
+		res, err := pipeline.ProcessNightpano(ctx, pipeline.Options{
+			InputDir:    path,
+			OutputDir:   outDir,
+			WorkDir:     workDir,
+			Runner:      runner,
+			Grade:       &grd,
+			Preset:      &preset,
+			Gimp:        gimp.New(cfg.GimpBin, cfg.GimpHost, cfg.GimpPort),
+			Graxpert:    graxRunner,
+			Starnet:     starRunner,
+			Solve:       solve,
+			Spcc:        spcc,
+			TargetHint:  *target,
+			DarkDir:     *darks,
+			FlatDir:     *flats,
+			BiasDir:     *bias,
+			CatalogDir:  cfg.SirilCatalogDir,
+			DeepStarCat: cfg.DeepStarCat,
+			OnProgress:  pipelineProgress(*verbose),
 		})
 		if err != nil {
 			return err

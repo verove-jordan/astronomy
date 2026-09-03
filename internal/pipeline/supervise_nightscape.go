@@ -117,6 +117,12 @@ type nightscapePatch struct {
 	// up to 2); HighlightCeiling overrides the look's core ceiling (0.3..0.95, lower = dimmer core).
 	SaturationScale  *float64 `json:"saturation_scale,omitempty"`
 	HighlightCeiling *float64 `json:"highlight_ceiling,omitempty"`
+	// KeepMeteors blends the meteors the sigma-clip rejected back into the sky, and leaves the
+	// satellites and aircraft out. It re-stacks rather than re-grades, so it is not a finishing knob.
+	KeepMeteors *bool `json:"keep_meteors,omitempty"`
+	// FlatRadialOnly reduces a master flat to its lens falloff, discarding the reflection a phone
+	// flat carries in the middle. Re-stacks rather than re-grades.
+	FlatRadialOnly *bool `json:"flat_radial_only,omitempty"`
 }
 
 func isLookName(name string) bool {
@@ -146,5 +152,9 @@ const nightscapeKnobMenu = `You may tune these grade controls (each re-renders i
 - brightness (0.03..0.2): the target sky-background level (lower = darker sky; higher lifts the Milky-Way core).
 - saturation_scale (0..2): scales the look's own colour saturation (1 = as designed; below 1 tames neon colour).
 - highlight_ceiling (0.3..0.95): the Milky-Way core's brightness ceiling (lower = dimmer, better-protected core; 0 keeps the look's own).`
+
+// keep_meteors is deliberately NOT offered here. The supervised finish is a re-grade of the persisted
+// linear sky and cannot re-stack, so it could not honour the change: the meteors are found in the
+// registered frames and added before the grade. It is a job parameter, not a finishing knob.
 
 const nightscapeSystemPrompt = nightscapeIntro + nightscapeKnobMenu + supervisorDefectRules

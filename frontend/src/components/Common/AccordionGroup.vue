@@ -73,7 +73,14 @@ defineExpose({ open, toggle, isOpen });
 
 <template>
   <div class="space-y-3">
-    <section v-for="it in items" :key="it.key" :class="card">
+    <!-- data-demo makes every collapsible section addressable by key, which is what lets the
+         tour-screenshot generator expand and photograph one without knowing the page. -->
+    <section
+      v-for="it in items"
+      :key="it.key"
+      :class="card"
+      :data-demo="`accordion-${it.key}`"
+    >
       <button
         type="button"
         class="flex w-full items-center justify-between gap-2 text-left"

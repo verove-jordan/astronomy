@@ -3,6 +3,7 @@ import { computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import TabBar from "@/components/Common/TabBar.vue";
+import HelpButton from "@/components/Common/HelpButton.vue";
 import MosaicPlanner from "@/components/Mosaic/MosaicPlanner.vue";
 import CaptureAssistant from "@/components/Mosaic/CaptureAssistant.vue";
 import { useMosaicStore } from "@/stores/mosaic";
@@ -69,7 +70,10 @@ onMounted(async () => {
       />
     </Teleport>
     <div>
-      <h1 class="text-2xl font-semibold">{{ t("mosaic.title") }}</h1>
+      <div class="flex items-center gap-2">
+        <h1 class="text-2xl font-semibold">{{ t("mosaic.title") }}</h1>
+        <HelpButton />
+      </div>
       <p class="text-sm text-slate-400">{{ t("mosaic.subtitle") }}</p>
     </div>
     <MosaicPlanner v-if="tab === 'plan'" />

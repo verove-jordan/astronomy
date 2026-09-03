@@ -29,7 +29,12 @@ type sunSpec struct {
 	features int     // on-disc filaments and plage — the detail a sharpness metric must see
 	noise    float64 // additive noise amplitude
 	sky      float64 // sky background level
-	seed     uint64  // seeds the STRUCTURE: prominence and feature layout
+	// moonR, moonCX and moonCY stamp an occulting body over the scene. It is applied after the Sun
+	// is drawn but BEFORE the PSF, so its edge carries exactly the same blur the solar limb does —
+	// which is what makes it usable as a resolution probe. moonR <= 0 draws none, so every fixture
+	// that predates the eclipse work renders byte-for-byte as it did.
+	moonR, moonCX, moonCY float64
+	seed                  uint64 // seeds the STRUCTURE: prominence and feature layout
 	// noiseSeed seeds the noise only. Keeping it separate is what lets a set of frames share one
 	// scene and differ only in their noise — which is the whole premise of stacking, and which a
 	// single shared seed silently breaks: vary `seed` per frame and every frame gets DIFFERENT
@@ -75,6 +80,7 @@ func drawSun(s sunSpec) *fits.Image {
 			p[y*s.w+x] = float32(v)
 		}
 	}
+	applyOcculter(p, s)
 	applyRings(p, s)
 	applyGradient(p, s)
 	if s.psfSigma > 0 {
@@ -86,6 +92,27 @@ func drawSun(s sunSpec) *fits.Image {
 		}
 	}
 	return im
+}
+
+// applyOcculter blocks everything inside the occulting body, leaving sky.
+//
+// It runs before the rings and the sweet-spot gradient because those are the instrument's, and the
+// instrument sees the Sun only after the Moon has taken its bite; a ring drawn over the occulter
+// would be light that never arrived.
+func applyOcculter(p []float32, s sunSpec) {
+	if s.moonR <= 0 {
+		return
+	}
+	r2 := s.moonR * s.moonR
+	for y := 0; y < s.h; y++ {
+		dy := float64(y) - s.moonCY
+		for x := 0; x < s.w; x++ {
+			dx := float64(x) - s.moonCX
+			if dx*dx+dy*dy <= r2 {
+				p[y*s.w+x] = float32(s.sky)
+			}
+		}
+	}
 }
 
 // promLayout picks prominence positions deterministically.

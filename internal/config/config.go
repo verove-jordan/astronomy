@@ -309,7 +309,10 @@ func Load() *Config {
 		DatabaseURL:    env("DATABASE_URL", "postgres://astro:astro@localhost:5432/astrostack?sslmode=disable"),
 		APIAddr:        env("API_ADDR", ":8080"),
 		LogLevel:       env("LOG_LEVEL", "info"),
-		DataDir:        env("ASTRO_DATA_DIR", "./data"),
+		// ./input, not ./data: compose.yaml pins the container's ASTRO_DATA_DIR to ${PWD}/input, and
+		// two different defaults meant host-dev and the container browsed different roots — the same
+		// capture visible in one mode and invisible in the other, with nothing to explain why.
+		DataDir:        env("ASTRO_DATA_DIR", "./input"),
 		WorkDir:        env("ASTRO_WORK_DIR", "./work"),
 		KeepWork:       envBool("ASTRO_KEEP_WORK", false),
 		OutputDir:      env("ASTRO_OUTPUT_DIR", "./output"),

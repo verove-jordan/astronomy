@@ -36,6 +36,10 @@ const (
 	VerdictPermissionDenied = "permission_denied"
 	// VerdictNoReply — the port opens and nothing answers the echo.
 	VerdictNoReply = "no_reply"
+	// VerdictPortUnconfigurable — the port opens but refuses every serial setting, so nothing was
+	// ever asked. Distinct from VerdictNoReply because the advice differs: no_reply means the link
+	// works and the mount is quiet, whereas this never got as far as a link.
+	VerdictPortUnconfigurable = "port_unconfigurable"
 	// VerdictUnknown — the USB bus could not be read, so only the port list is evidence.
 	VerdictUnknown = "unknown"
 )
@@ -160,6 +164,10 @@ func verdict(d Diagnosis, bridge USBDevice, haveBridge, probed bool) (string, st
 		case errors.Is(p.err, os.ErrPermission):
 			return VerdictPermissionDenied, fmt.Sprintf(
 				"%s exists but this user may not open it. Check the file's permissions, and that no security tool is blocking serial access.", p.Path)
+		case errors.Is(p.err, ErrPortUnconfigurable):
+			return VerdictPortUnconfigurable, fmt.Sprintf(
+				"%s opens but refuses every serial setting, so no command was ever sent — even writing back the settings it already reports fails. That is the adapter or its driver, not the protocol: power the mount on and let the hand controller boot past its splash screen, check the cable is in the hand controller's socket rather than the mount's AUX port, then unplug and replug the USB cable to re-enumerate the adapter.",
+				p.Path)
 		}
 	}
 	if probed && len(d.Probes) > 0 {

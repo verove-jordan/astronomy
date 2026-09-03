@@ -19,6 +19,7 @@ import {
   segIdle,
 } from "@/constants/styles";
 import TabBar from "@/components/Common/TabBar.vue";
+import HelpButton from "@/components/Common/HelpButton.vue";
 import { tzForLocation, fmtClock, fmtDateTime } from "@/utils/tz";
 import { kindPillClass } from "@/utils/events";
 import type { SkyEvent } from "@/types";
@@ -197,7 +198,10 @@ const location = computed(() => store.query?.location);
   <div class="space-y-4">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div>
-        <h1 class="text-2xl font-semibold">{{ t("calendar.title") }}</h1>
+        <div class="flex items-center gap-2">
+          <h1 class="text-2xl font-semibold">{{ t("calendar.title") }}</h1>
+          <HelpButton />
+        </div>
         <p class="text-sm text-slate-400">{{ t("calendar.subtitle") }}</p>
       </div>
       <div class="flex flex-wrap items-center gap-2">

@@ -89,7 +89,7 @@ func TestRegRefiner_MeasuresAKnownDisplacement(t *testing.T) {
 			// Moving the assumed centre by (dx,dy) moves the disc in the warped raster by (-dx,-dy),
 			// so the refiner must report the displacement that puts it back.
 			moved := Warp(im, Transform{Scale: 1, CX: l.CX + sh.dx, CY: l.CY + sh.dy}, side, 1)
-			gx, gy := r.measure(moved, canonical)
+			gx, gy := r.measure(moved, canonical, nil)
 			t.Logf("centre moved by (%+.1f,%+.1f) -> measured (%+.2f,%+.2f)", sh.dx, sh.dy, gx, gy)
 			assert.InDelta(t, sh.dx, gx, 0.3, "measured dx")
 			assert.InDelta(t, sh.dy, gy, 0.3, "measured dy")

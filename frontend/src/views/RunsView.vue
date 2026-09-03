@@ -7,6 +7,7 @@ import RunResultPanels from "@/components/Common/RunResultPanels.vue";
 import FilterChip from "@/components/Common/FilterChip.vue";
 import EngineChip from "@/components/Common/EngineChip.vue";
 import Spinner from "@/components/Common/Spinner.vue";
+import HelpButton from "@/components/Common/HelpButton.vue";
 import { card, btnGhost } from "@/constants/styles";
 import { baseName } from "@/utils/format";
 import type { RunSummary, RunResult } from "@/types";
@@ -44,7 +45,10 @@ function fmtDate(ms: number): string {
   <div class="space-y-6">
     <div class="flex flex-wrap items-center gap-3">
       <div>
-        <h1 class="text-2xl font-semibold">{{ t("runs.title") }}</h1>
+        <div class="flex items-center gap-2">
+          <h1 class="text-2xl font-semibold">{{ t("runs.title") }}</h1>
+          <HelpButton />
+        </div>
         <p class="text-sm text-slate-500 dark:text-slate-400">
           {{ t("runs.subtitle") }}
         </p>

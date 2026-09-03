@@ -56,6 +56,7 @@ func applyMosaicConstraints(p *mode.Preset) {
 		return
 	}
 	p.CoverageCrop = false
+	p.EdgeCrop = false // the union's never-covered margins are sky-filled on purpose, not cut away
 	p.CropFrac = 0
 	p.SeamOffsetRefit = true
 	p.SeamNoiseEq = true

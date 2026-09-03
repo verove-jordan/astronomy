@@ -9,6 +9,7 @@ import FrameTimeline from "@/components/Logbook/FrameTimeline.vue";
 import SessionConditions from "@/components/Logbook/SessionConditions.vue";
 import TrackingReport from "@/components/Capture/TrackingReport.vue";
 import Spinner from "@/components/Common/Spinner.vue";
+import HelpButton from "@/components/Common/HelpButton.vue";
 import { btnGhost, card, checkbox, statusPill } from "@/constants/styles";
 import { humanizeMs, formatTimestamp } from "@/utils/format";
 import { tzForLocation } from "@/utils/tz";
@@ -84,15 +85,18 @@ const lightFrames = computed(() =>
       <!-- Header: the identity of the night. -->
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div class="min-w-0">
-          <h1 class="truncate text-2xl font-semibold">
-            {{ session.object || t("logbook.untitled") }}
-            <span
-              v-if="session.panel"
-              class="font-mono text-base text-slate-400"
-            >
-              {{ session.panel }}
-            </span>
-          </h1>
+          <div class="flex min-w-0 items-center gap-2">
+            <h1 class="truncate text-2xl font-semibold">
+              {{ session.object || t("logbook.untitled") }}
+              <span
+                v-if="session.panel"
+                class="font-mono text-base text-slate-400"
+              >
+                {{ session.panel }}
+              </span>
+            </h1>
+            <HelpButton />
+          </div>
           <p class="truncate text-sm text-slate-500 dark:text-slate-400">
             {{ t("logbook.nightOf", { night: nightKey(session.started_at) }) }}
             · <span class="font-mono">{{ session.root }}</span>
@@ -154,7 +158,7 @@ const lightFrames = computed(() =>
       </div>
 
       <!-- What was shot. -->
-      <section :class="card">
+      <section :class="card" data-demo="logbook-tally">
         <h2 class="mb-3 text-lg font-medium">{{ t("logbook.tally.title") }}</h2>
         <FilterTally v-if="stats.length" :stats="stats" />
         <p v-else class="text-sm text-slate-400">

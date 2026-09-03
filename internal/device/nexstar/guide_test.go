@@ -14,11 +14,20 @@ import (
 // replyGuide answers the autoguide-rate commands. It lives beside the guide tests rather than in
 // replyPEC, which documents itself as answering the periodic-error commands and only those.
 func (f *fakeHC) replyGuide(p []byte) ([]byte, bool) {
+	// Which motor the frame is aimed at matters here: the rate is stored per axis, and SetGuideRate
+	// only keeps the two in step because it writes both.
 	switch p[3] {
 	case mcSetAutoguideRate:
-		f.guideRate = p[4]
+		if p[2] == axisAltDec {
+			f.guideRateDec = p[4]
+		} else {
+			f.guideRate = p[4]
+		}
 		return []byte("#"), true
 	case mcGetAutoguideRate:
+		if p[2] == axisAltDec {
+			return []byte{f.guideRateDec, '#'}, true
+		}
 		return []byte{f.guideRate, '#'}, true
 	}
 	return nil, false
@@ -217,4 +226,98 @@ func TestSetGuideRateCommand_EncodesAsFractionOfSidereal(t *testing.T) {
 	assert.Equal(t, byte(17), read[2])
 	assert.Equal(t, byte(mcGetAutoguideRate), read[3])
 	assert.Equal(t, byte(1), read[7], "exactly one reply byte, read by length")
+}
+
+// A guide pulse turns the axis with the same variable-rate slew a nudge uses, and that stops the
+// drive. Nudge has always put it back; this did not, and guiding is the worse place to lose it — the
+// pulses land DURING an exposure, dozens of times in one, so an unrestored drive means the rest of
+// that sub is taken with right ascension standing still.
+func TestPulseGuide_PutsTheDriveBackAfterwards(t *testing.T) {
+	hc := newFakeHC()
+	m := testMount(t, hc)
+
+	require.NoError(t, m.PulseGuide(context.Background(), device.GuideAxisRA, 8, 150*time.Millisecond))
+
+	sent, ok := hc.sentPrefixed('T')
+	require.True(t, ok, "the drive must be put back after a guide pulse")
+	assert.Equal(t, byte(TrackingEQNorth), sent[1], "restored to the mode it was in, not a guess")
+
+	// And after the axis has stopped, or it re-asserts tracking and then cancels it again.
+	lastRate, lastTrack := -1, -1
+	for i, c := range hc.commands() {
+		if len(c) == 8 && c[0] == 'P' && (c[3] == 6 || c[3] == 7) {
+			lastRate = i
+		}
+		if len(c) >= 2 && c[0] == 'T' {
+			lastTrack = i
+		}
+	}
+	assert.Greater(t, lastTrack, lastRate, "tracking is restored after the axis has stopped")
+}
+
+// A drive that was deliberately off must stay off. PEC training stops it on purpose and then guides
+// nothing; re-asserting a mode we never saw would start a mount under someone.
+func TestPulseGuide_LeavesAStoppedDriveStopped(t *testing.T) {
+	hc := newFakeHC()
+	hc.trackMode = TrackingOff
+	m := testMount(t, hc)
+
+	require.NoError(t, m.PulseGuide(context.Background(), device.GuideAxisDec, 8, 150*time.Millisecond))
+
+	_, ok := hc.sentPrefixed('T')
+	assert.False(t, ok, "no drive command may be sent when tracking was already off")
+}
+
+// The mode is remembered, not asked for. Guiding fires constantly, so a `t` query per pulse would
+// put two extra round trips on the link for every correction of the night.
+func TestPulseGuide_DoesNotQueryTheDriveModePerPulse(t *testing.T) {
+	hc := newFakeHC()
+	m := testMount(t, hc)
+	ctx := context.Background()
+
+	// One State() read is what a mount panel does every second anyway; it populates the cache.
+	_, err := m.State(ctx)
+	require.NoError(t, err)
+	before := countPrefixed(hc, 't')
+
+	for i := 0; i < 3; i++ {
+		require.NoError(t, m.PulseGuide(ctx, device.GuideAxisRA, 8, 150*time.Millisecond))
+	}
+
+	assert.Equal(t, before, countPrefixed(hc, 't'), "no pulse may re-ask what the drive mode is")
+	assert.Equal(t, 3, countPrefixed(hc, 'T'), "but every pulse must put the drive back")
+}
+
+// With nothing cached yet — the first pulse of a session — it pays for one reading rather than
+// guessing. Restoring a mode that was never seen could start a mount under someone.
+func TestPulseGuide_AsksOnceWhenItHasNeverSeenTheMode(t *testing.T) {
+	hc := newFakeHC()
+	m := testMount(t, hc)
+	ctx := context.Background()
+
+	require.NoError(t, m.PulseGuide(ctx, device.GuideAxisRA, 8, 150*time.Millisecond))
+	require.NoError(t, m.PulseGuide(ctx, device.GuideAxisRA, 8, 150*time.Millisecond))
+
+	assert.Equal(t, 1, countPrefixed(hc, 't'), "asked once, then remembered")
+}
+
+func countPrefixed(hc *fakeHC, prefix byte) int {
+	n := 0
+	for _, c := range hc.commands() {
+		if len(c) > 0 && c[0] == prefix {
+			n++
+		}
+	}
+	return n
+}
+
+// A pulse rejected before it moves anything must not cost two frames on a 9600-baud link.
+func TestPulseGuide_RejectedPulseTouchesNothing(t *testing.T) {
+	hc := newFakeHC()
+	m := testMount(t, hc)
+	before := len(hc.commands())
+
+	require.Error(t, m.PulseGuide(context.Background(), device.GuideAxisRA, 8, time.Hour))
+
+	assert.Equal(t, before, len(hc.commands()), "a refused pulse sends nothing at all")
 }

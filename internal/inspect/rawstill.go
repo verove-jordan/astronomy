@@ -26,6 +26,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/verove-jordan/astronomy/internal/filters"
+	"github.com/verove-jordan/astronomy/internal/pointing"
 	"github.com/verove-jordan/astronomy/internal/rawconv"
 	"github.com/verove-jordan/astronomy/internal/rawmeta"
 )
@@ -45,8 +47,40 @@ func ClassifyRawStills(ctx context.Context, paths []string) []*Frame {
 		frames[i] = classifyRawTokens(p)
 	}
 	classifyRawByStats(ctx, frames)
+	vetoBelowHorizon(frames)
 	finalizeRawTypes(frames)
 	return frames
+}
+
+// horizonVetoDeg is how far below the horizon the optical axis has to point before a frame is
+// refused as a light. Nobody frames the night sky aimed thirty degrees into the ground, while the
+// darks of a real session were shot at -82, so the margin is wide in both directions.
+const horizonVetoDeg = -30
+
+// vetoBelowHorizon reclassifies any frame the pixel statistics called a light while the camera was
+// demonstrably aimed at the ground.
+//
+// classifyByStats is batch-relative: it finds the dark floor and the "starry" exposures among the
+// frames it is given, so a folder holding nothing but darks has no light to compare against and
+// every frame looks normal. Gravity does not care what else is in the folder — a phone lying face
+// down was not photographing the sky, whatever the batch says. Folder and filename tokens still
+// win, because those are an explicit statement of intent rather than an inference.
+func vetoBelowHorizon(frames []*Frame) {
+	for _, fr := range frames {
+		if !fr.HasPointing || fr.AltDeg > horizonVetoDeg {
+			continue
+		}
+		if isCalibration(fr.Type) || fr.ClassSource == SourceFilename {
+			continue
+		}
+		// Pointing says "not a light" but cannot say which kind of calibration; exposure does, on
+		// the same threshold the statistical path uses.
+		fr.Type = Dark
+		if fr.ExposureMs > 0 && fr.ExposureMs <= biasMaxExposureMs {
+			fr.Type = Bias
+		}
+		fr.ClassSource = SourceHeuristic
+	}
 }
 
 // classifyRawTokens builds a Frame from EXIF metadata plus filename/folder type tokens. Type stays
@@ -60,8 +94,9 @@ func classifyRawTokens(path string) *Frame {
 	return fr
 }
 
-// applyRawMeta copies EXIF metadata onto a frame: ISO, exposure, camera model (into Instrument), and
-// pixel dimensions.
+// applyRawMeta copies EXIF metadata onto a frame: ISO, exposure, camera model (into Instrument),
+// pixel dimensions, and — for a phone raw that carries a compass bearing and a gravity vector —
+// where the camera was aimed.
 func applyRawMeta(fr *Frame, m rawmeta.Meta) {
 	fr.ISO = m.ISO
 	if m.HasExposure {
@@ -69,19 +104,25 @@ func applyRawMeta(fr *Frame, m rawmeta.Meta) {
 	}
 	fr.Instrument = m.CameraModel
 	fr.Width, fr.Height = m.Width, m.Height
+	if p, ok := pointing.FromMeta(m); ok {
+		fr.AzDeg, fr.AltDeg, fr.RollDeg, fr.HasPointing = p.AzDeg, p.AltDeg, p.RollDeg, true
+	}
 }
 
 // finalizeRawTypes defaults every still-Unknown frame to a Light and normalizes the filter: lights are
-// RGB one-shot-color, calibration frames carry no filter.
+// RGB one-shot-color, calibration frames carry no filter. Every frame here came from a camera raw or a
+// colour still, so all three primaries are present — stamp the plane count so the pipeline sees colour
+// without having to re-derive it from the extension.
 func finalizeRawTypes(frames []*Frame) {
 	for _, fr := range frames {
 		if fr.Type == Unknown {
 			fr.Type = Light
 		}
+		fr.Channels = 3
 		if isCalibration(fr.Type) {
 			fr.Filter = ""
 		} else {
-			fr.Filter = "RGB"
+			fr.Filter = filters.Color
 		}
 	}
 }
@@ -155,7 +196,7 @@ func sampleRawStat(ctx context.Context, path string, exposureMs int64) (frameSta
 	dst := filepath.Join(dir, "sample.png")
 	cctx, cancel := context.WithTimeout(ctx, sipsTimeout)
 	defer cancel()
-	if err := rawconv.Thumbnail(cctx, path, dst, rawSampleMax); err != nil {
+	if err := rawconv.ThumbnailForStats(cctx, path, dst, rawSampleMax); err != nil {
 		return frameStat{}, err
 	}
 	vals, err := lumaSample(dst)

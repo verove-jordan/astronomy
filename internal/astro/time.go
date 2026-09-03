@@ -17,6 +17,12 @@ func JulianDate(t time.Time) float64 {
 	return float64(t.UTC().UnixNano())/nanosPerDay + unixEpochJD
 }
 
+// TimeFromJD is the inverse of JulianDate: the UTC instant a Julian Date names. Round-trips exactly
+// enough for any use here — the float64 holds a Julian Date to well under a microsecond.
+func TimeFromJD(jd float64) time.Time {
+	return time.Unix(0, int64((jd-unixEpochJD)*nanosPerDay)).UTC()
+}
+
 // JulianCenturies returns the number of Julian centuries elapsed since J2000.0 for the given JD.
 func JulianCenturies(jd float64) float64 {
 	return (jd - J2000) / 36525.0

@@ -18,6 +18,7 @@ import AstroWeatherPanel from "@/components/Sky/AstroWeatherPanel.vue";
 import CollapsibleCard from "@/components/Common/CollapsibleCard.vue";
 import TwoPane from "@/components/Common/TwoPane.vue";
 import TabBar from "@/components/Common/TabBar.vue";
+import HelpButton from "@/components/Common/HelpButton.vue";
 import IconStar from "@/components/Icons/IconStar.vue";
 import { card, input, btnGhost, skyTypePillClass } from "@/constants/styles";
 import { scrollElementToTop } from "@/utils/scroll";
@@ -335,7 +336,10 @@ const fovH = computed(() => store.query?.equipment.fov_h_deg ?? 1);
   <div class="space-y-4">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div>
-        <h1 class="text-2xl font-semibold">{{ t("tonight.title") }}</h1>
+        <div class="flex items-center gap-2">
+          <h1 class="text-2xl font-semibold">{{ t("tonight.title") }}</h1>
+          <HelpButton />
+        </div>
         <p class="text-sm text-slate-400">{{ t("tonight.subtitle") }}</p>
       </div>
       <div class="flex flex-wrap items-center gap-3">

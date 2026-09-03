@@ -136,6 +136,10 @@ type Options struct {
 	// Solve / Spcc are the plate-solve + SPCC inputs for color calibration (from config).
 	Solve siril.SolveOptions
 	Spcc  siril.SpccOptions
+	// OpticsExplicit marks Solve's focal length / pixel size as THIS RUN's, given on the request,
+	// rather than the engine's configured rig. When it is false the values are only a default and
+	// solveoptics.go drops them if the frames prove they came from another camera.
+	OpticsExplicit bool
 	// TargetHint is the user-declared imaging target — a catalogue name ("M66", "NGC 3628") or an
 	// explicit "RA,Dec" position — tried ahead of any header/folder-derived resolution when seeding
 	// the plate-solve (and therefore SPCC). Optional; naming of the run is never derived from it.
@@ -149,6 +153,10 @@ type Options struct {
 	// CatalogDir is Siril's bundled object-catalogue dir, used to resolve the target name → coords
 	// for plate-solving when the FITS header lacks RA/Dec.
 	CatalogDir string
+	// DeepStarCat is the DEEP star catalogue file (ATHYG, `just download-deepstars`). Nightpano needs
+	// it: at a 72-degree field Siril's plate solver cannot help, so panels are solved against this
+	// one by internal/skypano.
+	DeepStarCat string
 
 	// DarkDir/FlatDir/BiasDir are optional calibration-frame folders for the nightscape (milkyway)
 	// path: lights in opts.InputDir are calibrated against masters built from these before stacking.
@@ -333,6 +341,10 @@ type Result struct {
 	// CombineCrop records the coverage-derived crop applied to the colour-combine inputs (grouped
 	// runs with CoverageCrop on): the common covered rectangle, or the honest union fallback.
 	CombineCrop *CombineCrop `json:"combine_crop,omitempty"`
+	// EdgeCrop records the ragged-stacking-edge trim of the colour-combine inputs (edgecrop.go),
+	// measured from the stack's own pixels rather than from registration geometry — so it applies to
+	// single-session runs, which carry no coverage grid. Absent when nothing needed cutting.
+	EdgeCrop *CombineCrop `json:"edge_crop,omitempty"`
 	// MosaicAssembly records a Mode "mosaic" run's panel assembly (segmentation, per-panel solves,
 	// photometric matching, canvas + seam metrics). See mosaicassemble.go.
 	MosaicAssembly *MosaicResult `json:"mosaic_assembly,omitempty"`
@@ -440,12 +452,21 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The mono per-filter pipeline cannot stack one-shot-color (Bayer) frames — drop them (with a warning)
-	// before grouping, so a directory that mixes mono FITS with an older OSC session does not mis-stack
-	// the colour mosaics. The OSC frames are processed by the dedicated OSC path instead.
-	if n := inv.ExcludeBayer(); n > 0 {
-		inv.Warnings = append(inv.Warnings, fmt.Sprintf(
-			"%d one-shot-color (Bayer) frame(s) excluded from the mono pipeline — process them with the OSC path", n))
+	// One-shot-color captures stack through this same pipeline as a SINGLE channel named RGB (inspect
+	// names it; see nameColorChannel), which is what lets colour inherit the calibration library,
+	// grading, trail masking, plate-solving, SPCC and the whole finish rather than needing a parallel
+	// implementation. Only a MIXED folder still drops frames: nothing can stack mono and colour lights
+	// together, so the mono session wins and the colour frames are reported rather than silently lost.
+	osc := inv.ColorModel == inspect.ColorOSC
+	if inv.ColorModel == inspect.ColorMixed {
+		if n := inv.ExcludeColor(); n > 0 {
+			inv.Warnings = append(inv.Warnings, fmt.Sprintf(
+				"%d one-shot-color frame(s) excluded — this folder also holds monochrome lights, and one "+
+					"run cannot stack both; process the colour frames from their own folder", n))
+		}
+	}
+	if osc {
+		markColorPreset(opts.Preset)
 	}
 
 	// Absolute paths: Siril runs with its CWD set per-sequence, so every -out path must be absolute.
@@ -832,6 +853,11 @@ func combine(ctx context.Context, opts Options, res *Result, workRun, outDir str
 	// the field they ALL cover, so the colour combine never mixes regions where one channel has no
 	// data (regional casts) or none has (black wedges). Masters/aligned files stay untouched.
 	channels = applyCoverageCrop(opts, res, channels, outDir)
+	// Then the stack's own ragged edge, measured from the pixels. Complementary to the coverage
+	// crop, not a duplicate of it: coverage knows where the frames landed, this knows where the
+	// finished stack stops being sky — which reaches further (measured: 135 px of drift left a
+	// 200 px skirt). A single-session run has only this one.
+	channels = applyEdgeCrop(opts, res, channels, outDir)
 	finishAligned(ctx, opts, channels, res, workRun, outDir)
 }
 
@@ -995,13 +1021,23 @@ func finishWithGimp(ctx context.Context, opts Options, channels map[string]strin
 		return nil, postprocess.CalNone, err
 	}
 	deg := backgroundDegree(ctx, opts) // 0 when GraXpert already extracted the background
+	// The solver is told about the telescope in the config, which is not necessarily the one that
+	// took these frames — see solveoptics.go for the Nikon run it silently mis-solved.
+	solve, opticsWarn := solveOpticsFor(opts.Solve,
+		filepath.Join(outDir, channels[firstFilter(channels)]+".fits"), opts.OpticsExplicit)
+	if opticsWarn != "" {
+		opts.report(Progress{Line: "⚠ " + opticsWarn})
+	}
 	cc := postprocess.ColorCalOptions{
 		Enabled: opts.Preset.ColorCalibration, RemoveGreen: true, StarField: true,
-		Solve: opts.Solve, Spcc: opts.Spcc,
+		Solve: solve, Spcc: opts.Spcc,
 	}
 	in, notes, method, err := prepGimpInputs(ctx, opts, opts.Runner, channels, outDir, stretchDir, deg, cc, opts.Preset.BackgroundLevel, opts.Preset.LinkedStretch)
 	if err != nil {
 		return nil, method, err
+	}
+	if opticsWarn != "" {
+		notes = append(notes, opticsWarn)
 	}
 	final, err := finishComposite(ctx, opts, in, notes, channels, outDir)
 	return final, method, err
@@ -1151,9 +1187,34 @@ func stretchScript(loadName, saveTif string, rmgreen, linked bool, bgLevel float
 	}
 	fmt.Fprintf(&b, "%s\n", siril.AutostretchCmd(linked, bgLevel))
 	if saveTif != "" { // "" → the caller appends its own save (the sky-chroma-flatten FITS detour)
-		fmt.Fprintf(&b, "savetif %s\n", saveTif)
+		b.WriteString(saveDisplayTif(saveTif))
 	}
 	return b.String()
+}
+
+// saveDisplayTif writes the GIMP composite's input TIFF with the colour profile ASSIGNED rather than
+// converted, so the numbers reach GIMP exactly as the stretch left them.
+//
+// Siril 1.4 is colour-managed, and `savetif` CONVERTS from the image's profile to the output's. That
+// is invisible for as long as the image carries no profile — Siril just assigns sRGB and the pixels
+// pass through — which is what every run did while the colour ladder fell to its star-field rung. The
+// first run where PCC actually landed came out washed out and pink, and the cause is one HDU:
+//
+//	HDU 2: type=0, EXTNAME=ICCProfile
+//
+// PCC attaches a profile, so savetif started converting, applying the sRGB transfer curve to already-
+// stretched data. Measured on that run: the stretched FITS sky sits at 0.061 and the TIFF handed to
+// GIMP at 0.286 — which is 0.061^(1/2.2). A whole image lifted a stop and a half.
+//
+// The washed-out sky is the obvious half. The pink is the same fault: the composite's saturation boost
+// is shadow-protected, full strength only above ~60% luminance, so at 0.06 the galaxy and star halos
+// sat under the ramp and at 0.29 they sit over it, and the residual chroma of thin colour data blooms
+// magenta exactly where the user saw it — around stars, across the galaxy, everywhere.
+//
+// icc_assign REINTERPRETS without touching pixels, so this is a no-op for a profile-less image and the
+// pre-PCC output stays byte-identical.
+func saveDisplayTif(name string) string {
+	return fmt.Sprintf("icc_assign sRGB\nsavetif %s\n", name)
 }
 
 // prepGimpInputs builds the stretched per-component TIFFs GIMP composites. The RGB base is produced
@@ -1174,10 +1235,18 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 	// Resolve the colour palette (natural / HaRGB / HOO / SHO / HOS / Foraxx / mono) against the channels
 	// present. A palette missing its required filters falls back (note recorded). "natural" ≡ the legacy
 	// R→R/G→G/B→B mapping, so a default run is byte-identical to before the palette engine.
+	// A duo-band ONE-SHOT-COLOUR capture is split into pseudo-Hα/[OIII] channel files first, so the
+	// narrowband palettes below can map it (see duoband.go). Every other colour run is returned its
+	// own map unchanged and keeps the untouched pass-through. The has/cpath closures above capture
+	// the variable, so they follow this reassignment.
+	channels, duoNote := duobandChannels(opts.Preset, channels, outDir)
 	pal, palNote := resolvePalette(opts.Preset, channels)
 	base := filepath.Join(stretchDir, "base")
 	in := gimp.Inputs{Base: base + ".tif", Color: pal.Color}
 	var notes []string
+	if duoNote != "" {
+		notes = append(notes, duoNote)
+	}
 	if palNote != "" {
 		notes = append(notes, palNote)
 	}
@@ -1210,18 +1279,30 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 		// offset would otherwise stretch into a colour cast and turn the noise into coloured blotches). A
 		// mapped narrowband palette assigns emission lines to R/G/B, where equalising the very different
 		// line pedestals toward one grey would flatten the intended false colour — so it is skipped there.
-		if !pal.Narrowband {
+		// One-shot color has a single already-merged channel: its three primaries were recorded through
+		// one optical path in one exposure, so there is nothing to equalize and nothing to combine.
+		// A duo-band split takes the ordinary rgbcomp road: the palette's R/G/B name real channel
+		// files now, and the single-master shortcut below would throw that mapping away.
+		osc := isColorRun(opts.Preset) && !pal.Narrowband
+		if !pal.Narrowband && !osc {
 			if n, err := equalizeBackgrounds(cpath(pal.R), cpath(pal.G), cpath(pal.B)); err != nil {
 				notes = append(notes, "background equalization skipped: "+err.Error())
 			} else if n != "" {
 				notes = append(notes, n)
 			}
 		}
-		// Combine the palette's channels into the linear RGB base (dark stretch below). The dark target
-		// background keeps the sky near-black instead of Siril's washed-out 0.25 default.
+		// Build the linear RGB base (dark stretch below). The dark target background keeps the sky
+		// near-black instead of Siril's washed-out 0.25 default. Mono channels are merged with rgbcomp;
+		// a colour master IS the base and is only background-extracted. Everything downstream of this
+		// point — combined background extraction, AI colour denoise, chroma smoothing, SPCC, the
+		// stretch and the GIMP composite — is identical for both.
 		combProg := opts.beginStep("combining channels + background")
 		s1 := hdr + pmPre + fmt.Sprintf("rgbcomp %s %s %s -out=rgb_base\nload rgb_base\n%ssave rgb_base\n",
 			rSrc, gSrc, bSrc, siril.SubskyCmd(deg))
+		if osc {
+			combProg = opts.beginStep("background extraction")
+			s1 = hdr + fmt.Sprintf("load %s\n%ssave rgb_base\n", oscSource(channels), siril.SubskyCmd(deg))
+		}
 		if _, err := runner.Run(ctx, outDir, s1, combProg); err != nil {
 			return gimp.Inputs{}, nil, calMethod, err
 		}
@@ -1286,7 +1367,14 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 			// residual green is real cast, not construction — task #316 shipped green stars because this
 			// gate left the star-field rung with no green removal at all. The neutralization fallback
 			// already strips green inside NeutralizeScript; the narrowband palette skips SCNR by design.
-			rmgreen = method.Calibrated()
+			// ...but NOT after PCC. SCNR is one-sided — it can only ever LOWER green — so it is only
+			// safe where a known green excess exists to remove: SPCC's balance leaves one, and the
+			// star-field rung's warm anchor means its residual green is real cast. PCC's photometric
+			// balance leaves neither, so all SCNR can do there is bias green DOWN, which puts red and
+			// blue above it and reads as magenta. On a frame whose signal rides at 1e-4 over a 0.2449
+			// pedestal that bias is not subtle: it showed up as blue landing 0.9% over green after the
+			// stretch where the two were exactly equal before it.
+			rmgreen = method.Calibrated() && method != postprocess.CalPCC
 		}
 		// Milestone: the colour-calibrated (gradient-removed) linear RGB, before the stretch.
 		capturePreview(ctx, opts, outDir, ordColorCal, stageColorCal, "", filepath.Join(outDir, "rgb_base.fits"), true)
@@ -1344,7 +1432,7 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 					notes = append(notes, n)
 				}
 			}
-			s2b := hdr + fmt.Sprintf("load rgb_base_stretch\nsavetif %s\n", base)
+			s2b := hdr + "load rgb_base_stretch\n" + saveDisplayTif(base)
 			if _, err := runner.Run(ctx, outDir, s2b, ccProg); err != nil {
 				return gimp.Inputs{}, nil, calMethod, err
 			}
@@ -1643,7 +1731,14 @@ func (o Options) masterStack(mt calib.MasterType) stackalg.Options {
 
 func processChannel(ctx context.Context, opts Options, set inspect.Set, masters []calib.Master,
 	workRun, outDir string, gradeOpts grade.Options, onProgress func(siril.Progress)) ChannelResult {
-	sel := calib.MatchForLightExcluding(set.Key, masters, opts.CalibExclude, opts.ForceCalibration)
+	// Masters from another sensor leave the POOL before the match, not the Selection after it: Siril
+	// would accept a wrong-sized master, skip the correction and still report success, and striking
+	// one from the finished result would cost that role its fallback (see calib/dims.go).
+	usable, dimNote := calib.KeepMatchingDims(masters, firstFramePath(set.Frames))
+	sel := calib.MatchForLightExcluding(set.Key, usable, opts.CalibExclude, opts.ForceCalibration)
+	if dimNote != "" {
+		sel.Notes = append(sel.Notes, dimNote)
+	}
 	ch := ChannelResult{
 		Object:      set.Key.Object,
 		Filter:      set.Key.Filter,
@@ -1662,13 +1757,14 @@ func processChannel(ctx context.Context, opts Options, set inspect.Set, masters 
 	// absence is soft: calibration then falls back to -cc=dark).
 	opts.ensureMasters(ctx, []string{dark, flat, bias, calib.DefectsListPath(dark)})
 	cm := siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias, DarkOptimize: sel.DarkOptimize,
-		BadPixelMap: calib.DefectsListFor(dark)}
+		BadPixelMap: calib.DefectsListFor(dark), CFA: needsDebayer(set.Frames)}
 
 	// A single-frame set cannot form a Siril sequence (no .seq is written for one image), so the
 	// sequence calibrate/register would abort: calibrate the frame alone and promote it to the
 	// channel master directly — no registration, grading or stacking to run on one frame.
+	ingest := seqIngest(set.Frames)
 	if set.Count == 1 {
-		if _, err := opts.Runner.Run(ctx, seqDir, siril.CalibrateSingleScript("light", cm), onProgress); err != nil {
+		if _, err := opts.Runner.Run(ctx, seqDir, siril.CalibrateSingleScriptWith("light", cm, ingest), onProgress); err != nil {
 			ch.Err = err.Error()
 			return ch
 		}
@@ -1681,7 +1777,7 @@ func processChannel(ctx context.Context, opts Options, set inspect.Set, masters 
 
 	// Calibrate + register (writes per-frame metrics to the calibrated sequence's .seq), then grade
 	// and stack the survivors.
-	if _, err := opts.Runner.Run(ctx, seqDir, siril.CalibrateRegisterScript("light", cm), onProgress); err != nil {
+	if _, err := opts.Runner.Run(ctx, seqDir, siril.CalibrateRegisterScriptWith("light", cm, ingest), onProgress); err != nil {
 		ch.Err = err.Error()
 		return ch
 	}
@@ -2133,6 +2229,16 @@ func framePaths(frames []*inspect.Frame) []string {
 		out[i] = f.Path
 	}
 	return out
+}
+
+// firstFramePath is one representative frame of a set — the file whose header answers "what sensor
+// took these?" for the whole set (a set is by definition one camera at one binning). Used to size-
+// check the matched masters against the lights; "" when the set is empty.
+func firstFramePath(frames []*inspect.Frame) string {
+	if len(frames) == 0 {
+		return ""
+	}
+	return frames[0].Path
 }
 
 func dominantObject(inv *inspect.Inventory) string {

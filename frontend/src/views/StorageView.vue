@@ -29,6 +29,7 @@ import {
   isArchivedClass,
 } from "@/constants/storageClasses";
 import Spinner from "@/components/Common/Spinner.vue";
+import HelpButton from "@/components/Common/HelpButton.vue";
 import IconFolder from "@/components/Icons/IconFolder.vue";
 import IconDownload from "@/components/Icons/IconDownload.vue";
 import IconArrowUp from "@/components/Icons/IconArrowUp.vue";
@@ -541,7 +542,10 @@ onMounted(() => {
 <template>
   <div class="space-y-6">
     <div>
-      <h1 class="text-xl font-semibold">{{ t("storage.title") }}</h1>
+      <div class="flex items-center gap-2">
+        <h1 class="text-xl font-semibold">{{ t("storage.title") }}</h1>
+        <HelpButton />
+      </div>
       <p class="text-sm text-slate-500">{{ t("storage.subtitle") }}</p>
     </div>
 
@@ -588,7 +592,9 @@ onMounted(() => {
                   {{ t("storage.default") }}
                 </span>
               </p>
-              <p class="truncate text-xs text-slate-500">
+              <!-- Endpoint + access key id: identifying, and this page gets screenshotted for the
+                   docs/tours, so it is tagged for the generator's redaction pass. -->
+              <p class="truncate text-xs text-slate-500" data-demo="s3-credentials">
                 {{ c.endpoint || "AWS S3" }} · {{ c.region }} ·
                 {{ c.access_key_id }}
               </p>

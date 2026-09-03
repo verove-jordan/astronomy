@@ -18,6 +18,7 @@ import PolarScopeReticle from "@/components/Polar/PolarScopeReticle.vue";
 import PolarAlignPanel from "@/components/Polar/PolarAlignPanel.vue";
 import PolarTutorial from "@/components/Polar/PolarTutorial.vue";
 import Spinner from "@/components/Common/Spinner.vue";
+import HelpButton from "@/components/Common/HelpButton.vue";
 import { card, input, btnGhost } from "@/constants/styles";
 import { tzForLocation, zonedWallToISO, nowInZone } from "@/utils/tz";
 
@@ -113,7 +114,10 @@ const mapExpanded = ref(false);
 <template>
   <div class="space-y-4">
     <header>
-      <h1 class="text-xl font-bold text-brand-300">{{ t("goto.title") }}</h1>
+      <div class="flex items-center gap-2">
+        <h1 class="text-xl font-bold text-brand-300">{{ t("goto.title") }}</h1>
+        <HelpButton />
+      </div>
       <p class="text-sm text-slate-400">{{ t("goto.subtitle") }}</p>
     </header>
 
@@ -139,7 +143,7 @@ const mapExpanded = ref(false);
     </h2>
 
     <!-- Controls -->
-    <div :class="card">
+    <div :class="card" data-demo="goto-sequence">
       <div class="grid gap-4 md:grid-cols-2">
         <div>
           <label class="mb-1 block text-xs font-medium text-slate-400">{{
@@ -157,7 +161,7 @@ const mapExpanded = ref(false);
             <label class="mb-1 block text-xs font-medium text-slate-400">{{
               t("goto.controls.mount")
             }}</label>
-            <select v-model="profile" :class="input">
+            <select v-model="profile" :class="input" data-demo="goto-catalogue">
               <option v-for="p in store.profiles" :key="p.key" :value="p.key">
                 {{ t(`goto.profiles.${p.key}.label`) }}
               </option>

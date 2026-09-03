@@ -7,6 +7,7 @@ import GenericTable, {
   type Column,
 } from "@/components/Common/GenericTable.vue";
 import Spinner from "@/components/Common/Spinner.vue";
+import HelpButton from "@/components/Common/HelpButton.vue";
 import { btnGhost, btnPrimary } from "@/constants/styles";
 import { humanizeMs, baseName, tempC } from "@/utils/format";
 
@@ -111,7 +112,10 @@ const phoneColumns: Column<Row>[] = [
 <template>
   <div class="space-y-4">
     <div class="flex items-center justify-between">
-      <h1 class="text-2xl font-semibold">{{ t("library.title") }}</h1>
+      <div class="flex items-center gap-2">
+        <h1 class="text-2xl font-semibold">{{ t("library.title") }}</h1>
+        <HelpButton />
+      </div>
       <div class="flex items-center gap-2">
         <button
           v-if="s3.active"
@@ -157,7 +161,7 @@ const phoneColumns: Column<Row>[] = [
         {{ t("library.empty") }}
       </p>
 
-      <div v-if="rows.length" class="space-y-2">
+      <div v-if="rows.length" class="space-y-2" data-demo="library-masters">
         <h2 class="text-lg font-semibold">{{ t("library.deepskyTitle") }}</h2>
         <GenericTable :columns="columns" :rows="rows" max-height="28rem" />
       </div>

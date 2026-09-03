@@ -47,8 +47,36 @@ func WritePixels(t *testing.T, dir, name string, w, h int, pix []uint16, cards m
 	return path
 }
 
+// WriteRGB creates a w×h×3 16-bit FITS cube (NAXIS=3, NAXIS3=3 — the shape Siril writes after a
+// `-debayer` calibrate, and what any already-demosaiced colour image converts to), with one constant
+// value per plane, and returns its full path. Use it for fixtures that must be colour WITHOUT
+// carrying a BAYERPAT card, which is the case a Bayer-only detector cannot see.
+func WriteRGB(t *testing.T, dir, name string, w, h int, r, g, b uint16, cards map[string]string) string {
+	t.Helper()
+	pix := make([]uint16, w*h*3)
+	for i := 0; i < w*h; i++ {
+		pix[i], pix[w*h+i], pix[2*w*h+i] = r, g, b
+	}
+	hdr := buildHeaderPlanes(w, h, 3, cards)
+
+	data := make([]byte, len(pix)*2)
+	for i, v := range pix {
+		binary.BigEndian.PutUint16(data[i*2:], uint16(int32(v)-32768))
+	}
+	for len(data)%blockSize != 0 {
+		data = append(data, 0)
+	}
+	path := filepath.Join(dir, name)
+	require.NoError(t, os.WriteFile(path, append(hdr, data...), 0o644))
+	return path
+}
+
 // buildHeader assembles a padded 16-bit primary-HDU header with the supplied extra cards.
-func buildHeader(w, h int, cards map[string]string) []byte {
+func buildHeader(w, h int, cards map[string]string) []byte { return buildHeaderPlanes(w, h, 1, cards) }
+
+// buildHeaderPlanes is buildHeader with an explicit plane count: 1 emits the 2-D header every
+// existing fixture uses (byte-identical), 3 emits a NAXIS=3 colour cube.
+func buildHeaderPlanes(w, h, planes int, cards map[string]string) []byte {
 	var hdr []byte
 	add := func(key, val string) {
 		s := key
@@ -66,9 +94,16 @@ func buildHeader(w, h int, cards map[string]string) []byte {
 	}
 	add("SIMPLE", "T")
 	add("BITPIX", "16")
-	add("NAXIS", "2")
+	if planes > 1 {
+		add("NAXIS", "3")
+	} else {
+		add("NAXIS", "2")
+	}
 	add("NAXIS1", strconv.Itoa(w))
 	add("NAXIS2", strconv.Itoa(h))
+	if planes > 1 {
+		add("NAXIS3", strconv.Itoa(planes))
+	}
 	add("BZERO", "32768")
 	add("BSCALE", "1")
 	for k, v := range cards {

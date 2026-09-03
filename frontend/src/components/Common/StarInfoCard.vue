@@ -98,7 +98,11 @@ const hasCatalogueMag = computed(
         <dt class="text-slate-500">{{ t("stars.info.mag") }}</dt>
         <dd>{{ info!.mag!.toFixed(2) }}</dd>
       </template>
-      <template v-else-if="magEstimate !== null && magEstimate !== undefined && magEstimate < 90">
+      <template
+        v-else-if="
+          magEstimate !== null && magEstimate !== undefined && magEstimate < 90
+        "
+      >
         <dt class="text-slate-500">{{ t("stars.info.magEst") }}</dt>
         <dd>{{ magEstimate.toFixed(1) }}</dd>
       </template>

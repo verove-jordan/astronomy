@@ -4,7 +4,11 @@
 //
 // Sourcing is hybrid and soft-failing, so a value is ALWAYS produced (the score never fails to compute):
 //
-//	disk/memory cache → keyed online API → offline atlas (djlorenz model) → keyless GIBS VIIRS → default
+//	offline atlas (when primary) → disk/memory cache → keyed online API → offline atlas → GIBS VIIRS → default
+//
+// The caches sit in that ladder to spare NETWORK round-trips, which is why the offline atlas jumps ahead
+// of them when no keyed API is configured: it is a local raster, so it is both cheaper than a cache miss
+// and finer than the cache key, which rounds coordinates to ~1 km.
 //
 // The online API key is read from configuration (the environment) only — it is never logged and never
 // exposed to the browser; the browser reaches the upstream tiles through this server's proxy.
@@ -24,9 +28,16 @@ import (
 )
 
 // SiteQuality is the sky brightness at one location in the forms the scorer and UI need.
+//
+// Bortle and BortleF are the same reading at two resolutions. The integer class is what the scale was
+// defined as and what every threshold ("darker than 4") means; the fraction is the class the underlying
+// brightness actually supports — a site at SQM 21.4 is a 4, but a 4.2, and the neighbouring valley at
+// 21.6 is a 3.7. Snapping to nine buckets discards most of what the atlas knows, so both travel together
+// and the UI shows the fraction while classing on the integer.
 type SiteQuality struct {
 	SQM         float64 `json:"sqm"`          // zenith brightness, mag/arcsec² (higher = darker)
 	Bortle      int     `json:"bortle"`       // 1 (pristine) … 9 (inner city)
+	BortleF     float64 `json:"bortle_f"`     // the same class, continuous: 4.24 rather than 4
 	Source      string  `json:"source"`       // "api" | "atlas" | "viirs" | "default"
 	RetrievedMs int64   `json:"retrieved_ms"` // when this value was obtained
 }
@@ -57,6 +68,16 @@ func (p *Provider) currentAtlas() *atlas {
 	p.atlasMu.RLock()
 	defer p.atlasMu.RUnlock()
 	return p.atlas
+}
+
+// atlasSQM samples the offline atlas at the EXACT coordinate, with no rounding of its own. ok=false when
+// no atlas is installed or the point falls outside the downloaded region.
+func (p *Provider) atlasSQM(lat, lon float64) (float64, bool) {
+	a := p.currentAtlas()
+	if a == nil {
+		return 0, false
+	}
+	return a.sampleSQM(lat, lon)
 }
 
 // New builds a Provider, placing its on-disk cache under the work dir (falling back to the user cache).
@@ -106,6 +127,18 @@ func New(cfg *config.Config) *Provider {
 func (p *Provider) At(ctx context.Context, lat, lon float64) (SiteQuality, string) {
 	key := cacheKey(lat, lon)
 
+	// 0. The offline atlas is a LOCAL raster — the djlorenz model at 30 arcsec (~0.9 km cells) — so it
+	// answers at the coordinate actually asked for, for the price of a disk read. The caches below exist
+	// to spare NETWORK round-trips, and their ~1 km key rounds the QUESTION rather than the answer: two
+	// points on opposite sides of a town's edge collapse onto one entry and report the same sky. When no
+	// keyed API is configured the atlas IS the primary source, so read it directly and uncached and keep
+	// every metre of the model's resolution.
+	if p.apiURL == "" {
+		if sqm, ok := p.atlasSQM(lat, lon); ok {
+			return newSiteQuality(sqm, "atlas"), ""
+		}
+	}
+
 	// 1. Fresh cache (in-process, then disk). Light pollution is near-static, so this hits often.
 	if sq, ok := p.freshCached(key); ok {
 		return sq, ""
@@ -120,17 +153,11 @@ func (p *Provider) At(ctx context.Context, lat, lon float64) (SiteQuality, strin
 		}
 	}
 
-	// 3. Offline atlas (downloaded via `just update-light-pollution-data`).
-	if a := p.currentAtlas(); a != nil {
-		if sqm, ok := a.sampleSQM(lat, lon); ok {
-			sq := newSiteQuality(sqm, "atlas")
-			p.store(key, sq)
-			warn := ""
-			if p.apiURL != "" {
-				warn = "live light-pollution service unavailable — using the offline atlas"
-			}
-			return sq, warn
-		}
+	// 3. Offline atlas (downloaded via `just update-light-pollution-data`) — reached here only when a
+	// keyed API is configured but did not answer. Not cached: it is free to recompute, and caching it
+	// under the API's key would both blur it and suppress the API retry for the whole TTL.
+	if sqm, ok := p.atlasSQM(lat, lon); ok {
+		return newSiteQuality(sqm, "atlas"), "live light-pollution service unavailable — using the offline atlas"
 	}
 
 	// 4. Keyless VIIRS night-lights (NASA Black Marble), sampled from the overlay tile covering the site.
@@ -212,7 +239,13 @@ func (p *Provider) cachePath(key string) string {
 
 func newSiteQuality(sqm float64, source string) SiteQuality {
 	sqm = clampf(sqm, 14.0, pristineSQM)
-	return SiteQuality{SQM: round2(sqm), Bortle: sqmToBortle(sqm), Source: source, RetrievedMs: time.Now().UnixMilli()}
+	return SiteQuality{
+		SQM:         round2(sqm),
+		Bortle:      sqmToBortle(sqm),
+		BortleF:     round2(sqmToBortleF(sqm)),
+		Source:      source,
+		RetrievedMs: time.Now().UnixMilli(),
+	}
 }
 
 // cacheKey rounds to ~0.01° (~1 km). Light pollution is spatially smooth, so neighbouring sites share a

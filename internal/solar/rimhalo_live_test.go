@@ -37,7 +37,7 @@ func TestRimHalo_Live(t *testing.T) {
 	l, ok := FitLimb(mono)
 	require.True(t, ok)
 
-	discRef := imgops.Percentile(imgops.Subsample(onDiscSamples(mono.Pix[0], mono.W, mono.H, l, 0.5), 100000), 50)
+	discRef := imgops.Percentile(imgops.Subsample(onDiscSamples(mono.Pix[0], mono.W, mono.H, l, 0.5, nil), 100000), 50)
 	t.Logf("master %dx%d r=%.1f at (%.1f,%.1f) | disc level %.4f", mono.W, mono.H, l.R, l.CX, l.CY, discRef)
 
 	// The finished image, so the rim is measured where it is actually seen.
@@ -47,8 +47,8 @@ func TestRimHalo_Live(t *testing.T) {
 	for _, frac := range []float64{0.80, 0.90, 0.94, 0.96, 0.97, 0.98, 0.99, 1.00,
 		1.01, 1.02, 1.05, 1.10, 1.20, 1.30, 1.45, 1.60} {
 		lo, hi := frac-0.005, frac+0.005
-		lin := annulusSamples(mono.Pix[0], mono.W, mono.H, l, lo, hi)
-		fm := annulusSamples(fin.Pix[0], fin.W, fin.H, l, lo, hi)
+		lin := annulusSamples(mono.Pix[0], mono.W, mono.H, l, lo, hi, nil)
+		fm := annulusSamples(fin.Pix[0], fin.W, fin.H, l, lo, hi, nil)
 		if len(lin) < 64 || len(fm) < 64 {
 			continue
 		}
@@ -62,9 +62,9 @@ func TestRimHalo_Live(t *testing.T) {
 	// Is the off-limb background symmetric about the disc centre? Compare the azimuthal spread of
 	// the LINEAR sky against the halo's own height, in units of the disc.
 	t.Logf("off-limb asymmetry (linear, as a fraction of the disc level):")
-	sky := offLimbLevel(mono.Pix[0], mono.W, mono.H, l)
+	sky := offLimbLevel(mono.Pix[0], mono.W, mono.H, l, nil)
 	for _, frac := range []float64{1.02, 1.05, 1.10, 1.20, 1.30, 1.45} {
-		v := annulusSamples(mono.Pix[0], mono.W, mono.H, l, frac-0.01, frac+0.01)
+		v := annulusSamples(mono.Pix[0], mono.W, mono.H, l, frac-0.01, frac+0.01, nil)
 		if len(v) < 256 {
 			continue
 		}

@@ -8,6 +8,7 @@ this document is about making that link survive an unattended night.
 - Diagnose: `just mount-doctor`
 - Prove: `just mount-probe`
 - Endure: `just mount-soak 8h`
+- Inspect: `just mount-audit`
 
 ## Wiring, and the one thing that catches everybody
 
@@ -102,6 +103,114 @@ GoTo as a failure is how someone aborts a slew that is already happening.
   thing sent on the reconnected port, before anything else can borrow it. This replaces a real bug —
   `nudgeAxis` and `PulseGuide` used to report success without stopping the motor when the port had
   gone, and a motor does not stop because a USB cable was pulled.
+
+## Putting the mount back the way you bought it
+
+After a night that went wrong, the question is usually "did the software write something into the
+mount". Nothing in a Celestron will tell you: the hand controller has no menu that shows its stored
+periodic-error table, and none that erases one. `astrostack mount audit` reads it all back.
+
+### The settings live on two boards
+
+This is the fact everything else here turns on, and it is the one most guides get wrong.
+
+| Setting | Board | Cleared by `Menu ▸ Utilities ▸ Factory Settings`? |
+|---|---|---|
+| Site, time zone, DST | Hand controller | Yes |
+| Alignment geometry terms | Hand controller | Yes — reset to zero |
+| Hibernated state, user objects, filter/slew limits | Hand controller | Yes |
+| **Periodic-error (PEC) table** | RA motor controller | **Only on HC firmware 4.15 and later** |
+| **Autoguide rates** (one per motor) | Motor controllers | Same |
+| **Anti-backlash**, GoTo approach | Motor controllers | Same |
+
+[Celestron's own note](https://www.celestron.com/blogs/knowledgebase/what-does-resetting-to-factory-defaults-reset-what-does-reflashing-the-hand-control-hc-and-motor-control-board-reset)
+is explicit about the split:
+
+> When you do the factory reset in the HC the results depend on the version of the HC firmware you
+> are using. Starting in version 4.15, you will lose all settings saved in the motor control as well
+> as all settings saved in the HC. Prior to version 4.15 you lost only those settings in the HC.
+
+`mount audit` prints the hand controller's version, so you can tell which case you are in before
+pressing anything. This AVX reports 5.31, well past the threshold — so a factory reset there *should*
+also wipe the PEC table and both autoguide rates. "Should" is the reason the audit exists.
+
+**Anti-backlash cannot be read or written over the link at all.** Celestron's serial protocol has no
+command for it and neither does any third-party driver, so it is hand-controller-only. A report that
+listed it would be inventing it, and this one does not.
+
+### What this application can write
+
+A short list, and most of it is not reachable from the web UI:
+
+| Written by | Where it lands | In the UI? |
+|---|---|---|
+| `PECWriteCurve` — the 88-bin table | RA motor board, survives power-off | No |
+| PEC playback on/off | volatile; the mount always boots with it **off** | No |
+| `SetGuideRate` — both motors | motor boards | No |
+| Site `W`, clock `H` | hand controller | Yes |
+| Tracking mode `T` | hand controller | Yes |
+| `Sync` — the pointing model | hand controller | Yes |
+
+Nothing writes the PEC table or the guide rates during a capture session. Unless a `POST /pec/*` or
+`POST /mount/guide-rate` call was made by hand, they hold whatever the hand controller last put
+there.
+
+### The two commands
+
+```
+just mount-audit                           # read it all back; writes and moves nothing
+just mount-reset -pec                      # a dry run; APPLY=1 just mount-reset -pec to do it
+
+astrostack mount audit [-report PATH]      # the same two, with every flag
+astrostack mount reset [what] [-apply]
+```
+
+The audit never seeks the PEC index (that turns RA by up to two degrees), never syncs and never
+slews, so it is safe to run in the middle of a session. It reports the hand controller's site, clock
+and drive mode; **both** motors' autoguide rates — `GuideRate()` reads only RA on the grounds that
+the two are always set together, which is exactly the assumption worth testing; and the periodic-error
+table translated into the units the error is measured in.
+
+Two derived figures are worth knowing. **Swing** is the peak-to-peak position the stored table drives
+RA through over one worm revolution — directly comparable with a measured periodic error. **Net** is
+the table's DC term: a correction is supposed to return to where it started, so a non-zero net is a
+constant rate error bolted onto sidereal. That one does not look like periodic error at all. It looks
+like a mount that trails steadily in one direction all night on a night when the polar alignment is
+good.
+
+One thing the audit deliberately will not claim: **whether the mount is replaying the table cannot be
+read back.** The protocol has no way to ask, so the report says what the driver last commanded and
+labels it as such. The reassuring half is that a Celestron always powers up with playback off.
+
+`mount reset` is **not** a factory reset and does not pretend to be one. It undoes what this
+application is able to write and proves every change by reading it back — which the hand
+controller's menu cannot do. It is a dry run unless `-apply` is given, and it writes the whole
+pre-change state to `output/mount-restore-<stamp>.json` **before** the first byte goes out, refusing
+to run at all if it cannot. That rule is not caution: the table already in the mount may be the only
+copy of an hour somebody spent with a hand controller, and it exists nowhere else in the world.
+
+`-pec` writes a table of zeros. A zero rate in every bin *is* the erase, and every bin is read back
+after it is written (`PECWriteCurve` aborts rather than leaving a half-written table, which tracks
+worse than none). Playback is stopped before the rewrite starts, never after — the other order
+replays a half-written table for the couple of seconds the write takes.
+
+The same two are in the UI, under Capture → Mount → "What's stored in the mount", and on the device
+server as `GET /mount/audit` and `POST /mount/reset`.
+
+### Doing it properly
+
+1. `just mount-audit` — the record of what was in there, written to `output/`. Keep it; it is the
+   only evidence that survives the next step.
+2. Hand controller: `Menu ▸ Utilities ▸ Factory Settings`, then power-cycle.
+3. Re-enter site and time, and re-align.
+4. `just mount-audit` again, and compare. On firmware ≥ 4.15 the PEC table should now read all
+   zeros and both guide rates should match.
+5. Only if something survived: `just mount-reset` (a dry run — read what it plans), then
+   `APPLY=1 just mount-reset`.
+6. `just mount-probe` to confirm the link is still clean afterwards: 500 echoes, no errors, no
+   resynchronisations.
+
+Stop `astrostack device` before any of these. macOS gives a serial port to one process at a time.
 
 ## The bench protocol
 

@@ -73,14 +73,19 @@ func newSession(opts Options, workDir, outDir string) *session {
 // runBatch re-inspects the materialized frames, refreshes masters, calibrates any new lights and
 // re-stacks every channel that gained frames. It is the unit of work the watch loop debounces.
 func (s *session) runBatch(ctx context.Context, localRoot string) error {
-	if s.isOSCDir(localRoot) {
-		return nil // one-shot-color: collect only; the full color stack runs at finalize
-	}
 	inv, err := inspect.Scan(ctx, localRoot)
 	if err != nil {
 		return err
 	}
-	inv.ExcludeBayer() // mono live path cannot stack Bayer frames; the OSC guard above handles pure-CFA dirs
+	// One-shot-color sessions live-stack as a single RGB channel, exactly like a mono session with one
+	// filter: the channel pool, the calibration and the incremental re-stack are all keyed on the
+	// filter name and never care what it is. Previously an OSC session returned here immediately and
+	// collected frames in silence — the whole point of live stacking, watching the image deepen as the
+	// night goes on, only worked for mono rigs. Only a MIXED folder still drops its colour frames.
+	if inv.ColorModel != inspect.ColorOSC {
+		inv.ExcludeColor()
+	}
+	s.announceColor(inv.ColorModel)
 	if err := s.refreshMasters(ctx, inv); err != nil {
 		s.emit(pipeline.Progress{Step: "calibration warning: " + err.Error()})
 	}
@@ -106,7 +111,7 @@ func (s *session) runBatch(ctx context.Context, localRoot string) error {
 // never recalibrated within a master generation.
 func (s *session) calibrateNew(ctx context.Context, set inspect.Set, dirty map[string]bool) {
 	cs := s.channel(set.Key)
-	cm := mastersFor(set.Key, s.masters)
+	cm := mastersFor(set, s.masters)
 
 	var newPaths []string
 	var newFrames []*inspect.Frame
@@ -228,23 +233,17 @@ func (s *session) channel(key inspect.SetKey) *channelState {
 	return cs
 }
 
-// isOSCDir reports whether the watched dir holds one-shot-color frames, caching the verdict once frames
-// exist. The mono live preview cannot debayer, so an OSC session is collected silently and stacked in
-// full colour at finalize.
-func (s *session) isOSCDir(root string) bool {
-	if s.oscChecked {
-		return s.isOSC
+// announceColor reports a one-shot-color session once, the first time the scan is sure. It replaces
+// an isOSCDir guard that used to SKIP the whole batch for colour sessions; colour now live-stacks as
+// a single RGB channel like any other, so this is informational only.
+func (s *session) announceColor(cm inspect.ColorModel) {
+	if s.oscChecked || cm == "" {
+		return
 	}
-	frames, _ := inspect.ListFITSFrames(root)
-	if len(frames) == 0 {
-		return false // undecided until the first frame lands
-	}
-	s.isOSC = inspect.IsOSCDir(root)
 	s.oscChecked = true
-	if s.isOSC {
-		s.emit(pipeline.Progress{Step: "one-shot-color session detected — collecting subs; the full colour stack runs on Stop"})
+	if cm == inspect.ColorOSC {
+		s.emit(pipeline.Progress{Step: "one-shot-color session detected — stacking as a single RGB channel"})
 	}
-	return s.isOSC
 }
 
 func (s *session) emit(p pipeline.Progress) {
@@ -261,10 +260,25 @@ func (s *session) onSiril(step string) func(siril.Progress) {
 }
 
 // mastersFor resolves the dark/flat/bias masters for a light set, plus the dark's measured defect
-// map when one exists beside it (per-frame -cc=bpm repair instead of -cc=dark).
-func mastersFor(key inspect.SetKey, masters []calib.Master) siril.CalibMasters {
-	dark, flat, bias := calib.MatchForLight(key, masters).Masters()
-	return siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias, BadPixelMap: calib.DefectsListFor(dark)}
+// map when one exists beside it (per-frame -cc=bpm repair instead of -cc=dark). A raw CFA set is
+// marked so calibration stays CFA-aware and demosaics last — the frames must reach the live stack in
+// colour, not as a green checkerboard.
+func mastersFor(set inspect.Set, masters []calib.Master) siril.CalibMasters {
+	// Exclude masters shot on another sensor: Siril accepts one, skips the correction and reports
+	// success, so a live stack would quietly run uncalibrated. See calib/dims.go.
+	usable := masters
+	if len(set.Frames) > 0 {
+		usable, _ = calib.KeepMatchingDims(masters, set.Frames[0].Path)
+	}
+	dark, flat, bias := calib.MatchForLight(set.Key, usable).Masters()
+	cfa := len(set.Frames) > 0
+	for _, fr := range set.Frames {
+		if !fr.NeedsDebayer() {
+			cfa = false
+			break
+		}
+	}
+	return siril.CalibMasters{Dark: dark, Flat: flat, Bias: bias, BadPixelMap: calib.DefectsListFor(dark), CFA: cfa}
 }
 
 // calibSignature fingerprints the calibration sets so masters are rebuilt only when they change.

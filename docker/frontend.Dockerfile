@@ -16,5 +16,8 @@ FROM nginx:1.27-alpine AS runtime
 COPY docker/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=builder /app/dist /usr/share/nginx/html
 EXPOSE 80
-HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://localhost/ >/dev/null || exit 1
+# 127.0.0.1, not localhost: `listen 80` binds IPv4 only, while localhost resolves to ::1 first in
+# this image — so the probe was refused on a container that was serving pages perfectly well, and the
+# container sat permanently "unhealthy" (which any depends_on: service_healthy would wait on forever).
+HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://127.0.0.1/ >/dev/null || exit 1
 CMD ["nginx", "-g", "daemon off;"]

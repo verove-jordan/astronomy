@@ -29,6 +29,17 @@ var (
 	// left connected. Saying "no mount found" here sends the user hunting for a hardware fault that
 	// does not exist.
 	ErrPortBusy = errors.New("the serial port is held by another program")
+	// ErrPortUnconfigurable means the device node exists and opens, but the driver then refuses
+	// EVERY serial configuration. On macOS this is what a wedged or unpowered PL2303 hand-controller
+	// bridge looks like: even writing back the exact termios the port already reports fails with
+	// EINVAL, so it is not a wrong baud rate and no retry fixes it. It is worth its own sentinel
+	// because it is indistinguishable from "the mount is switched off" at the port layer, and the
+	// library throws the real errno away — go.bug.st/serial v1.6.2 formats the wrong variable at
+	// serial_unix.go:247, which is why the raw message reads "term settings: %!w(<nil>)".
+	ErrPortUnconfigurable = errors.New(
+		"the serial adapter accepted no serial settings — power the mount on and let the hand " +
+			"controller finish booting, check the cable is in the hand controller (not the mount's " +
+			"AUX port), then unplug and replug the USB cable to re-enumerate the adapter")
 )
 
 // openSerial opens a hand-controller port at the protocol's fixed 9600 8N1.
@@ -67,6 +78,8 @@ func translateSerialError(err error) error {
 			return fmt.Errorf("%w: %v", ErrPortBusy, err)
 		case serial.PortClosed, serial.PortNotFound:
 			return fmt.Errorf("%w: %v", ErrLinkGone, err)
+		case serial.InvalidSerialPort:
+			return fmt.Errorf("%w: %v", ErrPortUnconfigurable, err)
 		case serial.PermissionDenied:
 			return fmt.Errorf("%w: %v", os.ErrPermission, err)
 		}

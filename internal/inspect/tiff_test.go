@@ -4,6 +4,7 @@ import (
 	"context"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +45,44 @@ func writeGray16TIFF(t *testing.T, path string, w, h int, fill func(x, y int) ui
 	require.NoError(t, err)
 	defer f.Close()
 	require.NoError(t, tiff.Encode(f, img, nil))
+}
+
+// writeTestTIFF encodes a small real TIFF that is either 16-bit mono or 16-bit RGB, so the colour
+// probe (which reads only the header) has a genuine container to classify. Both are a plausible
+// astro still; only the plane count tells them apart, which is exactly the point.
+func writeTestTIFF(t *testing.T, path string, colour bool) {
+	t.Helper()
+	if !colour {
+		writeGray16TIFF(t, path, 8, 8, func(x, y int) uint16 { return uint16(1000 + 40*(x+y)) })
+		return
+	}
+	img := image.NewRGBA64(image.Rect(0, 0, 8, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			v := uint16(1000 + 40*(x+y))
+			img.SetRGBA64(x, y, color.RGBA64{R: v, G: v / 2, B: v / 3, A: 65535})
+		}
+	}
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	defer f.Close()
+	require.NoError(t, tiff.Encode(f, img, nil))
+}
+
+// writeTestJPEG encodes a small real colour JPEG. Plain colour stills used to be accepted by
+// detect.go yet skipped by the scan walk, so a folder of them inspected as completely empty.
+func writeTestJPEG(t *testing.T, path string) {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(10 * x), G: uint8(10 * y), B: 40, A: 255})
+		}
+	}
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	defer f.Close()
+	require.NoError(t, jpeg.Encode(f, img, nil))
 }
 
 // TestScan_TIFFByDirName is the regression for the reported bug. These SharpCap 16-bit .TIF lunar

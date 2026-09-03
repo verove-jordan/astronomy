@@ -1,4 +1,5 @@
 import { computed, toValue, type MaybeRefOrGetter } from "vue";
+import { COLOR_FILTER } from "@/constants/filters";
 import type { ChannelResult, Inventory } from "@/types";
 
 export interface FilterSummary {
@@ -49,7 +50,11 @@ export function summaryFromInventory(
     lightCount++;
     totalIntegrationMs += f.exposure_ms;
     if (f.object) objects.add(f.object);
-    const key = f.filter || "—";
+    // A one-shot-color light carries all three primaries rather than one band. The engine names that
+    // channel RGB, but an older capture may reach us with no filter at all — showing it as "—" made
+    // a perfectly well-understood colour capture look unidentified.
+    const key =
+      f.filter || (f.bayer || (f.channels ?? 1) >= 3 ? COLOR_FILTER : "—");
     const fs = filterMap.get(key) || {
       filter: key,
       count: 0,

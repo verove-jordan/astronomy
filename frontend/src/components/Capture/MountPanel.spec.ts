@@ -2,6 +2,8 @@ import { createTestingPinia } from "@pinia/testing";
 import { mount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useCaptureStore } from "@/stores/capture";
+
 import MountPanel from "./MountPanel.vue";
 
 // Keyboard jogging moves a telescope, so the two properties that matter are: a held key keeps the
@@ -164,5 +166,140 @@ describe("MountPanel keyboard jogging", () => {
     await pad.trigger("keydown", { key: "Tab" });
 
     expect(jogs()).toHaveLength(0);
+  });
+});
+
+// Reading the mount back, and the two properties that matter for a control that writes to hardware:
+// it is never done behind the user's back, and the destructive half is a preview until it is not.
+describe("MountPanel mount audit", () => {
+  const AUDIT = {
+    at_ms: 1,
+    identity: { model: "Advanced VX", model_code: 20, firmware: "5.30" },
+    site: { read: true, lat_deg: 48.8566, lon_deg: 2.3522 },
+    clock: {
+      read: true,
+      utc: "2026-09-03T21:00:00Z",
+      offset_hours: 1,
+      dst: true,
+      skew_sec: 2,
+    },
+    drive: {
+      read: true,
+      tracking: true,
+      tracking_rate: "sidereal",
+      aligned: true,
+    },
+    guide: {
+      read: true,
+      ra_units: 128,
+      dec_units: 32,
+      ra_fraction: 0.5,
+      dec_fraction: 0.125,
+      both_axes: true,
+      mismatch: true,
+    },
+    pec: {
+      supported: true,
+      read: true,
+      bins: 4,
+      worm_period_sec: 478,
+      bin_sec: 5.4,
+      lsb_arcsec_per_sec: 0.0147,
+      indexed: true,
+      current_bin: 0,
+      curve: [10, -10, 5, -5],
+      all_zero: false,
+      peak_units: 10,
+      peak_rate_arcsec_per_sec: 0.147,
+      swing_arcsec: 3.2,
+      net_arcsec_per_rev: 0,
+      playback_commanded: false,
+    },
+    notes: ["the table is not empty"],
+  };
+
+  function panelWithStore() {
+    const wrapper = mountPanel();
+    const store = useCaptureStore();
+    vi.mocked(store.auditMount).mockResolvedValue({
+      connected: true,
+      audit: AUDIT as never,
+    });
+    vi.mocked(store.resetMount).mockResolvedValue({
+      dry_run: true,
+      backup_path: "/tmp/mount-restore.json",
+      before: AUDIT as never,
+      actions: [],
+    } as never);
+    return { wrapper, store };
+  }
+
+  beforeEach(() => {
+    posts.length = 0;
+    vi.restoreAllMocks();
+  });
+
+  // Eighty-eight worm bins is eighty-eight round trips on a 9600-baud link. Polling this during a
+  // session would steal commands from whatever else is using the mount.
+  it("reads the mount only when asked", async () => {
+    const { wrapper, store } = panelWithStore();
+    expect(store.auditMount).not.toHaveBeenCalled();
+
+    await wrapper.find('[data-testid="mount-audit-read"]').trigger("click");
+    expect(store.auditMount).toHaveBeenCalledTimes(1);
+  });
+
+  // A list of signed bytes says nothing; its shape says immediately whether this is a worm
+  // correction or noise, and the panel to change it only appears once there is a reading to change.
+  it("draws the stored curve, and offers to put it back only after a reading", async () => {
+    const { wrapper } = panelWithStore();
+    expect(wrapper.find('[data-testid="mount-reset"]').exists()).toBe(false);
+
+    await wrapper.find('[data-testid="mount-audit-read"]').trigger("click");
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find('[data-testid="mount-reset"]').exists()).toBe(true);
+    const path = wrapper.find("svg path");
+    expect(path.exists()).toBe(true);
+    expect(path.attributes("d")).toContain("M0.00");
+  });
+
+  it("previews without applying, and defaults to the settings nothing else can reach", async () => {
+    const { wrapper, store } = panelWithStore();
+    await wrapper.find('[data-testid="mount-audit-read"]').trigger("click");
+    await wrapper.vm.$nextTick();
+
+    await wrapper.find('[data-testid="mount-reset-preview"]').trigger("click");
+
+    expect(store.resetMount).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apply: false,
+        pec: true,
+        pec_playback: true,
+        guide_rate: true,
+        site: false,
+        clock: false,
+        tracking: false,
+      }),
+    );
+  });
+
+  // Writing to the mount outlives the session and cannot be undone from this panel, so a declined
+  // confirmation must send nothing at all rather than sending a dry run.
+  it("asks before it writes, and sends nothing when refused", async () => {
+    const { wrapper, store } = panelWithStore();
+    await wrapper.find('[data-testid="mount-audit-read"]').trigger("click");
+    await wrapper.vm.$nextTick();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    await wrapper.find('[data-testid="mount-reset-apply"]').trigger("click");
+    expect(confirm).toHaveBeenCalled();
+    expect(store.resetMount).not.toHaveBeenCalled();
+
+    confirm.mockReturnValue(true);
+    await wrapper.find('[data-testid="mount-reset-apply"]').trigger("click");
+    expect(store.resetMount).toHaveBeenCalledWith(
+      expect.objectContaining({ apply: true }),
+    );
   });
 });

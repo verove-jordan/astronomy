@@ -68,11 +68,13 @@ func applyModeParamPatch(working mode.Preset, raw json.RawMessage) (mode.Preset,
 		return applyCometParamPatch(working, raw)
 	case mode.Milkyway:
 		return applyNightscapeParamPatch(working, raw)
+	case mode.Nightpano:
+		return applyNightpanoParamPatch(working, raw)
 	case mode.Planetary:
 		return applyPlanetaryParamPatch(working, raw)
 	case mode.Mosaic:
 		return applyMosaicParamPatch(working, raw)
-	case mode.Sun:
+	case mode.Sun, mode.Eclipse:
 		return applySunParamPatch(working, raw)
 	default: // deepsky / nebula / livestack share the full tiered whitelist
 		return applyDeepskyParamPatch(working, raw)
@@ -150,11 +152,65 @@ func applyNightscapeParamPatch(working mode.Preset, raw json.RawMessage) (mode.P
 	if next.HighlightCeil != 0 {
 		next.HighlightCeil = clampf(next.HighlightCeil, 0.3, 0.95)
 	}
+	setB(&next.KeepMeteors, patch.KeepMeteors)
+	setB(&next.FlatRadialOnly, patch.FlatRadialOnly)
 	changed := next.Look != working.Look ||
 		floatChanged(next.BackgroundLevel, working.BackgroundLevel) ||
 		floatChanged(next.Saturation, working.Saturation) ||
-		floatChanged(next.HighlightCeil, working.HighlightCeil)
-	return next, tierA, changed
+		floatChanged(next.HighlightCeil, working.HighlightCeil) ||
+		next.KeepMeteors != working.KeepMeteors ||
+		next.FlatRadialOnly != working.FlatRadialOnly
+	t := tierA
+	if next.KeepMeteors != working.KeepMeteors || next.FlatRadialOnly != working.FlatRadialOnly {
+		// The meteors are found in the registered frames and added to the LINEAR sky, so turning this
+		// on or off cannot be answered by re-grading a finished image.
+		t = tierC
+	}
+	return next, t, changed
+}
+
+// applyNightpanoParamPatch is the panorama patch model: the milkyway grade knobs (every panel is
+// stacked by that recipe) plus the canvas knobs. It is tierC, not tierA: the panorama has no
+// persisted pre-grade canvas to re-enter, so changing anything means assembling again.
+func applyNightpanoParamPatch(working mode.Preset, raw json.RawMessage) (mode.Preset, tier, bool) {
+	next, _, changed := applyNightscapeParamPatch(working, raw)
+	var patch nightpanoPatch
+	if err := json.Unmarshal(raw, &patch); err != nil {
+		return next, tierC, changed
+	}
+	before := next
+	if patch.Projection != nil {
+		if p := strings.ToLower(strings.TrimSpace(*patch.Projection)); isPanoProjection(p) {
+			next.PanoProjection = p
+		}
+	}
+	setF(&next.PanoScaleDegPerPix, patch.ScaleDegPerPix)
+	next.PanoScaleDegPerPix = clampf(next.PanoScaleDegPerPix, 0.005, 0.2)
+	setF(&next.PanoGroupStepDeg, patch.GroupStepDeg)
+	if next.PanoGroupStepDeg != 0 {
+		next.PanoGroupStepDeg = clampf(next.PanoGroupStepDeg, 0.1, 20)
+	}
+	setF(&next.PanoBandMaskLatDeg, patch.BandMaskLatDeg)
+	next.PanoBandMaskLatDeg = clampf(next.PanoBandMaskLatDeg, 0, 60)
+	setB(&next.PanoBackground, patch.Background)
+	setB(&next.PanoForeground, patch.Foreground)
+
+	changed = changed || next.PanoProjection != before.PanoProjection ||
+		floatChanged(next.PanoScaleDegPerPix, before.PanoScaleDegPerPix) ||
+		floatChanged(next.PanoGroupStepDeg, before.PanoGroupStepDeg) ||
+		floatChanged(next.PanoBandMaskLatDeg, before.PanoBandMaskLatDeg) ||
+		next.PanoBackground != before.PanoBackground ||
+		next.PanoForeground != before.PanoForeground
+	return next, tierC, changed
+}
+
+// isPanoProjection reports whether s names a canvas nightpano can render.
+func isPanoProjection(s string) bool {
+	switch s {
+	case "stereographic", "galactic", "altaz", "both", "all":
+		return true
+	}
+	return false
 }
 
 // applyPlanetaryParamPatch is the planetary patch model: the finish knobs (tierA Refinish) plus the
@@ -237,6 +293,16 @@ func ParamsFor(p mode.Preset) map[string]any {
 		return map[string]any{
 			"look": p.Look, "brightness": p.BackgroundLevel,
 			"saturation_scale": p.Saturation, "highlight_ceiling": p.HighlightCeil,
+			"keep_meteors": p.KeepMeteors, "flat_radial_only": p.FlatRadialOnly,
+		}
+	case mode.Nightpano:
+		return map[string]any{
+			"look": p.Look, "brightness": p.BackgroundLevel,
+			"saturation_scale": p.Saturation, "highlight_ceiling": p.HighlightCeil,
+			"projection": p.PanoProjection, "scale_deg_per_pix": p.PanoScaleDegPerPix,
+			"group_step_deg": p.PanoGroupStepDeg, "band_mask_lat_deg": p.PanoBandMaskLatDeg,
+			"pano_background": p.PanoBackground, "pano_foreground": p.PanoForeground,
+			"keep_meteors": p.KeepMeteors, "flat_radial_only": p.FlatRadialOnly,
 		}
 	case mode.Planetary:
 		f := p.Planetary.Finish
@@ -255,7 +321,7 @@ func ParamsFor(p mode.Preset) map[string]any {
 			"drizzle_scale": p.Planetary.DrizzleScale,
 			"align_points":  p.Planetary.AlignPoints,
 		}
-	case mode.Sun:
+	case mode.Sun, mode.Eclipse:
 		s, f := p.Sun, p.Sun.Finish
 		return map[string]any{
 			"flat_strength": f.FlatStrength, "deconv_sigma": f.DeconvSigma, "deconv_iters": f.DeconvIters,
@@ -272,8 +338,13 @@ func ParamsFor(p mode.Preset) map[string]any {
 			"min_frames": s.MinFrames, "crop_margin": s.CropMargin,
 			"scale_tolerance": s.ScaleTolerance, "band": string(s.Band),
 			"rescale_groups": s.RescaleGroups, "bracket_merge": s.BracketMerge,
-			"ap_align": s.APAlign, "ap_scale": s.APScale,
+			"ap_align": s.APAlign, "ap_scale": s.APScale, "two_body": s.TwoBody,
+			"best_frames": s.BestFrames, "best_frame_gap_seconds": s.BestFrameGapSeconds,
 			"bracket_stops": s.BracketStops, "transparency_floor": s.TransparencyFloor,
+			"sequence_panels": s.SequencePanels, "sequence_stack": s.SequenceStack,
+			"sequence_angle_deg": s.SequenceAngleDeg,
+			"sequence_spacing":   s.SequenceSpacing,
+			"site_lat":           s.SiteLatDeg, "site_lon": s.SiteLonDeg,
 		}
 	case mode.Mosaic:
 		m := deepskyParams(p)
@@ -355,9 +426,11 @@ func knownParamKeys(m mode.Mode) map[string]bool {
 		types = []reflect.Type{reflect.TypeOf(cometPatch{})}
 	case mode.Milkyway:
 		types = []reflect.Type{reflect.TypeOf(nightscapePatch{})}
+	case mode.Nightpano: // the milkyway grade knobs (each panel uses that recipe) plus the canvas
+		types = []reflect.Type{reflect.TypeOf(nightscapePatch{}), reflect.TypeOf(nightpanoPatch{})}
 	case mode.Planetary:
 		types = []reflect.Type{reflect.TypeOf(planetaryPatch{})}
-	case mode.Sun:
+	case mode.Sun, mode.Eclipse:
 		types = []reflect.Type{reflect.TypeOf(sunPatch{})}
 	case mode.Mosaic: // the full deepsky surface plus the assembler keys
 		types = []reflect.Type{reflect.TypeOf(supervisePatch{}), reflect.TypeOf(mosaicPatch{})}
@@ -367,7 +440,7 @@ func knownParamKeys(m mode.Mode) map[string]bool {
 	// The Siril-backed modes additionally accept the stacking panel's keys; planetary/sun/milkyway
 	// stack natively with their own knobs and must NOT advertise them.
 	switch m {
-	case mode.Planetary, mode.Sun, mode.Milkyway:
+	case mode.Planetary, mode.Sun, mode.Eclipse, mode.Milkyway, mode.Nightpano:
 	default:
 		types = append(types, reflect.TypeOf(stackPatch{}))
 	}
@@ -391,9 +464,11 @@ func KnobMenuFor(m mode.Mode) string {
 		return cometKnobMenu
 	case mode.Milkyway:
 		return nightscapeKnobMenu
+	case mode.Nightpano:
+		return nightpanoKnobMenu
 	case mode.Planetary:
 		return planetaryKnobMenu
-	case mode.Sun:
+	case mode.Sun, mode.Eclipse:
 		return sunKnobMenu
 	default:
 		return tierKnobMenu
@@ -429,43 +504,59 @@ func KnobRangesFor(m mode.Mode) map[string]KnobRange {
 		}
 		mergeRanges(r, stackKnobRanges(), masterStackKnobRanges(), cometStackKnobRanges())
 		return r
-	case mode.Sun:
+	case mode.Sun, mode.Eclipse:
 		return map[string]KnobRange{
-			"flat_strength":      {Min: 0, Max: 1},
-			"deconv_sigma":       {Min: 0, Max: 5},
-			"deconv_iters":       {Min: 0, Max: 80, Int: true},
-			"transparency_floor": {Min: 0, Max: 1},
-			"bracket_stops":      {Min: 0, Max: 6},
-			"ap_scale":           {Min: 0, Max: 8, Int: true},
-			"sharpen_small":      {Min: 0, Max: 4},
-			"sharpen_medium":     {Min: 0, Max: 4},
-			"sharpen_large":      {Min: 0, Max: 4},
-			"sharpen_denoise":    {Min: 0, Max: 1},
-			"limb_flatten":       {Min: 0, Max: 1},
-			"prominence_boost":   {Min: 0, Max: 4},
-			"prominence_feather": {Min: 0, Max: 0.05},
-			"stretch":            {Min: 0, Max: 1},
-			"contrast":           {Min: 0.2, Max: 3},
-			"saturation":         {Min: 0, Max: 2},
-			"background_level":   {Min: 0, Max: 0.3},
-			"background_tint":    {Min: 0, Max: 1},
-			"glow_strength":      {Min: 0, Max: 1},
-			"glow_radius":        {Min: 0, Max: 0.3},
-			"keep_percent":       {Min: 5, Max: 100, Int: true},
-			"max_frames":         {Min: 8, Max: 2000, Int: true},
-			"drizzle":            {Min: 1, Max: 2},
-			"clip_sigma":         {Min: 1, Max: 6},
-			"window_seconds":     {Min: 5, Max: 3600},
-			"window_frames":      {Min: 8, Max: 2000, Int: true},
-			"min_frames":         {Min: 2, Max: 500, Int: true},
-			"crop_margin":        {Min: 0.02, Max: 1},
-			"scale_tolerance":    {Min: 0.002, Max: 0.2},
+			"flat_strength":          {Min: 0, Max: 1},
+			"deconv_sigma":           {Min: 0, Max: 5},
+			"deconv_iters":           {Min: 0, Max: 80, Int: true},
+			"transparency_floor":     {Min: 0, Max: 1},
+			"bracket_stops":          {Min: 0, Max: 6},
+			"ap_scale":               {Min: 0, Max: 8, Int: true},
+			"best_frames":            {Min: 0, Max: 200, Int: true},
+			"best_frame_gap_seconds": {Min: 0, Max: 600},
+			"sharpen_small":          {Min: 0, Max: 4},
+			"sharpen_medium":         {Min: 0, Max: 4},
+			"sharpen_large":          {Min: 0, Max: 4},
+			"sharpen_denoise":        {Min: 0, Max: 1},
+			"limb_flatten":           {Min: 0, Max: 1},
+			"prominence_boost":       {Min: 0, Max: 4},
+			"prominence_feather":     {Min: 0, Max: 0.05},
+			"stretch":                {Min: 0, Max: 1},
+			"contrast":               {Min: 0.2, Max: 3},
+			"saturation":             {Min: 0, Max: 2},
+			"background_level":       {Min: 0, Max: 0.3},
+			"background_tint":        {Min: 0, Max: 1},
+			"glow_strength":          {Min: 0, Max: 1},
+			"glow_radius":            {Min: 0, Max: 0.3},
+			"keep_percent":           {Min: 5, Max: 100, Int: true},
+			"max_frames":             {Min: 8, Max: 2000, Int: true},
+			"drizzle":                {Min: 1, Max: 2},
+			"clip_sigma":             {Min: 1, Max: 6},
+			"window_seconds":         {Min: 5, Max: 3600},
+			"window_frames":          {Min: 8, Max: 2000, Int: true},
+			"min_frames":             {Min: 2, Max: 500, Int: true},
+			"crop_margin":            {Min: 0.02, Max: 1},
+			"scale_tolerance":        {Min: 0.002, Max: 0.2},
+			"sequence_panels":        {Min: 3, Max: 21, Int: true},
+			"sequence_angle_deg":     {Min: -90, Max: 90},
+			"sequence_spacing":       {Min: 0.5, Max: 4},
+			"site_lat":               {Min: -90, Max: 90},
+			"site_lon":               {Min: -180, Max: 180},
 		}
 	case mode.Milkyway:
 		return map[string]KnobRange{
 			"brightness":        {Min: 0.03, Max: 0.2},
 			"saturation_scale":  {Min: 0, Max: 2},
 			"highlight_ceiling": {Min: 0.3, Max: 0.95},
+		}
+	case mode.Nightpano:
+		return map[string]KnobRange{
+			"brightness":        {Min: 0.03, Max: 0.2},
+			"saturation_scale":  {Min: 0, Max: 2},
+			"highlight_ceiling": {Min: 0.3, Max: 0.95},
+			"scale_deg_per_pix": {Min: 0.005, Max: 0.2},
+			"group_step_deg":    {Min: 0.1, Max: 20},
+			"band_mask_lat_deg": {Min: 0, Max: 60},
 		}
 	case mode.Planetary:
 		return map[string]KnobRange{

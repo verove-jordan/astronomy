@@ -49,6 +49,10 @@ const (
 	// maximum, which is one frame and therefore noise; not the median, which sinks with the cloud and
 	// would judge a mostly-clouded clip against itself.
 	transparencyReferencePct = 90.0
+	// transparencyLocalFrames is the window the local reference is taken over, in frames — about a
+	// minute at 30 fps. Long enough that a passing cloud cannot define "clear", short enough that the
+	// eclipse's own drift across it stays under the gate's threshold.
+	transparencyLocalFrames = 1800
 	// transparencyMaxDrop is the largest fraction of a clip the gate may remove. A session shot
 	// through broken cloud is still a session: past this the run keeps the clearest frames it has and
 	// says what it did, rather than returning nothing.
@@ -72,6 +76,9 @@ type IngestOptions struct {
 	// explicitly, so only a zero-value IngestOptions — a test reaching for the ingest alone — sees
 	// the gate off.
 	TransparencyFloor float64
+	// TwoBody fits the solar limb and an occulting lunar limb instead of one circle (pair.go). It
+	// is what an eclipse run turns on; off, every fit in this package is the one it always was.
+	TwoBody bool
 }
 
 func (o IngestOptions) band() Band {
@@ -110,6 +117,9 @@ type Frame struct {
 	TimeMs int64   `json:"time_ms"` // capture instant, Unix ms
 	Score  float64 `json:"score"`   // sharpness, comparable within a source
 	Limb   Limb    `json:"limb"`    // geometry in the materialised frame's own coordinates
+	// Moon is the occulting body in the same coordinates, R=0 when there is none. It is what lets
+	// the stack know which of this frame's pixels carry no Sun at all.
+	Moon Limb `json:"moon,omitempty"`
 }
 
 // IngestVideo scans a clip, selects its sharpest frames and writes them out cropped to the disc.
@@ -117,12 +127,12 @@ func IngestVideo(ctx context.Context, path string, info VideoInfo, opts IngestOp
 	if err := fsutil.EnsureDir(opts.WorkDir); err != nil {
 		return nil, nil, err
 	}
-	scan, err := scanVideo(ctx, opts.FFmpegBin, path, info, opts.cropMargin())
+	scan, err := scanVideo(ctx, opts.FFmpegBin, path, info, opts.cropMargin(), opts.TwoBody)
 	if err != nil {
 		return nil, nil, err
 	}
 	var warnings []string
-	unclouded, cloudNote := gateTransparency(scan.frames, opts.TransparencyFloor)
+	unclouded, cloudNote := gateTransparency(scan.frames, opts.TransparencyFloor, opts.TwoBody)
 	if cloudNote != "" {
 		warnings = append(warnings, filepath.Base(path)+": "+cloudNote)
 	}
@@ -156,7 +166,7 @@ func IngestVideo(ctx context.Context, path string, info VideoInfo, opts IngestOp
 // The reference is per CLIP. Each clip is asked to contribute its own best frames, and the levels
 // between clips are the business of normalisation and, when they differ by enough to matter, of the
 // exposure tiering.
-func gateTransparency(frames []frameScan, floor float64) ([]frameScan, string) {
+func gateTransparency(frames []frameScan, floor float64, local bool) ([]frameScan, string) {
 	if floor <= 0 {
 		return frames, ""
 	}
@@ -173,12 +183,16 @@ func gateTransparency(frames []frameScan, floor float64) ([]frameScan, string) {
 	if ref <= 0 {
 		return frames, ""
 	}
-	cut := floor * ref
+	refAt := func(int) float64 { return ref }
+	if local {
+		refAt = localTransparencyRef(frames)
+	}
 	kept := make([]frameScan, 0, len(frames))
 	worst := math.Inf(1)
-	for _, f := range frames {
-		if f.ok && f.level > 0 && f.level < cut {
-			worst = math.Min(worst, f.level/ref)
+	for i, f := range frames {
+		r := refAt(i)
+		if f.ok && f.level > 0 && r > 0 && f.level < floor*r {
+			worst = math.Min(worst, f.level/r)
 			continue
 		}
 		kept = append(kept, f)
@@ -198,6 +212,78 @@ func gateTransparency(frames []frameScan, floor float64) ([]frameScan, string) {
 	return kept, fmt.Sprintf(
 		"cloud dropped %d of %d frames below %.0f%% transmission (worst %.0f%%)",
 		dropped, len(frames), 100*floor, 100*worst)
+}
+
+// localTransparencyRef returns a per-frame "how clear it was around here" reference, taken over a
+// window of about a minute rather than over the whole clip.
+//
+// A clip-wide reference assumes the only thing that changes the Sun's measured brightness is the
+// weather. During an eclipse that is false in a way that grows through the session: the surviving
+// crescent lies closer and closer to the limb, so LIMB DARKENING alone takes its median down — on
+// synthetic frames, to 62% of an unoccluded disc by 97% obscuration. Judged against the clip's
+// clearest minute, the deepest and most interesting part of a seventeen-minute clip therefore reads
+// as thickening cloud and is thrown away wholesale.
+//
+// The two effects separate cleanly in TIME. Cloud arrives and leaves in seconds; obscuration moves
+// over minutes and never reverses. So the reference is a running 90th percentile over a window long
+// enough that the eclipse's drift within it is smaller than the gate's own threshold, and short
+// enough that it still tracks the session — and a percentile, not a mean, so a cloud inside the
+// window cannot drag the bar down to meet itself.
+func localTransparencyRef(frames []frameScan) func(int) float64 {
+	// Block percentiles at block centres, linearly interpolated between them: a true sliding window
+	// would be O(n·w) on a thirty-thousand-frame clip for an answer that is smooth by construction.
+	const block = transparencyLocalFrames
+	type node struct{ at, ref float64 }
+	var nodes []node
+	for start := 0; start < len(frames); start += block {
+		end := start + block
+		if end > len(frames) {
+			end = len(frames)
+		}
+		vals := make([]float64, 0, end-start)
+		for _, f := range frames[start:end] {
+			if f.ok && f.level > 0 {
+				vals = append(vals, f.level)
+			}
+		}
+		if len(vals) < 8 {
+			continue
+		}
+		nodes = append(nodes, node{at: float64(start+end-1) / 2, ref: percentileOf(vals, transparencyReferencePct)})
+	}
+	if len(nodes) == 0 {
+		return func(int) float64 { return 0 }
+	}
+	if len(nodes) == 1 {
+		return func(int) float64 { return nodes[0].ref }
+	}
+	// Past either end the trend is CONTINUED, not held flat. Holding it flat is the obvious choice
+	// and it silently eats the end of every clip: the reference stops at the last block's centre
+	// while the level keeps declining for another half-block, so the last few hundred frames are
+	// judged against a bar that describes an earlier, less eclipsed minute. On a five-minute fixture
+	// that alone cost 900 frames — more than the cloud the gate exists to catch.
+	between := func(a, b node, x float64) float64 {
+		if b.at == a.at {
+			return a.ref
+		}
+		return a.ref + (x-a.at)/(b.at-a.at)*(b.ref-a.ref)
+	}
+	return func(i int) float64 {
+		x := float64(i)
+		if x <= nodes[0].at {
+			return between(nodes[0], nodes[1], x)
+		}
+		last := len(nodes) - 1
+		if x >= nodes[last].at {
+			return between(nodes[last-1], nodes[last], x)
+		}
+		for k := 1; k < len(nodes); k++ {
+			if x <= nodes[k].at {
+				return between(nodes[k-1], nodes[k], x)
+			}
+		}
+		return nodes[last].ref
+	}
 }
 
 // clearestFrames keeps the n most transparent frames, back in capture order.
@@ -293,7 +379,7 @@ func extractSelected(ctx context.Context, path string, info VideoInfo, scan scan
 		_ = cmd.Wait()
 	}()
 
-	out, err := readAndWriteFrames(stdout, crop, info, path, keep, opts.WorkDir)
+	out, err := readAndWriteFrames(stdout, crop, scan.scale, discCropSide(scan, opts), info, path, keep, opts.WorkDir, opts.TwoBody)
 	if err != nil {
 		return nil, fmt.Errorf("extract %s: %w\n%s", filepath.Base(path), err, tailLines(stderr.String(), 4))
 	}
@@ -301,12 +387,14 @@ func extractSelected(ctx context.Context, path string, info VideoInfo, scan scan
 }
 
 // readAndWriteFrames consumes the selected frames off the pipe and persists them.
-func readAndWriteFrames(r io.Reader, crop cropRect, info VideoInfo, src string,
-	keep []frameScan, workDir string) ([]Frame, error) {
+func readAndWriteFrames(r io.Reader, crop cropRect, scale float64, side int, info VideoInfo, src string,
+	keep []frameScan, workDir string, twoBody bool) ([]Frame, error) {
 
 	wanted := make(map[int]float64, len(keep))
+	limbs := make(map[int]Limb, len(keep))
 	for _, f := range keep {
 		wanted[f.index] = f.score
+		limbs[f.index] = f.limb
 	}
 	last := keep[len(keep)-1].index
 	msPerFrame := 0.0
@@ -322,15 +410,18 @@ func readAndWriteFrames(r io.Reader, crop cropRect, info VideoInfo, src string,
 		index int
 		score float64
 		plane []float32
+		limb  Limb // this frame's own disc, in scan pixels
 	}
 	jobs := make(chan job, ingestWorkers())
 	results := make(chan Frame, ingestWorkers())
 	g, gctx := errgroup.WithContext(context.Background())
 	for w := 0; w < ingestWorkers(); w++ {
 		g.Go(func() error {
-			im := &fits.Image{W: crop.w, H: crop.h, C: 1, Pix: make([][]float32, 1)}
+			im := &fits.Image{C: 1, Pix: make([][]float32, 1)}
 			for j := range jobs {
-				im.Pix[0] = j.plane
+				// Cropped around THIS frame's own disc before anything else, so the linearisation and
+				// the FITS both work on the disc rather than on the box the whole clip needed.
+				im.W, im.H, im.Pix[0] = centreOnDisc(j.plane, crop, scale, side, j.limb)
 				Linearize(im.Pix[0], info)
 				dst := filepath.Join(workDir, fmt.Sprintf("%s_%05d.fits", base, j.index))
 				if err := im.WriteFITS(dst); err != nil {
@@ -338,8 +429,8 @@ func readAndWriteFrames(r io.Reader, crop cropRect, info VideoInfo, src string,
 				}
 				f := Frame{Path: dst, Source: src, Index: j.index, Score: j.score,
 					TimeMs: info.CreatedMs + int64(float64(j.index)*msPerFrame)}
-				if l, ok := FitLimb(im); ok {
-					f.Limb = l
+				if g, ok := fitGeometry(im, twoBody); ok {
+					f.Limb, f.Moon = g.Sun, g.Moon
 				}
 				select {
 				case results <- f:
@@ -376,7 +467,7 @@ func readAndWriteFrames(r io.Reader, crop cropRect, info VideoInfo, src string,
 			plane := make([]float32, crop.w*crop.h)
 			decodeGray16BE(buf, plane)
 			select {
-			case jobs <- job{index: n, score: score, plane: plane}:
+			case jobs <- job{index: n, score: score, plane: plane, limb: limbs[n]}:
 			case <-gctx.Done():
 				return gctx.Err()
 			}
@@ -411,4 +502,47 @@ func ingestWorkers() int {
 		return 8
 	}
 	return n
+}
+
+// discCropSide is the square every kept frame is cut down to: the disc plus its prominence margin.
+func discCropSide(scan scanResult, opts IngestOptions) int {
+	r := opts.TargetRadius
+	if r <= 0 {
+		r = scan.limb.R * scan.scale
+	}
+	if r <= 0 {
+		return 0 // no geometry to centre on; the whole decoded box is kept
+	}
+	return cropSideFor(r, opts.cropMargin())
+}
+
+// centreOnDisc cuts a square out of a decoded frame, centred on that frame's own disc.
+//
+// THE DECODED BOX IS NOT THE FRAME'S BOX. ffmpeg's crop filter is one rectangle for the whole
+// stream, so it has to be the UNION of everywhere the disc went — and on a handheld or
+// imperfectly-tracked capture the disc wanders. Measured on a seventeen-minute clip of the 12 Aug
+// eclipse, that union came to 1848 x 1848 pixels around a disc 610 across: eighty-nine percent of
+// every scratch frame was empty sky. At 13.7 MB a frame, twelve hundred frames is 16 GB of disk that
+// the stack then reads twice per anchor, for nothing.
+//
+// So the union is what ffmpeg is asked for and what arrives over the pipe, and each frame is then
+// cut down here to the same square the stills path uses — sized once for the group, centred on the
+// individual frame. Nothing downstream notices: the geometry is re-fitted on the written image, so
+// registration solves against the crop it is actually given.
+func centreOnDisc(plane []float32, crop cropRect, scale float64, side int, l Limb) (int, int, []float32) {
+	if side <= 0 || l.R <= 0 || side >= crop.w || side >= crop.h {
+		return crop.w, crop.h, plane
+	}
+	// The limb was measured on the SCAN raster; the pipe carries full-resolution display pixels
+	// offset by the union crop's own origin.
+	cx := l.CX*scale - float64(crop.x)
+	cy := l.CY*scale - float64(crop.y)
+	x0 := clampInt(int(cx)-side/2, 0, crop.w-side)
+	y0 := clampInt(int(cy)-side/2, 0, crop.h-side)
+
+	out := make([]float32, side*side)
+	for y := 0; y < side; y++ {
+		copy(out[y*side:(y+1)*side], plane[(y0+y)*crop.w+x0:(y0+y)*crop.w+x0+side])
+	}
+	return side, side, out
 }

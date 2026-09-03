@@ -239,6 +239,15 @@ const (
 	mcGetAutoguideRate = 0x47 // → one byte, the same scaling
 )
 
+// mcGetVersion asks a motor controller for its own firmware version, which is NOT the hand
+// controller's — the two are separate boards with separate flash, and Celestron's own reset notes
+// hinge on that distinction. The reply length is the trap: the board answers with as many bytes as
+// the frame ASKS for, and the published note says "2 or 4 bytes, major.minor.build". Two is what
+// every driver requests and what a human wants to read, so two is what this asks for; the audit
+// still sends it LAST and re-proves synchronisation afterwards, because a version string is not
+// worth risking a reading that matters.
+const mcGetVersion = 0xFE
+
 // autoguideRateScale is what one unit of the autoguide-rate byte is worth. The rate travels as a
 // fraction of sidereal in 1/256ths, so the whole byte spans zero to just under one times sidereal.
 const autoguideRateScale = 256.0

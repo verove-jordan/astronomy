@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/verove-jordan/astronomy/internal/config"
 	"github.com/verove-jordan/astronomy/internal/device/nexstar"
 )
 
@@ -33,6 +34,10 @@ func runMount(args []string) error {
 		return runMountProbe(args[1:])
 	case "soak":
 		return runMountSoak(args[1:])
+	case "audit":
+		return runMountAudit(args[1:])
+	case "reset":
+		return runMountReset(args[1:])
 	case "help", "--help", "-h":
 		mountUsage()
 		return nil
@@ -49,6 +54,28 @@ Usage:
   astrostack mount doctor [-probe]        why this Mac can (or cannot) see the hand controller
   astrostack mount probe  [-port PATH]    connect, identify the mount, and time 500 echoes
   astrostack mount soak   [flags]         run the overnight endurance test and write a report
+  astrostack mount audit  [flags]         read back every setting stored in the mount
+  astrostack mount reset  [flags]         put back the settings this app can write
+
+Audit flags:
+  -port PATH        serial device (default: the first that looks like a USB-serial adapter)
+  -report PATH      write the report here as well as to the terminal (.json alongside)
+
+Reset flags (a DRY RUN unless -apply is given):
+  -apply            actually send the writes; without it, nothing leaves this machine
+  -pec              write a table of zeros over the periodic-error curve, verifying every bin
+  -playback         stop the mount replaying whatever curve it holds
+  -guide-rate       set both motors to half sidereal, the rate mounts ship with
+  -site             rewrite the site from ASTRO_LAT / ASTRO_LON
+  -clock            rewrite the clock from this machine
+  -tracking         set the drive to sidereal tracking (-tracking-off to stop it instead)
+  -all              all of the above
+  -backup-dir DIR   where the pre-change state is saved (default: the configured output dir)
+
+Reset is not a factory reset and does not pretend to be one. It undoes what this application can
+write, and proves each change by reading it back. The hand controller's own
+Menu > Utilities > Factory Settings clears more — including things no serial command can reach —
+but tells you nothing about what it did. Run 'mount audit' after it to find out.
 
 Soak flags:
   -port PATH        serial device (default: the first that looks like a USB-serial adapter)
@@ -196,6 +223,107 @@ func runMountSoak(args []string) error {
 	if !r.Pass() {
 		return fmt.Errorf("the soak did not pass")
 	}
+	return nil
+}
+
+// runMountAudit answers "what is actually stored in this mount".
+//
+// It exists because nothing else can answer it. The hand controller has no menu that shows you its
+// periodic-error table, and no menu that erases one either; the autoguide rates live on a third
+// board again. After a night that went wrong, the difference between "I think the software wrote
+// something" and knowing is this command.
+func runMountAudit(args []string) error {
+	fs := flag.NewFlagSet("mount audit", flag.ContinueOnError)
+	port := fs.String("port", "", "serial device (default: the first likely USB-serial adapter)")
+	report := fs.String("report", "", "write the report to this path (a .json sibling is written too)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	m, err := connectMount(ctx, *port)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = m.Close() }()
+
+	r, err := nexstar.Audit(ctx, m)
+	if err != nil {
+		return err
+	}
+	fmt.Print(r.String())
+
+	if *report != "" {
+		if err := os.WriteFile(*report, []byte(r.String()), 0o644); err != nil {
+			return fmt.Errorf("write the report: %w", err)
+		}
+		if b, jerr := r.JSON(); jerr == nil {
+			_ = os.WriteFile(*report+".json", b, 0o644)
+		}
+		fmt.Printf("\nreport written to %s\n", *report)
+	}
+	return nil
+}
+
+// runMountReset puts back the settings this application is able to write.
+//
+// A dry run by default, because this is the only command in the repo that changes hardware state
+// outliving the session. The backup is written even on a dry run: the table already in the mount may
+// be the only copy of an hour somebody spent with a hand controller, and having it on disk before
+// anyone decides anything costs nothing.
+func runMountReset(args []string) error {
+	fs := flag.NewFlagSet("mount reset", flag.ContinueOnError)
+	port := fs.String("port", "", "serial device (default: the first likely USB-serial adapter)")
+	apply := fs.Bool("apply", false, "actually send the writes")
+	all := fs.Bool("all", false, "restore everything this app can write")
+	pec := fs.Bool("pec", false, "write a table of zeros over the periodic-error curve")
+	playback := fs.Bool("playback", false, "stop the mount replaying its stored curve")
+	guideRate := fs.Bool("guide-rate", false, "set both motors to half sidereal")
+	site := fs.Bool("site", false, "rewrite the site from the configured latitude and longitude")
+	clock := fs.Bool("clock", false, "rewrite the clock from this machine")
+	tracking := fs.Bool("tracking", false, "set the drive to sidereal tracking")
+	trackingOff := fs.Bool("tracking-off", false, "stop the drive instead of starting it")
+	backupDir := fs.String("backup-dir", "", "where to save the pre-change state (default: the output dir)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cfg := config.Load()
+	dir := *backupDir
+	if dir == "" {
+		dir = cfg.OutputDir
+	}
+
+	opts := nexstar.RestoreOptions{
+		PEC:         *pec || *all,
+		PECPlayback: *playback || *all,
+		GuideRate:   *guideRate || *all,
+		Site:        *site || *all,
+		SiteLatDeg:  cfg.LatDeg,
+		SiteLonDeg:  cfg.LonDeg,
+		Clock:       *clock || *all,
+		Tracking:    *tracking || *trackingOff || *all,
+		TrackingOn:  !*trackingOff,
+		BackupDir:   dir,
+		DryRun:      !*apply,
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	m, err := connectMount(ctx, *port)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = m.Close() }()
+
+	res, err := nexstar.Restore(ctx, m, opts)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("before:\n\n%s\n", res.Before.String())
+	fmt.Print(res.String())
 	return nil
 }
 

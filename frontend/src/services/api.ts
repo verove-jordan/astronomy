@@ -1,6 +1,6 @@
 // Centralized fetch wrapper. Stores call these; components never fetch directly.
 
-import type { Health } from "@/types";
+import type { Health, StageArtifact, SkyPoint } from "@/types";
 
 // Default to a RELATIVE base ("" → same-origin): the app is served behind a reverse proxy that forwards
 // /api to the Go engine — nginx in the container image (docker/default.conf.template) and the Vite dev
@@ -99,6 +99,28 @@ export const fileUrl = (path: string) =>
 // full-resolution PNG so the page loads fast (the full image is fetched only when a run is opened).
 export const thumbUrl = (path: string, w?: number) =>
   `${BASE}/api/thumb?path=${encodeURIComponent(path)}${w ? `&w=${w}` : ""}${s3Suffix()}`;
+// skyPoint is the map hover lookup: light pollution at a coordinate, plus cached weather when the
+// server already holds some. Safe to call while the pointer moves — it never fetches upstream.
+export const skyPoint = (lat: number, lon: number, signal?: AbortSignal) =>
+  apiGet<SkyPoint>(
+    `/api/sky/point?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`,
+    signal,
+  );
+
+// Full-resolution stage exports of a finished run: list what it preserved, then render one to PNG or
+// TIFF. The export returns a path, which is fetched through fileUrl like any other run artifact.
+export const jobStages = (jobId: number) =>
+  apiGet<{ stages: StageArtifact[] }>(`/api/jobs/${jobId}/stages`);
+export const exportJobStage = (
+  jobId: number,
+  key: string,
+  format: "png" | "tif",
+) =>
+  apiPost<{ path: string }>(`/api/jobs/${jobId}/stages/export`, {
+    key,
+    format,
+  });
+
 export const eventsUrl = (jobId: number) => `${BASE}/api/jobs/${jobId}/events`;
 export const agentTurnEventsUrl = (turnId: string) =>
   `${BASE}/api/agent/turns/${turnId}/events`;

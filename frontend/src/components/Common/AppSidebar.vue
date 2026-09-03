@@ -11,6 +11,7 @@ import IconLogbook from "@/components/Icons/IconLogbook.vue";
 import IconMosaic from "@/components/Icons/IconMosaic.vue";
 import IconTelescope from "@/components/Icons/IconTelescope.vue";
 import IconCalendar from "@/components/Icons/IconCalendar.vue";
+import IconSolarSystem from "@/components/Icons/IconSolarSystem.vue";
 import IconCamera from "@/components/Icons/IconCamera.vue";
 import IconAgent from "@/components/Icons/IconAgent.vue";
 import IconChevronRight from "@/components/Icons/IconChevronRight.vue";
@@ -41,6 +42,7 @@ const links = computed<NavLink[]>(() => {
     },
     { to: "/mosaic", key: "nav.mosaic", icon: IconMosaic },
     { to: "/calendar", key: "nav.calendar", icon: IconCalendar },
+    { to: "/solarsystem", key: "nav.solarSystem", icon: IconSolarSystem },
     {
       to: "/processing",
       key: "nav.processing",

@@ -28,6 +28,15 @@ type VideoInfo struct {
 	Rotation    int     `json:"rotation,omitempty"`   // display-matrix rotation in degrees
 	BitDepth    int     `json:"bit_depth,omitempty"`  // 8, 10 or 12, parsed from PixFmt
 	CreatedMs   int64   `json:"created_ms,omitempty"` // container creation_time, Unix ms
+	// LatDeg/LonDeg/ElevM come from the QuickTime ISO 6709 location tag a phone writes into its own
+	// recordings. They are carried because an eclipse sequence needs to know WHERE the clip was
+	// shot: the Moon's parallax is nearly a degree, so the phase at a given second is a different
+	// number a few hundred kilometres away. HasSite distinguishes "at the prime meridian on the
+	// equator" from "no tag".
+	LatDeg  float64 `json:"lat_deg,omitempty"`
+	LonDeg  float64 `json:"lon_deg,omitempty"`
+	ElevM   float64 `json:"elev_m,omitempty"`
+	HasSite bool    `json:"has_site,omitempty"`
 }
 
 // ffprobeBin resolves the ffprobe next to the configured ffmpeg, falling back to PATH.
@@ -46,7 +55,7 @@ func probeVideo(ctx context.Context, ffmpegBin, path string) VideoInfo {
 		"-show_entries", "stream=width,height,r_frame_rate,pix_fmt,color_transfer,color_range,codec_name,duration",
 		"-show_entries", "stream_side_data=rotation",
 		"-show_entries", "format=duration",
-		"-show_entries", "format_tags=creation_time",
+		"-show_entries", "format_tags=creation_time,com.apple.quicktime.location.ISO6709",
 		"-of", "default=nw=1",
 		path,
 	}
@@ -91,6 +100,10 @@ func parseProbe(s string) VideoInfo {
 		case "creation_time", "TAG:creation_time":
 			if t, err := time.Parse(time.RFC3339, val); err == nil {
 				v.CreatedMs = t.UnixMilli()
+			}
+		case "com.apple.quicktime.location.ISO6709", "TAG:com.apple.quicktime.location.ISO6709":
+			if lat, lon, elev, ok := parseISO6709(val); ok {
+				v.LatDeg, v.LonDeg, v.ElevM, v.HasSite = lat, lon, elev, true
 			}
 		}
 	}
@@ -142,3 +155,49 @@ func (v VideoInfo) IsHDR() bool { return transferKind(v.Transfer) != transferSDR
 // ffmpeg omits color_range on plenty of QuickTime files; limited is the safe assumption there,
 // because treating limited data as full merely fails to expand it, while the reverse clips.
 func (v VideoInfo) FullRange() bool { return v.ColorRange == "pc" || v.ColorRange == "jpeg" }
+
+// parseISO6709 reads the ISO 6709 point a phone stamps on a recording, e.g. "+47.2783-002.4948/"
+// or "+47.2783-002.4948+0020.000/". Signed decimal degrees only - the degrees-minutes-seconds forms
+// the standard also allows have never been seen from an iPhone, and guessing at them would risk
+// silently misplacing an observer by tens of kilometres, which is worse than having no site at all.
+func parseISO6709(s string) (latDeg, lonDeg, elevM float64, ok bool) {
+	s = strings.TrimSuffix(strings.TrimSpace(s), "/")
+	if s == "" {
+		return 0, 0, 0, false
+	}
+	fields := splitSigned(s)
+	if len(fields) < 2 {
+		return 0, 0, 0, false
+	}
+	lat, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil || lat < -90 || lat > 90 {
+		return 0, 0, 0, false
+	}
+	lon, err := strconv.ParseFloat(fields[1], 64)
+	if err != nil || lon < -180 || lon > 180 {
+		return 0, 0, 0, false
+	}
+	if len(fields) > 2 {
+		elevM, _ = strconv.ParseFloat(fields[2], 64)
+	}
+	return lat, lon, elevM, true
+}
+
+// splitSigned cuts a run of signed decimals ("+47.2783-002.4948+0020") at each sign.
+func splitSigned(s string) []string {
+	var out []string
+	start := -1
+	for i, r := range s {
+		if r != '+' && r != '-' {
+			continue
+		}
+		if start >= 0 {
+			out = append(out, s[start:i])
+		}
+		start = i
+	}
+	if start >= 0 && start < len(s) {
+		out = append(out, s[start:])
+	}
+	return out
+}

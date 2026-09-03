@@ -196,6 +196,14 @@ func buildCombine(channels map[string]string, opts Options) (string, *Result) {
 	var b strings.Builder
 	b.WriteString("requires 1.2.0\nsetext fits\nset32bits\n")
 	switch {
+	case has(filters.Color):
+		// One-shot color: the stacked master already carries all three primaries, so there is nothing
+		// to compose — load it and let the colour stages downstream treat it as the colour image it is.
+		// Without this case it fell to the `default:` branch below, which loads the same file but
+		// labels the result "mono": colour calibration was then skipped and saturation forced to 0, so
+		// a perfectly good colour stack came out flat and grey.
+		fmt.Fprintf(&b, "load %s\n", channels[filters.Color])
+		res.Mode = "RGB"
 	case has("R") && has("G") && has("B"):
 		buildColor(&b, channels, has, res)
 	case has("Ha") && has("OIII") && has("SII"):

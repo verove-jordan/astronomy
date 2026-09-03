@@ -131,6 +131,8 @@ type fakeHC struct {
 	pending  []byte
 	aligned  bool
 	slewing  bool
+	// trackMode is what the `t` query answers — the drive mode a nudge has to put back.
+	trackMode byte
 	raNow    float64
 	decNow   float64
 	failEcho bool
@@ -146,15 +148,30 @@ type fakeHC struct {
 	// the write verification.
 	pecCorrupt map[int]int8
 
-	// guideRate is the motor controller's autoguide-rate byte, in 1/256ths of sidereal.
-	guideRate byte
+	// guideRate is the motor controller's autoguide-rate byte, in 1/256ths of sidereal. There is one
+	// per motor because that is how the hardware stores it, and a pair that disagree is exactly what
+	// the audit exists to notice.
+	guideRate    byte
+	guideRateDec byte
+
+	// site and clock are the hand controller's own stored values, as the eight raw bytes `w` and `h`
+	// answer with. Held encoded so the fake exercises the same wire format the driver parses.
+	site  []byte
+	clock []byte
+
+	// motorVersion is what each motor controller answers to the version command.
+	motorVersion [2]byte
 }
 
 func newFakeHC() *fakeHC {
 	return &fakeHC{
 		aligned: true, raNow: 10, decNow: 41,
 		pecTable: make([]int8, 88), pecIndexed: true,
-		guideRate: 128, // half sidereal, as mounts tend to ship
+		guideRate: 128, guideRateDec: 128, // half sidereal, as mounts tend to ship
+		trackMode:    TrackingEQNorth,
+		site:         encodeSite(Site{LatDeg: 48.8566, LonDeg: 2.3522})[1:],
+		clock:        encodeClock(time.Now())[1:],
+		motorVersion: [2]byte{7, 11},
 	}
 }
 
@@ -190,9 +207,19 @@ func (f *fakeHC) replyTo(p []byte) []byte {
 		}
 		return []byte("0#")
 	case p[0] == 't':
-		return []byte{TrackingEQNorth, '#'}
+		return []byte{f.trackMode, '#'}
 	case p[0] == 'p':
 		return []byte("W#")
+	case p[0] == 'w':
+		return append(append([]byte{}, f.site...), '#')
+	case p[0] == 'W' && len(p) >= 9:
+		f.site = append([]byte{}, p[1:9]...)
+		return []byte("#")
+	case p[0] == 'h':
+		return append(append([]byte{}, f.clock...), '#')
+	case p[0] == 'H' && len(p) >= 9:
+		f.clock = append([]byte{}, p[1:9]...)
+		return []byte("#")
 	case p[0] == 'r':
 		// A real mount starts slewing; the fake jumps to the commanded position.
 		if ra, dec, err := DecodeRADec(string(p[1:])); err == nil {
@@ -254,6 +281,8 @@ func (f *fakeHC) replyPEC(p []byte) ([]byte, bool) {
 	case mcPECRecordStop:
 		f.pecRecStopped = true
 		return []byte("#"), true
+	case mcGetVersion:
+		return []byte{f.motorVersion[0], f.motorVersion[1], '#'}, true
 	}
 	return nil, false
 }
@@ -432,6 +461,45 @@ func TestNudge_AlwaysStopsTheAxis(t *testing.T) {
 	last := rateFrames[len(rateFrames)-1]
 	assert.Zero(t, last[4], "the final frame must command rate zero")
 	assert.Zero(t, last[5])
+}
+
+// A nudge moves the axes with slew commands, and those stop the drive. Measured on fw 5.31: the
+// mount goes on reporting tracking:true afterwards, so nothing downstream can notice. Dither nudges
+// between subs, so failing to restore the drive trails every remaining frame of the night.
+func TestNudge_RestoresTrackingAfterTheMove(t *testing.T) {
+	hc := newFakeHC()
+	m := testMount(t, hc)
+
+	require.NoError(t, m.Nudge(context.Background(), 8, 0))
+
+	sent, ok := hc.sentPrefixed('T')
+	require.True(t, ok, "the drive must be put back after a nudge")
+	assert.Equal(t, byte(TrackingEQNorth), sent[1], "restored to the mode it was in, not a guess")
+
+	// The restore must come after the last rate command, or it re-asserts tracking and then stops it.
+	lastRate, lastTrack := -1, -1
+	for i, c := range hc.commands() {
+		if len(c) == 8 && c[0] == 'P' && c[1] == 3 {
+			lastRate = i
+		}
+		if len(c) >= 2 && c[0] == 'T' {
+			lastTrack = i
+		}
+	}
+	assert.Greater(t, lastTrack, lastRate, "tracking is restored after the axis has stopped")
+}
+
+// A drive that was deliberately off must stay off: PEC training stops it on purpose, and so does the
+// sequencer around a large slew. Restoring a mode we never saw could start a mount under someone.
+func TestNudge_LeavesAStoppedDriveStopped(t *testing.T) {
+	hc := newFakeHC()
+	hc.trackMode = TrackingOff
+	m := testMount(t, hc)
+
+	require.NoError(t, m.Nudge(context.Background(), 8, 0))
+
+	_, ok := hc.sentPrefixed('T')
+	assert.False(t, ok, "no drive command may be sent when tracking was already off")
 }
 
 func TestSetTracking(t *testing.T) {

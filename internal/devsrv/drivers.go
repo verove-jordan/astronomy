@@ -114,12 +114,65 @@ func driverReport() []DriverStatus {
 // discover lists the devices that could be connected. The simulator always offers one of each, so
 // the whole capture UI is exercisable with nothing plugged in; real hardware is appended when a
 // driver can actually see it.
+//
+// Every kind must be enumerated here, not just the mount. The UI picks the first DISCOVERED device
+// of a kind and only falls back to the driver list — which starts with the simulator — when
+// discovery came back empty. So a kind missing from this function is a kind that silently connects
+// the simulator with real hardware plugged in, which is exactly how a live ASI camera ended up
+// showing as "Simulated ASI1600MM Pro".
 func discover() []device.Info {
 	out := []device.Info{
 		{ID: "sim-camera", Name: "Simulated ASI1600MM Pro", Driver: DriverSim, Kind: device.KindCamera},
 		{ID: "sim-wheel", Name: "Simulated EFW 5×36mm", Driver: DriverSim, Kind: device.KindWheel},
 		{ID: "sim-mount", Name: "Simulated Celestron AVX", Driver: DriverSim, Kind: device.KindMount},
 	}
+	out = append(out, asiCameras()...)
+	out = append(out, efwWheels()...)
+	out = append(out, nexstarMounts()...)
+	return out
+}
+
+// asiCameras lists the ZWO cameras the SDK can see. A driver whose library will not load simply
+// contributes nothing — the simulator is still offered.
+func asiCameras() []device.Info {
+	cams, err := asi.List()
+	if err != nil {
+		return nil
+	}
+	out := make([]device.Info, 0, len(cams))
+	for _, c := range cams {
+		name := c.Name
+		if name == "" {
+			name = "ZWO camera"
+		}
+		out = append(out, device.Info{
+			ID: fmt.Sprintf("asi-%d", c.ID), Name: name,
+			Driver: DriverASI, Kind: device.KindCamera,
+		})
+	}
+	return out
+}
+
+// efwWheels lists the ZWO filter wheels the SDK can see. Discovery cannot read the model name
+// without opening the wheel (see efw.List), so the name is the generic one until it connects.
+func efwWheels() []device.Info {
+	wheels, err := efw.List()
+	if err != nil {
+		return nil
+	}
+	out := make([]device.Info, 0, len(wheels))
+	for _, wh := range wheels {
+		out = append(out, device.Info{
+			ID: fmt.Sprintf("efw-%d", wh.ID), Name: "ZWO EFW",
+			Driver: DriverEFW, Kind: device.KindWheel,
+		})
+	}
+	return out
+}
+
+// nexstarMounts lists the serial ports that look like a hand controller.
+func nexstarMounts() []device.Info {
+	var out []device.Info
 	for _, port := range nexstar.ListPorts() {
 		if !port.Likely {
 			continue // a Bluetooth channel is not a telescope

@@ -20,7 +20,13 @@ setup:
     @command -v air >/dev/null || go install github.com/air-verse/air@latest
     just build-mcp
     @test -d frontend/node_modules || (cd frontend && pnpm install)
-    @echo "Setup done. Next: just up && just migrate, then just dev + just web"
+    @echo "Setup done. Check your tools with 'just doctor', then: just up, and just dev + just web"
+    @echo "(the engine migrates the database itself on boot — 'just migrate' is redundant)"
+
+# Host mode; `just stack` prints the containerized answer by running this same command in the engine.
+# Report which external tools this machine has, and what degrades without each one.
+doctor:
+    @go run ./cmd/astrostack doctor
 
 # Start Postgres (compose).
 up:
@@ -42,13 +48,19 @@ web-prod:
 stack-build:
     GIT_DESCRIBE=$(git describe --tags --always --dirty) BUILD_TIME=$(date -u +%Y-%m-%dT%H:%MZ) docker compose --profile stack build
 
-# Run the whole app in containers WITHOUT the model — db + engine + frontend (UI :${WEB_PORT_PROD:-8082}, API :${ENGINE_PORT:-8080}).
+# Safe to re-run: the preflight is idempotent and reports only what it changed. The first run
+# builds a multi-GB image (Siril/GIMP/GraXpert/GDAL) and takes 15-40 minutes.
+# Set up + build + run the whole app in containers (db + engine + frontend, no AI), then print the URL.
 stack:
+    @scripts/stack-preflight.sh
     GIT_DESCRIBE=$(git describe --tags --always --dirty) BUILD_TIME=$(date -u +%Y-%m-%dT%H:%MZ) API_UPSTREAM=engine:8080 docker compose --profile stack up -d --build
+    @scripts/stack-ready.sh
 
 # Run the whole app in containers WITH the model (Linux+GPU; needs nvidia-container-toolkit). Then: just ai-pull
 stack-ai:
+    @scripts/stack-preflight.sh
     API_UPSTREAM=engine:8080 docker compose --profile stack --profile ai up -d --build
+    @scripts/stack-ready.sh
 
 # Stop the containerized app services (engine + frontend + ai); leaves Postgres running.
 stack-down:
@@ -97,8 +109,12 @@ web:
 # It runs as its OWN process so `just dev` — which restarts the engine on every source save — can
 # never drop a USB connection mid-sequence.
 #
+# Re-running this RESTARTS it: any device server already on the port is stopped first, and waited
+# for, so a stray sidecar from an earlier session is never left blocking the start.
+#
 # Device server (simulator, or hardware with a native SDK): camera / filter wheel / mount.
 device:
+    @scripts/device-stop.sh
     go run ./cmd/astrostack device
 
 # ZWO ship no arm64 macOS library — their SDK, and their own ASIStudio, are x86_64 only. A native
@@ -106,11 +122,15 @@ device:
 # letting Rosetta run it solves that: the engine, the frontend and every bit of stacking stay native
 # arm64 and talk to it over HTTP exactly as before. This is why device I/O lives in its own process.
 #
+# Re-running this RESTARTS it, and the running server is stopped only AFTER the build succeeds —
+# a compile error must not leave you with the working sidecar killed and nothing in its place.
+#
 # Device server built as x86_64, for real ZWO hardware on an Apple-Silicon Mac.
 device-x86:
     @command -v arch >/dev/null && arch -x86_64 /usr/bin/true 2>/dev/null || \
         (echo "Rosetta 2 is not installed — run: softwareupdate --install-rosetta" && exit 1)
     GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -o bin/astrostack-x86 ./cmd/astrostack
+    @scripts/device-stop.sh
     ./bin/astrostack-x86 device
 
 device-status:
@@ -139,6 +159,22 @@ mount-soak DURATION='8h':
         -duration {{DURATION}} \
         -motion {{ env_var_or_default("MOTION", "none") }} \
         -report "$(pwd)/output/mount-soak-$(date -u +%Y%m%dT%H%M%SZ).txt"
+
+# The hand controller has no menu that shows its stored periodic-error table, and the autoguide
+# rates live on the motor boards again — so after a night that went wrong this is the only way to
+# find out what is actually in there. It writes nothing and moves nothing.
+# Read back every setting stored in the mount (site, clock, drive, guide rates, PEC table).
+mount-audit:
+    go run ./cmd/astrostack mount audit \
+        -report "$(pwd)/output/mount-audit-$(date -u +%Y%m%dT%H%M%SZ).txt"
+
+# NOT a factory reset: it undoes only what this app can write, and proves each change by reading it
+# back. The mount's current settings are saved to output/ before the first byte goes out, dry run or
+# not. Narrow it with e.g. `just mount-reset -pec`.
+# Put back what this app can write into the mount — a DRY RUN unless APPLY=1.
+mount-reset WHAT='-all':
+    go run ./cmd/astrostack mount reset {{WHAT}} \
+        {{ if env_var_or_default("APPLY", "") != "" { "-apply" } else { "" } }}
 
 # Serve the local vision model for the finish supervisor (host; first run downloads ~28 GB).
 run-ia-model:
@@ -192,6 +228,14 @@ update-canopy-data:
 gen-skymap-data MAG="6.0":
     go run ./cmd/astrostack skymap-data --mag "{{MAG}}"
 
+# One-time download of the planet/moon surface maps the 3-D solar-system page (/solarsystem) draws
+# with, into <ASTRO_WORK_DIR>/solarsystem (~20 MB at 2k, ~200 MB at 8k). Optional and idempotent:
+# every body whose map is absent is shaded procedurally, so the page works fully without this — the
+# maps only make it photographic. RES = 2k (default) or 8k. Source: Solar System Scope, CC BY 4.0;
+# the page credits it in its legend (see docs/third-party.md).
+download-planet-textures RES="2k":
+    @scripts/download-planet-textures.sh "{{RES}}"
+
 # Rebuild the embedded deep star catalogue (internal/deepstars/catalogue/hyg_mag9.csv.gz) the
 # star-annotation endpoint uses for name labels (proper/Bayer/Flamsteed/HD). Fetches the HYG database
 # (network at generation time ONLY; same source pin as gen-skymap-data). MAG = faintest star kept.
@@ -237,6 +281,11 @@ video FILE *args:
 # Generate a scenario with the /demo-video Claude command. e.g. just demo overview · just demo tour --headless
 demo scenario="tour" *args:
     @scripts/demo.sh {{scenario}} {{args}}
+
+# Regenerate the in-app help-tour screenshots into frontend/public/tour/ (host; needs the app running).
+# Re-run whenever the UI changes, then commit frontend/public/tour/. e.g. just tour-shots --locales en
+tour-shots *args:
+    @scripts/tour-shots.sh {{args}}
 
 # Run the Siril MCP server in the foreground (manual testing).
 mcp-siril:

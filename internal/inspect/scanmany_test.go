@@ -44,7 +44,7 @@ func TestScanMany_MergesRootsAndFixesCrossDirWarnings(t *testing.T) {
 	// The lights folder alone warns about missing calibration.
 	solo, err := Scan(context.Background(), lights)
 	require.NoError(t, err)
-	assert.Contains(t, strings.Join(solo.Warnings, "\n"), "no darks found")
+	assert.Contains(t, strings.Join(solo.Warnings, "\n"), "no darks in this folder")
 
 	// Merged with the calibration folder, the union is complete: no missing-calibration warnings.
 	merged, err := ScanMany(context.Background(), []string{lights, calib}, DefaultScanOptions())
@@ -57,8 +57,8 @@ func TestScanMany_MergesRootsAndFixesCrossDirWarnings(t *testing.T) {
 	assert.Equal(t, 1, counts[Bias])
 
 	joined := strings.Join(merged.Warnings, "\n")
-	assert.NotContains(t, joined, "no darks found")
-	assert.NotContains(t, joined, "no flats found")
+	assert.NotContains(t, joined, "no darks in this folder")
+	assert.NotContains(t, joined, "no flats in this folder")
 }
 
 // A single root through ScanMany must be byte-identical to Scan — the single-folder path is unchanged.

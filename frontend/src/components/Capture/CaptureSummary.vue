@@ -4,16 +4,37 @@ import type { CaptureSummary } from "@/composables/useCaptureSummary";
 import { card } from "@/constants/styles";
 import { humanizeMs } from "@/utils/format";
 import FilterChip from "@/components/Common/FilterChip.vue";
+import Pill from "@/components/Common/Pill.vue";
 
-defineProps<{ summary: CaptureSummary; path?: string; title?: string }>();
+defineProps<{
+  summary: CaptureSummary;
+  path?: string;
+  title?: string;
+  // How the capture records colour, straight from the inventory. Surfaced because it changes what
+  // the run will do — one RGB channel instead of a per-filter combine — and because a "mixed"
+  // verdict means some frames will be left out, which the user should learn before launching.
+  colorModel?: "mono" | "osc" | "mixed";
+}>();
 const { t } = useI18n();
 </script>
 
 <template>
   <div :class="card">
     <div class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-      <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200">
+      <h3
+        class="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200"
+      >
         {{ title || t("capture.summary") }}
+        <Pill
+          v-if="colorModel === 'osc'"
+          color-class="bg-brand-100 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300"
+          >{{ t("capture.colorOsc") }}</Pill
+        >
+        <Pill
+          v-else-if="colorModel === 'mixed'"
+          color-class="bg-warning-100 text-warning-700 dark:bg-warning-900/40 dark:text-warning-300"
+          >{{ t("capture.colorMixed") }}</Pill
+        >
       </h3>
       <span
         v-if="summary.objects.length"

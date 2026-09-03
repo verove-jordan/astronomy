@@ -8,10 +8,12 @@ export const MODES = [
   "deepsky",
   "nebula",
   "milkyway",
+  "nightpano",
   "planetary",
   "comet",
   "mosaic",
   "sun",
+  "eclipse",
 ] as const;
 
 export type Mode = (typeof MODES)[number];
@@ -24,6 +26,7 @@ export const STAR_MODES: readonly string[] = [
   "livestack",
   "comet",
   "milkyway",
+  "nightpano",
 ];
 
 // PAUSABLE_MODES are the modes with a safe mid-run boundary to pause at.

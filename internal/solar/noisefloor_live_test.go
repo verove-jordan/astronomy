@@ -95,7 +95,7 @@ func TestNoiseFloor_Live(t *testing.T) {
 		// Half the difference's energy is one frame's worth: var(a-b) = var(a) + var(b) = 2·var.
 		discSum += 0.5 * bandOnDisc(diff, l)
 		skySum += bandEnergy(imgops.GaussianBlur(aw.Pix[0], aw.W, aw.H, bandInner),
-			imgops.GaussianBlur(aw.Pix[0], aw.W, aw.H, bandOuter), aw.W, aw.H, l, 1.15, 1.45)
+			imgops.GaussianBlur(aw.Pix[0], aw.W, aw.H, bandOuter), aw.W, aw.H, Pair{Sun: l}, 1.15, 1.45)
 		totalSum += bandOnDisc(aw, l)
 		medSum += discMedian(aw, l)
 	}

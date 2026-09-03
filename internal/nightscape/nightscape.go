@@ -15,6 +15,7 @@ import (
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 	"github.com/verove-jordan/astronomy/internal/graxpert"
 	"github.com/verove-jordan/astronomy/internal/libmirror"
+	"github.com/verove-jordan/astronomy/internal/meteor"
 	"github.com/verove-jordan/astronomy/internal/rawconv"
 	"github.com/verove-jordan/astronomy/internal/siril"
 )
@@ -115,6 +116,22 @@ type Options struct {
 	Spcc             siril.SpccOptions
 	Focal35mm        float64
 
+	// Meteors searches the registered frames for streaks and blends the confident meteors back into
+	// the linear sky before it is graded, so they are stretched and coloured with everything else.
+	// Off by default: with it off a run is byte-identical to one built before any of this existed.
+	//
+	// Satellites and aircraft are identified and left out. Every candidate is written to meteors.json
+	// with the reason it was kept or dropped, so a decision can be argued with without re-running.
+	Meteors bool
+
+	// FlatRadialOnly reduces the master flat to the smooth lens falloff fitted to it, discarding
+	// everything that is not a function of radius. That is the usable half of a PHONE flat: the
+	// non-radial part is dominated by a reflection of the phone's own camera bump in the middle of the
+	// frame (7% peak to peak, measured), and the radial part is a real 1.1-stop vignette Apple does
+	// not pre-correct. It also lets a flat shot at a different resolution be used at all, since a
+	// radial model in normalised radius is resolution-independent.
+	FlatRadialOnly bool
+
 	// DarkDir/FlatDir/BiasDir are optional calibration-frame folders (#4); empty keeps the proven
 	// uncalibrated single-pass path. Offset == bias.
 	DarkDir, FlatDir, BiasDir string
@@ -142,15 +159,22 @@ type Options struct {
 
 // Result reports what Process produced.
 type Result struct {
-	FinalPNG       string
-	PreviewPNG     string
-	CompositeFITS  string
-	SkyFITS        string
-	ForegroundFITS string
-	Width, Height  int
-	InputFrames    int
-	StackedFrames  int
-	Warnings       []string
+	FinalPNG      string
+	PreviewPNG    string
+	CompositeFITS string
+	SkyFITS       string
+	// TransientFITS is the layer the sigma-clip rejected — where the session's meteors are.
+	TransientFITS string
+	// MeteorLayerFITS is the linear layer of the meteors that were confidently identified and blended
+	// back in, and MeteorsBlended how many of them there were. Empty when Meteors is off or nothing
+	// cleared the bar.
+	MeteorLayerFITS string
+	MeteorsBlended  int
+	ForegroundFITS  string
+	Width, Height   int
+	InputFrames     int
+	StackedFrames   int
+	Warnings        []string
 }
 
 // note appends a non-empty warning (a helper for the many soft-fail enhancement steps).
@@ -284,14 +308,107 @@ func compose(ctx context.Context, o Options, aligned []string, fgPath string, re
 	linearizeSRGB(fg)
 	cleanHotPixels(fg, 5.0)
 
-	// Sky mask from the clean linear foreground, captured before gradient removal touches its levels.
-	alpha := buildSkyAlpha(fg, look.MaskPercentile, look.MaskDilation, look.MaskBlur)
+	// Did the camera's field of view ever reach the ground? Two steps below assume it did — the sky
+	// mask, and the stack's per-frame sky-pixel selection — and both invent a foreground out of the
+	// sky's own dimmer half when it did not. The phone's tilt settles it before either runs.
+	inFrame, known := horizonInFrame(o.Frames)
+	skyOnly := known && !inFrame
+	if skyOnly {
+		o.Brightness = skyOnlyTargetBg(o.Brightness, look.TargetBg)
+	}
 
-	// Clean sky stack (per-pixel sky-only mean), linearising each aligned frame as it streams in.
-	sky, err := computeCleanSkyStack(aligned, fg, look.SkyPercentile, true, 1.3, 0.5, linearizeSRGB)
+	// Sky mask from the clean linear foreground, captured before gradient removal touches its levels.
+	alpha, note := allSky(fg.W*fg.H), "no horizon in frame; composited the stack directly"
+	if !skyOnly {
+		// Hand the mask the horizon the pointing predicts, so it does not have to infer from the
+		// pixels which dark region is ground — over a Milky Way it cannot.
+		prior, ok := groundPrior(o.Frames, fg.W, fg.H)
+		if !ok {
+			res.Warnings = append(res.Warnings, "no pointing for the horizon; sky mask fell back to luminance only")
+		}
+		alpha, note = buildSkyAlpha(fg, look.MaskPercentile, look.MaskDilation, look.MaskBlur, prior)
+	}
+	if note != "" {
+		res.Warnings = append(res.Warnings, note)
+	}
+
+	// Clean sky stack, linearising each aligned frame as it streams in. Normally each frame
+	// contributes only its brightest pixels, which is how drifting trees and rooftops are kept out
+	// of the sky. With nothing but sky in shot that rule discards the darker half of the sky itself:
+	// only pixels tracing the Milky Way survive, everything around them falls below the coverage
+	// floor and gets extrapolated, and the result is the band ringed by a black shell. Take every
+	// pixel instead, and stop rejecting green-dominant pixels — there is no foliage up there.
+	// The same is true WITH a horizon in shot, and that took longer to see. The percentile does not
+	// know the difference between the ground and the dark half of the sky — it only knows the share
+	// of pixels it was told to drop — and on a registered sequence the same dark sky is below it in
+	// every frame, so it is rejected everywhere, falls under the coverage floor, and comes back as
+	// invented fill. Measured on the panel that carries the horizon here: the 55th percentile lands at
+	// 0.0062 while the SKY's own median is 0.0057, so over half of the real sky was being thrown away.
+	//
+	// The dark floor is the test that actually distinguishes them, and it is already computed a few
+	// lines below: ground and sky are orders apart, not percentiles apart. On the same panel the floor
+	// sits at 0.0030, above 99% of the ground (p99 = 0.0023) and well under the faintest sky
+	// (p1 = 0.0051). So the percentile goes, on both paths, and the floor does the rejecting.
+	skyPct, rejectGreen, minCoverage := 0.0, true, 0.5
+	if skyOnly {
+		// Half the frames is the right bar when a pixel might be sky in some frames and tree in
+		// others. With only sky in shot the only reason a pixel goes uncovered is that the field
+		// drifted off it, so requiring half the frames would hand the whole drift border to the
+		// extrapolated fill — the same black rim, just narrower. Take a real average wherever a
+		// fifth of the frames reached, and extrapolate only the true corners.
+		skyPct, rejectGreen, minCoverage = 0, false, 0.2
+	}
+	sky, coverage, tran, err := computeCleanSkyStack(aligned, fg, skyPct, rejectGreen, 1.3, minCoverage, linearizeSRGB)
 	if err != nil {
 		return nil, err
 	}
+	// Find the meteors before the crop, so they are measured against the same uncropped stack the
+	// frames align to; the layer is then cropped alongside everything else below.
+	var meteors meteorResult
+	if o.Meteors {
+		meteors = buildMeteorLayer(aligned, sky, alpha, linearizeSRGB, outDir)
+		for _, w := range meteors.Warnings {
+			res.Warnings = append(res.Warnings, w)
+		}
+	}
+
+	// Trim the drift edges before ANYTHING measures this image. Registration leaves the rim covered
+	// by only part of the sequence, and the recipe fades it into an extrapolated fill; that rim is
+	// where autoStretch's low percentile lands, so the black point is set below the real sky and the
+	// whole frame grades out washed. Cropping is what lets the grade see sky and only sky.
+	if b := coverageBox(coverage, sky.W, sky.H, len(aligned), minCoverage); !b.full(sky.W, sky.H) {
+		res.Warnings = append(res.Warnings, fmt.Sprintf(
+			"cropped %dx%d to %dx%d covered by the whole sequence", sky.W, sky.H, b.width(), b.height()))
+		alpha = cropPlane(alpha, sky.W, sky.H, b)
+		fg = cropImage(fg, b)
+		tran = tran.crop(sky.W, sky.H, b) // the same crop, or the transients no longer line up with the sky
+		if meteors.Layer != nil {
+			meteors.Layer = cropImage(meteors.Layer, b)
+		}
+		sky = cropImage(sky, b)
+	}
+	// Add the meteors to the LINEAR sky, before it is neutralised, flattened and stretched. Blending
+	// after the grade would need the meteor tone-mapped to match by hand; blending here means the same
+	// curve is applied to it as to the sky it crossed, which is the only way it looks photographed
+	// rather than drawn on.
+	if meteors.Layer != nil {
+		if err := meteors.Layer.WriteFITS(filepath.Join(outDir, meteorLayerFile)); err == nil {
+			res.MeteorLayerFITS = filepath.Join(outDir, meteorLayerFile)
+		}
+		sky = meteor.Blend(sky, meteors.Layer, 1)
+		res.MeteorsBlended = meteors.Painted
+		res.Warnings = append(res.Warnings, fmt.Sprintf(
+			"blended %d meteor(s) back in; dropped %d satellite(s) and %d aircraft",
+			meteors.Painted, meteors.Counts[meteor.Satellite], meteors.Counts[meteor.Aircraft]))
+	}
+	// Persist what the clip rejected. It is written before any grading so the meteors keep the linear
+	// brightness they were caught at, and it is written even when empty — "no transients" is a result.
+	if note := tran.write(outDir); note != "" {
+		res.Warnings = append(res.Warnings, note)
+	} else if tran != nil {
+		res.TransientFITS = filepath.Join(outDir, transientFile)
+	}
+
 	if os.Getenv("NS_DEBUG") != "" {
 		_ = exportPNG(percentileStretch(sky.Clone(), 0.5, 99.5), filepath.Join(outDir, "dbg_sky_raw.png"))
 		_ = exportPNG(percentileStretch(fg.Clone(), 0.5, 99.5), filepath.Join(outDir, "dbg_fg_raw.png"))

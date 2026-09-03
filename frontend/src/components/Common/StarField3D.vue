@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { fileUrl } from "@/services/api";
+import { BASE, fileUrl } from "@/services/api";
+import {
+  GALAXY_VERSION,
+  decodeGalaxyCloud,
+  type GalaxyCloud,
+} from "@/utils/galaxycloud";
 import {
   btnPrimary,
   checkbox,
@@ -10,7 +15,10 @@ import {
   segIdle,
   segWrap,
 } from "@/constants/styles";
-import { useStarField3D } from "@/composables/useStarField3D";
+import {
+  GALAXY_DEFAULT_GAIN,
+  useStarField3D,
+} from "@/composables/useStarField3D";
 import { useFlyControls } from "@/composables/useFlyControls";
 import {
   DEPTH_MEASURED,
@@ -66,26 +74,14 @@ const starSize = ref(2.6);
 // photograph, 1 is looking at the whole Milky Way, and everything in between is true scale.
 const showGalaxy = ref(false);
 const galaxyZoom = ref(0);
+// The Milky Way point cloud, fetched the first time the layer is switched on, and how brightly it is
+// exposed — the one thing about the cloud that only an eye can settle.
+const galaxyCloud = ref<GalaxyCloud | null>(null);
+const galaxyGain = ref(GALAXY_DEFAULT_GAIN);
+let galaxyLoading = false;
 // The image's sky anchors, which carry the field's ROLL. Without them the Galaxy cannot be oriented
 // and must not be drawn; the composable checks them against the manifest's own camera as well.
 const frame = computed(() => props.stars?.solve?.frame ?? null);
-
-// How much sky is in frame at the current point of the journey — the readout beside the slider. A
-// percentage would say nothing; "17 pc" then "40 kpc" is the whole story of what the slider does.
-const galaxySpanLabel = computed(() =>
-  formatDistance(
-    frameSpanPc(
-      galaxyZoom.value,
-      {
-        medianPc: props.manifest.depth.median_pc,
-        tanHalfH: props.manifest.camera.tan_half_h,
-        toGalacticCentre: [0, 0, 1],
-        toNorthPole: [0, 1, 0],
-      },
-      props.manifest.camera.tan_half_w,
-    ),
-  ),
-);
 
 const backdropUrl = computed(() =>
   props.manifest.backdrop ? fileUrl(props.manifest.backdrop) : "",
@@ -96,6 +92,7 @@ const {
   error,
   orbit,
   galaxyAvailable,
+  journeyCtx,
   selected,
   hovered,
   resetView,
@@ -120,7 +117,20 @@ const {
   starSize,
   showGalaxy,
   galaxyZoom,
+  galaxyCloud,
+  galaxyGain,
   frame,
+});
+
+// How much sky is in frame at the current point of the journey — the readout beside the slider. A
+// percentage would say nothing; "17 pc", then "40 kpc", then "9 Mpc" is the whole story of what the
+// slider does. Read off the renderer's own journey so the number cannot describe a different one.
+const galaxySpanLabel = computed(() => {
+  const ctx = journeyCtx.value;
+  if (!ctx) return "";
+  return formatDistance(
+    frameSpanPc(galaxyZoom.value, ctx, props.manifest.camera.tan_half_w),
+  );
 });
 
 // Exploration mode. The keyboard flies and the mouse looks; orbiting stays exactly as it was when
@@ -210,6 +220,33 @@ watch(
   },
   { immediate: true },
 );
+
+// loadGalaxyCloud fetches the Milky Way.
+//
+// Not part of the run at all: the cloud is the same Galaxy for every photograph ever taken, so it is
+// served from its own endpoint with a week's cache lifetime and an ETag. First open of the first run
+// pays for it; every run after that is a cache hit, and the per-run part is a 3×3 matrix.
+//
+// Deferred until the layer is switched on. Someone who never asks for the Galaxy never downloads it.
+async function loadGalaxyCloud() {
+  if (galaxyCloud.value || galaxyLoading) return;
+  galaxyLoading = true;
+  try {
+    const res = await fetch(`${BASE}/api/galaxy/points?v=${GALAXY_VERSION}`);
+    if (!res.ok) throw new Error(String(res.status));
+    galaxyCloud.value = decodeGalaxyCloud(await res.arrayBuffer());
+  } catch {
+    // A missing Galaxy costs the layer, not the scene. The toggle stays on and the reference rings
+    // still draw, so the failure is visible without being fatal.
+    galaxyCloud.value = null;
+  } finally {
+    galaxyLoading = false;
+  }
+}
+
+watch(showGalaxy, (on) => {
+  if (on) void loadGalaxyCloud();
+});
 
 // --- fullscreen ------------------------------------------------------------------------------------
 
@@ -468,7 +505,7 @@ const shapeTierClass: Record<string, string> = {
             type="button"
             class="rounded-md bg-slate-900/80 p-2 text-slate-200 backdrop-blur transition-colors hover:bg-slate-700"
             :aria-label="t('scene3d.resetView')"
-            :title="t('scene3d.resetView')"
+            :title="t('scene3d.resetViewHint')"
             @click="resetView()"
           >
             <IconReset />
@@ -777,10 +814,27 @@ const shapeTierClass: Record<string, string> = {
           class="w-32 accent-brand-600"
         />
         <!-- Not a percentage: the honest readout is how much sky is actually in frame, which runs
-             from tens of parsecs to tens of kiloparsecs across the same slider. -->
+             from tens of parsecs to megaparsecs across the same slider. -->
         <span class="tabular-nums text-slate-500 dark:text-slate-400">
           {{ galaxySpanLabel }}
         </span>
+      </label>
+      <label
+        v-if="showGalaxy && galaxyAvailable"
+        class="flex items-center gap-2"
+        :title="t('scene3d.galaxyGainHint')"
+      >
+        <span class="shrink-0 text-slate-600 dark:text-slate-300">
+          {{ t("scene3d.galaxyGain") }}
+        </span>
+        <input
+          v-model.number="galaxyGain"
+          type="range"
+          min="0.1"
+          max="2"
+          step="0.05"
+          class="w-24 accent-brand-600"
+        />
       </label>
     </div>
 
@@ -792,6 +846,10 @@ const shapeTierClass: Record<string, string> = {
       <span v-if="manifest.camera.right_handed === false">
         {{ t("scene3d.galaxyMirrored") }}
       </span>
+      <!-- Said plainly rather than left to be noticed: a viewer who knows what the Milky Way looks
+           like will go looking for the dark lanes, and the honest answer is that they are absent
+           because nothing here can know where the eye stands relative to the dust. -->
+      <span class="block">{{ t("scene3d.galaxyNoDust") }}</span>
     </p>
 
     <!-- The legend, which is also the honesty statement: what is measured, what is guessed, and

@@ -3,6 +3,7 @@ package calib
 import (
 	"fmt"
 	"math"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -103,7 +104,35 @@ func matchForLight(light inspect.SetKey, masters []Master, force bool) Selection
 	if sel.Bias == nil && sel.Dark == nil {
 		sel.Notes = append(sel.Notes, "no bias or dark — no read-noise calibration available")
 	}
+	if n := borrowedNote(sel); n != "" {
+		sel.Notes = append(sel.Notes, n)
+	}
 	return sel
+}
+
+// borrowedNote names the masters this light set is calibrated with that did NOT come from frames in
+// this run's own folder. A session that calibrates itself says nothing — Notes are the exceptions.
+//
+// It exists because the run had no way of saying so, and the gap is not cosmetic. bestFlat falls
+// back to ANY flat in the library when the session brought none; the only trace was an inventory
+// warning reading "vignetting/dust correction skipped UNLESS a library master matches", which is
+// equally true whether nothing happened or a stranger's flat was divided into every light. On a
+// camera that publishes no gain or offset — every DSLR — the library key cannot tell two bodies
+// apart, so "a matching master" is a much weaker statement than it looks.
+func borrowedNote(sel Selection) string {
+	var borrowed []string
+	for _, c := range []struct {
+		role string
+		m    *Master
+	}{{RoleDark, sel.Dark}, {RoleFlat, sel.Flat}, {RoleBias, sel.Bias}} {
+		if c.m != nil && c.m.FromLibrary {
+			borrowed = append(borrowed, fmt.Sprintf("%s %s (%d frames)", c.role, filepath.Base(c.m.Path), c.m.FrameCount))
+		}
+	}
+	if len(borrowed) == 0 {
+		return ""
+	}
+	return "from the calibration library, not this session's own frames: " + strings.Join(borrowed, " · ")
 }
 
 func bestDark(light inspect.SetKey, masters []Master, force bool) *Master {

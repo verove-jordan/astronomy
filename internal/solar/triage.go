@@ -49,6 +49,11 @@ type Options struct {
 	MinGroupFrames int     // ≤0 → defaultMinGroupFrames
 	FFmpegBin      string
 	Workers        int // ≤0 → 4
+	// TwoBody measures an occulting body alongside the solar limb (pair.go). Triage groups files by
+	// measured disc radius, so on an eclipse the one-circle fit does not merely lose precision — it
+	// reports whichever body won its robust trim, and files shot minutes apart land in different
+	// groups for no reason but that.
+	TwoBody bool
 }
 
 func (o Options) tolerance() float64 {
@@ -194,9 +199,9 @@ func probeAll(ctx context.Context, paths []string, scratch string, opts Options)
 			}
 			var p FrameProbe
 			if videoExts[strings.ToLower(filepath.Ext(path))] {
-				p = probeVideoFile(gctx, opts.FFmpegBin, path, scratch)
+				p = probeVideoFile(gctx, opts.FFmpegBin, path, scratch, opts.TwoBody)
 			} else {
-				p = probeStill(gctx, path, scratch, readStillMeta(path))
+				p = probeStill(gctx, path, scratch, readStillMeta(path), opts.TwoBody)
 			}
 			mu.Lock()
 			out[i] = p

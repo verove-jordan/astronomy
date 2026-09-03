@@ -46,6 +46,16 @@ const (
 	Comet     Mode = "comet"     // moving comet: dual star/comet stack + star-layer recomposite
 	Mosaic    Mode = "mosaic"    // tiled panels of one large object: per-panel deepsky stacks + WCS assembly
 	Sun       Mode = "sun"       // the Sun in Hα or white light: limb-registered lucky imaging
+	// Nightpano is a sky panorama swept by hand across many pointings: each pointing stacks with the
+	// milkyway recipe, then every panel is plate-solved and reprojected onto ONE spherical canvas.
+	// Distinct from Mosaic, which is gnomonic and cannot represent an arch wider than a hemisphere.
+	Nightpano Mode = "nightpano"
+	// Eclipse is a partially eclipsed Sun: the solar recipe, but with the occulting Moon measured as
+	// a second circle and masked out of the stack and of every on-disc measurement. It is a separate
+	// mode rather than a knob on Sun because the geometry changes what every measurement MEANS —
+	// "the disc" is no longer the subject, "the limb" is two limbs, and the frame's brightest edge
+	// belongs to a body that moves while the Sun does not.
+	Eclipse Mode = "eclipse"
 )
 
 // Format is the desired output artifact.
@@ -242,6 +252,40 @@ type Preset struct {
 	// OBJCTRA/OBJCTDEC clustering) | "folders" | "coords".
 	MosaicPanelSource string
 
+	// PanoProjection selects the nightpano canvas: "stereographic" (conformal, the natural
+	// look-up-at-the-sky rendering) | "galactic" (the Milky Way laid out as a level band) | "altaz"
+	// (the arch as it stood over the horizon at one instant) | "both" (the first two) | "all".
+	PanoProjection string
+	// PanoScaleDegPerPix is the canvas scale. The panels are about 0.02 deg/px, so the default 0.03
+	// deliberately samples a little coarser than the data: at the panels' own scale the canvas is
+	// four times the pixels for detail the plate solution cannot place that precisely.
+	PanoScaleDegPerPix float64
+	// PanoGroupStepDeg splits panels when consecutive frames move further than this on the sky
+	// (0 → the measured default in internal/panelgroup).
+	PanoGroupStepDeg float64
+	// PanoBandMaskLatDeg is the galactic latitude inside which canvas pixels count as BAND rather
+	// than background, for both the flattening and the colour. The band is the subject: measuring
+	// the sky's own level and colour anywhere inside it neutralises the Milky Way to grey.
+	PanoBandMaskLatDeg float64
+	// PanoBackground removes the residual sky dome from the assembled canvas with a low-order
+	// polynomial fitted OUTSIDE the band. Off keeps the canvas photometrically raw.
+	PanoBackground bool
+
+	// PanoForeground composites the landscape under the alt-az arch, taken from whichever panel was
+	// aimed lowest. It applies to the "altaz" canvas only — the other projections have no horizon to
+	// stand it on. Off by default.
+	PanoForeground bool
+
+	// FlatRadialOnly reduces a master flat to the smooth lens falloff fitted to it. See
+	// nightscape.Options.FlatRadialOnly — it is what makes a phone flat usable.
+	FlatRadialOnly bool
+
+	// KeepMeteors searches the registered frames for streaks and blends the confident meteors back
+	// into the linear sky, dropping satellites and aircraft. Applies to the milkyway and nightpano
+	// recipes, which are the ones that sigma-clip a fixed field across many frames and so are the ones
+	// that delete meteors by design.
+	KeepMeteors bool
+
 	// CoverageCrop crops the COLOUR-COMBINE inputs (never the persisted channel masters) to the
 	// largest rectangle every channel covers at CoverageMinFrac of its stacked depth. Multi-night
 	// merges leave each channel covering a different union of rotated footprints; combining them
@@ -252,6 +296,14 @@ type Preset struct {
 	// CoverageMinFrac is the per-cell depth threshold: covered = reached by at least this fraction
 	// of the channel's stacked frames (min 1).
 	CoverageMinFrac float64
+
+	// EdgeCrop trims the ragged edge off the COLOUR-COMBINE inputs (never the persisted masters):
+	// the dead wedge a drifting session leaves plus the band beside it where the stack's sky sits
+	// off its own level. Unlike CoverageCrop this is measured from the finished stack's pixels, so
+	// it needs no registration geometry and works on a single-session run — which is exactly where
+	// it was found: a 135 px drift left a 200 px skirt only 0.2% above the sky, which is +46σ to a
+	// background model, and the sky fit that followed blew a quarter of the frame to white.
+	EdgeCrop bool
 
 	// CoreSatMask repairs sensor-saturated galaxy/star cores before a MULTI-NIGHT stack: pixels at
 	// a group's post-normalization saturation ceiling are replaced from the sub-ceiling median of
@@ -451,10 +503,10 @@ func (f Format) WantsImage() bool { return f != FormatVideo }
 // ParseMode validates a mode string.
 func ParseMode(s string) (Mode, error) {
 	switch Mode(strings.ToLower(s)) {
-	case Deepsky, Nebula, Milkyway, Planetary, Livestack, Comet, Mosaic, Sun:
+	case Deepsky, Nebula, Milkyway, Planetary, Livestack, Comet, Mosaic, Sun, Nightpano, Eclipse:
 		return Mode(strings.ToLower(s)), nil
 	default:
-		return "", fmt.Errorf("unknown mode %q (want: deepsky, nebula, milkyway, planetary, livestack, comet, mosaic, sun)", s)
+		return "", fmt.Errorf("unknown mode %q (want: deepsky, nebula, milkyway, planetary, livestack, comet, mosaic, sun, nightpano, eclipse)", s)
 	}
 }
 
@@ -535,6 +587,7 @@ func presetFor(m Mode) Preset {
 			SeamNoiseEq:               true,    // coverage-weighted starlet fade of the noise-depth step at coverage boundaries (multi-group channels only)
 			CoverageCrop:              true,    // crop the colour combine to the cross-channel common covered field (multi-night wedges/casts; masters untouched)
 			CoverageMinFrac:           0.30,    // a cell counts as covered at ≥30% of the channel's stacked depth
+			EdgeCrop:                  true,    // trim the ragged stacking edge off the combine inputs (drift wedge + the skirt beside it; masters untouched)
 			CoreSatMask:               true,    // repair sensor-saturated cores from unsaturated nights before the multi-night stack
 			BackgroundAI:              true,    // per-channel GraXpert background extraction
 			CombinedBackgroundAI:      true,    // parity with deepsky: 2nd GraXpert pass on combined RGB → homogeneous sky
@@ -586,6 +639,24 @@ func presetFor(m Mode) Preset {
 			Look:            "natural", // dedicated nightscape recipe: foreground composite + faithful grade
 			Orientation:     "exif",
 		}
+	case Nightpano:
+		// Every panel is stacked by the milkyway recipe, so the panel-level knobs must match it
+		// exactly — a panorama is that recipe run N times and then assembled.
+		p := For(Milkyway)
+		p.Mode = Nightpano
+		// The canvas owns background extraction, and it must run ONCE over the whole arch: the Milky
+		// Way band IS the large-scale gradient of a 57-by-72-degree panel, so flattening a panel
+		// against its own background subtracts the subject. See internal/skypano/flatten.go.
+		p.BackgroundAI = false
+		p.BackgroundDegree = 0
+		// The panels are placed by our own solver (internal/skypano), which Siril's cannot do at this
+		// field width, and the sky is colour-balanced on the assembled canvas instead.
+		p.ColorCalibration = false
+		p.PanoProjection = "both"
+		p.PanoScaleDegPerPix = 0.03
+		p.PanoBandMaskLatDeg = 20
+		p.PanoBackground = true
+		return p
 	case Planetary:
 		return Preset{
 			Mode: Planetary,
@@ -616,6 +687,51 @@ func presetFor(m Mode) Preset {
 			Sun:      solar.DefaultPreset(),
 			Previews: true,
 		}
+	case Eclipse:
+		// Derived from Sun, because it IS the solar recipe — only the geometry differs. Every override
+		// below names a measured reason.
+		p := For(Sun)
+		p.Mode = Eclipse
+		s := &p.Sun
+		// The two-body fit, which is the whole point: one circle handed a crescent's boundary points
+		// converges on a blend of the two bodies and flips between them frame to frame.
+		s.TwoBody = true
+		// The Moon travels 0.508"/s against the Sun — 9.8 px/min at the 3.1"/px these captures run at,
+		// so a sixty-second window smears the occulter's edge by ten pixels against a point spread
+		// function of about two. Thirty seconds is the compromise: still 900 frames at 30 fps, and the
+		// swept band the stack has to exclude stays around five pixels.
+		s.WindowSeconds = 30
+		// A window is only worth stacking if its frames are allowed to reach it. The solar defaults cap
+		// a window at 150 frames, which at 30 fps is five seconds — it would split every window into
+		// six and stack a fraction of what was shot.
+		s.WindowFrames = 1200
+		s.MaxFrames = 1200
+		// Keep far more of the clip than a solar run does. At this aperture the limit is diffraction,
+		// not seeing, so frames vary little and the stack is SNR-limited; the crescent is a small part
+		// of the frame and needs every photon it can get.
+		s.KeepPercent = 70
+		// The capture is undersampled by roughly two and a half times — 3.1"/px against a diffraction
+		// FWHM near 2.3" — and the disc wanders hundreds of pixels across a clip, so there is ample
+		// sub-pixel dither for drizzle to work with.
+		s.Drizzle = 1.5
+		// Rendered in the colour the recording had, measured off the clip, rather than in a chosen
+		// palette. It is the one thing about an eclipse that is genuinely photographic: the crescent
+		// through an Hα etalon has a colour the phone recorded, and inventing a different one throws
+		// that away. Falls back to gold when there is nothing to measure.
+		s.Finish.Palette = solar.PaletteNative
+		// Hand back the sharpest individual frames as well as the stack. On this capture the stack is
+		// measurably blurrier than its own inputs, so the best single frame is a real candidate for
+		// the best picture and the run should not make that choice silently.
+		s.BestFrames = 12
+		s.BestFrameGapSeconds = 20
+		// The alignment-point field is OFF, measured rather than assumed. It is meant to correct
+		// atmospheric distortion across the disc, and on a crescent most of the disc is occulter — so
+		// most of its nodes correlate the Moon against the Moon and the field it fits is then applied
+		// to the Sun. On 160 real frames it cost 2%: solar limb sigma 3.11 without it, 3.17 with. The
+		// full-disc solar path had already measured it making the limb worse; a crescent only sharpens
+		// the case.
+		s.APAlign = false
+		return p
 	case Livestack:
 		// Live stacking finalizes through the standard deep-sky path; the per-batch live preview reads
 		// only the grade thresholds. Reuse the deepsky preset verbatim, just retagging the mode.
@@ -653,6 +769,7 @@ func presetFor(m Mode) Preset {
 			SeamNoiseEq:               true,    // coverage-weighted starlet fade of the noise-depth step at coverage boundaries (multi-group channels only)
 			CoverageCrop:              true,    // crop the colour combine to the cross-channel common covered field (multi-night wedges/casts; masters untouched)
 			CoverageMinFrac:           0.30,    // a cell counts as covered at ≥30% of the channel's stacked depth
+			EdgeCrop:                  true,    // trim the ragged stacking edge off the combine inputs (drift wedge + the skirt beside it; masters untouched)
 			CoreSatMask:               true,    // repair sensor-saturated cores from unsaturated nights before the multi-night stack
 			ChromaBlur:                0,       // 0: GraXpert AI denoise handles colour noise; no blur → crisp star halos
 			ChromaSmoothPx:            6,       // mean-preserving chroma smooth on the combined RGB → flattens residual colour patches (no luma cost)

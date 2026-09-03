@@ -109,18 +109,19 @@ func coarseLimb(im *fits.Image) (Limb, bool, bool) {
 	return finishLimb(c, pts), partial, acceptLimb(c, pts, im)
 }
 
-// discMask thresholds the frame at the half-way level between sky and disc — which is where the
-// limb physically sits — and keeps the largest connected component.
-func discMask(im *fits.Image) ([]bool, bool) {
-	p := im.Pix[0]
-	sample := imgops.Subsample(p, 200000)
-	sky := imgops.Percentile(sample, 20)
+// discLevels measures the frame's sky and disc levels — the two ends the limb threshold sits
+// between. It is a function of its own because the two-body fit needs the same pair of numbers to
+// judge how much local contrast counts as a real edge (pair.go).
+//
+// Two passes: split roughly, then take the median of the bright side as the true disc level so the
+// half-max threshold does not drift with how much of the frame the disc happens to fill.
+func discLevels(im *fits.Image) (sky, disc float64, ok bool) {
+	sample := imgops.Subsample(im.Pix[0], 200000)
+	sky = imgops.Percentile(sample, 20)
 	peak := imgops.Percentile(sample, 99.5)
 	if peak-sky < 1e-9 {
-		return nil, false
+		return 0, 0, false
 	}
-	// Two passes: split roughly, then take the median of the bright side as the true disc level so
-	// the half-max threshold does not drift with how much of the frame the disc happens to fill.
 	rough := float32(sky + 0.5*(peak-sky))
 	var bright []float32
 	for _, v := range sample {
@@ -129,14 +130,25 @@ func discMask(im *fits.Image) ([]bool, bool) {
 		}
 	}
 	if len(bright) < 16 {
-		return nil, false
+		return 0, 0, false
 	}
-	disc := imgops.Percentile(bright, 50)
+	disc = imgops.Percentile(bright, 50)
 	// A limb only exists if there is sky to see it against. Without this gate a frame zoomed right
 	// into the disc surface — no sky anywhere in it — still splits at the median of its own noise,
 	// producing a speckled mask whose ragged boundary fits a plausible-looking circle. That circle
 	// would then define the scale for its whole group. Refusing is the only honest answer.
 	if disc <= 0 || (disc-sky)/disc < minSkyContrast {
+		return 0, 0, false
+	}
+	return sky, disc, true
+}
+
+// discMask thresholds the frame at the half-way level between sky and disc — which is where the
+// limb physically sits — and keeps the largest connected component.
+func discMask(im *fits.Image) ([]bool, bool) {
+	p := im.Pix[0]
+	sky, disc, ok := discLevels(im)
+	if !ok {
 		return nil, false
 	}
 	thr := float32(sky + 0.5*(disc-sky))
@@ -325,7 +337,29 @@ func refineLimb(im *fits.Image, coarse Limb) (Limb, bool) {
 // limbByInflection samples the radial profile across the limb and returns the radius of steepest
 // fall, interpolated to sub-pixel by fitting a parabola to the gradient's peak.
 func limbByInflection(im *fits.Image, c Limb, cos, sin float64) (float64, bool) {
-	r0, r1 := c.R*(1-limbSearchSpan), c.R*(1+limbSearchSpan)
+	return edgeByInflection(im, c, cos, sin, edgeFalling, limbSearchSpan)
+}
+
+// edgeDirection is which way the brightness steps as a ray leaves the centre.
+type edgeDirection float64
+
+const (
+	// edgeFalling is bright inside, dark outside — the solar limb against the sky.
+	edgeFalling edgeDirection = 1
+	// edgeRising is dark inside, bright outside — the lunar limb, whose interior is the occulting
+	// body and whose exterior is the still-visible Sun. An eclipse is the only place this occurs,
+	// and it is the whole reason this parameter exists: searching for a falling edge along a ray
+	// that leaves the Moon's centre finds the far side of the crescent, tens of pixels away.
+	edgeRising edgeDirection = -1
+)
+
+// edgeByInflection locates a step edge along one ray at its point of steepest change.
+//
+// The direction argument only flips which sign of gradient is sought; the sub-pixel vertex is the
+// same parabola either way, because a parabola through three gradient samples has its extremum at
+// the same place whether that extremum is a peak or a trough.
+func edgeByInflection(im *fits.Image, c Limb, cos, sin float64, dir edgeDirection, span float64) (float64, bool) {
+	r0, r1 := c.R*(1-span), c.R*(1+span)
 	n := int((r1-r0)/limbSearchStep) + 1
 	if n < 9 {
 		return 0, false
@@ -341,10 +375,12 @@ func limbByInflection(im *fits.Image, c Limb, cos, sin float64) (float64, bool) 
 	}
 	smoothProfile(prof)
 
-	// Central differences, then the most negative one — the outward-falling edge.
+	// Central differences, then the most negative one — the outward-falling edge. A rising edge is
+	// the same search on the negated profile.
+	s := float64(dir)
 	best, bestSlope := -1, 0.0
 	for k := 1; k < len(prof)-1; k++ {
-		if d := prof[k+1] - prof[k-1]; d < bestSlope {
+		if d := s * (prof[k+1] - prof[k-1]); d < bestSlope {
 			best, bestSlope = k, d
 		}
 	}
@@ -352,9 +388,9 @@ func limbByInflection(im *fits.Image, c Limb, cos, sin float64) (float64, bool) 
 		return 0, false
 	}
 	// Parabolic vertex through the three gradient samples around the peak.
-	gm := prof[best] - prof[best-2]
-	g0 := prof[best+1] - prof[best-1]
-	gp := prof[best+2] - prof[best]
+	gm := s * (prof[best] - prof[best-2])
+	g0 := s * (prof[best+1] - prof[best-1])
+	gp := s * (prof[best+2] - prof[best])
 	shift := 0.0
 	if den := gm - 2*g0 + gp; math.Abs(den) > 1e-12 {
 		shift = 0.5 * (gm - gp) / den

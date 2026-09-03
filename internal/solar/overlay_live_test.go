@@ -29,7 +29,7 @@ func TestProbeOverlay_Live(t *testing.T) {
 		}
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			dst := filepath.Join(outDir, "limb_"+sanitizeName(path)+".png")
-			p, err := ProbeOverlay(context.Background(), "", path, dst)
+			p, err := ProbeOverlay(context.Background(), "", path, dst, false)
 			require.NoError(t, err)
 			t.Logf("ok=%v centre=(%.1f,%.1f) r=%.1f arc=%.0f° resid=%.2fpx points=%d partial=%v → %s",
 				p.DiscOK, p.Disc.CX, p.Disc.CY, p.Disc.R, p.Disc.ArcDeg, p.Disc.ResidRMS,

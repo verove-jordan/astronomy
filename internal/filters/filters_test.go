@@ -84,3 +84,40 @@ func TestNarrowband_IsSubsetOfCanonical(t *testing.T) {
 		assert.Less(t, Rank(f), len(Canonical), f)
 	}
 }
+
+func TestIsColorAndIsMono(t *testing.T) {
+	tests := []struct {
+		in            string
+		color, isMono bool
+	}{
+		{"RGB", true, false},
+		{"rgb", true, false},
+		{"OSC", true, false},
+		{"Color", true, false},
+		{"colour", true, false},
+		{"Bayer", true, false},
+		// An empty name is neither: it means "not known yet", and the inventory decides from the
+		// pixels and headers. Reading it as colour would make every unlabeled mono capture look OSC.
+		{"", false, false},
+		{"  ", false, false},
+		{"L", false, true},
+		{"Ha", false, true},
+		// A custom filter nobody has mapped yet is still evidence of a filter wheel.
+		{"Custom", false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			assert.Equal(t, tt.color, IsColor(tt.in), "IsColor(%q)", tt.in)
+			assert.Equal(t, tt.isMono, IsMono(tt.in), "IsMono(%q)", tt.in)
+		})
+	}
+}
+
+// Color must never join Canonical: it would take a wheel rank, get an IsNarrowband answer and claim
+// a slot in the emission-screen tables, none of which mean anything for a colour sensor.
+func TestColor_IsNotACanonicalFilter(t *testing.T) {
+	assert.Equal(t, len(Canonical), Rank(Color), "Color must sort after every real filter")
+	assert.False(t, IsNarrowband(Color))
+	_, ok := Token(Color)
+	assert.False(t, ok, "Color is not a filter-wheel token")
+}

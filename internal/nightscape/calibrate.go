@@ -74,6 +74,16 @@ func calibrateLights(ctx context.Context, o Options, plan calPlan, seqDir string
 	// different resolution) so a mismatch degrades to "less calibration", never a crash.
 	dark, notes = matchOrDrop(dark, ref, "dark", notes)
 	bias, notes = matchOrDrop(bias, ref, "bias", notes)
+	// The flat is reduced to its radial falloff BEFORE the size check, because that is what makes the
+	// check pass: a radial model in normalised radius does not know how big the image is, so a flat
+	// shot at 48 megapixels calibrates 12-megapixel lights without binning anything. It also throws
+	// away the non-radial part, which on a phone flat is mostly a reflection of the phone's own camera
+	// bump in the middle of the frame. See internal/calib/radialflat.go.
+	if flat != nil && o.FlatRadialOnly {
+		var note string
+		flat, note = radialiseFlat(flat, ref)
+		notes = joinNotes(notes, note)
+	}
 	flat, notes = matchOrDrop(flat, ref, "flat", notes)
 	if dark == nil && bias == nil && flat == nil {
 		return "calibration skipped (" + notes + ")"
@@ -95,11 +105,18 @@ func calibrateLights(ctx context.Context, o Options, plan calPlan, seqDir string
 		}
 	}
 
-	done := 0
+	done, mismatched := 0, 0
 	for _, name := range lightNames {
 		im, err := fits.ReadImage(name)
 		if err != nil {
 			return fmt.Sprintf("calibration aborted (read %s: %v); %d lights done", filepath.Base(name), err, done)
+		}
+		// The masters were matched against ref, ONE light. That is not the same as matching every
+		// light: a folder holding two sensor resolutions passes the check on ref and then runs the
+		// pixel math off the end of the smaller master. Leave such a frame uncalibrated and say so.
+		if im.W != ref.W || im.H != ref.H || im.C != ref.C {
+			mismatched++
+			continue
 		}
 		normalizeADU(im) // Siril convert output is 0..65535 ADU; bring it to [0,1] before linearize
 		linearizeSRGB(im)
@@ -120,6 +137,10 @@ func calibrateLights(ctx context.Context, o Options, plan calPlan, seqDir string
 		done++
 	}
 	summary := fmt.Sprintf("calibrated %d lights (dark=%v flat=%v bias=%v)", done, dark != nil, useFlat, bias != nil && dark == nil)
+	if mismatched > 0 {
+		summary += fmt.Sprintf("; %d light(s) left uncalibrated — they are not %dx%d like the rest of the set",
+			mismatched, ref.W, ref.H)
+	}
 	if notes != "" {
 		summary += "; " + notes
 	}
@@ -282,12 +303,17 @@ func matchOrDrop(m, ref *fits.Image, tag, notes string) (*fits.Image, string) {
 	return m, notes
 }
 
-// --- in-place pixel math (masters and lights share dimensions; callers guarantee it) ---
+// --- in-place pixel math ---
+//
+// Every loop below is bounded by the SHORTER of the two planes. Callers are expected to have matched
+// dimensions already, and one of them once did not: a mismatched master ran the subtraction off the
+// end and took the whole run down with it. A wrong picture can be seen and argued with; a panic
+// cannot, so the bound stays even though it should never be reached.
 
 func subtractImage(im, sub *fits.Image) {
 	for c := 0; c < im.C && c < sub.C; c++ {
 		p, s := im.Pix[c], sub.Pix[c]
-		for i := range p {
+		for i := 0; i < len(p) && i < len(s); i++ {
 			p[i] -= s[i]
 		}
 	}
@@ -298,7 +324,7 @@ func subtractImage(im, sub *fits.Image) {
 func divideImage(im, flat *fits.Image) {
 	for c := 0; c < im.C && c < flat.C; c++ {
 		p, f := im.Pix[c], flat.Pix[c]
-		for i := range p {
+		for i := 0; i < len(p) && i < len(f); i++ {
 			if f[i] > 1e-4 {
 				p[i] /= f[i]
 			}
@@ -372,3 +398,36 @@ func joinNotes(parts ...string) string {
 	}
 	return out
 }
+
+// radialiseFlat replaces a master flat with the smooth lens falloff fitted to it, materialised at the
+// lights' own size. It returns the original and a note if the fit could not be made — a flat that
+// cannot be reduced is better handled by the size check that follows than by guessing.
+func radialiseFlat(flat, ref *fits.Image) (*fits.Image, string) {
+	lum := make([]float64, flat.W*flat.H)
+	for c := 0; c < flat.C; c++ {
+		for i, v := range flat.Pix[c] {
+			lum[i] += float64(v)
+		}
+	}
+	for i := range lum {
+		lum[i] /= float64(flat.C)
+	}
+	prof := calib.RadialProfileOf(lum, flat.W, flat.H, radialFlatBins)
+	v, err := calib.FitRadialVignette(prof, radialFlatFitFrom)
+	if err != nil {
+		return flat, "flat kept whole (" + err.Error() + ")"
+	}
+	return v.Image(ref.W, ref.H, ref.C), fmt.Sprintf(
+		"flat reduced to its lens falloff (corner %.0f%% of centre, fit rms %.4f, centre extrapolated from r>%.2f)",
+		100*v.At(1)/v.At(0), v.RMS, v.FitFrom)
+}
+
+const (
+	// radialFlatBins is how finely the falloff is measured. Twenty bins over the half-diagonal is
+	// about 100 pixels per bin on a 12-megapixel frame — far finer than a vignette varies.
+	radialFlatBins = 20
+	// radialFlatFitFrom is where the CLEAN data starts. Measured on a real iPhone flat set, the
+	// reflection of the phone's camera bump reaches to about 0.45 of the half-diagonal; fitting
+	// outside it and extrapolating inward is what keeps that reflection out of the model.
+	radialFlatFitFrom = 0.45
+)

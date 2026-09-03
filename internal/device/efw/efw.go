@@ -133,6 +133,43 @@ func Available() (string, error) {
 	return fmt.Sprintf("SDK loaded; %d wheel(s) connected", n), nil
 }
 
+// Device names one filter wheel the SDK can see, as discovery reports it.
+type Device struct {
+	Index int32
+	ID    int32
+}
+
+// List enumerates the connected wheels WITHOUT opening any of them.
+//
+// Identity only, deliberately: EFWGetProperty — the call that would give the model name and the slot
+// count — requires the wheel to be OPEN, and discovery runs on a timer, so reading the name here
+// would fight the sequencer for the wheel and could re-home it mid-sequence. The name arrives on
+// connect instead.
+func List() ([]Device, error) {
+	s, err := load()
+	if err != nil {
+		return nil, err
+	}
+	return listWheels(s), nil
+}
+
+// listWheels is split from List so the fake SDK can drive it with no vendor library present.
+func listWheels(s *sdk) []Device {
+	n := s.getNum()
+	if n <= 0 || n > 16 {
+		return nil
+	}
+	out := make([]Device, 0, n)
+	for i := int32(0); i < n; i++ {
+		var id int32
+		if err := efwCheck("EFWGetID", s.getID(i, &id)); err != nil {
+			continue // one wheel that will not identify must not hide the rest
+		}
+		out = append(out, Device{Index: i, ID: id})
+	}
+	return out
+}
+
 // Wheel implements device.FilterWheel.
 type Wheel struct {
 	mu  sync.Mutex

@@ -29,6 +29,7 @@ import CollapsibleCard from "@/components/Common/CollapsibleCard.vue";
 import TwoPane from "@/components/Common/TwoPane.vue";
 import StatusPill from "@/components/Common/StatusPill.vue";
 import EnvWarnings from "@/components/Common/EnvWarnings.vue";
+import HelpButton from "@/components/Common/HelpButton.vue";
 import IconFolder from "@/components/Icons/IconFolder.vue";
 import IconCloud from "@/components/Icons/IconCloud.vue";
 import type { CreateOpts, KnobRange, StackMenu } from "@/stores/jobs";
@@ -1273,7 +1274,10 @@ function histChip(exists: boolean): string {
 <template>
   <div class="space-y-6">
     <div>
-      <h1 class="text-2xl font-semibold">{{ t("import.title") }}</h1>
+      <div class="flex items-center gap-2">
+        <h1 class="text-2xl font-semibold">{{ t("import.title") }}</h1>
+        <HelpButton />
+      </div>
       <p class="text-sm text-slate-500 dark:text-slate-400">
         {{ t("import.hint") }}
       </p>
@@ -1592,7 +1596,11 @@ function histChip(exists: boolean): string {
 
     <!-- Selected capture + channel mapping + run controls -->
     <div v-if="inv" class="grid gap-4 lg:grid-cols-2">
-      <CaptureSummary :summary="summary" :path="summaryPath" />
+      <CaptureSummary
+        :summary="summary"
+        :path="summaryPath"
+        :color-model="inv.color_model"
+      />
       <FilterMappingEditor
         v-if="detectedFilters.length"
         v-model="mapping"

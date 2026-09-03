@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute } from "vue-router";
 import TwoPane from "@/components/Common/TwoPane.vue";
+import HelpButton from "@/components/Common/HelpButton.vue";
 import CameraControls from "@/components/Capture/CameraControls.vue";
 import DevicePanel from "@/components/Capture/DevicePanel.vue";
 import FocusMeter from "@/components/Capture/FocusMeter.vue";
@@ -113,9 +114,12 @@ const imageScale = computed(
 <template>
   <div class="space-y-4">
     <header>
-      <h1 class="text-xl font-semibold text-slate-800 dark:text-slate-100">
-        {{ t("capture.title") }}
-      </h1>
+      <div class="flex items-center gap-2">
+        <h1 class="text-xl font-semibold text-slate-800 dark:text-slate-100">
+          {{ t("capture.title") }}
+        </h1>
+        <HelpButton />
+      </div>
       <p class="text-sm text-slate-500 dark:text-slate-400">
         {{ t("capture.subtitle") }}
       </p>
@@ -162,7 +166,10 @@ const imageScale = computed(
                     : 'flex flex-col gap-4 xl:flex-row'
                 "
               >
-                <div :class="fullscreen ? 'h-full w-full' : 'min-w-0 flex-1'">
+                <div
+                  :class="fullscreen ? 'h-full w-full' : 'min-w-0 flex-1'"
+                  data-demo="capture-liveview"
+                >
                   <LiveView
                     :fill="fullscreen"
                     :chrome-visible="chromeVisible"
@@ -173,6 +180,7 @@ const imageScale = computed(
                      floating over it, fading out when the mouse rests so nothing covers the stars. -->
                 <aside
                   v-if="store.connected.camera"
+                  data-demo="capture-camera"
                   :class="[
                     fullscreen
                       ? 'absolute right-0 top-0 h-full w-80 overflow-y-auto border-l border-white/10 bg-slate-950/85 p-4 backdrop-blur transition-opacity duration-300'
@@ -244,7 +252,7 @@ const imageScale = computed(
             <LiveHistogram :stats="store.liveStats" log />
           </section>
 
-          <section :class="card">
+          <section :class="card" data-demo="capture-sequencer">
             <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
               <h2
                 class="text-sm font-semibold text-slate-700 dark:text-slate-200"
@@ -282,7 +290,7 @@ const imageScale = computed(
 
       <template #aside>
         <div class="space-y-4">
-          <section :class="card">
+          <section :class="card" data-demo="capture-devices">
             <h2
               class="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-200"
             >
@@ -300,11 +308,11 @@ const imageScale = computed(
             <MountPanel />
           </section>
 
-          <section :class="card">
+          <section :class="card" data-demo="capture-polar">
             <PolarCameraPanel />
           </section>
 
-          <section :class="card">
+          <section :class="card" data-demo="capture-filters">
             <h2
               class="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-200"
             >
@@ -313,7 +321,7 @@ const imageScale = computed(
             <FilterSlots />
           </section>
 
-          <section :class="card">
+          <section :class="card" data-demo="capture-focus">
             <h2
               class="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-200"
             >

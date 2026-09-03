@@ -35,6 +35,16 @@ type PhoneKey struct {
 	ExposureMs  int64
 	Width       int
 	Height      int
+	// ISOInvariant drops ISO from the match. Set it for a raw whose gain is already normalised —
+	// a linear DNG such as Apple ProRAW, where the same scene at ISO 2500 and ISO 6400 develops to
+	// the SAME pixel level (measured: 4% apart, not the 2.56x the ISO ratio implies).
+	//
+	// Without it a real session cannot be calibrated at all: a phone on auto-exposure picks a
+	// different ISO for almost every frame, so darks shot minutes after the lights — at the same
+	// exposure, the same temperature, the same sensor — are refused for differing in a number that
+	// no longer describes the sensor state. Exposure still has to match, because dark current
+	// genuinely scales with time.
+	ISOInvariant bool
 }
 
 // PhoneSelection is the phone masters chosen for one light set, plus human-readable notes.
@@ -115,7 +125,7 @@ func bestPhoneFlat(light PhoneKey, masters []PhoneMaster) *PhoneMaster {
 // ISO and dimensions, and equal camera model when both carry one (an empty model matches, so a master
 // with no readable model still applies to the same-dimension, same-ISO light).
 func sameSensor(light PhoneKey, m *PhoneMaster) bool {
-	if m.ISO != light.ISO {
+	if !light.ISOInvariant && m.ISO != light.ISO {
 		return false
 	}
 	if m.CameraModel != "" && light.CameraModel != "" && m.CameraModel != light.CameraModel {

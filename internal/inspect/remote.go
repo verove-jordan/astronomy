@@ -47,12 +47,18 @@ func FrameFromHeader(path string, h *fits.Header) *Frame {
 	}
 	if v, ok := h.String("BAYERPAT"); ok {
 		if b := strings.TrimSpace(v); b != "" && !strings.EqualFold(b, "NONE") {
-			fr.Bayer = strings.ToUpper(b) // one-shot-color; the mono pipeline excludes these
+			fr.Bayer = strings.ToUpper(b) // one-shot-color, still a raw CFA mosaic: needs debayering
 		}
 	}
 	n1, _ := h.Int("NAXIS1")
 	n2, _ := h.Int("NAXIS2")
 	fr.Width, fr.Height = int(n1), int(n2)
+	// NAXIS3 is the plane count: 3 = an ALREADY-DEBAYERED colour image (Siril writes these after a
+	// `-debayer` calibrate, and any RGB TIFF converted to FITS looks the same). Without this a colour
+	// FITS with no BAYERPAT was indistinguishable from a mono frame and got stacked as luminance.
+	if n3, ok := h.Int("NAXIS3"); ok && n3 > 0 {
+		fr.Channels = int(n3)
+	}
 	fr.Object, _ = h.String("OBJECT")
 	fr.Instrument, _ = h.String("INSTRUME")
 	fr.Creator, _ = h.String("SWCREATE")
