@@ -120,6 +120,23 @@ func frameDims(path string) (int, int) {
 	return int(w), int(h)
 }
 
+// frameChannels is a frame's plane count (NAXIS3), 1 when the keyword is absent.
+//
+// It is what turns a per-plane size into a per-FRAME size, and the two are not the same once a
+// one-shot-colour sequence is debayered: fits.Image keeps C separate W*H float32 planes
+// (Pix[channel]), so a calibrated OSC frame costs THREE times a mono one. Sizing a memory budget
+// from W*H*4 alone under-counts an OSC run by 3× — see trailmask.go, where that killed the engine.
+func frameChannels(path string) int {
+	f, err := fits.Open(path)
+	if err != nil {
+		return 1
+	}
+	if c, ok := f.Header.Int("NAXIS3"); ok && c > 0 {
+		return int(c)
+	}
+	return 1
+}
+
 // pickAnchorRef returns the anchor span's reference frame: the middle frame when it registered,
 // else the nearest registered neighbour (middle-out) — or -1 when none registered.
 func pickAnchorRef(span groupSpan, registered func(int) bool) int {
