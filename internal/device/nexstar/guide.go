@@ -49,6 +49,24 @@ func (m *Mount) PulseGuide(ctx context.Context, axis device.GuideAxis, arcsecPer
 		d = minPulseDuration
 	}
 
+	// Read the drive mode BEFORE moving, and put it back afterwards — the same bracket Nudge has, for
+	// the same measured reason.
+	//
+	// A pulse turns the axis with a variable-rate slew, and Celestron's notes warn those conflict with
+	// tracking. Measured on an AVX at firmware 5.31 (see Nudge): the axis is left STOPPED afterwards,
+	// while the mount goes on answering the `t` query with its old mode — so State() still reports
+	// tracking:true and nothing downstream notices. Guiding makes that worse than dithering does,
+	// because it happens DURING an exposure and can happen dozens of times in one: an unrestored drive
+	// means the rest of that sub is taken with right ascension standing still at 15"/s of sky.
+	//
+	// The mode is REMEMBERED rather than asked for, which is the one way this differs from Nudge.
+	// Guiding fires constantly and a `t` query per pulse would put two extra round trips on the link
+	// for every correction of the night; State() already reads the mode about once a second and
+	// SetTracking records what it wrote, so trackingModeForGuide costs nothing after the first pulse.
+	// What is left is the one frame that cannot be avoided: re-asserting the drive afterwards.
+	mode := m.trackingModeForGuide()
+	defer m.restoreTracking(mode)
+
 	motor := axisAzmRA
 	if axis == device.GuideAxisDec {
 		motor = axisAltDec

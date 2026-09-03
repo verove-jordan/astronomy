@@ -148,16 +148,30 @@ type fakeHC struct {
 	// the write verification.
 	pecCorrupt map[int]int8
 
-	// guideRate is the motor controller's autoguide-rate byte, in 1/256ths of sidereal.
-	guideRate byte
+	// guideRate is the motor controller's autoguide-rate byte, in 1/256ths of sidereal. There is one
+	// per motor because that is how the hardware stores it, and a pair that disagree is exactly what
+	// the audit exists to notice.
+	guideRate    byte
+	guideRateDec byte
+
+	// site and clock are the hand controller's own stored values, as the eight raw bytes `w` and `h`
+	// answer with. Held encoded so the fake exercises the same wire format the driver parses.
+	site  []byte
+	clock []byte
+
+	// motorVersion is what each motor controller answers to the version command.
+	motorVersion [2]byte
 }
 
 func newFakeHC() *fakeHC {
 	return &fakeHC{
 		aligned: true, raNow: 10, decNow: 41,
 		pecTable: make([]int8, 88), pecIndexed: true,
-		guideRate: 128, // half sidereal, as mounts tend to ship
-		trackMode: TrackingEQNorth,
+		guideRate: 128, guideRateDec: 128, // half sidereal, as mounts tend to ship
+		trackMode:    TrackingEQNorth,
+		site:         encodeSite(Site{LatDeg: 48.8566, LonDeg: 2.3522})[1:],
+		clock:        encodeClock(time.Now())[1:],
+		motorVersion: [2]byte{7, 11},
 	}
 }
 
@@ -196,6 +210,16 @@ func (f *fakeHC) replyTo(p []byte) []byte {
 		return []byte{f.trackMode, '#'}
 	case p[0] == 'p':
 		return []byte("W#")
+	case p[0] == 'w':
+		return append(append([]byte{}, f.site...), '#')
+	case p[0] == 'W' && len(p) >= 9:
+		f.site = append([]byte{}, p[1:9]...)
+		return []byte("#")
+	case p[0] == 'h':
+		return append(append([]byte{}, f.clock...), '#')
+	case p[0] == 'H' && len(p) >= 9:
+		f.clock = append([]byte{}, p[1:9]...)
+		return []byte("#")
 	case p[0] == 'r':
 		// A real mount starts slewing; the fake jumps to the commanded position.
 		if ra, dec, err := DecodeRADec(string(p[1:])); err == nil {
@@ -257,6 +281,8 @@ func (f *fakeHC) replyPEC(p []byte) ([]byte, bool) {
 	case mcPECRecordStop:
 		f.pecRecStopped = true
 		return []byte("#"), true
+	case mcGetVersion:
+		return []byte{f.motorVersion[0], f.motorVersion[1], '#'}, true
 	}
 	return nil, false
 }

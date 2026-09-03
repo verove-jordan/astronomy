@@ -8,7 +8,7 @@
 //	astrostack video   <file> [flags] process a lunar/planetary video
 //	astrostack serve                  run the HTTP API server
 //	astrostack device                 run the device server (camera / filter wheel / mount)
-//	astrostack mount <sub>            diagnose, probe or soak-test the hand-controller link
+//	astrostack mount <sub>            diagnose, probe, soak-test or audit the hand-controller link
 //	astrostack migrate                apply database migrations
 //	astrostack doctor                 report which external tools are present and what is degraded
 package main
@@ -82,7 +82,7 @@ Usage:
   astrostack video   <file> [flags]  process a lunar/planetary video
   astrostack serve                   run the HTTP API server
   astrostack device                  run the device server (camera / filter wheel / mount)
-  astrostack mount <sub>             hand-controller link: doctor | probe | soak
+  astrostack mount <sub>             hand-controller link: doctor | probe | soak | audit | reset
   astrostack migrate                 apply database migrations
   astrostack doctor                  report which external tools are present, and what degrades without them
   astrostack lightpollution-atlas    build the offline light-pollution atlas (djlorenz model)

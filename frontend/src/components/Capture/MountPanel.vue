@@ -5,7 +5,7 @@ import { btnGhost, input } from "@/constants/styles";
 import { apiGet, apiPost } from "@/services/api";
 import { useCaptureStore } from "@/stores/capture";
 import { useSkyStore } from "@/stores/sky";
-import type { MountDiagnosis } from "@/types";
+import type { MountAudit, MountDiagnosis, MountRestoreResult } from "@/types";
 import { decToDMS, raToHMS } from "@/utils/sexagesimal";
 
 // Manual mount control: pick the port, nudge it around, turn tracking on and off, stop it.
@@ -287,6 +287,85 @@ function releaseAll() {
 
 function onVisibilityChange() {
   if (document.hidden) releaseAll();
+}
+
+// Reading the mount back, and putting back what this app can have written.
+//
+// This exists because nothing else can answer "what is actually in there". The hand controller has
+// no menu that shows its stored periodic-error table and none that erases one; the autoguide rates
+// sit on the motor boards again. After a night that went wrong, this is the difference between
+// suspecting the software wrote something and knowing.
+//
+// It is read on demand and never polled: eighty-eight worm bins is eighty-eight round trips on a
+// 9600-baud link, and the mount has better things to do with them during a session.
+const audit = ref<MountAudit | null>(null);
+const auditing = ref(false);
+const restore = ref<MountRestoreResult | null>(null);
+const resetting = ref(false);
+
+// The three defaults are the three settings the rest of this UI cannot reach at all — so if anything
+// unexpected is in the mount, it is one of these. Site, clock and tracking are left off: they are
+// already one button away above, and rewriting them is a change rather than an undo.
+const resetPick = reactive({
+  pec: true,
+  pec_playback: true,
+  guide_rate: true,
+  site: false,
+  clock: false,
+  tracking: false,
+});
+
+const resetChosen = computed(() => Object.values(resetPick).some(Boolean));
+
+async function readMount() {
+  auditing.value = true;
+  error.value = "";
+  try {
+    const res = await store.auditMount();
+    audit.value = res.audit ?? null;
+    if (!res.connected) error.value = t("capture.mount.notConnected");
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    auditing.value = false;
+  }
+}
+
+// A preview first, always. The server defaults to a dry run for the same reason: this is the only
+// thing the browser can reach that changes state inside the hardware and outlives the session.
+async function runReset(apply: boolean) {
+  if (!resetChosen.value) return;
+  if (apply && !window.confirm(t("capture.mount.resetConfirm"))) return;
+  resetting.value = true;
+  error.value = "";
+  try {
+    restore.value = await store.resetMount({ ...resetPick, apply });
+    // The after-reading is what proves the change, so show it in place of the stale one.
+    if (restore.value?.after) audit.value = restore.value.after;
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    resetting.value = false;
+  }
+}
+
+// The stored curve as a sparkline. A table of eighty-eight signed bytes says nothing to look at;
+// its shape says immediately whether this is a worm correction or noise.
+const pecPath = computed(() => {
+  const curve = audit.value?.pec.curve;
+  if (!curve?.length) return "";
+  const peak = Math.max(1, ...curve.map((v) => Math.abs(v)));
+  return curve
+    .map((v, i) => {
+      const x = (i / (curve.length - 1)) * 100;
+      const y = 10 - (v / peak) * 9;
+      return `${i ? "L" : "M"}${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(" ");
+});
+
+function fixed(v: number | undefined, digits = 1): string {
+  return v === undefined ? "—" : v.toFixed(digits);
 }
 
 function ms(v: number | undefined): string {
@@ -608,6 +687,335 @@ function uptime(v: number | undefined): string {
         >
           {{ siteResult }}
         </p>
+      </details>
+
+      <!-- What is stored in the mount. Two boards, and the split matters: the hand controller holds
+           the site, clock and alignment, while the motor controllers hold the periodic-error table
+           and the autoguide rates and keep them when a hand controller is swapped. That is why a
+           "factory reset" clears different things depending on which firmware is asked. -->
+      <details
+        class="rounded-md border border-slate-200 p-2 dark:border-slate-700"
+        data-testid="mount-audit"
+      >
+        <summary
+          class="cursor-pointer text-xs text-slate-600 dark:text-slate-300"
+        >
+          {{ t("capture.mount.auditTitle") }}
+        </summary>
+        <p class="mt-1 text-[11px] text-slate-400">
+          {{ t("capture.mount.auditHint") }}
+        </p>
+
+        <button
+          :class="btnGhost"
+          class="mt-2 !px-2 !py-1 text-xs"
+          :disabled="auditing || !connected"
+          data-testid="mount-audit-read"
+          @click="readMount"
+        >
+          {{
+            auditing
+              ? t("capture.mount.auditReading")
+              : t("capture.mount.auditRead")
+          }}
+        </button>
+
+        <div v-if="audit" class="mt-2 space-y-2 text-[11px]">
+          <p class="text-slate-500 dark:text-slate-400">
+            {{ audit.identity.model }} · {{ t("capture.mount.auditFirmware") }}
+            {{ audit.identity.firmware }}
+            <span
+              v-if="audit.identity.ra_motor_firmware"
+              class="text-slate-400"
+            >
+              · {{ t("capture.mount.auditMotorFirmware") }}
+              {{ audit.identity.ra_motor_firmware }} /
+              {{ audit.identity.dec_motor_firmware }}
+            </span>
+          </p>
+
+          <div>
+            <p class="font-medium text-slate-600 dark:text-slate-300">
+              {{ t("capture.mount.auditHandController") }}
+            </p>
+            <dl class="mt-0.5 space-y-0.5 text-slate-500 dark:text-slate-400">
+              <div class="flex gap-2">
+                <dt class="w-24 shrink-0">
+                  {{ t("capture.mount.auditSite") }}
+                </dt>
+                <dd v-if="audit.site.read" class="font-mono">
+                  {{ audit.site.lat_deg.toFixed(4) }}°,
+                  {{ audit.site.lon_deg.toFixed(4) }}°
+                </dd>
+                <dd v-else class="text-slate-400">
+                  {{ t("capture.mount.auditNotReadable") }} —
+                  {{ audit.site.err }}
+                </dd>
+              </div>
+              <div class="flex gap-2">
+                <dt class="w-24 shrink-0">
+                  {{ t("capture.mount.auditClock") }}
+                </dt>
+                <dd v-if="audit.clock.read" class="font-mono">
+                  {{ audit.clock.utc.slice(0, 19).replace("T", " ") }}
+                  <span
+                    :class="
+                      Math.abs(audit.clock.skew_sec) > 60
+                        ? 'text-amber-600 dark:text-amber-400'
+                        : 'text-slate-400'
+                    "
+                  >
+                    ({{
+                      t("capture.mount.auditSkew", {
+                        skew: fixed(audit.clock.skew_sec, 0),
+                      })
+                    }})
+                  </span>
+                </dd>
+                <dd v-else class="text-slate-400">
+                  {{ t("capture.mount.auditNotReadable") }} —
+                  {{ audit.clock.err }}
+                </dd>
+              </div>
+              <div class="flex gap-2">
+                <dt class="w-24 shrink-0">
+                  {{ t("capture.mount.auditDrive") }}
+                </dt>
+                <dd>
+                  {{ audit.drive.tracking_rate || "off" }} ·
+                  {{
+                    audit.drive.aligned
+                      ? "aligned"
+                      : t("capture.mount.notAligned")
+                  }}
+                </dd>
+              </div>
+            </dl>
+          </div>
+
+          <div>
+            <p class="font-medium text-slate-600 dark:text-slate-300">
+              {{ t("capture.mount.auditMotorControllers") }}
+            </p>
+            <dl class="mt-0.5 space-y-0.5 text-slate-500 dark:text-slate-400">
+              <div class="flex gap-2">
+                <dt class="w-24 shrink-0">
+                  {{ t("capture.mount.auditGuideRate") }}
+                </dt>
+                <dd v-if="audit.guide.read" class="font-mono">
+                  RA {{ audit.guide.ra_units }}/256
+                  <template v-if="audit.guide.both_axes">
+                    · Dec {{ audit.guide.dec_units }}/256
+                  </template>
+                  <span
+                    v-if="audit.guide.mismatch"
+                    class="font-sans text-amber-600 dark:text-amber-400"
+                  >
+                    — {{ t("capture.mount.auditDisagree") }}
+                  </span>
+                </dd>
+                <dd v-else class="text-slate-400">
+                  {{ t("capture.mount.auditNotReadable") }} —
+                  {{ audit.guide.err }}
+                </dd>
+              </div>
+              <div class="flex gap-2">
+                <dt class="w-24 shrink-0">{{ t("capture.mount.auditPec") }}</dt>
+                <dd data-testid="mount-audit-pec">
+                  <template v-if="audit.pec.read && audit.pec.all_zero">
+                    {{
+                      t("capture.mount.auditPecEmpty", { bins: audit.pec.bins })
+                    }}
+                  </template>
+                  <template v-else-if="audit.pec.read">
+                    <span class="text-amber-600 dark:text-amber-400">
+                      {{
+                        t("capture.mount.auditPecStored", {
+                          bins: audit.pec.bins,
+                          peak: audit.pec.peak_units,
+                          rate: fixed(audit.pec.peak_rate_arcsec_per_sec, 2),
+                          swing: fixed(audit.pec.swing_arcsec),
+                        })
+                      }}
+                      <template
+                        v-if="Math.abs(audit.pec.net_arcsec_per_rev) > 1"
+                      >
+                        {{
+                          t("capture.mount.auditPecDrift", {
+                            net: fixed(audit.pec.net_arcsec_per_rev),
+                          })
+                        }}
+                      </template>
+                    </span>
+                  </template>
+                  <span v-else class="text-slate-400">
+                    {{ t("capture.mount.auditNotReadable") }} —
+                    {{ audit.pec.err }}
+                  </span>
+                </dd>
+              </div>
+            </dl>
+            <svg
+              v-if="pecPath"
+              class="mt-1 w-full text-sky-500"
+              viewBox="0 0 100 20"
+              preserveAspectRatio="none"
+              height="28"
+              aria-hidden="true"
+            >
+              <line
+                x1="0"
+                y1="10"
+                x2="100"
+                y2="10"
+                stroke="currentColor"
+                stroke-width="0.2"
+                opacity="0.4"
+              />
+              <path
+                :d="pecPath"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="0.7"
+                vector-effect="non-scaling-stroke"
+              />
+            </svg>
+            <p v-if="audit.pec.supported" class="text-slate-400">
+              {{
+                t("capture.mount.auditPecPlayback", {
+                  state: audit.pec.playback_commanded ? "on" : "off",
+                })
+              }}
+            </p>
+          </div>
+
+          <ul
+            v-if="audit.notes?.length"
+            class="list-disc space-y-0.5 pl-4 text-slate-500 dark:text-slate-400"
+          >
+            <li v-for="(note, i) in audit.notes" :key="i">{{ note }}</li>
+          </ul>
+        </div>
+      </details>
+
+      <!-- Putting it back. Deliberately NOT called a factory reset: it undoes only what this app can
+           write, and proves every change by reading it back. -->
+      <details
+        v-if="audit"
+        class="rounded-md border border-slate-200 p-2 dark:border-slate-700"
+        data-testid="mount-reset"
+      >
+        <summary
+          class="cursor-pointer text-xs text-slate-600 dark:text-slate-300"
+        >
+          {{ t("capture.mount.resetTitle") }}
+        </summary>
+        <p class="mt-1 text-[11px] text-slate-400">
+          {{ t("capture.mount.resetHint") }}
+        </p>
+        <div class="mt-2 space-y-1 text-[11px]">
+          <label
+            class="flex items-start gap-2 text-slate-600 dark:text-slate-300"
+          >
+            <input v-model="resetPick.pec" type="checkbox" class="mt-0.5" />
+            {{ t("capture.mount.resetPec") }}
+          </label>
+          <label
+            class="flex items-start gap-2 text-slate-600 dark:text-slate-300"
+          >
+            <input
+              v-model="resetPick.pec_playback"
+              type="checkbox"
+              class="mt-0.5"
+            />
+            {{ t("capture.mount.resetPlayback") }}
+          </label>
+          <label
+            class="flex items-start gap-2 text-slate-600 dark:text-slate-300"
+          >
+            <input
+              v-model="resetPick.guide_rate"
+              type="checkbox"
+              class="mt-0.5"
+            />
+            {{ t("capture.mount.resetGuideRate") }}
+          </label>
+          <label
+            class="flex items-start gap-2 text-slate-600 dark:text-slate-300"
+          >
+            <input v-model="resetPick.site" type="checkbox" class="mt-0.5" />
+            {{ t("capture.mount.resetSite") }}
+          </label>
+          <label
+            class="flex items-start gap-2 text-slate-600 dark:text-slate-300"
+          >
+            <input v-model="resetPick.clock" type="checkbox" class="mt-0.5" />
+            {{ t("capture.mount.resetClock") }}
+          </label>
+          <label
+            class="flex items-start gap-2 text-slate-600 dark:text-slate-300"
+          >
+            <input
+              v-model="resetPick.tracking"
+              type="checkbox"
+              class="mt-0.5"
+            />
+            {{ t("capture.mount.resetTracking") }}
+          </label>
+        </div>
+        <div class="mt-2 flex gap-2">
+          <button
+            :class="btnGhost"
+            class="!px-2 !py-1 text-xs"
+            :disabled="resetting || !resetChosen"
+            data-testid="mount-reset-preview"
+            @click="runReset(false)"
+          >
+            {{ t("capture.mount.resetPreview") }}
+          </button>
+          <button
+            :class="btnGhost"
+            class="!px-2 !py-1 text-xs"
+            :disabled="resetting || !resetChosen"
+            data-testid="mount-reset-apply"
+            @click="runReset(true)"
+          >
+            {{
+              resetting
+                ? t("capture.mount.resetApplying")
+                : t("capture.mount.resetApply")
+            }}
+          </button>
+        </div>
+        <p v-if="!resetChosen" class="mt-1 text-[11px] text-slate-400">
+          {{ t("capture.mount.resetNothing") }}
+        </p>
+        <div v-if="restore" class="mt-2 space-y-1 text-[11px]">
+          <p
+            v-if="restore.backup_path"
+            class="text-emerald-600 dark:text-emerald-400"
+          >
+            {{ t("capture.mount.resetBackup", { path: restore.backup_path }) }}
+          </p>
+          <ul class="space-y-0.5">
+            <li
+              v-for="a in restore.actions"
+              :key="a.item"
+              :class="
+                a.err
+                  ? 'text-danger-500'
+                  : a.applied
+                    ? 'text-slate-600 dark:text-slate-300'
+                    : 'text-slate-400'
+              "
+            >
+              {{ a.detail }}<span v-if="a.err"> — {{ a.err }}</span>
+            </li>
+          </ul>
+          <p v-if="restore.dry_run" class="text-slate-400">
+            {{ t("capture.mount.resetDryRun") }}
+          </p>
+        </div>
       </details>
     </div>
 

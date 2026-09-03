@@ -85,7 +85,7 @@ func classifyPassthrough(frame []byte) retrySafety {
 			return retryAlways
 		}
 		return retryNever
-	case mcPECReadData, mcPECBin, mcAtIndex, mcGetAutoguideRate, mcGetPosition, mcSlewDone:
+	case mcPECReadData, mcPECBin, mcAtIndex, mcGetAutoguideRate, mcGetPosition, mcSlewDone, mcGetVersion:
 		// Reads of motor-controller state.
 		return retryAfterResync
 	}

@@ -160,6 +160,22 @@ mount-soak DURATION='8h':
         -motion {{ env_var_or_default("MOTION", "none") }} \
         -report "$(pwd)/output/mount-soak-$(date -u +%Y%m%dT%H%M%SZ).txt"
 
+# The hand controller has no menu that shows its stored periodic-error table, and the autoguide
+# rates live on the motor boards again — so after a night that went wrong this is the only way to
+# find out what is actually in there. It writes nothing and moves nothing.
+# Read back every setting stored in the mount (site, clock, drive, guide rates, PEC table).
+mount-audit:
+    go run ./cmd/astrostack mount audit \
+        -report "$(pwd)/output/mount-audit-$(date -u +%Y%m%dT%H%M%SZ).txt"
+
+# NOT a factory reset: it undoes only what this app can write, and proves each change by reading it
+# back. The mount's current settings are saved to output/ before the first byte goes out, dry run or
+# not. Narrow it with e.g. `just mount-reset -pec`.
+# Put back what this app can write into the mount — a DRY RUN unless APPLY=1.
+mount-reset WHAT='-all':
+    go run ./cmd/astrostack mount reset {{WHAT}} \
+        {{ if env_var_or_default("APPLY", "") != "" { "-apply" } else { "" } }}
+
 # Serve the local vision model for the finish supervisor (host; first run downloads ~28 GB).
 run-ia-model:
     @scripts/ia-model.sh

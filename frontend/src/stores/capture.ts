@@ -14,6 +14,8 @@ import type {
   DeviceStatus,
   DeviceWheelState,
   LiveStats,
+  MountAudit,
+  MountRestoreResult,
   PreviewImage,
 } from "@/types";
 
@@ -463,6 +465,25 @@ export const useCaptureStore = defineStore("capture", () => {
     return res.clock;
   }
 
+  // What is stored in the mount right now. Read on demand, never polled: it is ninety round trips on
+  // a 9600-baud link, and the mount has other things to do with them.
+  async function auditMount(): Promise<{
+    connected: boolean;
+    audit?: MountAudit;
+  }> {
+    return apiGet<{ connected: boolean; audit?: MountAudit }>(
+      "/api/device/mount/audit",
+    );
+  }
+
+  // Put back what this app can have written. A dry run unless apply is set — the server defaults the
+  // same way, and both are deliberate on a call that changes hardware state outliving the session.
+  async function resetMount(
+    body: Record<string, unknown>,
+  ): Promise<MountRestoreResult> {
+    return apiPost<MountRestoreResult>("/api/device/mount/reset", body);
+  }
+
   async function loadSessions(): Promise<void> {
     sessions.value = (
       await apiGet<{ sessions: CaptureSessionRow[] }>("/api/capture/sessions")
@@ -535,6 +556,8 @@ export const useCaptureStore = defineStore("capture", () => {
     diagnoseMount,
     setMountSite,
     setMountClock,
+    auditMount,
+    resetMount,
     loadSessions,
     loadSequences,
     saveSequence,

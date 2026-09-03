@@ -2082,6 +2082,91 @@ export interface MountDiagnosis {
   scan_error?: string;
 }
 
+// What is actually stored inside the mount, read back over the serial link.
+//
+// The split into hand controller and motor controllers is not cosmetic. Site, clock, tracking mode
+// and the alignment model live in the hand controller; the periodic-error table and the autoguide
+// rates live on the motor boards, one per axis, and survive a hand controller being swapped. That is
+// why a "factory reset" clears different things depending on which firmware is asked.
+export interface MountAudit {
+  at_ms: number;
+  port?: string;
+  identity: {
+    model: string;
+    model_code: number;
+    firmware: string;
+    ra_motor_firmware?: string;
+    dec_motor_firmware?: string;
+    motor_err?: string;
+  };
+  site: { read: boolean; lat_deg: number; lon_deg: number; err?: string };
+  clock: {
+    read: boolean;
+    utc: string;
+    offset_hours: number;
+    dst: boolean;
+    skew_sec: number;
+    err?: string;
+  };
+  drive: {
+    read: boolean;
+    tracking: boolean;
+    tracking_rate: string;
+    aligned: boolean;
+    pier_side?: string;
+    err?: string;
+  };
+  guide: {
+    read: boolean;
+    ra_units: number;
+    dec_units: number;
+    ra_fraction: number;
+    dec_fraction: number;
+    // Whether the declination motor could be read separately at all — the simulator, and any driver
+    // exposing only the single-axis rate, answers for right ascension alone.
+    both_axes: boolean;
+    mismatch: boolean;
+    err?: string;
+  };
+  pec: {
+    supported: boolean;
+    read: boolean;
+    err?: string;
+    bins: number;
+    worm_period_sec: number;
+    bin_sec: number;
+    lsb_arcsec_per_sec: number;
+    indexed: boolean;
+    current_bin: number;
+    curve?: number[];
+    all_zero: boolean;
+    peak_units: number;
+    peak_rate_arcsec_per_sec: number;
+    swing_arcsec: number;
+    net_arcsec_per_rev: number;
+    // What the driver last COMMANDED, not a reading: the protocol cannot be asked whether the mount
+    // is replaying its table.
+    playback_commanded: boolean;
+  };
+  link?: MountLinkHealth;
+  notes?: string[];
+}
+
+export interface MountRestoreAction {
+  item: string;
+  detail: string;
+  applied: boolean;
+  err?: string;
+}
+
+export interface MountRestoreResult {
+  dry_run: boolean;
+  backup_path?: string;
+  before: MountAudit;
+  after?: MountAudit;
+  actions: MountRestoreAction[];
+}
+
 export interface DeviceMountState {
   connected: boolean;
   reconnecting?: boolean;
