@@ -7,9 +7,10 @@
 // disc in the final. No linear pass can guarantee neutrality at that precision, so this pass runs
 // where the eye sees: on the STRETCHED RGB base, just before the GIMP composite. It measures the
 // sky's chroma (c−m, m=(R+G+B)/3) on a coarse tile grid over sky pixels only, smooths it into a
-// per-channel zero-sum field, and subtracts it with SNR-feathered object protection — the sky
-// becomes neutral everywhere while galaxies, nebulae and stars keep their colour, and the
-// per-pixel mean m (the luminance) is preserved exactly.
+// per-channel zero-sum field, and subtracts that field from every pixel. Objects are protected in
+// the MEASUREMENT (they never contribute to a tile's sky chroma) but not in the APPLICATION: the
+// cast is behind them too, and exempting them is what left a coloured disc around every star. The
+// per-pixel mean m (the luminance) is preserved exactly, now everywhere.
 package pipeline
 
 import (
@@ -87,7 +88,7 @@ func flattenSkyChroma(path string, tilePx int) (string, error) {
 	if err := im.OverwriteData(path); err != nil {
 		return "", fmt.Errorf("sky chroma flatten: write: %w", err)
 	}
-	return fmt.Sprintf("sky chroma flattened (grid %dpx, peak %.1f%% of sky, objects protected)",
+	return fmt.Sprintf("sky chroma flattened (grid %dpx, peak %.1f%% of sky, applied uniformly)",
 		tilePx, 100*peak/math.Max(bg, 1e-9)), nil
 }
 
@@ -106,7 +107,7 @@ func flattenSkyChromaPass(im *fits.Image, mean, lumS []float32, bg, sigma float6
 			peak = math.Max(peak, math.Abs(float64(v)))
 		}
 	}
-	applySkyChromaField(im, lumS, fields, bg, sigma, tilePx)
+	applySkyChromaField(im, fields, bg, tilePx)
 	return peak, true
 }
 
@@ -217,23 +218,32 @@ func fillInvalidTiles(fields *[3][]float32, valid []bool, tw, th int) {
 	}
 }
 
-// applySkyChromaField subtracts the bilinearly-upsampled field with SNR-feathered protection: the
-// same weight for all three channels, so the zero-sum field leaves m=(R+G+B)/3 untouched.
-func applySkyChromaField(im *fits.Image, lumS []float32, fields [3][]float32, bg, sigma float64, tilePx int) {
+// applySkyChromaField subtracts the bilinearly-upsampled field from EVERY pixel — the same field,
+// the same three channels, no object weighting.
+//
+// It used to feather the subtraction out where the luminance rose above the sky
+// (1 − smoothstep(skyChromaSNRLo, skyChromaSNRHi, snr)), so that objects "kept their colour". That
+// is what painted the coloured discs. The field is a model of the ADDITIVE SKY CAST — measured from
+// sky pixels only, on a coarse grid, then smoothed — and the sky lies behind the stars too. Removing
+// it from the background while leaving it inside a dilated halo around every star does not preserve
+// those stars' colour; it preserves the cast on them, as an island, while their surroundings lose
+// it. Measured on the first ASI2600MC run: sky chroma pinned at the ±1 LSB floor across five
+// luminance bins, then climbing from lum≈50 upward — the step being the edge of each disc.
+//
+// Subtracting uniformly is also what the objects actually want. The field is bounded by fieldCap (a
+// multiple of the SKY level), so against a bright star it is a sub-percent shift, while against the
+// sky it is the whole correction. And because the field is zero-sum across channels, uniform
+// subtraction now preserves m=(R+G+B)/3 EVERYWHERE rather than only where the old weight reached 1.
+func applySkyChromaField(im *fits.Image, fields [3][]float32, bg float64, tilePx int) {
 	tw, th := tileDims(im.W, im.H, tilePx)
 	fieldCap := float32(skyChromaMaxFrac * math.Max(bg, 1e-6))
 	for y := 0; y < im.H; y++ {
 		row := y * im.W
 		for x := 0; x < im.W; x++ {
 			i := row + x
-			snr := (float64(lumS[i]) - bg) / sigma
-			wgt := 1 - smoothstep(skyChromaSNRLo, skyChromaSNRHi, snr)
-			if wgt <= 0 {
-				continue
-			}
 			for c := 0; c < 3; c++ {
 				f := clipF32(bilinearTile(fields[c], tw, th, tilePx, x, y), fieldCap)
-				v := im.Pix[c][i] - float32(wgt)*f
+				v := im.Pix[c][i] - f
 				if v < 0 {
 					v = 0
 				}

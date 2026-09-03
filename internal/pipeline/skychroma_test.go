@@ -118,15 +118,33 @@ func TestFlattenSkyChroma(t *testing.T) {
 		assert.InDelta(t, 1.0, median64(rg), 0.1) // was ~1.8 before the flatten
 	})
 
-	t.Run("bright object chroma survives", func(t *testing.T) {
-		for y := 115; y < 145; y++ {
-			for x := 315; x < 345; x++ {
-				i := y*scW + x
-				for c := 0; c < 3; c++ {
-					assert.InDelta(t, before.Pix[c][i], after.Pix[c][i], 1e-4)
+	t.Run("a bright object is corrected like its surroundings, not exempted", func(t *testing.T) {
+		// This subtest used to assert the object came through byte-identical. That contract WAS the
+		// coloured-disc bug: exempting an object from a correction every neighbouring pixel receives
+		// leaves the sky cast sitting on it as an island, which is what the eye reads as a disc
+		// around every star. The properties that actually matter are continuity across the object's
+		// edge and the object keeping its OWN colour — both asserted here.
+		shift := func(x0, x1 int) float64 {
+			var vals []float64
+			for y := 110; y < 150; y++ {
+				for x := x0; x < x1; x++ {
+					i := y*scW + x
+					vals = append(vals, float64(before.Pix[0][i]-after.Pix[0][i]))
 				}
 			}
+			return median64(vals)
 		}
+		onObject, besideIt := shift(310, 350), shift(375, 415)
+		assert.InDelta(t, besideIt, onObject, 0.005, "the correction must not step at the object's edge")
+
+		var rg []float64
+		for y := 110; y < 150; y++ {
+			for x := 310; x < 350; x++ {
+				i := y*scW + x
+				rg = append(rg, float64(after.Pix[0][i]-after.Pix[1][i]))
+			}
+		}
+		assert.InDelta(t, 0.20, median64(rg), 0.03, "the object is still red, not neutralized")
 	})
 
 	t.Run("luminance preserved", func(t *testing.T) {
