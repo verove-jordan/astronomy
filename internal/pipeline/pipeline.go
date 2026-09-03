@@ -1235,10 +1235,18 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 	// Resolve the colour palette (natural / HaRGB / HOO / SHO / HOS / Foraxx / mono) against the channels
 	// present. A palette missing its required filters falls back (note recorded). "natural" ≡ the legacy
 	// R→R/G→G/B→B mapping, so a default run is byte-identical to before the palette engine.
+	// A duo-band ONE-SHOT-COLOUR capture is split into pseudo-Hα/[OIII] channel files first, so the
+	// narrowband palettes below can map it (see duoband.go). Every other colour run is returned its
+	// own map unchanged and keeps the untouched pass-through. The has/cpath closures above capture
+	// the variable, so they follow this reassignment.
+	channels, duoNote := duobandChannels(opts.Preset, channels, outDir)
 	pal, palNote := resolvePalette(opts.Preset, channels)
 	base := filepath.Join(stretchDir, "base")
 	in := gimp.Inputs{Base: base + ".tif", Color: pal.Color}
 	var notes []string
+	if duoNote != "" {
+		notes = append(notes, duoNote)
+	}
 	if palNote != "" {
 		notes = append(notes, palNote)
 	}
@@ -1273,7 +1281,9 @@ func prepGimpInputs(ctx context.Context, opts Options, runner *siril.Runner, cha
 		// line pedestals toward one grey would flatten the intended false colour — so it is skipped there.
 		// One-shot color has a single already-merged channel: its three primaries were recorded through
 		// one optical path in one exposure, so there is nothing to equalize and nothing to combine.
-		osc := isColorRun(opts.Preset)
+		// A duo-band split takes the ordinary rgbcomp road: the palette's R/G/B name real channel
+		// files now, and the single-master shortcut below would throw that mapping away.
+		osc := isColorRun(opts.Preset) && !pal.Narrowband
 		if !pal.Narrowband && !osc {
 			if n, err := equalizeBackgrounds(cpath(pal.R), cpath(pal.G), cpath(pal.B)); err != nil {
 				notes = append(notes, "background equalization skipped: "+err.Error())
