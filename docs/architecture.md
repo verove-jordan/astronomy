@@ -710,7 +710,7 @@ tool paths are all env vars, no Go changes are needed, only Linux builds of the 
 - `just stack` → `db` + **`engine`** (Go `serve` + Linux **Siril 1.4.x AppImage / GIMP 2.10 /
   GraXpert / ffmpeg** baked in, `docker/engine.Dockerfile`) + `frontend`. The engine reaches Postgres
   at `db:5432` and self-migrates. The engine persists **absolute** filesystem paths (in Postgres +
-  `run.json`), so the stack bind-mounts `input/` (read-only), `library/`, `output/` and `work/` at their
+  `run.json`), so the stack bind-mounts `input/`, `library/`, `output/` and `work/` (all read-write) at their
   **same absolute host paths** and runs with the repo root as CWD (`working_dir: ${PWD}`) — pre-existing
   Library/Runs/Tasks/reuse rows resolve unchanged and host-dev ⇄ stack stay interchangeable. nginx
   templates its `/api` upstream (`API_UPSTREAM=engine:8080`).
@@ -722,9 +722,16 @@ tool paths are all env vars, no Go changes are needed, only Linux builds of the 
 Trade-offs: the engine image builds for the **host architecture** (arm64 on Apple Silicon, amd64 on
 Linux), so Siril/GIMP run **natively — no emulation**. Siril has no arm64 build, so the Dockerfile
 branches on `TARGETARCH`: amd64 gets the pinned **1.4.3 x86_64 AppImage** (extracted from its squashfs
-without executing the AppImage runtime), arm64 gets the **distro package (~1.2.x)**. The WCS/parity logic
-in `reuse_process.go` assumes 1.4.3, so prefer a native amd64 host (or host-dev on macOS) when exact
-multi-session parity matters. That distro Siril also ships its deep-sky **object catalogue in a legacy
+without executing the AppImage runtime), arm64 gets **1.4.x from the maintainer PPA**
+(`ppa:lock042/siril`, overridable with `--build-arg SIRIL_PPA=`). The 1.4 floor is not optional: the
+pipeline emits 1.4 script syntax and `internal/siril/runner.go` refuses to start against anything
+older, so Ubuntu's own `universe` package (1.2.1) would fail every run. A native build now VERIFIES
+this — `siril-cli --version` must succeed when the image and build architectures match, and the build
+fails naming the PPA if it does not; only a genuine cross-arch build keeps the old warning, since
+there the binary cannot be executed at all. The patch level can still differ from the pinned 1.4.3,
+and the WCS/parity logic in `reuse_process.go` was written against 1.4.3, so prefer a native amd64
+host (or host-dev on macOS) when exact multi-session parity matters. The arm64 package also ships its
+deep-sky **object catalogue in a legacy
 semicolon `.txt` format** (RA in hours, split N/S sign column) the engine's CSV parser can't read, so the
 tonight planner and the name→coord resolver fall back to a **catalogue snapshot compiled into the engine
 binary** (`internal/skycat/catalogue/*.csv` via `go:embed`; `skycat.Load` prefers the on-disk Siril
@@ -749,7 +756,7 @@ macOS is the **VLM** (no GPU/Metal) — keep it native there.
 | Environment | Command | Engine + Siril/GIMP | AI model (VLM) | Use it for |
 |---|---|---|---|---|
 | **macOS — daily dev** | `just up` + `just dev` + `just web` | **native on host** (fast) | native mlx: `just run-ia-model` | everything — the normal workflow |
-| **macOS — full container** | `just stack` | container (**native arm64**) — Siril/GIMP run natively (Siril ~1.2.x from the distro) | native mlx on host | a full local stack; use amd64 or host-dev for exact 1.4.3 parity |
+| **macOS — full container** | `just stack` | container (**native arm64**) — Siril/GIMP run natively (Siril 1.4.x from `ppa:lock042/siril`) | native mlx on host | a full local stack; use amd64 or host-dev for exact 1.4.3 patch parity |
 | **Linux + NVIDIA GPU** | `just stack-ai` + `just ai-pull` | container (**native amd64**) — full processing | container (Ollama, GPU) | **true 100 % dockerized**, incl. the VLM |
 | **Linux — no GPU** | `just stack` | container (native amd64) — full processing | skip, or point at any OpenAI-compatible server | headless processing without a GPU |
 
@@ -782,7 +789,9 @@ Beyond the host-dev variables, the containerized stack reads (host tool paths li
 `run.json`, so the stack mounts your `./input`, `./library`, `./output`, `./work` at their **same
 absolute host paths** and runs with the repo root as CWD. Previous Library masters, Runs, Tasks and
 cross-session reuse resolve unchanged, and you can switch between host-dev and the stack freely.
-Keep captures under `./input` (or symlink them there); `input` is mounted read-only.
+Keep captures under `./input` (or symlink them there). `input` is mounted **read-write**: the pipeline
+only ever reads it, but the S3 "download & inspect" import writes downloaded capture folders into it,
+and a read-only mount broke that.
 
 ## S3 storage (import / process / results + sync + backup)
 

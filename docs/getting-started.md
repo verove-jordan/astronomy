@@ -12,26 +12,34 @@ path without the explanations.
 
 There are two ways, and they are genuinely different.
 
-| | **Host mode** (recommended on macOS) | **Container mode** (`just stack`) |
+| | **Container mode** (`just stack`) | **Host mode** |
 |---|---|---|
-| What runs where | The Go engine runs on your Mac and drives your own Siril/GIMP; Docker provides Postgres only | Everything in Docker, with Linux Siril/GIMP/GraXpert baked into the image |
-| You must install | Go, Node/pnpm, Siril, ffmpeg (+ optionally GIMP) | Docker and `just`, nothing else |
-| Best for | Daily work on a Mac — faster, and it uses the tools you already have | Linux, a server, or "just make it run" |
-| Ports | API 8080, UI 5173 | API 8080, UI 8082 |
+| What runs where | Everything in Docker, with Linux Siril/GIMP/GraXpert baked into the image | The Go engine runs on your Mac and drives your own Siril/GIMP; Docker provides Postgres only |
+| You must install | Docker and `just`, nothing else | Go, Node/pnpm, Siril, ffmpeg (+ optionally GIMP) |
+| Setting up | One command, and it sets itself up | A handful of Homebrew installs, then `just setup` |
+| Best for | **Your first run**, Linux, a server, or "just make it run" | Daily development on a Mac — faster to iterate, and it is what the Go tests exercise |
+| Ports | API 8080, UI 8082 | API 8080, UI 5173 |
 
 Siril and GIMP are desktop applications that cannot run in a Linux container on macOS, which is why
 host mode exists at all. It is a deliberate exception to this project's otherwise
 everything-in-Docker rule — see
 [architecture.md](architecture.md#deliberate-deviation).
 
-**Container mode is two commands.** If that is what you want:
+**Container mode is one command.** If that is what you want:
 
 ```bash
-cp .env.example .env
-just stack            # builds the images the first time — this takes a while
+just stack
 ```
 
-Then open <http://localhost:8082> and skip to [§5](#5-your-first-run).
+It creates `.env` and the data directories, checks that Docker is running and the ports are free,
+builds the images, waits for the engine, prints which tools it found and what degrades without each
+one, and ends with the URL. Re-run it whenever — it is idempotent and reports only what it changed.
+
+The first build takes **15–40 minutes** and produces a multi-GB image, because it bakes in Linux
+Siril, GIMP, GraXpert, GDAL and ffmpeg. Later runs reuse it.
+
+Then open the URL it prints (<http://localhost:8082> by default) and skip to
+[§5](#5-your-first-run).
 
 The rest of this page covers host mode.
 
@@ -43,7 +51,7 @@ The rest of this page covers host mode.
 just --version        # if this fails, install just first: https://github.com/casey/just
 docker info           # must print a server section — Docker Desktop has to be RUNNING
 go version            # 1.23 or newer
-node --version        # 20 or newer
+node --version        # 22 or newer (the frontend image builds on node:22)
 pnpm --version        # `corepack enable` if missing
 ```
 
@@ -56,13 +64,26 @@ brew install --cask gimp      # recommended — it does the layered finish
 brew install libraw           # recommended — develops DSLR/phone raw files
 ```
 
+Then ask the engine what it can actually see:
+
+```bash
+just doctor           # every external tool, grouped by what its absence costs
+```
+
+It groups them as **Required** (Siril, ffmpeg, Postgres — nothing runs without these),
+**Recommended** (GIMP, a raw developer), **Optional** (GraXpert, StarNet++, a local vision model,
+the device server) and the plate-solving catalogues, then lists a plain-language warning for
+anything missing. `just stack` prints the same report from inside the container, so the two modes
+can be compared line for line.
+
 Things worth knowing before you hit them:
 
 - **`just setup` is macOS-flavoured.** It installs `golangci-lint` with Homebrew and assumes `pnpm`
   is already on your PATH. On Linux, install both yourself and skip `just setup`.
 - **Siril is not checked at startup.** The engine starts fine without it and prints one warning to
-  stderr; the failure shows up when your first job runs. If you installed Siril somewhere other
-  than `/Applications/Siril.app`, set `SIRIL_BIN` in `.env`.
+  stderr; the failure shows up when your first job runs. `just doctor` is the check that is not
+  easy to miss. If you installed Siril somewhere other than `/Applications/Siril.app`, set
+  `SIRIL_BIN` in `.env`.
 - **GIMP is optional but visible.** Without it the finish falls back to Siril's simpler
   composition — the run succeeds, the picture is just less good.
 
@@ -198,7 +219,10 @@ match, or colour calibration that could not run because the field would not plat
 | The file browser shows nothing | `ASTRO_DATA_DIR` points at a folder that does not exist, or has no captures | `mkdir -p input` and put a capture there |
 | Colour frames vanish from the inventory | The folder holds monochrome AND colour lights | One run cannot stack both — split them into separate folders. The inventory warns about this |
 | Plate-solving and colour calibration silently do nothing | The offline star catalogues are not downloaded | `just download-catalogues` (~3 GB; add `just download-catalogues-spcc` for photometric colour calibration, ~5 GB more). Without them these steps degrade quietly rather than failing |
-| "port already in use" | Something else holds 5432, 8080, 5173 or 8082 | Override `POSTGRES_PORT`, `API_ADDR`, `WEB_PORT` or `WEB_PORT_PROD` in `.env` |
+| "port already in use" | Something else holds 5432, 8080, 5173 or 8082 | Override `POSTGRES_PORT`, `API_ADDR`, `WEB_PORT` or `WEB_PORT_PROD` in `.env`. `just stack` checks these three before building and names the variable to change |
+| `just stack` says Docker is not running | Docker Desktop is installed but stopped | Start it and wait for the whale icon to settle, then re-run |
+| `just stack` builds, then the engine never becomes healthy | Usually a migration or config error | It prints the last 40 log lines and exits; `just stack-logs` has the rest |
+| A container run cannot reach your local AI model | `.env` pins `ASTRO_LLM_URL` to `127.0.0.1`, which inside a container means the container | Comment it out — the stack then uses `host.docker.internal`. The preflight warns about this |
 | `just setup` fails at `golangci-lint` or `pnpm` | Not on macOS, or pnpm missing | Install both by hand; the rest of `just setup` is `go mod download` and `pnpm install` |
 | A `just gitnexus-*` recipe fails | Those are author-only code-graph tools | Ignore them |
 | Jobs die on large stacks | Too many concurrent workers for the RAM | Set `ASTRO_MAX_WORKERS=3` in `.env` |

@@ -17,21 +17,47 @@ alignment, events calendar, weather + light-pollution overlays) rounds out the w
 a Takahashi FC-100 DF + ZWO ASI 1600MM Pro mono rig, but the rig is configurable — and a DSLR or a
 one-shot-colour camera works with no extra setup.
 
-Siril and GIMP are host-installed macOS apps, so for daily macOS dev the Go engine **runs on the
-host** and drives them directly; Docker Compose provides Postgres. This is a deliberate exception
-to the usual "everything-in-a-container" rule. A fully **containerized** mode also ships
-(`just stack`) for portable / Linux-server deploys. See
+There are two ways to run it. **`just stack`** puts everything in Docker — the engine image bakes in
+Linux Siril, GIMP and GraXpert — and is the one-command path for a new machine, a server, or "just
+make it run". **Host mode** runs the Go engine on your Mac against your own Siril/GIMP with only
+Postgres in Docker; it is faster to iterate on and is what the Go tests exercise. That second mode
+is a deliberate exception to the usual everything-in-a-container rule, because Siril and GIMP are
+desktop applications that cannot run in a Linux container on macOS. See
 [docs/architecture.md](docs/architecture.md).
 
 ## Quickstart
 
-**New here? Follow [docs/getting-started.md](docs/getting-started.md)** — the same path with the
-prerequisites, the first-run walkthrough and the failure modes spelled out.
+Everything in Docker — nothing to install but Docker and [`just`](https://github.com/casey/just):
 
 ```bash
 git clone <repo-url> && cd astronomy
-cp .env.example .env          # adjust host tool paths / secrets if needed
+just stack
+```
+
+That is the whole of it. `just stack` creates `.env` and the data directories, checks Docker and
+the ports, builds the images, waits for the engine, reports which tools are present and what
+degrades without each one, and prints the URL. It is idempotent — re-run it any time.
+
+**The first build takes 15–40 minutes** and produces a multi-GB image: it bakes in Linux
+Siril, GIMP, GraXpert, GDAL and ffmpeg so nothing has to be installed on your machine. Later runs
+reuse it.
+
+Open the URL it prints (<http://localhost:8082> by default) → **Processing → Import**, point it at
+a capture folder under `./input`, launch a run. Every page has a **help** button that opens a
+guided tour of that page.
+
+<details>
+<summary><b>Host mode</b> — the faster daily loop on macOS (engine on the host, Postgres in Docker)</summary>
+
+Siril and GIMP are desktop applications that cannot run in a Linux container on macOS, so for daily
+development the Go engine runs on the host and drives the ones you already have — a deliberate
+[exception](docs/architecture.md#deliberate-deviation) to the everything-in-Docker rule. It is
+faster to iterate on and it is what the Go tests exercise.
+
+```bash
+git clone <repo-url> && cd astronomy
 just setup                    # Go deps, dev tools, Siril MCP binary, frontend deps (idempotent)
+just doctor                   # what's installed, and what degrades without it
 just up                       # Postgres (Docker); the engine migrates itself on boot
 
 mkdir -p input                # ASTRO_DATA_DIR — the root the UI may browse (git-ignored, so a
@@ -46,30 +72,30 @@ just process deepsky image input/M31         # mono LRGB+Ha, or colour — auto-
 just process planetary video input/moon.mp4  # lucky imaging
 ```
 
-Open <http://localhost:5173> → **Processing → Import**, point it at a capture folder, launch a run.
-Every page has a **help** button that opens a guided tour of that page.
-
-**Everything in Docker** (portable / server — no host toolchain; the engine image bakes the Linux
-Siril/GIMP/GraXpert):
-
-```bash
-cp .env.example .env
-just stack                    # db + engine + frontend → UI :8082, API :8080
-```
+</details>
 
 The finish supervisor's ~28 GB vision model is **opt-in and decoupled** — `just stack` never
 downloads it. Add it with `just run-ia-model` (macOS, native Metal) or `just stack-ai` +
 `just ai-pull` (Linux + NVIDIA GPU). Per-environment matrix, ports and stack variables:
 [docs/architecture.md → Fully containerized mode](docs/architecture.md#fully-containerized-mode-stack).
 
+For the walkthrough with failure modes spelled out, see
+[docs/getting-started.md](docs/getting-started.md).
+
 ## Prerequisites
 
-Daily macOS development drives host-installed tools (the documented
-[host-engine exception](docs/architecture.md#deliberate-deviation)); only Postgres is in Docker.
-For the all-container path you need just Docker + `just`.
+**Container mode (`just stack`) — this is all you need:**
 
-- **Required**: macOS (Apple Silicon recommended) · Docker · [`just`](https://github.com/casey/just)
-  · Go 1.23+ · Node 20+/pnpm · **Siril** (`brew install --cask siril`) · ffmpeg
+- [Docker](https://docs.docker.com/desktop/install/mac-install/) (Desktop on macOS, running) ·
+  [`just`](https://github.com/casey/just) (`brew install just`)
+
+Everything the pipeline drives is baked into the engine image. Nothing else is installed on your
+machine.
+
+**Host mode — additionally, on the host itself:**
+
+- **Required**: macOS (Apple Silicon recommended) · Go 1.23+ · Node 22/pnpm ·
+  **Siril 1.4+** (`brew install --cask siril`) · ffmpeg (`brew install ffmpeg`)
 - **Recommended**: GIMP (the LRGB+Ha finish; absent → Siril `rgbcomp` fallback) · LibRaw
   (`brew install libraw` — develops DSLR/phone raws) · Python 3.12 (Siril's plate-solve/SPCC
   scripting)
@@ -77,26 +103,32 @@ For the all-container path you need just Docker + `just`.
   [StarNet++ v2](https://www.starnetastro.com) (star reduction) · a local vision model
   (`just run-ia-model`) for the [finish supervisor](docs/agent.md)
 
+Run **`just doctor`** to see which of these you have and what each missing one costs — the same
+report `just stack` prints from inside the container. Copy-pasteable install commands are in
+[docs/getting-started.md](docs/getting-started.md#2-install-the-prerequisites).
+
 The optional tools are **soft-fail** (missing → warning + fallback; disable with `--no-ai`) and
-are *invoked, never bundled* — their licences stay with your install. For **offline
-plate-solving + SPCC**, download the Gaia catalogues once: `just download-catalogues`
-(`just download-catalogues-spcc` adds the photometric chunks).
+are *invoked, never bundled* — their licences stay with your install. StarNet++ is therefore never
+in the image either: mount it and set `STARNET_BIN`. For **offline plate-solving + SPCC**, download
+the Gaia catalogues once: `just download-catalogues` (`just download-catalogues-spcc` adds the
+photometric chunks).
 
 ## Usage
 
-`just` on its own lists all 58 recipes. The ones you will actually use:
+`just` on its own lists every recipe. The ones you will actually use:
 
 | Recipe | What it does |
 |--------|--------------|
 | `just` | List every recipe. |
-| `just setup` / `just up` / `just down` | First-run setup · start Postgres · stop the stack. |
+| `just stack` / `just stack-down` / `just stack-logs` | **The whole app in Docker** — set up, build, run, report, print the URL · stop it · tail its logs. |
+| `just doctor` | Which external tools this machine has, and what degrades without each one. |
+| `just setup` / `just up` / `just down` | Host-mode first-run setup · start Postgres · stop the stack. |
 | `just migrate` / `just migrate-down` | Apply / roll back schema migrations (`dev` migrates on boot, so this is rarely needed). |
 | `just inspect DIR` | Print the classified inventory of a capture folder (no processing). |
 | `just process MODE FORMAT PATH` | Full auto pipeline. MODE: `deepsky`·`nebula`·`milkyway`·`planetary`·`comet`·`mosaic`·`sun`·`eclipse`·`livestack`; FORMAT: `image`·`video`·`both`. Pass-through flags after the path (e.g. `-v --supervise`). |
 | `just video FILE` | Shortcut for `process planetary video` (lucky imaging). |
 | `just refine RUNDIR` | Re-run **only** the finish (AI supervisor) on an existing run — no re-stacking. |
 | `just dev` / `just web` | Host API with hot reload · Vue dev server. |
-| `just stack` / `just stack-down` / `just stack-logs` | The whole app in Docker (no AI model) · stop it · tail its logs. |
 | `just device` / `just device-x86` | Camera/mount/wheel server — simulator, or a real ZWO under Rosetta. |
 | `just device-status` / `just mount-doctor` | Health-check the device server · diagnose the mount USB link. |
 | `just run-ia-model` / `just ia-model-status` | Serve the local vision model (first run downloads ~28 GB) · check it. |

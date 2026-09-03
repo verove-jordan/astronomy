@@ -33,6 +33,10 @@ Precedence notes:
 ## Host tools
 
 The engine drives host-installed binaries (see the [host-engine exception](architecture.md#deliberate-deviation)).
+Run **`just doctor`** to see which of them resolve on this machine and what each missing one costs —
+it deep-probes rather than just looking up paths (a real `siril-cli --version`, a real GraXpert
+extraction), and it is the same report `just stack` prints from inside the engine container and the
+UI shows at `GET /api/environment`.
 
 | Variable | Default | Description |
 |---|---|---|

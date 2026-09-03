@@ -17,21 +17,47 @@ vision** (opt-in) qui critique et réajuste la finition. Un **planificateur de s
 le flux. Conçu pour une lunette Takahashi FC-100 DF + ZWO ASI 1600MM Pro, mais l'équipement est
 configurable — et un reflex ou une caméra couleur fonctionne sans réglage supplémentaire.
 
-Siril et GIMP sont des applications macOS installées sur l'hôte : en développement quotidien le
-moteur Go **tourne sur l'hôte** et les pilote directement ; Docker Compose fournit Postgres. C'est
-une exception assumée à la règle « tout en conteneur ». Un mode entièrement **conteneurisé**
-existe aussi (`just stack`) pour un déploiement portable / serveur Linux. Voir
-[docs/architecture.md](docs/architecture.md).
+Il y a deux façons de le lancer. **`just stack`** met tout dans Docker — l'image moteur embarque les
+versions Linux de Siril, GIMP et GraXpert — et c'est le chemin en une commande pour une machine
+neuve, un serveur, ou simplement « que ça marche ». Le **mode hôte** fait tourner le moteur Go sur
+votre Mac avec vos propres Siril/GIMP, seul Postgres restant en Docker ; il est plus rapide à
+itérer et c'est lui que les tests Go exercent. Ce second mode est une exception assumée à la règle
+« tout en conteneur », parce que Siril et GIMP sont des applications de bureau qui ne peuvent pas
+tourner dans un conteneur Linux sur macOS. Voir [docs/architecture.md](docs/architecture.md).
 
 ## Démarrage rapide
 
-**Première fois ? Suivez [docs/getting-started.md](docs/getting-started.md)** (en anglais) — le même
-chemin, avec les prérequis, la première exécution pas à pas et les pannes courantes.
+Tout en Docker — rien à installer sauf Docker et [`just`](https://github.com/casey/just) :
 
 ```bash
 git clone <repo-url> && cd astronomy
-cp .env.example .env          # ajustez les chemins d'outils / secrets si besoin
+just stack
+```
+
+C'est tout. `just stack` crée le `.env` et les dossiers de données, vérifie Docker et les ports,
+construit les images, attend le moteur, indique quels outils sont présents et ce qui se dégrade
+sans chacun d'eux, puis affiche l'URL. La commande est idempotente — relancez-la quand vous voulez.
+
+**La première construction prend 15 à 40 minutes** et produit une image de plusieurs Go : elle
+embarque Siril, GIMP, GraXpert, GDAL et ffmpeg en version Linux, pour que rien n'ait à être
+installé sur votre machine. Les lancements suivants la réutilisent.
+
+Ouvrez l'URL affichée (<http://localhost:8082> par défaut) → **Processing → Import**, choisissez un
+dossier de captures sous `./input`, lancez un traitement. Chaque page a un bouton **aide** qui
+ouvre une visite guidée de la page.
+
+<details>
+<summary><b>Mode hôte</b> — la boucle quotidienne plus rapide sur macOS (moteur sur l'hôte, Postgres en Docker)</summary>
+
+Siril et GIMP sont des applications de bureau qui ne peuvent pas tourner dans un conteneur Linux
+sur macOS : en développement quotidien le moteur Go tourne donc sur l'hôte et pilote ceux que vous
+avez déjà — une [exception assumée](docs/architecture.md#deliberate-deviation) à la règle du
+tout-conteneur.
+
+```bash
+git clone <repo-url> && cd astronomy
 just setup                    # dépendances Go, outils dev, binaire MCP Siril, frontend (idempotent)
+just doctor                   # ce qui est installé, et ce qui se dégrade sans
 just up                       # Postgres (Docker) ; le moteur applique le schéma au démarrage
 
 mkdir -p input                # ASTRO_DATA_DIR — la racine explorable par l'UI (git-ignorée : un
@@ -46,16 +72,7 @@ just process deepsky image input/M31          # LRGB+Ha mono, ou couleur — dé
 just process planetary video input/lune.mp4   # lucky imaging
 ```
 
-Ouvrez <http://localhost:5173> → **Processing → Import**, choisissez un dossier de captures,
-lancez un traitement. Chaque page a un bouton **aide** qui ouvre une visite guidée de la page.
-
-**Tout en Docker** (portable / serveur — aucun outillage hôte ; l'image moteur embarque les
-versions Linux de Siril/GIMP/GraXpert) :
-
-```bash
-cp .env.example .env
-just stack                    # db + moteur + frontend → UI :8082, API :8080
-```
+</details>
 
 Le modèle de vision (~28 Go) du superviseur reste **opt-in et découplé** — `just stack` ne le
 télécharge jamais. Ajoutez-le avec `just run-ia-model` (macOS, Metal natif) ou `just stack-ai` +
@@ -64,12 +81,18 @@ télécharge jamais. Ajoutez-le avec `just run-ia-model` (macOS, Metal natif) ou
 
 ## Prérequis
 
-Le développement quotidien sur macOS pilote des outils installés sur l'hôte (l'«
-[exception moteur-hôte](docs/architecture.md#deliberate-deviation) » documentée) ; seul Postgres
-est en Docker. Pour le tout-conteneur, il ne faut que Docker + `just`.
+**Mode conteneur (`just stack`) — c'est tout ce qu'il faut :**
 
-- **Requis** : macOS (Apple Silicon recommandé) · Docker · [`just`](https://github.com/casey/just)
-  · Go 1.23+ · Node 20+/pnpm · **Siril** (`brew install --cask siril`) · ffmpeg
+- [Docker](https://docs.docker.com/desktop/install/mac-install/) (Desktop sur macOS, démarré) ·
+  [`just`](https://github.com/casey/just) (`brew install just`)
+
+Tout ce que le pipeline pilote est embarqué dans l'image moteur. Rien d'autre n'est installé sur
+votre machine.
+
+**Mode hôte — en plus, sur l'hôte lui-même :**
+
+- **Requis** : macOS (Apple Silicon recommandé) · Go 1.23+ · Node 22/pnpm ·
+  **Siril 1.4+** (`brew install --cask siril`) · ffmpeg (`brew install ffmpeg`)
 - **Recommandé** : GIMP (la composition LRGB+Ha ; absent → repli Siril `rgbcomp`) · LibRaw
   (`brew install libraw` — développe les raws reflex/téléphone) · Python 3.12 (résolution
   astrométrique + SPCC de Siril)
@@ -77,19 +100,26 @@ est en Docker. Pour le tout-conteneur, il ne faut que Docker + `just`.
   [StarNet++ v2](https://www.starnetastro.com) (réduction d'étoiles) · un modèle de vision local
   (`just run-ia-model`) pour le [superviseur de finition](docs/agent.md)
 
+Lancez **`just doctor`** pour voir lesquels vous avez et ce que coûte chaque absence — le même
+rapport que `just stack` affiche depuis l'intérieur du conteneur. Les commandes d'installation
+copiables sont dans [docs/getting-started.md](docs/getting-started.md#2-install-the-prerequisites).
+
 Les outils optionnels sont **à échec doux** (absent → avertissement + repli ; `--no-ai` pour tout
-couper) et sont *invoqués, jamais embarqués*. Pour une **résolution astrométrique + SPCC hors
+couper) et sont *invoqués, jamais embarqués* — StarNet++ n'est donc pas non plus dans l'image :
+montez-le et définissez `STARNET_BIN`. Pour une **résolution astrométrique + SPCC hors
 ligne**, téléchargez une fois les catalogues Gaia : `just download-catalogues`
 (`just download-catalogues-spcc` ajoute les blocs photométriques).
 
 ## Utilisation
 
-`just` seul liste les 58 recettes. Celles que vous utiliserez vraiment :
+`just` seul liste toutes les recettes. Celles que vous utiliserez vraiment :
 
 | Recette | Rôle |
 |--------|------|
 | `just` | Liste toutes les recettes. |
-| `just setup` / `just up` / `just down` | Installation initiale · démarrer Postgres · arrêter la pile. |
+| `just stack` / `just stack-down` / `just stack-logs` | **Toute l'app dans Docker** — installe, construit, lance, diagnostique et affiche l'URL · arrêter · suivre les logs. |
+| `just doctor` | Quels outils externes cette machine possède, et ce qui se dégrade sans chacun. |
+| `just setup` / `just up` / `just down` | Installation initiale (mode hôte) · démarrer Postgres · arrêter la pile. |
 | `just migrate` / `just migrate-down` | Appliquer / annuler les migrations (`dev` migre au démarrage : rarement utile). |
 | `just inspect DIR` | Affiche l'inventaire classifié d'un dossier (sans traiter). |
 | `just process MODE FORMAT PATH` | Pipeline automatique. MODE : `deepsky`·`nebula`·`milkyway`·`planetary`·`comet`·`mosaic`·`sun`·`eclipse`·`livestack` ; FORMAT : `image`·`video`·`both`. Options après le chemin (ex. `-v --supervise`). |
