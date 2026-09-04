@@ -97,7 +97,7 @@ func sessionConfigs(frames []*Frame, night string) []SessionConfig {
 		}
 		cfg := SessionConfig{
 			Filter: fr.Filter, ExposureMs: fr.ExposureMs, Gain: fr.Gain, Offset: fr.Offset,
-			Bin: fr.BinX, TempBucket: tempBucketC(fr),
+			Bin: fr.BinX, TempBucket: displayTempBucketC(fr),
 		}
 		counts[cfg]++
 	}

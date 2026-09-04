@@ -99,8 +99,11 @@ func dash(s string) string {
 	return s
 }
 
+// temp renders the set's sensor temperature, or "-" for the types that do not have one. A flat is
+// not grouped by temperature (its response does not depend on it), so printing its zero bucket as
+// "0°C" would read as a measurement rather than as an absent one.
 func temp(k inspect.SetKey) string {
-	if k.Type == inspect.Bias {
+	if !inspect.SetKeyUsesTemperature(k.Type) {
 		return "-"
 	}
 	return fmt.Sprintf("%d°C", k.TempBucket)
