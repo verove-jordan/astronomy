@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/verove-jordan/astronomy/internal/config"
 	"github.com/verove-jordan/astronomy/internal/device"
@@ -28,6 +29,19 @@ import (
 
 // Server holds the currently connected devices. Exactly one of each kind can be connected at a
 // time — a second camera on the same mount is not a scenario worth the complexity.
+//
+// # Lock discipline
+//
+// mu guards the POINTERS and nothing else. It is never held while a driver runs, because driver
+// calls talk to hardware and take as long as hardware takes: an iPhone's warm-up is twenty seconds,
+// EFWOpen re-homes the wheel, a NexStar handshake retries over a 9600-baud line. Holding one mutex
+// across those made every endpoint — /health included — wait behind whichever device was slowest,
+// which the engine's health probe reads as a dead server and the UI reports as "not running".
+//
+// Exclusion between two connects of the SAME kind comes from that kind's gate, so attaching the
+// camera never blocks the mount panel. Connection state is mirrored into atomics so /health can
+// answer without entering a driver at all — asking one would reintroduce the freeze, since
+// efw.Connected() takes the lock EFWOpen holds for the seconds it spends homing.
 type Server struct {
 	cfg *config.Config
 
@@ -37,7 +51,17 @@ type Server struct {
 	mount  device.Mount
 	world  *sim.World // non-nil when the simulated driver is in use
 
+	// Per-kind connect gates: one kind's connect/disconnect is serialised without touching the others.
+	camGate, wheelGate, mountGate sync.Mutex
+
+	// What this server holds, readable without any lock.
+	camOn, wheelOn, mountOn atomic.Bool
+
+	// inv caches the driver report and the discovered devices off the request path.
+	inv *inventory
+
 	live     *liveView
+	liveRec  *liveRecorder
 	video    *videoRecorder
 	pecTrain *pecSession
 	// link supervises the mount's serial link: an idle-timer heartbeat, the health the UI streams,
@@ -49,7 +73,9 @@ type Server struct {
 // explicitly, so plugging in hardware never surprises a running session.
 func New(cfg *config.Config) *Server {
 	s := &Server{cfg: cfg}
+	s.inv = newInventory(s.busyKinds)
 	s.live = newLiveView(s)
+	s.liveRec = newLiveRecorder(s)
 	s.video = newVideoRecorder(s)
 	s.pecTrain = newPECSession(s)
 	s.link = newMountLink(s)
@@ -121,6 +147,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /live/simulate", s.liveSimulate)
 	mux.HandleFunc("POST /live/save", s.liveSave)
 	mux.HandleFunc("POST /live/focus/reset", s.liveFocusReset)
+	mux.HandleFunc("POST /live/record/start", s.liveRecordStart)
+	mux.HandleFunc("POST /live/record/stop", s.liveRecordStop)
+	mux.HandleFunc("GET /live/record", s.liveRecordStatus)
 	mux.HandleFunc("POST /video/start", s.videoStart)
 	mux.HandleFunc("POST /video/stop", s.videoStop)
 	mux.HandleFunc("GET /video/status", s.videoStatus)
@@ -133,44 +162,54 @@ func (s *Server) Handler() http.Handler {
 
 // Close disconnects everything — called on shutdown so a cooler is not left running.
 func (s *Server) Close() {
+	s.liveRec.Stop()
 	s.live.stop()
 	s.link.close()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.camera != nil {
-		_ = s.camera.Close()
-	}
-	if s.wheel != nil {
-		_ = s.wheel.Close()
-	}
-	if s.mount != nil {
-		_ = s.mount.Close()
+	s.inv.close()
+	s.detachCamera()
+	s.detachWheel()
+	s.detachMount()
+}
+
+// busyKinds reports which device kinds this server is holding, so the inventory leaves their drivers
+// alone rather than enumerating a camera out from under its own exposure.
+func (s *Server) busyKinds() map[string]bool {
+	return map[string]bool{
+		device.KindCamera: s.camOn.Load(),
+		device.KindWheel:  s.wheelOn.Load(),
+		device.KindMount:  s.mountOn.Load(),
 	}
 }
 
 // Drivers reports the availability of every device driver in this build.
-func (s *Server) Drivers() []DriverStatus { return driverReport() }
+func (s *Server) Drivers() []DriverStatus {
+	drivers, _ := s.inv.get(firstProbeBudget)
+	return drivers
+}
 
 // health reports which drivers this build can actually use. The engine surfaces it exactly like
 // Siril's or GraXpert's availability, so a missing SDK reads as "not installed" rather than as a
 // broken feature.
+//
+// It is also the liveness probe the whole capture UI hangs off, so it touches no lock and no driver:
+// whether this process is alive must never depend on what the hardware is busy doing.
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	drivers, _ := s.inv.get(firstProbeBudget)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
-		"drivers": driverReport(),
+		"drivers": drivers,
 		"connected": map[string]bool{
-			"camera": s.camera != nil && s.camera.Connected(),
-			"wheel":  s.wheel != nil && s.wheel.Connected(),
-			"mount":  s.mount != nil && s.mount.Connected(),
+			"camera": s.camOn.Load(),
+			"wheel":  s.wheelOn.Load(),
+			"mount":  s.mountOn.Load(),
 		},
 	})
 }
 
 // listDevices enumerates what could be connected right now, per driver.
 func (s *Server) listDevices(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"devices": discover()})
+	_, devices := s.inv.get(firstProbeBudget)
+	writeJSON(w, http.StatusOK, map[string]any{"devices": devices})
 }
 
 // listSerialPorts offers the serial devices a mount might be on. The hand controller shows up as a

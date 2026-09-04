@@ -3,6 +3,7 @@ package efw
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -279,4 +280,36 @@ func TestWheel_NamesAreFittedToTheWheelsRealSlotCount(t *testing.T) {
 	// A short list is padded, so slot 5 stays addressable even when unnamed.
 	w.SetFilterNames([]string{"L", "Ha"})
 	assert.Equal(t, []string{"L", "Ha", "", "", ""}, w.Names())
+}
+
+// A wheel that has gone away must be reported as NOT CONNECTED, not as a generic failure.
+//
+// It is the type, not the words, that decides whether a night survives: devsrv maps this sentinel to
+// code "not_connected", and the sequencer waits out anything carrying that code and carries on from
+// the next frame. Unwrapped it fell through to a bare 500, and one USB hiccup on the wheel ended a
+// session at frame 5 of 80.
+func TestEFWCheck_AVanishedWheelIsNotConnected(t *testing.T) {
+	tests := []struct {
+		name         string
+		code         int32
+		notConnected bool
+	}{
+		{"removed, or open in another program", 4, true},
+		{"closed", 9, true},
+		{"moving is a wheel that answered", 5, false},
+		{"an error state is a wheel that answered", 6, false},
+		{"success is no error", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := efwCheck("EFWGetPosition", tt.code)
+			if tt.code == 0 {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Equal(t, tt.notConnected, errors.Is(err, device.ErrNotConnected))
+			assert.Contains(t, err.Error(), "EFWGetPosition", "the failing call stays in the message")
+		})
+	}
 }

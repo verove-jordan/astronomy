@@ -86,6 +86,16 @@ func (c *Client) Camera(ctx context.Context) (CameraState, error) {
 	return out, err
 }
 
+// SetROI sets the frame geometry, which is how BINNING is applied — it is a property of the readout,
+// not a control. Zero width and height mean "the whole sensor at this binning".
+func (c *Client) SetROI(ctx context.Context, roi device.ROI) (device.ROI, error) {
+	var out struct {
+		ROI device.ROI `json:"roi"`
+	}
+	err := c.do(ctx, http.MethodPost, "/camera/roi", roi, &out)
+	return out.ROI, err
+}
+
 func (c *Client) SetControl(ctx context.Context, name string, value int64) error {
 	return c.do(ctx, http.MethodPost, "/camera/control",
 		map[string]any{"name": name, "value": value}, nil)

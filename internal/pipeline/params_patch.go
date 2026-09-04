@@ -238,6 +238,7 @@ func applyPlanetaryParamPatch(working mode.Preset, raw json.RawMessage) (mode.Pr
 	setI(&next.Planetary.BestPercent, patch.BestPercent)
 	next.Planetary.BestPercent = clampi(next.Planetary.BestPercent, 5, 90)
 	setB(&next.Planetary.APAlign, patch.APAlign)
+	setB(&next.Planetary.Mosaic, patch.PanelMosaic)
 	setB(&next.Planetary.DoubleStack, patch.DoubleStack)
 	setB(&next.Planetary.Calibrate, patch.Calibrate)
 	setF(&next.Planetary.DeconvFWHM, patch.DeconvFWHM)

@@ -161,3 +161,26 @@ describe("StepBulkEdit", () => {
     expect(wrapper.emitted("apply")).toBeFalsy();
   });
 });
+
+// A sub-second exposure must survive being typed while the panel is re-rendering, which it does once
+// a second for the whole of a run. The field used to be rebuilt from the model on every render, so
+// the decimal point was deleted as fast as it could be entered and the row collapsed back to a whole
+// number — or to 0, which the sequencer then refuses outright.
+describe("SequenceRunner exposure field", () => {
+  it("keeps a fractional exposure typed during a re-render", async () => {
+    const wrapper = mountRunner();
+    const field = wrapper.findComponent({ name: "DurationInput" });
+    const el = field.find("input");
+
+    await el.trigger("focus");
+    for (const text of ["0", "0.", "0.5"]) {
+      (el.element as HTMLInputElement).value = text;
+      await el.trigger("input");
+      steps(wrapper)[0].count += 1; // something else on the panel moves, as progress does
+      await wrapper.vm.$nextTick();
+    }
+
+    expect(steps(wrapper)[0].exposure_us).toBe(500_000);
+    expect((el.element as HTMLInputElement).value).toBe("0.5");
+  });
+});

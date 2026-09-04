@@ -176,7 +176,12 @@ var processedTokens = []string{
 //	Light_30sec_Bin1_filter-Ha_-15.0C_gain139_2026-07-27_221403_frame0001.fit
 func (m FrameMeta) FileName(seq int) string {
 	parts := []string{titleType(m.Type)}
-	parts = append(parts, fmt.Sprintf("%ssec", trimFloat(float64(m.ExposureUs)/1e6, 3)))
+	// SIX decimals, which is exactly one microsecond. Three lost the whole short end: an ASI's
+	// minimum exposure is 32 µs, and at three decimals every frame from a bias set to a lucky-imaging
+	// burst was named "0sec" — a name that flatly contradicts the EXPTIME beside it, in a scheme
+	// whose entire point is being a second, independent copy of the header. trimFloat still drops
+	// trailing zeros, so 30 s stays "30sec" and 0.2 s stays "0.2sec".
+	parts = append(parts, fmt.Sprintf("%ssec", trimFloat(float64(m.ExposureUs)/1e6, 6)))
 	parts = append(parts, fmt.Sprintf("Bin%d", maxInt(1, m.Bin)))
 	if f := sanitizeToken(m.Filter); f != "" {
 		parts = append(parts, "filter-"+f)

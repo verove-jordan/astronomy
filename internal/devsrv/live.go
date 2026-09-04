@@ -233,12 +233,6 @@ func (l *liveView) notify() {
 	}
 }
 
-func (s *Server) currentCamera() device.Camera {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.camera
-}
-
 // errFailedExposure is returned when the driver reports a failed exposure.
 var errFailedExposure = errorString("the camera reported a failed exposure")
 

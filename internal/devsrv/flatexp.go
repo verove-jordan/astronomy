@@ -77,9 +77,7 @@ func (s *Server) measureFlatExposure(ctx context.Context, req FlatExposureReques
 	}
 
 	if req.Slot > 0 {
-		s.mu.Lock()
-		wheel := s.wheel
-		s.mu.Unlock()
+		wheel := s.currentWheel()
 		if wheel != nil {
 			if err := wheel.SetPosition(req.Slot); err != nil {
 				return FlatExposureResult{}, err

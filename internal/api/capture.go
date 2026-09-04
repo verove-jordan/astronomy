@@ -199,15 +199,41 @@ func (s *Server) startCapture(w http.ResponseWriter, r *http.Request) {
 		LatDeg: site.Lat, LonDeg: site.Lon, ElevationM: site.ElevationM,
 		PixelUm: s.cfg.PixelSizeUm,
 	}
+	s.attachTrackMonitor(r.Context(), b.MeasureTracking)
+	s.launchCapture(w, r, req, site, captureTarget(b), nil)
+}
+
+// launchCapture is the last mile every start shares: fill in what the request left blank, prove the
+// folder is writable, hand it to the sequencer, and begin recording the sky.
+//
+// Resuming a session goes through exactly this function, so a resumed night cannot quietly differ
+// from a fresh one — which is the only way "finish what was left" means what it says.
+func (s *Server) launchCapture(
+	w http.ResponseWriter, r *http.Request,
+	req capture.Request, site skylog.Site, tgt skylog.Target, extra map[string]any,
+) {
+	if req.PixelUm == 0 {
+		req.PixelUm = s.cfg.PixelSizeUm
+	}
 	if req.FocalMM == 0 {
 		req.FocalMM = s.cfg.FocalLenMM
 	}
+	// Dithering turns a shift in PIXELS into a mount nudge in arcseconds, so without the plate scale
+	// every dither is skipped — silently, once every DitherN frames, for the whole night. Nothing in
+	// the browser has ever sent this field, so that is what happened on every run started from the
+	// UI: eighty planned frames, one "dither skipped: the image scale is unknown" note, and a stack
+	// whose fixed-pattern noise never averages down.
+	//
+	// It is derivable, so derive it — from THIS run's focal length rather than the configured one,
+	// because a second rig arrives as focal_mm on the request and the two differ by 3×.
+	if req.ImageScaleArcsecPx <= 0 {
+		req.ImageScaleArcsecPx = arcsecPerPixel(req.FocalMM, s.cfg.PixelSizeUm)
+	}
 	// Ask the writer to create the folder and prove it is writable, before a single exposure is taken.
-	if err := s.prepareCaptureDir(r.Context(), root); err != nil {
+	if err := s.prepareCaptureDir(r.Context(), req.Root); err != nil {
 		badRequest(w, err.Error())
 		return
 	}
-	s.attachTrackMonitor(r.Context(), b.MeasureTracking)
 	progress, err := s.captureRunner().Start(r.Context(), req)
 	if err != nil {
 		if errors.Is(err, capture.ErrSessionRunning) {
@@ -219,8 +245,12 @@ func (s *Server) startCapture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Only now is the session row known, so recording the sky starts here rather than above.
-	s.attachConditionsLogger(progress.SessionID, site, captureTarget(b))
-	writeJSON(w, http.StatusAccepted, map[string]any{"progress": progress})
+	s.attachConditionsLogger(progress.SessionID, site, tgt)
+	out := map[string]any{"progress": progress}
+	for k, v := range extra {
+		out[k] = v
+	}
+	writeJSON(w, http.StatusAccepted, out)
 }
 
 // centerCapture runs the plate-solve centring loop: expose, solve, sync, re-slew until the target
@@ -465,6 +495,10 @@ type captureRecorder struct{ store *store.Store }
 
 func (c captureRecorder) CreateSession(ctx context.Context, req capture.Request, total int) (int64, error) {
 	seq, _ := json.Marshal(req.Sequence)
+	// The WHOLE request, not just the sequence: resuming a night that stopped early has to replay the
+	// focal length, pointing and dither settings it was actually shot with, and nothing else records
+	// them once the run is over.
+	full, _ := json.Marshal(req)
 	tile := -1
 	if req.TileIndex != nil {
 		tile = *req.TileIndex
@@ -472,7 +506,8 @@ func (c captureRecorder) CreateSession(ctx context.Context, req capture.Request,
 	return c.store.CreateCaptureSession(ctx, store.CaptureSession{
 		Object: req.Object, Root: req.Root, Panel: req.Panel,
 		MosaicPlanID: req.MosaicPlanID, TileIndex: tile,
-		Sequence: seq, Status: string(capture.StatusRunning), TotalFrames: total,
+		Sequence: seq, Request: full,
+		Status: string(capture.StatusRunning), TotalFrames: total,
 		SiteLat: req.LatDeg, SiteLon: req.LonDeg, SiteElevationM: req.ElevationM,
 	})
 }

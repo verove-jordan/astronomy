@@ -25,29 +25,23 @@ func (s *Server) connectMount(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &body) {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.mount != nil {
-		_ = s.mount.Close()
-		s.mount = nil
-	}
-	// Remember the chosen port before the driver is built: it is what the factory opens.
-	if body.Port != "" {
-		mountPort = body.Port
-	}
-	mount, err := s.openMount(body.Driver)
+	// s.mu is not held across Connect: the NexStar handshake retries over a 9600-baud line and can
+	// take seconds, and nothing else in this process may be unanswerable while it does.
+	s.mountGate.Lock()
+	defer s.mountGate.Unlock()
+	s.detachMount()
+
+	mount, err := s.openMount(body.Driver, body.Port)
 	if err != nil {
 		deviceError(w, err)
 		return
 	}
-	if porter, ok := mount.(interface{ SetPort(string) }); ok && body.Port != "" {
-		porter.SetPort(body.Port)
-	}
 	if err := mount.Connect(r.Context()); err != nil {
+		_ = mount.Close()
 		deviceError(w, err)
 		return
 	}
-	s.mount = mount
+	s.attachMount(mount)
 	driver := body.Driver
 	if driver == "" {
 		driver = DriverSim
@@ -70,12 +64,9 @@ func mountModelOf(m device.Mount) string {
 }
 
 func (s *Server) disconnectMount(w http.ResponseWriter, _ *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.mount != nil {
-		_ = s.mount.Close()
-		s.mount = nil
-	}
+	s.mountGate.Lock()
+	defer s.mountGate.Unlock()
+	s.detachMount()
 	writeJSON(w, http.StatusOK, map[string]any{"connected": false})
 }
 
@@ -87,12 +78,6 @@ func (s *Server) disconnectMount(w http.ResponseWriter, _ *http.Request) {
 // it instead.
 func (s *Server) mountStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.mountSnapshot(r.Context()))
-}
-
-func (s *Server) currentMount() device.Mount {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.mount
 }
 
 // mountGoto slews to J2000 coordinates, refusing anything below the altitude floor. force skips the

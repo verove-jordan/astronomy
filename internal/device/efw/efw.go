@@ -367,8 +367,23 @@ func efwCheck(call string, code int32) error {
 	if code == 0 {
 		return nil
 	}
-	return fmt.Errorf("efw: %s failed: %s", call, efwErrorText(code))
+	err := fmt.Errorf("efw: %s failed: %s", call, efwErrorText(code))
+	if efwGone(code) {
+		// A wheel that has gone away is NOT CONNECTED, and saying so in the type is what decides
+		// whether a night survives. The sequencer waits out device errors and carries on from the next
+		// frame (internal/capture/recover.go) — but it recognises them by the code devsrv puts in the
+		// reply, and devsrv derives that code from these sentinels. Without the wrap this fell through
+		// to a bare 500, so a USB hiccup on the filter wheel ended the session outright. MEASURED:
+		// session 10 died at frame 5 of 80 on EFWGetPosition error 4, and the wheel was healthy again
+		// minutes later.
+		return fmt.Errorf("%w: %w", device.ErrNotConnected, err)
+	}
+	return err
 }
+
+// efwGone reports the SDK codes that mean the wheel is not there to be talked to: removed or opened
+// by another program (4), and closed (9). Everything else is a wheel that answered and said no.
+func efwGone(code int32) bool { return code == 4 || code == 9 }
 
 // efwErrorText names the documented EFW error codes.
 func efwErrorText(code int32) string {

@@ -1777,7 +1777,7 @@ func processChannel(ctx context.Context, opts Options, set inspect.Set, masters 
 
 	// Calibrate + register (writes per-frame metrics to the calibrated sequence's .seq), then grade
 	// and stack the survivors.
-	if _, err := opts.Runner.Run(ctx, seqDir, siril.CalibrateRegisterScriptWith("light", cm, ingest), onProgress); err != nil {
+	if err := calibrateAndRegister(ctx, opts, &ch, seqDir, cm, ingest, set.Key.Filter, onProgress); err != nil {
 		ch.Err = err.Error()
 		return ch
 	}
@@ -1785,6 +1785,47 @@ func processChannel(ctx context.Context, opts Options, set inspect.Set, masters 
 		set.Key.Filter, set.Frames, outDir, gradeOpts, opts.stackWeight(), onProgress, &ch, nil, nil,
 		(*regGeometry)(nil))
 	return ch
+}
+
+// calibrateAndRegister calibrates the linked light sequence and registers it, leaving r_<seq> on
+// disk and every frame's registration metrics in <seq>_.seq — the contract finishStackedChannel
+// reads. Preset.Register2Pass chooses HOW the reference frame is picked, and nothing else differs.
+//
+// One-pass registration leaves the reference at frame 1. That is right only by luck: a session
+// crossing the meridian puts frame 1 on the minority side of a 180° flip, so every later frame has
+// to match a rotated reference which may also be the worst frame of the night (measured on
+// SH2-132: 758 stars in the reference against 1470-1844 elsewhere, and 108 of 180 frames left
+// unmatched with 6-9 star pairs against a median of 559 for the ones that matched). Two-pass
+// measures every frame before matching anything and picks the reference from those metrics.
+func calibrateAndRegister(ctx context.Context, opts Options, ch *ChannelResult, seqDir string,
+	cm siril.CalibMasters, ingest siril.SeqIngest, filter string, onProgress func(siril.Progress)) error {
+	if opts.Preset == nil || !opts.Preset.Register2Pass {
+		_, err := opts.Runner.Run(ctx, seqDir, siril.CalibrateRegisterScriptWith("light", cm, ingest), onProgress)
+		return err
+	}
+	if _, err := opts.Runner.Run(ctx, seqDir, siril.CalibrateRegister2PassScriptWith("light", cm, ingest), onProgress); err != nil {
+		return err
+	}
+	base := siril.CalibratedSeq("light", cm)
+	noteRegistrationReference(opts, ch, seqDir, base, filter)
+	// refIndex 0 leaves the reference Siril chose in the metric pass alone; framing "current" keeps
+	// the one-pass geometry contract (the output canvas is the reference frame's own field).
+	_, err := opts.Runner.Run(ctx, seqDir, siril.ApplyRegistrationScript(base, 0, "current"), onProgress)
+	return err
+}
+
+// noteRegistrationReference records which frame the two-pass metric pass elected, and the star
+// count that earned it. The reference IS the point of the two-pass path, so a run has to be able to
+// show where it landed. Soft: an unreadable .seq never fails a registration that succeeded.
+func noteRegistrationReference(opts Options, ch *ChannelResult, seqDir, baseSeq, filter string) {
+	seq, err := grade.ParseSeq(filepath.Join(seqDir, baseSeq+"_.seq"))
+	if err != nil || seq.Reference < 0 || seq.Reference >= len(seq.Metrics) {
+		return
+	}
+	m := seq.Metrics[seq.Reference]
+	ch.Selection.Notes = append(ch.Selection.Notes, fmt.Sprintf(
+		"%s: two-pass registration elected frame %d/%d as reference (%d stars, FWHM %.2f px) instead of defaulting to frame 1",
+		filter, seq.Reference+1, len(seq.Metrics), m.StarCount, m.FWHM))
 }
 
 // finishStackedChannel grades a calibrated+registered sequence, stacks the survivors into the channel

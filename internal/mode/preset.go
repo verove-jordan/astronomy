@@ -317,6 +317,16 @@ type Preset struct {
 	// wheel was still moving). Conditional — only off-brightness frames are dropped.
 	DropFilterWheelTransition bool
 
+	// Register2Pass registers a single-session channel with Siril's TWO-PASS form instead of the
+	// one-pass default. One-pass leaves the reference at frame 1, which is right only by luck: a
+	// session that crosses the meridian puts frame 1 on the minority side of a 180° flip, and every
+	// later frame then has to match a rotated reference that may also be the worst frame of the
+	// night. Two-pass measures every frame first and picks the reference from those star counts and
+	// FWHM. Off by default because it moves the output pixel grid (a different reference frames the
+	// stack differently), which every byte-pinned run depends on. The multi-group/cross-session path
+	// always registers in two passes and is unaffected by this knob.
+	Register2Pass bool
+
 	// Optional astro-AI host tools (used only when the binary is installed; otherwise skipped).
 	// BackgroundAI runs GraXpert background extraction on the linear masters instead of Siril's
 	// polynomial subsky. StarReduce > 0 runs StarNet++ in the finish and screens the stars back at
@@ -669,7 +679,7 @@ func presetFor(m Mode) Preset {
 			// there (drizzle_scale 1 returns to native).
 			Planetary: planetary.Options{
 				BestPercent: 15, Sharpen: true, APAlign: true, APWeights: true, DoubleStack: true,
-				Calibrate: true, DrizzleScale: 1.5,
+				Calibrate: true, DrizzleScale: 1.5, Mosaic: true,
 				Formats: []string{"png", "tif"}, Finish: planetary.DefaultFinish(),
 			},
 			Curve:    []float64{0, 0, 0.5, 0.52, 1, 1},

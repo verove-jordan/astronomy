@@ -74,3 +74,27 @@ func mustEval(t *testing.T, p string) string {
 	require.NoError(t, err)
 	return real
 }
+
+// The plate scale is what turns a dither in PIXELS into a mount nudge in arcseconds. Nothing in the
+// browser has ever sent it, so a run that asked for dithering got none — silently, once every
+// DitherN frames, all night, with a single "dither skipped: the image scale is unknown" note to show
+// for it. It is derivable from the optics, so it is derived; and from the RUN's focal length,
+// because the second rig arrives as focal_mm on the request and is 3x shorter than the configured
+// one.
+func TestArcsecPerPixel(t *testing.T) {
+	tests := []struct {
+		name             string
+		focalMM, pixelUm float64
+		want             float64
+	}{
+		{"FC-100 DF with the ASI1600MM", 740, 3.8, 1.059},
+		{"RedCat 51 with the ASI2600MC", 250, 3.76, 3.102},
+		{"no focal length is no scale", 0, 3.8, 0},
+		{"no pixel size is no scale", 740, 0, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.InDelta(t, tt.want, arcsecPerPixel(tt.focalMM, tt.pixelUm), 0.001)
+		})
+	}
+}

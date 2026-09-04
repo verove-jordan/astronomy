@@ -21,8 +21,8 @@ import (
 // Every original frame is still resampled exactly once (pass-1 warps are discarded; only their
 // fields seed).
 const (
-	apDenseCellPx   = 120 // target pass-2 AP cell size (px) → 29×29 on a 3520 px frame
-	apDenseGridMax  = 32
+	apDenseCellPx  = 120 // target pass-2 AP cell size (px) → 29×29 on a 3520 px frame
+	apDenseGridMax = 32
 	// apAlignPointsGridMax is the explicit align_points per-axis ceiling (48 → 2304 points). At 48
 	// a 3520 px min-dim frame has ≈73 px cells — still ≥ the dense pass's 2% (~70 px) ZNCC patch
 	// half-size (apDensePatchPct), so every AP window keeps enough support to correlate. The AUTO
@@ -30,8 +30,8 @@ const (
 	// large-sensor run, so the explicit knob is the user's consent to that cost.
 	apAlignPointsGridMax = 48
 	apDensePatchPct      = 2  // dense-AP correlation window half-size, % of the smaller axis
-	apDenseMaxShift = 3  // local search around the pass-1 seed (px)
-	doubleStackMin  = 12 // fewer kept frames: a second pass adds noise, not sharpness
+	apDenseMaxShift      = 3  // local search around the pass-1 seed (px)
+	doubleStackMin       = 12 // fewer kept frames: a second pass adds noise, not sharpness
 	// A dense-grid window on featureless surface (flat maria, dark side) cannot correlate — a
 	// degenerate ZNCC would bend the field coherently enough to survive the median outlier gate.
 	// Such APs are vetoed up-front (scale-invariant Laplacian variance of the REFERENCE window)
@@ -222,7 +222,7 @@ func vetoFeaturelessAPs(rc *refContext) {
 // regions keep pass 1's proven correction.
 func measureSeededField(im *fits.Image, rc *refContext, seedDx, seedDy []float64) (dxGrid, dyGrid []float64) {
 	tgtBlur := blurPlane(im, warpBlur)
-	gdx, gdy := globalShift(im, tgtBlur, rc)
+	gdx, gdy, _ := globalShift(im, tgtBlur, rc, frameSeed{})
 	baseDx, baseDy := uniformGrid(gdx, gdy, rc.gridN)
 	if seedDx != nil {
 		baseDx, baseDy = resampleFieldTo(seedDx, seedDy, gridSize(seedDx), rc, im.W, im.H)

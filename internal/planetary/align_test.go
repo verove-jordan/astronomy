@@ -55,13 +55,12 @@ func TestWarpToSharpest_RecoversShift(t *testing.T) {
 	// The per-frame progress hook may fire concurrently from the parallel workers — count under a lock.
 	var mu sync.Mutex
 	ticks := 0
-	res, err := warpToSharpest(context.Background(), paths, scores, dir, "al", true, 1, 0,
-		func(done, total int) {
-			mu.Lock()
-			ticks++
-			mu.Unlock()
-			assert.Equal(t, 3, total)
-		})
+	res, err := warpToSharpest(context.Background(), paths, scores, dir, "al", true, 1, 0, nil, func(done, total int) {
+		mu.Lock()
+		ticks++
+		mu.Unlock()
+		assert.Equal(t, 3, total)
+	})
 	require.NoError(t, err)
 	out := res.paths
 	require.Len(t, out, 3)
@@ -92,7 +91,7 @@ func TestWarpToSharpest_SkipsUnreadableLeavingNamingGap(t *testing.T) {
 	require.NoError(t, ref.WriteFITS(good))
 	res, err := warpToSharpest(context.Background(),
 		[]string{good, filepath.Join(dir, "missing.fits"), good},
-		[]float64{9, 1, 5}, dir, "al", true, 1, 0, nil)
+		[]float64{9, 1, 5}, dir, "al", true, 1, 0, nil, nil)
 	require.NoError(t, err)
 	// The unreadable middle frame drops; the survivors keep their input-position names (slot 2 → 00003)
 	// and every parallel array stays index-aligned with the compacted output list.

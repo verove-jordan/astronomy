@@ -144,7 +144,9 @@ device-status:
 mount-doctor:
     @go run ./cmd/astrostack mount doctor {{ if env_var_or_default("PROBE", "") != "" { "-probe" } else { "" } }}
 
-# Stop `just device` first: macOS gives a serial port to one process at a time.
+# Stop `just device` / `just device-x86` first: macOS gives a serial port to one process at a time,
+# and this one holds it for the whole run. (mount-audit and mount-reset do NOT need that — they go
+# through the running device server.)
 #
 # Connect, identify the mount, and time 500 echoes.
 mount-probe:
@@ -163,6 +165,8 @@ mount-soak DURATION='8h':
 # The hand controller has no menu that shows its stored periodic-error table, and the autoguide
 # rates live on the motor boards again — so after a night that went wrong this is the only way to
 # find out what is actually in there. It writes nothing and moves nothing.
+#
+# Safe to run while `just device-x86` is up: it asks the device server, which owns the serial port.
 # Read back every setting stored in the mount (site, clock, drive, guide rates, PEC table).
 mount-audit:
     go run ./cmd/astrostack mount audit \
@@ -170,7 +174,8 @@ mount-audit:
 
 # NOT a factory reset: it undoes only what this app can write, and proves each change by reading it
 # back. The mount's current settings are saved to output/ before the first byte goes out, dry run or
-# not. Narrow it with e.g. `just mount-reset -pec`.
+# not. Narrow it with e.g. `just mount-reset -pec`. Like mount-audit, it works with the device
+# server running — it goes through it.
 # Put back what this app can write into the mount — a DRY RUN unless APPLY=1.
 mount-reset WHAT='-all':
     go run ./cmd/astrostack mount reset {{WHAT}} \

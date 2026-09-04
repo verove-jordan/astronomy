@@ -151,7 +151,7 @@ func TestCanonicalizeFields_RecoversReferenceWarp(t *testing.T) {
 	require.NoError(t, err)
 	rc := newRefContext(ref)
 	rcD := denseContextFrom(ref, rc, 0)
-	dx, dy, err := measureAllFields(context.Background(), fx.paths, 0, &rc, &rcD)
+	dx, dy, _, err := measureAllFields(context.Background(), fx.paths, 0, &rc, &rcD, nil)
 	require.NoError(t, err)
 	canonicalizeFields(dx, dy, 0, rcD.onDisk)
 
@@ -198,7 +198,7 @@ func TestCanonicalizeFields_BeatsReferenceGeometry(t *testing.T) {
 	require.NoError(t, err)
 	rc := newRefContext(ref)
 	rcD := denseContextFrom(ref, rc, 0)
-	dx, dy, err := measureAllFields(context.Background(), fx.paths, 0, &rc, &rcD)
+	dx, dy, _, err := measureAllFields(context.Background(), fx.paths, 0, &rc, &rcD, nil)
 	require.NoError(t, err)
 	legacyDx := make([][]float64, len(dx))
 	legacyDy := make([][]float64, len(dy))
@@ -257,7 +257,7 @@ func TestWarpToSharpest_FewFramesFallsBack(t *testing.T) {
 		scores = append(scores, float64(10-i))
 	}
 
-	res, err := warpToSharpest(context.Background(), paths, scores, dir, "ff", true, 1, 0, nil)
+	res, err := warpToSharpest(context.Background(), paths, scores, dir, "ff", true, 1, 0, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, res.paths, len(paths))
 	assert.Contains(t, res.note, "skipped", "below the floor the run must say canonical geometry was skipped")
@@ -277,7 +277,7 @@ func TestCanonicalizeFields_Deterministic(t *testing.T) {
 
 	rcD := denseContextFrom(ref, rc, 0)
 	run := func() ([][]float64, [][]float64) {
-		dx, dy, merr := measureAllFields(context.Background(), fx.paths, 0, &rc, &rcD)
+		dx, dy, _, merr := measureAllFields(context.Background(), fx.paths, 0, &rc, &rcD, nil)
 		require.NoError(t, merr)
 		canonicalizeFields(dx, dy, 0, rcD.onDisk)
 		return dx, dy

@@ -39,8 +39,8 @@ func TestMeasureTwoLevelField_RefinesSubCellWarp(t *testing.T) {
 
 	rc := newRefContext(truth)
 	rcD := denseContextFrom(truth, rc, 0)
-	denseDx, denseDy := measureTwoLevelField(frame, &rc, &rcD)
-	coarseDx, coarseDy := measureFrameField(frame, &rc, true)
+	denseDx, denseDy, _ := measureTwoLevelField(frame, &rc, &rcD, frameSeed{})
+	coarseDx, coarseDy, _ := measureFrameField(frame, &rc, true, frameSeed{})
 	coarseAtD, coarseAtDy := resampleFieldTo(coarseDx, coarseDy, rc.gridN, &rcD, w, h)
 
 	core := coreNodes(rcD.onDisk)
@@ -120,7 +120,7 @@ func TestMeasureTwoLevelField_VetoRidesBaseline(t *testing.T) {
 	require.Greater(t, vetoed, 5, "the flat half must veto its dense APs")
 
 	// The registration field stores sample-from offsets: the NEGATED content motion.
-	dxG, dyG := measureTwoLevelField(frame, &rc, &rcD)
+	dxG, dyG, _ := measureTwoLevelField(frame, &rc, &rcD, frameSeed{})
 	for k := range dxG {
 		assert.InDelta(t, -1.4, dxG[k], 0.35, "node %d dx: vetoed cells must ride the global baseline", k)
 		assert.InDelta(t, 0.8, dyG[k], 0.35, "node %d dy", k)

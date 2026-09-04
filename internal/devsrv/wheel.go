@@ -12,48 +12,45 @@ import (
 func (s *Server) connectWheel(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Driver string   `json:"driver"`
+		Device string   `json:"device"`
 		Names  []string `json:"names"`
 	}
 	if !decodeBody(w, r, &body) {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.wheel != nil {
-		_ = s.wheel.Close()
-		s.wheel = nil
-	}
-	wheel, err := s.openWheel(body.Driver)
+	// s.mu is not held across Connect: EFWOpen re-homes the wheel, which is seconds of motor time,
+	// and every other endpoint used to queue behind it.
+	s.wheelGate.Lock()
+	defer s.wheelGate.Unlock()
+	s.detachWheel()
+
+	wheel, err := s.openWheel(body.Driver, body.Device)
 	if err != nil {
 		deviceError(w, err)
 		return
 	}
 	if err := wheel.Connect(r.Context()); err != nil {
+		_ = wheel.Close()
 		deviceError(w, err)
 		return
 	}
 	if len(body.Names) > 0 {
 		wheel.SetFilterNames(body.Names)
 	}
-	s.wheel = wheel
+	s.attachWheel(wheel)
 	st, _ := wheel.State()
 	writeJSON(w, http.StatusOK, map[string]any{"connected": true, "wheel": st})
 }
 
 func (s *Server) disconnectWheel(w http.ResponseWriter, _ *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.wheel != nil {
-		_ = s.wheel.Close()
-		s.wheel = nil
-	}
+	s.wheelGate.Lock()
+	defer s.wheelGate.Unlock()
+	s.detachWheel()
 	writeJSON(w, http.StatusOK, map[string]any{"connected": false})
 }
 
 func (s *Server) wheelStatus(w http.ResponseWriter, _ *http.Request) {
-	s.mu.Lock()
-	wheel := s.wheel
-	s.mu.Unlock()
+	wheel := s.currentWheel()
 	if wheel == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"connected": false})
 		return
@@ -78,9 +75,7 @@ func (s *Server) setWheelNames(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &body) {
 		return
 	}
-	s.mu.Lock()
-	wheel := s.wheel
-	s.mu.Unlock()
+	wheel := s.currentWheel()
 	if wheel == nil {
 		deviceError(w, device.ErrNotConnected)
 		return
@@ -98,12 +93,25 @@ func (s *Server) setWheelPosition(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &body) {
 		return
 	}
-	s.mu.Lock()
-	wheel := s.wheel
-	s.mu.Unlock()
+	wheel := s.currentWheel()
 	if wheel == nil {
 		deviceError(w, device.ErrNotConnected)
 		return
+	}
+	// A wheel that is still moving REFUSES a new position — EFW error 5, and the simulator agrees.
+	// That is exactly the state an aborted session leaves behind, because the abort cancels the
+	// request while the motor is still turning: the next run then died on its very first filter
+	// change with "wheel is moving", a transient reported as a fault, and a night that was merely
+	// stopped could not be resumed at all.
+	//
+	// A caller that asked to WAIT has already said it wants the filter in the beam rather than an
+	// immediate answer, so settling first is what it meant. One that did not is left alone: for it,
+	// "the wheel is busy" is still the honest reply.
+	if body.Wait {
+		if err := wheel.WaitSettled(r.Context()); err != nil {
+			deviceError(w, err)
+			return
+		}
 	}
 	if err := wheel.SetPosition(body.Slot); err != nil {
 		deviceError(w, err)
@@ -120,9 +128,7 @@ func (s *Server) setWheelPosition(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) calibrateWheel(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	wheel := s.wheel
-	s.mu.Unlock()
+	wheel := s.currentWheel()
 	if wheel == nil {
 		deviceError(w, device.ErrNotConnected)
 		return

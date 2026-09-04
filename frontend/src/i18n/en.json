@@ -1555,7 +1555,10 @@
       "realPixels": "real sensor pixels",
       "fullscreen": "Fullscreen",
       "exitFullscreen": "Exit fullscreen (Esc)",
-      "fewLevels": "Only {levels} distinct pixel values here — this sensor is 12-bit, so a capped or empty field really does contain just a few. Expose longer, raise the gain, or point at a star."
+      "fewLevels": "Only {levels} distinct pixel values here — this sensor is 12-bit, so a capped or empty field really does contain just a few. Expose longer, raise the gain, or point at a star.",
+      "record": "Record",
+      "recording": "Recording",
+      "recordHint": "Keeps the frames the preview is already taking, from the one on screen. Click again to stop."
     },
     "hist": {
       "title": "Histogram",
@@ -1607,7 +1610,7 @@
       "tile": "shooting tile {panel}",
       "filter": "Filter",
       "count": "Frames",
-      "exposure": "Exp. s",
+      "exposure": "Exposure",
       "gain": "Gain",
       "dither": "Dither /",
       "remove": "Remove",
@@ -1925,7 +1928,8 @@
         "near_pole": "The telescope is pointing close to the mount's own axis, which leaves a small circle to fit. Point further from the pole for a firmer answer.",
         "no_residual": "Three frames always fit a circle exactly, so nothing could be cross-checked. A fourth frame would catch a knocked tripod.",
         "low_altitude": "A frame was taken low in the sky, where the refraction model is least reliable.",
-        "assumed_on_axis": "This assumed the telescope is looking straight down the right-ascension axis. Any cone error, or a declination axis off its index, is added to the answer unmeasured."
+        "assumed_on_axis": "This assumed the telescope is looking straight down the right-ascension axis. Any cone error, or a declination axis off its index, is added to the answer unmeasured.",
+        "drive_stopped": "The mount's drive is stopped, so the sky drifts through the frame at up to 15 arcseconds per second. Over an exposure of a few seconds that trails the stars far enough to stop them being plate-solved anywhere near the celestial equator. Start tracking, or shorten the exposure."
       },
       "rough": {
         "caveat": "Measured from a single frame, assuming the tube is looking down the right-ascension axis. That is what a polar scope assumes too, so expect the same accuracy — around half a degree, set by your cone error. Run the four-frame measurement for arcminutes.",
@@ -2029,7 +2033,9 @@
       "axisPercent": "% / °",
       "axisValue": "°C / ″",
       "tooShort": "Too few samples to chart — a session shorter than an hour records only its start and end."
-    }
+    },
+    "resume": "Resume this night",
+    "resumeStarted": "Started — {frames} frames still to shoot. Watch it on the Capture page."
   },
   "mapping": {
     "title": "Channel mapping",

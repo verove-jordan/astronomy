@@ -2,6 +2,7 @@ package nexstar
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -126,16 +127,16 @@ func TestFixedRateCommand(t *testing.T) {
 // fakeHC is a scriptable stand-in for the hand controller: it records what was sent and answers the
 // way a real one does, so the driver's conversation can be asserted without hardware.
 type fakeHC struct {
-	mu       sync.Mutex
-	sent     []string
-	pending  []byte
-	aligned  bool
-	slewing  bool
+	mu      sync.Mutex
+	sent    []string
+	pending []byte
+	aligned bool
+	slewing bool
 	// trackMode is what the `t` query answers — the drive mode a nudge has to put back.
 	trackMode byte
-	raNow    float64
-	decNow   float64
-	failEcho bool
+	raNow     float64
+	decNow    float64
+	failEcho  bool
 
 	// The PEC table and the worm's position in it. pecBin advances on every read, the way a turning
 	// worm would, so a caller polling for phase sees it move.
@@ -527,4 +528,33 @@ func TestOperationsRequireAConnection(t *testing.T) {
 	assert.ErrorIs(t, m.GotoRADec(ctx, 1, 1), device.ErrNotConnected)
 	_, err := m.State(ctx)
 	assert.ErrorIs(t, err, device.ErrNotConnected)
+}
+
+// Connect must not eat the sentinel that says WHY the port would not open.
+//
+// It used to: the open error was formatted with %v, which prints the sentinel's words while breaking
+// the chain. Every errors.Is on a Connect failure therefore answered false, and a caller could not
+// tell "another program holds the port" — the normal state while the device server runs — from a
+// mount that is switched off. The words looked right, which is what made it survive.
+func TestMount_Connect_KeepsTheReasonThePortWouldNotOpen(t *testing.T) {
+	tests := []struct {
+		name string
+		open error
+		want error
+	}{
+		{"busy", ErrPortBusy, ErrPortBusy},
+		{"unconfigurable", ErrPortUnconfigurable, ErrPortUnconfigurable},
+		{"gone", ErrLinkGone, ErrLinkGone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := New("/dev/cu.test", func(string) (Port, error) {
+				return nil, fmt.Errorf("%w: underlying detail", tt.open)
+			})
+			err := m.Connect(context.Background())
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tt.want, "the sentinel must survive Connect's wrapping")
+			assert.ErrorIs(t, err, device.ErrDriverUnavailable, "and so must the driver-level one")
+		})
+	}
 }

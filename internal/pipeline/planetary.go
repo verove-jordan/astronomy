@@ -323,8 +323,13 @@ type planetaryPatch struct {
 	TrueLum *bool `json:"true_lum,omitempty"`
 
 	// Tier C — re-stack from the source frames.
-	BestPercent *int     `json:"best_percent,omitempty"`
-	APAlign     *bool    `json:"ap_align,omitempty"`
+	BestPercent *int  `json:"best_percent,omitempty"`
+	APAlign     *bool `json:"ap_align,omitempty"`
+	// PanelMosaic segments a capture whose subject drifts across the field into overlapping panels
+	// and merges their stacks onto one canvas. Named panel_mosaic rather than "mosaic" because that
+	// wire key already means the deep-sky union canvas. Inert on a tracked capture (the drift gate
+	// keeps it one panel), so it is on by default.
+	PanelMosaic *bool    `json:"panel_mosaic,omitempty"`
 	DoubleStack *bool    `json:"double_stack,omitempty"`
 	Calibrate   *bool    `json:"calibrate,omitempty"`
 	DeconvFWHM  *float64 `json:"deconv_fwhm,omitempty"`

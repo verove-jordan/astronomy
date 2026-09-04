@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -19,8 +20,13 @@ import (
 //
 // These live outside the device server on purpose. macOS serial opens take TIOCEXCL, so exactly one
 // process may hold the port — which means the diagnosis and the endurance run cannot be endpoints on
-// a server that is itself holding it. The trade is that `astrostack device` must be stopped first,
-// and the error below says so rather than reporting a hardware fault.
+// a server that is itself holding it.
+//
+// audit and reset are the exception, and it matters: they are wanted most on an observing night,
+// which is exactly when the device server IS running and holding the port. Both operations already
+// exist on it as endpoints backed by the same nexstar functions, so those two ASK it rather than
+// failing with "Serial port busy" (mountsidecar.go). probe and soak still need the port to
+// themselves, and connectMount says so instead of reporting a hardware fault.
 
 func runMount(args []string) error {
 	if len(args) == 0 {
@@ -77,6 +83,9 @@ write, and proves each change by reading it back. The hand controller's own
 Menu > Utilities > Factory Settings clears more — including things no serial command can reach —
 but tells you nothing about what it did. Run 'mount audit' after it to find out.
 
+audit and reset work while 'astrostack device' is running: they go through it, because it owns the
+port. probe and soak need the port to themselves — stop the device server for those.
+
 Soak flags:
   -port PATH        serial device (default: the first that looks like a USB-serial adapter)
   -duration 8h      how long to run
@@ -86,7 +95,7 @@ Soak flags:
   -allow-reconnects 0
                     tolerate this many reconnects, for a deliberate unplug drill
 
-Stop 'astrostack device' first: macOS gives the serial port to one process at a time.
+macOS gives the serial port to one process at a time.
 `)
 }
 
@@ -242,13 +251,7 @@ func runMountAudit(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	m, err := connectMount(ctx, *port)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = m.Close() }()
-
-	r, err := nexstar.Audit(ctx, m)
+	r, err := readMountAudit(ctx, *port)
 	if err != nil {
 		return err
 	}
@@ -312,19 +315,56 @@ func runMountReset(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	m, err := connectMount(ctx, *port)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = m.Close() }()
-
-	res, err := nexstar.Restore(ctx, m, opts)
+	res, err := writeMountReset(ctx, *port, opts, *backupDir != "")
 	if err != nil {
 		return err
 	}
 	fmt.Printf("before:\n\n%s\n", res.Before.String())
 	fmt.Print(res.String())
 	return nil
+}
+
+// readMountAudit gets the audit from whichever process can actually reach the mount.
+//
+// An explicit -port names one adapter, so it is always opened directly; otherwise the running device
+// server is preferred when it is holding a hand controller, because on macOS it then owns the port
+// and nothing else can have it. This is what makes `just mount-audit` work on an observing night
+// instead of failing with "Serial port busy" at the moment the answer is wanted most.
+func readMountAudit(ctx context.Context, port string) (nexstar.AuditReport, error) {
+	if port == "" {
+		if sc := findMountSidecar(ctx, config.Load().DeviceAddr); sc != nil {
+			fmt.Printf("reading %s\n\n", sc.describe())
+			return sc.audit(ctx)
+		}
+	}
+	m, err := connectMount(ctx, port)
+	if err != nil {
+		return nexstar.AuditReport{}, err
+	}
+	defer func() { _ = m.Close() }()
+	return nexstar.Audit(ctx, m)
+}
+
+// writeMountReset routes the restore the same way the audit is routed. The device server chooses
+// where the pre-change backup lands, so an explicit -backup-dir is reported rather than silently
+// ignored — the file is the point of the flag.
+func writeMountReset(ctx context.Context, port string, opts nexstar.RestoreOptions, backupDirGiven bool) (nexstar.RestoreResult, error) {
+	if port == "" {
+		if sc := findMountSidecar(ctx, config.Load().DeviceAddr); sc != nil {
+			fmt.Printf("writing %s\n", sc.describe())
+			if backupDirGiven {
+				fmt.Println("note: -backup-dir is not used on this path — the device server writes the backup itself")
+			}
+			fmt.Println()
+			return sc.reset(ctx, opts)
+		}
+	}
+	m, err := connectMount(ctx, port)
+	if err != nil {
+		return nexstar.RestoreResult{}, err
+	}
+	defer func() { _ = m.Close() }()
+	return nexstar.Restore(ctx, m, opts)
 }
 
 // connectMount opens the hand controller, turning the two failures people actually hit into
@@ -339,6 +379,18 @@ func connectMount(ctx context.Context, port string) (*nexstar.Mount, error) {
 	}
 	m := nexstar.New(port, nil)
 	if err := m.Connect(ctx); err != nil {
+		if errors.Is(err, nexstar.ErrPortBusy) {
+			// On this machine the other program is almost always the device server, and saying
+			// "Serial port busy" sends the user hunting for a fault when the sidecar is simply doing
+			// its job. audit and reset route through it by themselves; probe and soak cannot, because
+			// they need the port to themselves for hours.
+			return nil, fmt.Errorf("%s is busy: %w\n\n"+
+				"That is normally `astrostack device` (just device-x86), which owns the port while it "+
+				"holds the mount.\n"+
+				"  audit / reset go through it automatically — connect the mount in Capture > Devices "+
+				"and re-run.\n"+
+				"  probe / soak need the port to themselves: stop the device server first", port, err)
+		}
 		d := nexstar.Diagnose(ctx, false)
 		return nil, fmt.Errorf("could not connect on %s: %w\n\n%s", port, err, d.String())
 	}

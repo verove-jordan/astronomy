@@ -158,14 +158,22 @@ type PolarSession struct {
 	lastFrame  polaralign.Frame
 	lastCorr   polaralign.Correction
 	haveLastFr bool
-	// seedRA/seedDec is where the mount says it is pointing, read once when the session starts.
+	// seedRA/seedDec is the starting point for the FIRST frame's solve, which has no previous sample
+	// to hint from. Siril's platesolve refuses outright when it is given neither coordinates nor a
+	// header carrying them — "no target coordinates passed and image header doesn't contain any
+	// either" — so without a seed the very first solve of every session failed and the wizard could
+	// never get past step 1.
 	//
-	// It exists for the FIRST frame, which has no previous sample to hint from. Siril's platesolve
-	// refuses outright when it is given neither coordinates nor a header carrying them — "no target
-	// coordinates passed and image header doesn't contain any either" — so without this the very
-	// first solve of every session failed, and the wizard could never get past step 1.
+	// But its near solver searches only ~10° around whatever it is given, which makes a WRONG seed
+	// worse than none: it spends the search on the wrong part of the sky and then reports a radius,
+	// not a reason. Where the seed came from is therefore kept too, so a failure can say so.
 	seedRA, seedDec float64
 	haveSeed        bool
+	seedFrom        string
+	// setupWarnings are raised when the session starts — conditions the operator can still fix, which
+	// is the only moment fixing them is cheap. Kept apart from the fit's own warnings because settle
+	// replaces those every time it publishes an answer.
+	setupWarnings []string
 
 	subsMu sync.Mutex
 	subs   map[chan PolarState]bool
@@ -239,6 +247,7 @@ func (p *PolarSession) Rough(ctx context.Context, opts PolarOptions) error {
 	if err := p.begin(ctx, opts, PolarMeasuring); err != nil {
 		return err
 	}
+	p.seedCelestialPole()
 	frame, err := p.solveFreshFrame(ctx)
 	if err != nil {
 		p.fail(err)
@@ -282,16 +291,22 @@ func (p *PolarSession) begin(ctx context.Context, opts PolarOptions, phase Polar
 	// Whether the drive is running changes what the target marker is pinned to, so it is read once here
 	// rather than assumed. A mount we cannot reach is not an error: alignment does not need one.
 	//
-	// The pointing is taken from the same reply and kept as the seed for the first solve. It only has
-	// to be roughly right — a mount that has not been aligned at all still knows which way it is
-	// facing to within a few degrees, and that is the difference between a two-second solve and one
-	// the solver refuses to attempt.
+	// The pointing is taken from the same reply and kept as the seed for the first solve — but ONLY
+	// from a mount that has been aligned.
+	//
+	// An unaligned Celestron still answers the position command; it just answers relative to a home
+	// it assumes rather than one anybody established, so the number has nothing to do with where the
+	// tube is looking. Measured on the AVX: it reported Dec 0.1° with the telescope on Polaris, 89°
+	// away, and every first solve died as "the near solver could not find a solution over the search
+	// radius (10.0 deg)" — a true statement about a search nobody should have started.
 	if st, err := p.client.Mount(ctx); err == nil {
 		p.mu.Lock()
 		p.state.Tracking = st.Mount.Tracking
-		if st.Connected {
-			p.seedRA, p.seedDec, p.haveSeed = st.Mount.RADeg, st.Mount.DecDeg, true
+		p.takeMountSeedLocked(st)
+		if st.Connected && !st.Mount.Tracking {
+			p.setupWarnings = append(p.setupWarnings, warnDriveStopped)
 		}
+		p.state.Warnings = p.setupWarnings
 		p.mu.Unlock()
 	}
 
@@ -316,7 +331,7 @@ func (p *PolarSession) settle(frame polaralign.Frame, axis polaralign.Axis, mode
 		p.state.Pole = &view
 	}
 	p.state.Axis, p.state.Correction = &axis, &corr
-	p.state.Warnings = axis.Warnings
+	p.state.Warnings = append(append([]string{}, p.setupWarnings...), axis.Warnings...)
 	p.lastFrame, p.lastCorr, p.haveLastFr = frame, corr, true
 	p.mu.Unlock()
 	p.publish()
@@ -510,7 +525,7 @@ func (p *PolarSession) refresh(ctx context.Context) error {
 func (p *PolarSession) solveFreshFrame(ctx context.Context) (polaralign.Frame, error) {
 	p.mu.Lock()
 	scratch, n := p.scratch, len(p.samples)
-	hint := p.solveHintLocked()
+	hint, hintFrom := p.solveHintLocked()
 	p.mu.Unlock()
 	if scratch == "" {
 		return polaralign.Frame{}, ErrPolarNotRunning
@@ -529,7 +544,7 @@ func (p *PolarSession) solveFreshFrame(ctx context.Context) (polaralign.Frame, e
 
 	res, err := p.solver.Solve(ctx, saved.Path, hint)
 	if err != nil {
-		return polaralign.Frame{}, fmt.Errorf("the frame could not be plate-solved: %w", err)
+		return polaralign.Frame{}, explainSolveFailure(err, hint, hintFrom)
 	}
 	at, err := time.Parse(time.RFC3339Nano, saved.StartedAt)
 	if err != nil {
@@ -567,9 +582,14 @@ func (p *PolarSession) waitForFrameAfter(ctx context.Context, seq int64, path st
 	// seed that solveHintLocked falls back on, which matters because the user turns the RA axis BY
 	// HAND between frames and the encoders follow: by the time frame two is taken, the position read
 	// at Start is tens of degrees stale. A solved sample still wins over this when there is one.
-	if st, err := p.client.Mount(ctx); err == nil && st.Connected {
+	//
+	// ALIGNED again, for the reason begin gives: an unaligned mount answers with a position it has
+	// no way of knowing. Refreshing from one here would undo the check at Start on the very next
+	// frame, and would overwrite the celestial-pole seed that lets "Find the pole" work with no
+	// mount at all — the two places have to agree or neither holds.
+	if st, err := p.client.Mount(ctx); err == nil {
 		p.mu.Lock()
-		p.seedRA, p.seedDec, p.haveSeed = st.Mount.RADeg, st.Mount.DecDeg, true
+		p.takeMountSeedLocked(st)
 		p.mu.Unlock()
 	}
 	p.mu.Lock()
@@ -608,20 +628,102 @@ func (p *PolarSession) waitForFrameAfter(ctx context.Context, seq int64, path st
 // solveHintLocked is where to tell the solver to look. The previous frame is the best hint there is —
 // the mount has been turned since, but by tens of degrees at most, which still turns an all-sky search
 // into a couple of seconds. Caller holds the lock.
-func (p *PolarSession) solveHintLocked() platesolve.Hint {
+func (p *PolarSession) solveHintLocked() (platesolve.Hint, string) {
 	hint := platesolve.Hint{FocalMM: p.opts.FocalMM, PixelUm: p.opts.PixelUm}
 	if n := len(p.samples); n > 0 {
 		last := p.samples[n-1]
 		hint.RADeg, hint.DecDeg, hint.HasHint = last.RADeg, last.DecDeg, true
-		return hint
+		return hint, "the previous solved frame"
 	}
-	// No sample yet, so fall back to where the mount says it is. Solved frames are better hints than
-	// the mount, which is why they win above — but on the first frame the choice is between the
-	// mount's word and nothing, and nothing is what makes the solver give up before it starts.
+	// No sample yet, so fall back to the session's seed. A solved frame is a better hint than
+	// anything else, which is why it wins above; on the first frame there is only the seed, and a
+	// seed nobody could supply is reported rather than guessed at.
 	if p.haveSeed {
 		hint.RADeg, hint.DecDeg, hint.HasHint = p.seedRA, p.seedDec, true
+		return hint, p.seedFrom
 	}
-	return hint
+	return hint, ""
+}
+
+// warnDriveStopped is raised when the session starts with the mount's drive off.
+//
+// This is the other half of the failure the seed bug hid. With the drive stopped the sky crosses the
+// frame at up to 15 arcseconds a second, so the four-second exposure this wizard uses smears stars
+// into a streak tens of pixels long anywhere near the celestial equator — which is exactly where the
+// instructions send you — and a streak is not a star as far as a plate solver is concerned. The
+// telescope looks fine, the focus is fine, and nothing solves.
+//
+// It is a CODE, not a sentence: PolarState.Warnings are i18n keys the panel renders through
+// t("capture.polar.warnings.<code>"), so prose here would reach the user as a missing-key string.
+const warnDriveStopped = "drive_stopped"
+
+// usableMountSeed reports whether a mount reply may be used to tell the solver where to look.
+//
+// Only an ALIGNED mount may. An unaligned Celestron still answers the position command; it just
+// answers relative to a home it assumes rather than one anybody established, so the number has
+// nothing to do with where the tube is looking. Measured on the AVX: it reported Dec 0.1° with the
+// telescope on Polaris, 89° away — and because Siril's near solver looks only ~10° around what it is
+// given, that seed did not merely fail to help, it guaranteed the failure and then reported a search
+// radius instead of a reason.
+//
+// One function, because the session reads the mount in two places and a rule enforced in only one of
+// them is no rule at all: refreshing per frame would otherwise undo the check at Start on the very
+// next frame, and would overwrite the celestial-pole seed that lets "Find the pole" work with no
+// mount at all.
+func usableMountSeed(st MountState) (raDeg, decDeg float64, ok bool) {
+	if !st.Connected || !st.Mount.Aligned {
+		return 0, 0, false
+	}
+	return st.Mount.RADeg, st.Mount.DecDeg, true
+}
+
+// takeMountSeedLocked adopts the mount's pointing when it is worth adopting, and leaves whatever
+// seed is already there when it is not. Caller holds p.mu.
+func (p *PolarSession) takeMountSeedLocked(st MountState) {
+	raDeg, decDeg, ok := usableMountSeed(st)
+	if !ok {
+		return
+	}
+	p.seedRA, p.seedDec, p.haveSeed = raDeg, decDeg, true
+	p.seedFrom = "the mount's reported position"
+}
+
+// seedCelestialPole points the first solve at the pole.
+//
+// This is Rough's own premise made usable: the mode asserts the tube is looking down the right
+// ascension axis, so the frame centre is within a fraction of a degree of the celestial pole. That
+// makes the pole the one seed this mode can always supply — with no mount, no alignment and no blind
+// solver installed — and a ~10° search around it covers every right ascension, because they all meet
+// there. It overrides an aligned mount's own position on purpose: if the two disagree, the mode's
+// assumption is already broken and the pole is the thing being tested.
+func (p *PolarSession) seedCelestialPole() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	dec := 90.0
+	if p.opts.Site.LatDeg < 0 {
+		dec = -90.0
+	}
+	p.seedRA, p.seedDec, p.haveSeed = 0, dec, true
+	p.seedFrom = "the celestial pole, where this mode assumes the telescope is looking"
+}
+
+// explainSolveFailure turns Siril's search-radius message into the thing to do about it.
+//
+// The solver can only ever report that it found nothing within its radius. It cannot know whether
+// that is because the field is too sparse, the focus is soft, the scale is wrong, or — the case that
+// actually happens — nobody could tell it where to look.
+func explainSolveFailure(err error, hint platesolve.Hint, from string) error {
+	base := fmt.Errorf("the frame could not be plate-solved: %w", err)
+	if !hint.HasHint {
+		return fmt.Errorf("%w\n\nNothing could tell the solver where to look: the mount is not aligned, so "+
+			"the position it reports is not where the telescope points. Align the mount first, or use "+
+			"\"Find the pole\", which assumes the telescope is looking down the right ascension axis and "+
+			"needs no mount at all", base)
+	}
+	return fmt.Errorf("%w\n\nThe search started from %s (%.3f°, %.3f°) and looks about 10° around it. Check "+
+		"the telescope really is pointing there, that the focus is sharp enough for stars to be detected, "+
+		"and that the focal length (%.0f mm) and pixel size (%.2f µm) match the camera actually attached",
+		base, from, hint.RADeg, hint.DecDeg, hint.FocalMM, hint.PixelUm)
 }
 
 // fail records a terminal error and tells the UI.

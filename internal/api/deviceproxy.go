@@ -143,10 +143,20 @@ func isDeviceStream(path string) bool {
 	return false
 }
 
+// deviceHealthTimeout bounds the liveness probe.
+//
+// A stopped device server is refused at connect and answers in microseconds, so this budget is only
+// ever spent on a server that is up but slow to reply — and that is precisely the case where giving
+// up is the wrong answer, because the UI turns "no reply" into "not running", blanks all three
+// device panels and tells the user to start a process they are already running. Five seconds rather
+// than two costs nothing on the failure path and leaves room for a sidecar that has just started and
+// is still taking its first inventory.
+const deviceHealthTimeout = 5 * time.Second
+
 // deviceHealth is a short-timeout probe used by the environment report, so a stopped device server
 // shows up as "not running" rather than making the whole status page hang.
 func (s *Server) deviceHealth(ctx context.Context) (map[string]any, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, deviceHealthTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+s.cfg.DeviceAddr+"/health", nil)
 	if err != nil {

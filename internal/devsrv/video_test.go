@@ -25,12 +25,10 @@ func videoServer(t *testing.T, connect bool) *Server {
 	})
 	t.Cleanup(srv.Close)
 	if connect {
-		cam, err := srv.openCamera("sim")
+		cam, err := srv.openCamera(DriverSim, "")
 		require.NoError(t, err)
 		require.NoError(t, cam.Connect(context.Background()))
-		srv.mu.Lock()
-		srv.camera = cam
-		srv.mu.Unlock()
+		srv.attachCamera(cam)
 	}
 	return srv
 }

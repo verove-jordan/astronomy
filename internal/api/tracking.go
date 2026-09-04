@@ -81,11 +81,17 @@ func (s *Server) trackingSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"session_ids": ids})
 }
 
-// imageScaleArcsecPx is the plate scale from the configured optics: 206265 × pixel / focal length.
+// imageScaleArcsecPx is the plate scale from the configured optics.
 // Zero when either is unset, which the analysis reads as "give no exposure advice".
 func (s *Server) imageScaleArcsecPx() float64 {
-	if s.cfg.FocalLenMM <= 0 || s.cfg.PixelSizeUm <= 0 {
+	return arcsecPerPixel(s.cfg.FocalLenMM, s.cfg.PixelSizeUm)
+}
+
+// arcsecPerPixel is the plate scale: 206.265 × pixel size (µm) / focal length (mm). Zero when either
+// is unknown — which every caller must read as "no scale", never as "zero arcseconds".
+func arcsecPerPixel(focalMM, pixelUm float64) float64 {
+	if focalMM <= 0 || pixelUm <= 0 {
 		return 0
 	}
-	return 206.265 * s.cfg.PixelSizeUm / s.cfg.FocalLenMM
+	return 206.265 * pixelUm / focalMM
 }

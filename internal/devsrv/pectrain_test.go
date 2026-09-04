@@ -46,16 +46,15 @@ func pecTestServer(t *testing.T, world sim.Config) *Server {
 	t.Cleanup(srv.Close)
 
 	ctx := context.Background()
-	cam, err := srv.openCamera(DriverSim)
+	cam, err := srv.openCamera(DriverSim, "")
 	require.NoError(t, err)
 	require.NoError(t, cam.Connect(ctx))
-	mount, err := srv.openMount(DriverSim)
+	mount, err := srv.openMount(DriverSim, "")
 	require.NoError(t, err)
 	require.NoError(t, mount.Connect(ctx))
 
-	srv.mu.Lock()
-	srv.camera, srv.mount = cam, mount
-	srv.mu.Unlock()
+	srv.attachCamera(cam)
+	srv.attachMount(mount)
 	return srv
 }
 

@@ -109,15 +109,14 @@ function onDriverChange(
 
 async function connect(kind: "camera" | "wheel" | "mount") {
   const driver = driverFor(kind);
+  // A discovered device carries the id its own driver understands — a serial path for the mount, an
+  // AVFoundation device name for a phone. Passing it means the driver opens the one we listed
+  // instead of re-guessing which of them the user meant.
+  const id = discoveredFor(kind).find((d) => d.driver === driver)?.id;
   try {
-    if (kind === "camera") await store.connectCamera(driver);
-    if (kind === "wheel") await store.connectWheel(driver);
-    if (kind === "mount") {
-      // A discovered mount is identified by its serial path; passing it means the driver opens the
-      // adapter we listed rather than re-guessing which one is the telescope.
-      const port = discoveredFor("mount").find((d) => d.driver === driver)?.id;
-      await store.connectMount(driver, port);
-    }
+    if (kind === "camera") await store.connectCamera(driver, id);
+    if (kind === "wheel") await store.connectWheel(driver, undefined, id);
+    if (kind === "mount") await store.connectMount(driver, id);
   } catch (e) {
     store.error = e instanceof Error ? e.message : String(e);
   }
@@ -134,6 +133,13 @@ async function connect(kind: "camera" | "wheel" | "mount") {
       <code class="rounded bg-black/10 px-1 font-mono dark:bg-white/10"
         >just device</code
       >
+      <!-- The engine knows WHY it could not reach the sidecar, and the reasons are not
+           interchangeable: a containerized engine dialing loopback is looking at itself, and an
+           Apple-Silicon Mac with ZWO hardware needs `just device-x86`. Telling everyone to run
+           `just device` sends half of them looking in the wrong place. -->
+      <p v-if="store.deviceStatus.error" class="mt-1 opacity-80">
+        {{ store.deviceStatus.error }}
+      </p>
     </div>
 
     <div
@@ -152,7 +158,9 @@ async function connect(kind: "camera" | "wheel" | "mount") {
         row.detail
       }}</span>
       <select
-        v-if="(!row.connected || row.simulated) && driversFor(row.kind).length > 1"
+        v-if="
+          (!row.connected || row.simulated) && driversFor(row.kind).length > 1
+        "
         class="shrink-0 rounded-md border border-slate-300 bg-white px-1.5 py-1 text-xs text-slate-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-brand-800/60 dark:bg-brand-900/20 dark:text-slate-100"
         :value="driverFor(row.kind)"
         :disabled="!store.deviceStatus?.running"

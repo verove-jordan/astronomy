@@ -323,6 +323,20 @@ func TestAuditReport_StringAndJSONAreUsable(t *testing.T) {
 	assert.Contains(t, string(b), "\"curve\"")
 }
 
+// Every label must be separated from its value. "  PEC playback" is exactly as wide as the column
+// used to be, so it rendered as "PEC playbacklast commanded by this driver: false" — in a report
+// whose whole purpose is being read by a person at 3am. The two longest labels are checked, because
+// the collision is a function of label length and they are the ones that can reach the column.
+func TestAuditReport_StringSeparatesTheLongestLabelsFromTheirValues(t *testing.T) {
+	m := testMount(t, newFakeHC())
+	r, err := Audit(context.Background(), m)
+	require.NoError(t, err)
+
+	out := r.String()
+	assert.Regexp(t, `PEC playback\s+last commanded`, out)
+	assert.Regexp(t, `guide rate\s+RA `, out)
+}
+
 // A preview followed by an apply lands inside the same second. Replacing the first backup with the
 // second would throw away the older state, which is always the one worth keeping.
 func TestWriteBackup_NeverOverwritesAnEarlierOne(t *testing.T) {

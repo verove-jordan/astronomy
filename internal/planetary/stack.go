@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 
 	"github.com/verove-jordan/astronomy/internal/fits"
 )
@@ -230,15 +231,39 @@ func clippedWeightedMean(ctx context.Context, paths []string, weights []float64,
 
 // normalize rescales all channels so the given high percentile of the luminance maps to 1.0 (matching
 // Siril's output_norm, so the downstream deconv/finish sees the same range it did before).
+//
+// When the frame also carries a large additive PEDESTAL — an off-disc sky sitting above
+// pedestalFrac of that high percentile — the pedestal is subtracted first, so the range maps
+// [sky, hi] → [0, 1] instead of [0, hi] → [0, 1]. Without it a capture whose bias is several times
+// its own signal (the Moon at a 40 µs exposure: sky ≈ 767 ADU, lunar peak ≈ 957) normalizes its own
+// sky to ~0.8 and the finish renders a white frame with a ghost of a Moon in it. A normal capture,
+// whose sky is a percent or two of the peak, never reaches the threshold and is byte-identical.
 func normalize(im *fits.Image, pct float64) {
 	hi := planePercentile(im.Pix[0], pct)
 	if hi <= 0 {
 		return
 	}
-	inv := float32(1.0 / hi)
+	lo := 0.0
+	if p, ok := skyPedestal(im); ok && p > pedestalFrac*hi && p < hi {
+		lo = p
+	}
+	if lo == 0 {
+		inv := float32(1.0 / hi)
+		for ch := 0; ch < im.C; ch++ {
+			for j := range im.Pix[ch] {
+				im.Pix[ch][j] *= inv
+			}
+		}
+		return
+	}
+	off, inv := float32(lo), float32(1.0/(hi-lo))
 	for ch := 0; ch < im.C; ch++ {
 		for j := range im.Pix[ch] {
-			im.Pix[ch][j] *= inv
+			v := (im.Pix[ch][j] - off) * inv
+			if v < 0 {
+				v = 0
+			}
+			im.Pix[ch][j] = v
 		}
 	}
 }
@@ -254,4 +279,49 @@ func newPlanes(c, n int) [][]float64 {
 // planePercentile returns the p-quantile (0..1) of a plane via a capped sample (fast, robust to size).
 func planePercentile(v []float32, p float64) float64 {
 	return lowPercentile(v, p)
+}
+
+// pedestalFrac is the share of the normalization range above which a flat background is treated as
+// an additive PEDESTAL to remove rather than as signal. Below it, normalize keeps its historical
+// pure scale and the master is byte-identical.
+const pedestalFrac = 0.15
+
+// minSkyFrac is the least off-disc area skyPedestal will measure a background from.
+const minSkyFrac = 0.02
+
+// skyPedestal estimates the additive background of a lunar/planetary master as the median of the
+// pixels OUTSIDE the fitted limb, in the first plane. ok=false (no confident disc, or too little
+// sky in frame) means the caller must not subtract anything.
+//
+// It is measured off-disc on purpose. A very short exposure — the Moon at 40 µs, where the sensor's
+// bias pedestal is several times the lunar signal itself — leaves a background that a plain low
+// percentile cannot tell from dark maria: on a frame the Moon overflows, that percentile sits ON the
+// surface and subtracting it would crush the shadows. The limb fit is what separates "sky" from
+// "dark part of the subject".
+func skyPedestal(im *fits.Image) (float64, bool) {
+	if im == nil || im.C == 0 || im.W <= 0 || im.H <= 0 {
+		return 0, false
+	}
+	fit, ok := fitLunarDisc(im)
+	if !ok || fit.R <= 0 {
+		return 0, false
+	}
+	rr := (fit.R * 1.06) * (fit.R * 1.06)
+	sky := make([]float64, 0, im.W*im.H/8)
+	// Sample on a stride: a median over ~1/9 of the sky is as good and far cheaper.
+	for y := 0; y < im.H; y += 3 {
+		dy := float64(y) - fit.CY
+		for x := 0; x < im.W; x += 3 {
+			dx := float64(x) - fit.CX
+			if dx*dx+dy*dy > rr {
+				sky = append(sky, float64(im.Pix[0][y*im.W+x]))
+			}
+		}
+	}
+	sampled := (im.W / 3) * (im.H / 3)
+	if sampled <= 0 || float64(len(sky)) < minSkyFrac*float64(sampled) {
+		return 0, false
+	}
+	sort.Float64s(sky)
+	return sky[len(sky)/2], true
 }

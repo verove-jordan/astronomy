@@ -30,6 +30,61 @@ ranking, multi-point alignment, per-AP top-K selection stacking and real deconvo
   is staged as one mono sequence.
 - The run/object name walks past generic capture buckets (`autorun`, `capture`, dates …) so
   `input/moon/autorun` → object `moon` (`objectName`).
+- **Camera raws are debayered at conversion** (`convert vid -debayer`, `siril.ConvertDebayerScript`).
+  Siril's plain `convert` decodes a CR2/NEF/DNG *without* demosaicing — correct for the deep-sky path,
+  which debayers last inside `calibrate` — but this mode has no calibrate step, so an undemosaiced
+  mosaic would be stacked, deconvolved and sharpened as a Bayer checkerboard. `anyCFARaw`
+  (`inspect.IsCFARaw`, the one canonical extension list) decides; video and FITS inputs are untouched.
+- **Long videos are decimated to a scratch budget.** A phone shooting 4K120 writes 33,000 frames in
+  four minutes; extracted to PNG and Siril-converted (~50 MB of FITS per 4K colour frame) that is
+  well over 100 GB for a stack that gains nothing past a few hundred well-chosen samples.
+  `videoFrameBudget` is stated in PIXELS (`videoPixelBudget`, 5 Gpx, clamped to 600–6000 frames) so a
+  small planetary ROI still keeps thousands of frames while a 4K clip is sampled with ffmpeg
+  `framestep=N` — **evenly across the clip**, never truncated, so a hand sweep keeps its whole sweep.
+
+## Panel mosaic — a capture that does not hold still
+
+`internal/planetary/mosaic.go` + `canvas.go`. The lucky-imaging core registers every frame onto ONE
+sharpest reference over a ±64 px search. That is right for a tracked planetary capture and wrong for
+two ordinary lunar ones: a **hand-swept phone at high magnification**, where the Moon is far bigger
+than the field and crosses it during the clip, and a **re-pointed DSLR burst series** covering a Moon
+that overflows the frame. In both, frames minutes apart share no pixels, so there is no reference they
+can all register onto — the stack collapses onto whatever overlapped the reference, or averages
+unrelated surface into mush.
+
+So the run is **measured first, then segmented**:
+
+1. **Drift trajectory** (`trackDrift`) — consecutive frames are cross-correlated on decimated planes
+   (`driftTrackDim`), each step **seeded by the previous one** (a sweep is continuous, so the search is
+   a small residual rather than a brute-force hunt — the difference between tracking 1,500 frames in
+   seconds and not at all). A step scoring under `driftGoodCorr` retries with a full-width search and
+   then a **coarse whole-frame recovery** (`coarseRecover` → `shiftByOverlap`, scored over the two
+   frames' actual OVERLAP, since a window centred on the frame cannot localize a large shift once half
+   of it has fallen outside). That recovery is what keeps a re-point from being read as "barely moved"
+   — an error every later frame would inherit, silently merging two pointings into one panel.
+2. **The gate** — total drift within `driftSinglePanelFrac` (30%) of the frame ⇒ **one panel, the
+   historical path, byte-identical master**. This is inert on a tracked capture.
+3. **Segmentation** (`segmentDrift`) — otherwise the sweep is cut into panels each spanning at most
+   `panelDriftFrac` of the frame (so a panel's frames always share ≥70% of their field), re-anchored
+   every `panelStepFrac` so **consecutive panels overlap**. A runt tail is re-anchored on the last
+   frame rather than merged into its predecessor (merging would push that panel past its drift budget
+   — exactly the smear the segmentation exists to prevent). A sweep needing more than `maxPanels`
+   widens its step rather than dropping its tail.
+4. **Each panel stacks through the unchanged core** (`stackPanelFrames`: rank → keep best % → AP-align
+   → weighted stack → double-stack), and its aligned frames are deleted as soon as its master exists.
+5. **Canvas** (`assemblePanels`) — panels are placed from the trajectory, then each is refined against
+   the panels already placed (incrementally, so panel N registers against N−1 rather than a panel it
+   never overlapped), photometrically matched over the overlap by a robust two-percentile fit (phone
+   auto-exposure walks with the lit fraction in frame), and blended with a smoothstep-feathered,
+   coverage-weighted accumulation. The result is one master **larger than any input frame**.
+
+The deep-sky mosaic (`internal/mosaic`) is deliberately NOT reused: it reprojects panels through a
+plate solve onto a TAN sky grid, and the Moon has no stars to solve against — its surface *is* the
+registration target.
+
+Everything past segmentation soft-fails to the single-panel stack: a mosaic that cannot be assembled
+must not cost the user the ordinary result. Knob: `panel_mosaic` (default on; named that way because
+the `mosaic` wire key already means the deep-sky union canvas).
 
 ## Algorithm, end to end
 

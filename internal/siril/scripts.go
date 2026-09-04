@@ -202,6 +202,19 @@ func CalibrateRegisterScript(seq string, m CalibMasters) string {
 
 // CalibrateRegisterScriptWith is CalibrateRegisterScript with an explicit sequence-ingest mode.
 func CalibrateRegisterScriptWith(seq string, m CalibMasters, in SeqIngest) string {
+	return calibrateRegisterScript(seq, m, in, false)
+}
+
+// CalibrateRegister2PassScriptWith is CalibrateRegisterScriptWith with Siril's TWO-PASS
+// registration: the metric pass runs over every frame before any matching, Siril picks the
+// reference from those star counts and FWHM instead of defaulting to frame 1, and only then are the
+// transforms computed. It writes NO registered image — the caller applies the result with
+// ApplyRegistrationScript, which produces the same r_<seq> the one-pass form would have.
+func CalibrateRegister2PassScriptWith(seq string, m CalibMasters, in SeqIngest) string {
+	return calibrateRegisterScript(seq, m, in, true)
+}
+
+func calibrateRegisterScript(seq string, m CalibMasters, in SeqIngest, twoPass bool) string {
 	var b strings.Builder
 	b.WriteString(scriptHeader)
 	b.WriteString(in.cmd(seq))
@@ -210,7 +223,11 @@ func CalibrateRegisterScriptWith(seq string, m CalibMasters, in SeqIngest) strin
 		fmt.Fprintf(&b, "calibrate %s %s -prefix=pp_\n", seq, strings.Join(args, " "))
 		target = "pp_" + seq
 	}
-	fmt.Fprintf(&b, "register %s\n", target)
+	reg := "register " + target
+	if twoPass {
+		reg += " -2pass"
+	}
+	fmt.Fprintf(&b, "%s\n", reg)
 	return b.String()
 }
 
@@ -418,6 +435,13 @@ func StackSelectedScript(regSeq string, regCount int, rejected []int, outName st
 // ConvertScript converts the files in the work dir into a FITS sequence named `seq`.
 func ConvertScript(seq string) string {
 	return scriptHeader + fmt.Sprintf("convert %s -out=.\n", seq)
+}
+
+// ConvertDebayerScript is ConvertScript with demosaicing: the staged frames are camera raws whose
+// consumer has no later calibrate step to debayer them (the planetary lucky-imaging path), so the
+// mosaic must be interpolated here or it is stacked and sharpened as a checkerboard.
+func ConvertDebayerScript(seq string) string {
+	return scriptHeader + fmt.Sprintf("convert %s -debayer -out=.\n", seq)
 }
 
 // IntegrateChannelsScript links the already co-registered channel masters staged in the work dir as

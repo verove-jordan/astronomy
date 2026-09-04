@@ -16,7 +16,10 @@ const (
 	phaseScore       = 0.10
 	phaseAlign       = 0.50
 	phaseStack       = 0.15
-	finishWeight     = 10.0 // percent reserved for co-register/deconvolve/finish after the channels
+	// phaseDrift is the slice of a channel's span spent measuring the capture's drift trajectory
+	// before deciding whether it is one panel or a sweep. It reads every frame once, decimated.
+	phaseDrift   = 0.08
+	finishWeight = 10.0 // percent reserved for co-register/deconvolve/finish after the channels
 )
 
 // runProgress tracks overall run completion (0..100) across weighted phases. All methods are safe on

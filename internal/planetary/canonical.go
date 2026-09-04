@@ -32,25 +32,28 @@ const (
 // measured with the two-level estimator (coarse 10×10 seeds the dense grid, densefield.go).
 // The reference slot gets a zero field (it is its own registration; canonicalizeFields turns
 // it into −C); an unreadable frame leaves nil slots and drops out in sweep 2.
-func measureAllFields(ctx context.Context, paths []string, refIdx int, rc10, rcD *refContext) (dx, dy [][]float64, err error) {
+func measureAllFields(ctx context.Context, paths []string, refIdx int, rc10, rcD *refContext,
+	seeds []frameSeed) (dx, dy [][]float64, corr []float64, err error) {
 	dx = make([][]float64, len(paths))
 	dy = make([][]float64, len(paths))
+	corr = make([]float64, len(paths))
 	err = forEachFrame(ctx, len(paths), planetaryWorkers(), func(i int) error {
 		if i == refIdx {
 			dx[i], dy[i] = uniformGrid(0, 0, rcD.gridN)
+			corr[i] = 1
 			return nil
 		}
 		im, rerr := fits.ReadImage(paths[i])
 		if rerr != nil {
 			return nil // frame drops out in sweep 2, same as the legacy path
 		}
-		dx[i], dy[i] = measureTwoLevelField(im, rc10, rcD)
+		dx[i], dy[i], corr[i] = measureTwoLevelField(im, rc10, rcD, seedAt(seeds, i))
 		return nil
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return dx, dy, nil
+	return dx, dy, corr, nil
 }
 
 // medianField returns the per-node median over every measured field except the reference's —

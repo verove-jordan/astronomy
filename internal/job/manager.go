@@ -197,10 +197,15 @@ type RunRequest struct {
 	Target              string            `json:"target,omitempty"`
 	FilterMap           map[string]string `json:"filter_map,omitempty"`            // detected/known filter → chosen channel ("ignore" drops)
 	DropWheelTransition *bool             `json:"drop_wheel_transition,omitempty"` // override preset default
-	ColorCalibration    *bool             `json:"color_calibration,omitempty"`     // override preset default
-	Denoise             *bool             `json:"denoise,omitempty"`               // false disables denoise
-	HaExcludeStars      *bool             `json:"ha_exclude_stars,omitempty"`      // true: screen Ha onto nebulosity only, not stars
-	Mosaic              *bool             `json:"mosaic,omitempty"`                // legacy alias of union_canvas (kept readable)
+	// Register2Pass registers each single-session channel with Siril's two-pass form, which elects
+	// the reference frame from a metric pass over every frame instead of defaulting to frame 1.
+	// Needed whenever a session crosses the meridian; it moves the output pixel grid, so it is
+	// opt-in. nil → the mode default (off).
+	Register2Pass    *bool `json:"register_2pass,omitempty"`
+	ColorCalibration *bool `json:"color_calibration,omitempty"` // override preset default
+	Denoise          *bool `json:"denoise,omitempty"`           // false disables denoise
+	HaExcludeStars   *bool `json:"ha_exclude_stars,omitempty"`  // true: screen Ha onto nebulosity only, not stars
+	Mosaic           *bool `json:"mosaic,omitempty"`            // legacy alias of union_canvas (kept readable)
 	// UnionCanvas is the multi-night union-canvas consent knob (keep every night's full field, same
 	// pointing) — current wire key; when both it and the legacy "mosaic" alias are set it wins.
 	// Unrelated to Mode "mosaic" (tiled panels), which forces the union machinery off.
@@ -1286,6 +1291,9 @@ func (m *Manager) execute(ctx context.Context, id int64, turnID, kind string, p 
 	}
 	if p.ColorCalibration != nil {
 		preset.ColorCalibration = *p.ColorCalibration
+	}
+	if p.Register2Pass != nil {
+		preset.Register2Pass = *p.Register2Pass
 	}
 	if p.Denoise != nil && !*p.Denoise {
 		preset.DenoiseChroma, preset.DenoiseLum = 0, 0

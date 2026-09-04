@@ -424,8 +424,10 @@ func auditNotes(r AuditReport) []string {
 // three in the morning, in sentences.
 func (r AuditReport) String() string {
 	var b strings.Builder
+	// 16, not 14: "  PEC playback" is exactly fourteen characters, so a 14-wide column ran the label
+	// straight into its value ("PEC playbacklast commanded by this driver: false").
 	f := func(label, format string, args ...any) {
-		fmt.Fprintf(&b, "%-14s%s\n", label, fmt.Sprintf(format, args...))
+		fmt.Fprintf(&b, "%-16s%s\n", label, fmt.Sprintf(format, args...))
 	}
 
 	f("mount", "%s (model %d)  hand controller firmware %s", orUnknown(r.Identity.Model), r.Identity.ModelCode, orUnknown(r.Identity.Firmware))

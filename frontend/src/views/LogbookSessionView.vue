@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
-import { useLogbookStore } from "@/stores/logbook";
+import { canResumeSession, useLogbookStore } from "@/stores/logbook";
 import ConditionsChart from "@/components/Logbook/ConditionsChart.vue";
 import FilterTally from "@/components/Logbook/FilterTally.vue";
 import FrameTimeline from "@/components/Logbook/FrameTimeline.vue";
@@ -10,7 +10,13 @@ import SessionConditions from "@/components/Logbook/SessionConditions.vue";
 import TrackingReport from "@/components/Capture/TrackingReport.vue";
 import Spinner from "@/components/Common/Spinner.vue";
 import HelpButton from "@/components/Common/HelpButton.vue";
-import { btnGhost, card, checkbox, statusPill } from "@/constants/styles";
+import {
+  btnGhost,
+  btnPrimary,
+  card,
+  checkbox,
+  statusPill,
+} from "@/constants/styles";
 import { humanizeMs, formatTimestamp } from "@/utils/format";
 import { tzForLocation } from "@/utils/tz";
 import { integrationMs, nightKey, sessionDurationMs } from "@/utils/logbook";
@@ -60,6 +66,35 @@ const startForecast = computed(
   () => store.conditions?.forecasts.find((f) => f.kind === "start") ?? null,
 );
 
+// --- resuming ------------------------------------------------------------------------------------
+//
+// A night is resumable when it stopped before its plan did. "Completed" is the one status that never
+// is; everything else — aborted, failed, interrupted, and a paused run the engine no longer holds —
+// may still owe frames. The engine is the authority and refuses an empty resume, so this only has to
+// avoid offering the button where it is certainly pointless.
+const resuming = ref(false);
+const resumeError = ref("");
+const resumeNote = ref("");
+
+const canResume = computed(() => canResumeSession(session.value ?? null));
+
+async function resume() {
+  const sess = session.value;
+  if (!sess || resuming.value) return;
+  resuming.value = true;
+  resumeError.value = "";
+  resumeNote.value = "";
+  try {
+    const res = await store.resumeSession(sess.id);
+    resumeNote.value = t("logbook.resumeStarted", { frames: res.remaining });
+    if (res.warning) resumeNote.value += " — " + res.warning;
+  } catch (e) {
+    resumeError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    resuming.value = false;
+  }
+}
+
 const totalIntegration = computed(() => humanizeMs(integrationMs(stats.value)));
 const lightFrames = computed(() =>
   stats.value
@@ -101,13 +136,32 @@ const lightFrames = computed(() =>
             {{ t("logbook.nightOf", { night: nightKey(session.started_at) }) }}
             · <span class="font-mono">{{ session.root }}</span>
           </p>
+          <p v-if="resumeNote" class="mt-1 text-sm text-success">
+            {{ resumeNote }}
+          </p>
+          <p v-if="resumeError" class="mt-1 text-sm text-red-500">
+            {{ resumeError }}
+          </p>
         </div>
-        <span
-          class="rounded px-2 py-1 text-xs"
-          :class="statusPill[session.status] ?? statusPill.cancelled"
-        >
-          {{ t(`capture.status.${session.status}`) }}
-        </span>
+        <div class="flex items-center gap-2">
+          <!-- Finish a night that stopped early. Offered only when there is something left, because
+               the engine refuses an empty resume and a button that only ever errors is worse than
+               no button. -->
+          <button
+            v-if="canResume"
+            :class="btnPrimary"
+            :disabled="resuming"
+            @click="resume"
+          >
+            {{ resuming ? t("common.loading") : t("logbook.resume") }}
+          </button>
+          <span
+            class="rounded px-2 py-1 text-xs"
+            :class="statusPill[session.status] ?? statusPill.cancelled"
+          >
+            {{ t(`capture.status.${session.status}`) }}
+          </span>
+        </div>
       </div>
 
       <!-- The four numbers that describe the run itself. -->

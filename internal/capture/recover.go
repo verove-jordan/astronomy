@@ -2,6 +2,7 @@ package capture
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -31,6 +32,24 @@ const (
 	recoveryPoll = 5 * time.Second
 )
 
+// errExposureStalled means the camera accepted an exposure and then never reported it finished.
+//
+// A sentinel rather than another entry in deviceErrorHints because this one is OURS: the hints match
+// what the device server wrote, and this is raised here, by the poll loop that gave up waiting. It is
+// recoverable for the same reason a vanished filter wheel is — the usual cause is the USB bus
+// renegotiating under a camera that comes straight back — but see maxConsecutiveRecoveries.
+var errExposureStalled = errors.New("the camera did not finish the exposure")
+
+// maxConsecutiveRecoveries is how many times in a row a run may be rescued before it is called dead.
+//
+// The ceiling exists BECAUSE the stall above is recoverable. Every other recoverable error is
+// self-limiting: the device is either back or it is not, and recover() waits the full ten minutes
+// either way. A stall is not — the camera answers "connected" the whole time — so without a count a
+// wedged rig would cycle expose-timeout-recover-expose for the rest of the night, spending it on
+// nothing and reporting the session as healthy the whole way. Five is two or three real hiccups'
+// worth of headroom, and at 60 s subs it costs a quarter of an hour before giving up.
+const maxConsecutiveRecoveries = 5
+
 // deviceErrorHints are the fragments a device-side failure carries.
 //
 // Matching on text is not elegant, and it is what the seam allows: the sequencer talks to the device
@@ -51,6 +70,9 @@ var deviceErrorHints = []string{
 func isRecoverable(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, errExposureStalled) {
+		return true
 	}
 	msg := strings.ToLower(err.Error())
 	for _, hint := range deviceErrorHints {

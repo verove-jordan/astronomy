@@ -483,6 +483,30 @@ const tempLabel = computed(() => {
 onBeforeUnmount(() => {
   void store.stopLive();
 });
+
+// --- recording ----------------------------------------------------------------------------------
+//
+// The button is a toggle over the device server's recorder, which keeps the frames the preview is
+// already producing. Polling only while it runs: an idle panel must not ask once a second forever.
+const recording = computed(() => store.liveRecord?.running === true);
+let recordTimer: number | undefined;
+
+async function toggleRecording() {
+  try {
+    if (recording.value) await store.stopLiveRecord();
+    else await store.startLiveRecord();
+  } catch (e) {
+    store.liveError = e instanceof Error ? e.message : String(e);
+  }
+}
+
+watch(recording, (on) => {
+  window.clearInterval(recordTimer);
+  recordTimer = on
+    ? window.setInterval(() => void store.refreshLiveRecord(), 1000)
+    : undefined;
+});
+onBeforeUnmount(() => window.clearInterval(recordTimer));
 </script>
 
 <template>
@@ -599,6 +623,30 @@ onBeforeUnmount(() => {
           {{
             store.liveRunning ? t("capture.live.stop") : t("capture.live.start")
           }}
+        </button>
+        <!-- Keeping what is already on screen. Only offered while the preview runs, because there
+             is nothing to record otherwise, and it reads out its own count so a recording that the
+             disk cannot keep up with is visible rather than quietly thin. -->
+        <button
+          v-if="store.liveRunning"
+          :class="btnGhost"
+          class="!px-2 !py-1"
+          :title="t('capture.live.recordHint')"
+          @click="toggleRecording"
+        >
+          <span
+            class="mr-1 inline-block h-2 w-2 rounded-full align-middle"
+            :class="recording ? 'animate-pulse bg-red-500' : 'bg-slate-400'"
+          />
+          {{
+            recording ? t("capture.live.recording") : t("capture.live.record")
+          }}
+          <span v-if="recording" class="ml-1 tabular-nums opacity-70">
+            {{ store.liveRecord?.saved ?? 0
+            }}<template v-if="store.liveRecord?.max_frames"
+              >/{{ store.liveRecord.max_frames }}</template
+            >
+          </span>
         </button>
         <label
           class="flex items-center gap-1 text-slate-500 dark:text-slate-400"

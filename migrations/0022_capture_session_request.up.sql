@@ -1,0 +1,13 @@
+-- A session records the SEQUENCE it shot but not the rest of what it was asked to do: the telescope
+-- and focal length, where it was pointed, the dither radius. Those live only in the request that
+-- started it, and once the run ends they are gone.
+--
+-- That is fine until a night stops early and has to be finished. Resuming from the columns alone
+-- would rebuild a run with no focal length (which the FITS header and the plate-solve hint both need,
+-- and which differs 3x between this rig's two telescopes), no target coordinates and no dither
+-- radius — frames that will not stack with the ones already on disk beside them. So the whole
+-- request is kept, and resume replays it with only the counts reduced.
+--
+-- '{}' for every existing row: those sessions predate this and simply cannot be resumed faithfully,
+-- which the API reports rather than guessing at.
+ALTER TABLE capture_sessions ADD COLUMN request JSONB NOT NULL DEFAULT '{}';

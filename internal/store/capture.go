@@ -62,14 +62,18 @@ type CaptureSession struct {
 	MosaicPlanID int64  `json:"mosaic_plan_id" db:"mosaic_plan_id"`
 	TileIndex    int    `json:"tile_index" db:"tile_index"`
 	Sequence     []byte `json:"sequence" db:"sequence"`
-	Status       string `json:"status" db:"status"`
-	Progress     []byte `json:"progress" db:"progress"`
-	TotalFrames  int    `json:"total_frames" db:"total_frames"`
-	FramesDone   int    `json:"frames_done" db:"frames_done"`
-	StartedAt    int64  `json:"started_at" db:"started_at"`
-	EndedAt      int64  `json:"ended_at" db:"ended_at"`
-	CreatedAt    int64  `json:"created_at" db:"created_at"`
-	UpdatedAt    int64  `json:"updated_at" db:"updated_at"`
+	// Request is the whole capture.Request this session was started from, so a night that stopped
+	// early can be finished with the focal length, pointing and dither settings it actually used
+	// rather than whatever the UI happens to hold later. Empty on sessions created before 0022.
+	Request     []byte `json:"request" db:"request"`
+	Status      string `json:"status" db:"status"`
+	Progress    []byte `json:"progress" db:"progress"`
+	TotalFrames int    `json:"total_frames" db:"total_frames"`
+	FramesDone  int    `json:"frames_done" db:"frames_done"`
+	StartedAt   int64  `json:"started_at" db:"started_at"`
+	EndedAt     int64  `json:"ended_at" db:"ended_at"`
+	CreatedAt   int64  `json:"created_at" db:"created_at"`
+	UpdatedAt   int64  `json:"updated_at" db:"updated_at"`
 
 	// Where the telescope stood, and the rolled-up record of the sky it stood under (skylog.Summary).
 	// The summary is denormalized onto the session so the logbook list draws one line per night
@@ -80,7 +84,7 @@ type CaptureSession struct {
 	ConditionsSummary []byte  `json:"conditions_summary" db:"conditions_summary"`
 }
 
-const captureSessionCols = `id,object,root,panel,mosaic_plan_id,tile_index,sequence,status,progress,` +
+const captureSessionCols = `id,object,root,panel,mosaic_plan_id,tile_index,sequence,request,status,progress,` +
 	`total_frames,frames_done,started_at,ended_at,created_at,updated_at,` +
 	`site_lat,site_lon,site_elevation_m,conditions_summary`
 
@@ -179,12 +183,13 @@ func (s *Store) CreateCaptureSession(ctx context.Context, sess CaptureSession) (
 	}
 	var id int64
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO capture_sessions(object,root,panel,mosaic_plan_id,tile_index,sequence,status,
-		   progress,total_frames,frames_done,started_at,created_at,updated_at,
+		`INSERT INTO capture_sessions(object,root,panel,mosaic_plan_id,tile_index,sequence,request,
+		   status,progress,total_frames,frames_done,started_at,created_at,updated_at,
 		   site_lat,site_lon,site_elevation_m)
-		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,0,$10,$11,$11,$12,$13,$14) RETURNING id`,
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,0,$11,$12,$12,$13,$14,$15) RETURNING id`,
 		sess.Object, sess.Root, sess.Panel, sess.MosaicPlanID, sess.TileIndex,
-		jsonOrEmpty(sess.Sequence), sess.Status, jsonOrEmpty(sess.Progress),
+		jsonOrEmpty(sess.Sequence), jsonOrEmpty(sess.Request),
+		sess.Status, jsonOrEmpty(sess.Progress),
 		sess.TotalFrames, sess.StartedAt, now,
 		sess.SiteLat, sess.SiteLon, sess.SiteElevationM).Scan(&id)
 	return id, err
@@ -198,9 +203,16 @@ func (s *Store) UpdateCaptureSession(ctx context.Context, id int64, status strin
 		endedAt = now
 	}
 	_, err := s.pool.Exec(ctx,
+		// The ::bigint casts are load-bearing. Postgres infers a parameter's type from its context,
+		// and `$5 <> 0` against an untyped literal makes it int4 — so every terminal write, the only
+		// one that carries a real ended_at, failed with "1788485806470 is greater than maximum value
+		// for int4". The per-frame writes passed 0 and went through, which is why frames_done kept
+		// advancing while status stayed "running" forever: every completed, aborted and failed session
+		// in the logbook was a phantom, and the error was discarded so nothing said why.
+		// internal/store/jobs.go already casts for the same reason.
 		`UPDATE capture_sessions
 		 SET status=$2, progress=$3, frames_done=$4,
-		     ended_at = CASE WHEN $5 <> 0 THEN $5 ELSE ended_at END,
+		     ended_at = CASE WHEN $5::bigint <> 0 THEN $5::bigint ELSE ended_at END,
 		     updated_at=$6
 		 WHERE id=$1`,
 		id, status, jsonOrEmpty(progress), framesDone, endedAt, now)

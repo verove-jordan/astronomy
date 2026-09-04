@@ -209,6 +209,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/capture/events", s.captureEvents)
 	mux.HandleFunc("GET /api/capture/sessions", s.listCaptureSessions)
 	mux.HandleFunc("GET /api/capture/sessions/{id}", s.getCaptureSession)
+	mux.HandleFunc("POST /api/capture/sessions/{id}/resume", s.resumeCaptureSession)
 	mux.HandleFunc("GET /api/capture/sessions/{id}/conditions", s.captureConditions)
 	mux.HandleFunc("GET /api/capture/sequences", s.listCaptureSequences)
 	mux.HandleFunc("POST /api/capture/sequences", s.saveCaptureSequence)

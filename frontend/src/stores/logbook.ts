@@ -1,6 +1,6 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
-import { apiGet } from "@/services/api";
+import { apiGet, apiPost } from "@/services/api";
 import type {
   CaptureConditionRow,
   CaptureForecastRow,
@@ -21,6 +21,21 @@ export interface LogbookQuery {
   object: string;
   fromMs: number;
   toMs: number;
+}
+
+// canResumeSession reports whether a night still owes frames.
+//
+// "Completed" is the one status that never does, and a run the engine is still holding cannot be
+// resumed because it has not stopped. Everything else — aborted, failed, interrupted, and a session
+// orphaned by an engine restart — may still be short. This is only a filter on where the button is
+// OFFERED: the engine recomputes what is owed from the frames actually recorded and refuses an empty
+// resume, so a stale row here costs a clear error rather than a wasted night.
+export function canResumeSession(
+  s: Pick<CaptureSessionRow, "status" | "frames_done" | "total_frames"> | null,
+): boolean {
+  if (!s) return false;
+  if (s.status === "completed" || s.status === "running") return false;
+  return s.frames_done < s.total_frames;
 }
 
 export interface SessionDetail {
@@ -191,6 +206,27 @@ export const useLogbookStore = defineStore("logbook", () => {
     conditions.value = null;
   }
 
+  // Finish a night that stopped early. The engine works out what is still owed from the frames this
+  // session actually recorded and starts the remainder with the same request — same folder, same
+  // optics, same pointing — so the resumed frames stack with the ones already there.
+  //
+  // It returns the new session's id: resuming creates a NEW row, because the old night happened and
+  // rewriting it to look like it ran until morning would be a lie the logbook then repeats forever.
+  async function resumeSession(
+    id: number,
+  ): Promise<{ sessionId: number; remaining: number; warning?: string }> {
+    const res = await apiPost<{
+      progress: { session_id: number };
+      remaining_frames: number;
+      warning?: string;
+    }>(`/api/capture/sessions/${id}/resume`, {});
+    return {
+      sessionId: res.progress.session_id,
+      remaining: res.remaining_frames,
+      warning: res.warning,
+    };
+  }
+
   return {
     sessions,
     total,
@@ -207,5 +243,6 @@ export const useLogbookStore = defineStore("logbook", () => {
     loadSession,
     loadConditions,
     clearDetail,
+    resumeSession,
   };
 });

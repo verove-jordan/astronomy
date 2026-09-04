@@ -32,11 +32,12 @@ func denseContextFrom(ref *fits.Image, rc10 refContext, alignPoints int) refCont
 // two-level estimator: global lock → coarse 10×10 AP field (outlier-rejected + smoothed,
 // exactly the legacy pass-1 field) → dense refinement seeded by the coarse field. Returns the
 // DENSE grid.
-func measureTwoLevelField(im *fits.Image, rc10, rcD *refContext) (dxGrid, dyGrid []float64) {
+func measureTwoLevelField(im *fits.Image, rc10, rcD *refContext, seed frameSeed) (dxGrid, dyGrid []float64, corr float64) {
 	tgtBlur := blurPlane(im, warpBlur)
-	coarseDx, coarseDy := coarseField(im, tgtBlur, rc10, true)
+	coarseDx, coarseDy, corr := coarseField(im, tgtBlur, rc10, true, seed)
 	baseDx, baseDy := resampleFieldTo(coarseDx, coarseDy, rc10.gridN, rcD, im.W, im.H)
-	return refineSeededField(tgtBlur, rcD, baseDx, baseDy)
+	dxGrid, dyGrid = refineSeededField(tgtBlur, rcD, baseDx, baseDy)
+	return dxGrid, dyGrid, corr
 }
 
 // resampleFieldTo bilinearly samples an n×n field at another context's AP centres — the seed

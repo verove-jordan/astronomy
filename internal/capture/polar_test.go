@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/verove-jordan/astronomy/internal/astro"
+	"github.com/verove-jordan/astronomy/internal/device"
 	"github.com/verove-jordan/astronomy/internal/fits"
 	"github.com/verove-jordan/astronomy/internal/platesolve"
 	_ "github.com/verove-jordan/astronomy/internal/platesolve"
@@ -508,4 +509,129 @@ func (s *sweepSolver) poleFrameLocked(now time.Time) (platesolve.Result, error) 
 		return platesolve.Result{}, errors.New("bad synthetic wcs")
 	}
 	return platesolve.Result{WCS: wcs, RADeg: ra, DecDeg: dec, ScaleArcsecPx: 4}, nil
+}
+
+// The seed decides where Siril looks, and its near solver searches only about 10° around it — so
+// "any seed beats none" is false. A seed from a mount that has not been aligned is a search of the
+// wrong sky, and it is what produced "the near solver could not find a solution over the search
+// radius (10.0 deg)" on a telescope pointed straight at Polaris: the mount answered Dec 0.1° for a
+// tube looking 89° away, because an unaligned Celestron reports against a home nobody established.
+func TestUsableMountSeed(t *testing.T) {
+	tests := []struct {
+		name string
+		st   MountState
+		want bool
+	}{
+		{
+			name: "an aligned mount knows where it points",
+			st:   MountState{Connected: true, Mount: device.MountState{Aligned: true, RADeg: 37.95, DecDeg: 89.26}},
+			want: true,
+		},
+		{
+			name: "an unaligned one answers anyway, and the answer is fiction",
+			st:   MountState{Connected: true, Mount: device.MountState{Aligned: false, RADeg: 179.66, DecDeg: 0.15}},
+			want: false,
+		},
+		{
+			name: "no mount at all",
+			st:   MountState{Connected: false, Mount: device.MountState{Aligned: true, RADeg: 10, DecDeg: 20}},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ra, dec, ok := usableMountSeed(tt.st)
+			assert.Equal(t, tt.want, ok)
+			if tt.want {
+				assert.Equal(t, tt.st.Mount.RADeg, ra)
+				assert.Equal(t, tt.st.Mount.DecDeg, dec)
+			}
+		})
+	}
+}
+
+// An unusable mount reply must leave the seed alone rather than replace it. The per-frame refresh
+// runs after "Find the pole" has seeded the pole, so a rule applied only at Start would be undone on
+// the very next frame.
+func TestPolarSession_AnUnalignedMountNeverOverwritesTheSeed(t *testing.T) {
+	sess, _ := polarRig(t)
+	sess.opts = polarOpts()
+	sess.seedCelestialPole()
+
+	sess.takeMountSeedLocked(MountState{
+		Connected: true,
+		Mount:     device.MountState{Aligned: false, RADeg: 179.66, DecDeg: 0.15},
+	})
+
+	hint, from := sess.solveHintLocked()
+	require.True(t, hint.HasHint)
+	assert.InDelta(t, 90.0, hint.DecDeg, 1e-9, "the pole seed must survive an unaligned mount")
+	assert.Contains(t, from, "celestial pole")
+}
+
+// "Find the pole" asserts the tube is looking down the right ascension axis, so the pole is the one
+// seed it can always supply — with no mount, no alignment and no blind solver installed. A ~10°
+// search around it covers every right ascension, because they all meet there.
+func TestPolarSession_SeedCelestialPoleFollowsTheHemisphere(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		latDeg float64
+		want   float64
+	}{
+		{"northern site", 48.85, 90},
+		{"southern site", -33.87, -90},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sess, _ := polarRig(t)
+			sess.opts = PolarOptions{Site: polaralign.Site{LatDeg: tt.latDeg}}
+			sess.seedCelestialPole()
+
+			hint, from := sess.solveHintLocked()
+			require.True(t, hint.HasHint)
+			assert.Equal(t, tt.want, hint.DecDeg)
+			assert.Contains(t, from, "celestial pole")
+		})
+	}
+}
+
+// A solved frame outranks every seed: it is measured rather than asserted.
+func TestPolarSession_ASolvedFrameOutranksTheSeed(t *testing.T) {
+	sess, _ := polarRig(t)
+	sess.opts = polarOpts()
+	sess.seedCelestialPole()
+	sess.samples = []polaralign.Sample{{RADeg: 120.5, DecDeg: 31.25, At: time.Now()}}
+
+	hint, from := sess.solveHintLocked()
+	require.True(t, hint.HasHint)
+	assert.Equal(t, 120.5, hint.RADeg)
+	assert.Equal(t, 31.25, hint.DecDeg)
+	assert.Contains(t, from, "previous solved frame")
+}
+
+// Siril can only report that it found nothing within its radius. Which of the several reasons it was
+// is exactly what the user cannot see, so the session says it.
+func TestExplainSolveFailure_NamesTheReasonSirilCannot(t *testing.T) {
+	base := errors.New("Siril near solver could not find a solution over the search radius (10.0 deg)")
+
+	unseeded := explainSolveFailure(base, platesolve.Hint{FocalMM: 740, PixelUm: 3.8}, "")
+	assert.Contains(t, unseeded.Error(), "the mount is not aligned")
+	assert.Contains(t, unseeded.Error(), "Find the pole")
+
+	seeded := explainSolveFailure(base,
+		platesolve.Hint{HasHint: true, RADeg: 37.95, DecDeg: 89.26, FocalMM: 740, PixelUm: 3.8},
+		"the mount's reported position")
+	assert.Contains(t, seeded.Error(), "the mount's reported position")
+	assert.Contains(t, seeded.Error(), "740 mm")
+}
+
+// A stopped drive must be reported as a warning CODE the panel can translate, not as prose — and it
+// must survive the fit publishing its own warnings, because settle replaces that list.
+func TestPolarSession_WarnsWhenTheDriveIsStopped(t *testing.T) {
+	sess, _ := polarRig(t)
+	sess.opts = polarOpts()
+	sess.setupWarnings = []string{warnDriveStopped}
+
+	sess.settle(polaralign.Frame{At: time.Now()}, polaralign.Axis{Warnings: []string{"weak_arc"}}, PolarMeasured)
+
+	assert.Equal(t, []string{warnDriveStopped, "weak_arc"}, sess.Snapshot().Warnings)
 }

@@ -2,6 +2,7 @@ package capture
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -26,13 +27,21 @@ type runState struct {
 	sinceDither int
 	sequence    int
 	night       string
+	// currentBin is the binning the camera is actually set to, so it is commanded once per change
+	// rather than before every frame. Zero means "not yet established", which makes the first step of
+	// a run always apply its own — the run's geometry must not depend on what the live view left.
+	currentBin int
+	// recoveries counts hardware rescues since the last frame that actually landed. It resets on
+	// success, so a night with three separate hiccups hours apart is healthy and five in a row is a
+	// rig that has stopped working.
+	recoveries int
 }
 
 func (r *Runner) captureOne(ctx context.Context, state *runState, step Step, index int) error {
 	if err := r.applyFilter(ctx, state, step); err != nil {
 		return err
 	}
-	if err := r.applySettings(ctx, step); err != nil {
+	if err := r.applySettings(ctx, state, step); err != nil {
 		return err
 	}
 	if err := r.maybeDither(ctx, state, step); err != nil {
@@ -126,21 +135,50 @@ func (r *Runner) resolveSlot(ctx context.Context, filter string) (int, error) {
 	return 0, fmt.Errorf("filter %q is not in the wheel (%s)", filter, strings.Join(st.Wheel.Names, ", "))
 }
 
-func (r *Runner) applySettings(ctx context.Context, step Step) error {
-	if err := r.client.SetControl(ctx, device.ControlExposure, step.ExposureUs); err != nil {
+func (r *Runner) applySettings(ctx context.Context, state *runState, step Step) error {
+	if err := r.applyControl(ctx, device.ControlExposure, step.ExposureUs); err != nil {
 		return fmt.Errorf("set exposure: %w", err)
 	}
-	if step.Gain > 0 {
-		if err := r.client.SetControl(ctx, device.ControlGain, step.Gain); err != nil {
+	// Gain and offset are sent WHATEVER their value. Zero is a real setting on a ZWO — it is the one
+	// this app ships as the default, because gain trades full-well depth for read noise that long
+	// subs make irrelevant anyway. Sending them only when positive meant a step asking for gain 0
+	// could never pull the camera down from the previous step's 200: those frames were then shot at
+	// a gain the plan never asked for, and nothing but the header would ever have said so.
+	if step.Gain >= 0 {
+		if err := r.applyControl(ctx, device.ControlGain, step.Gain); err != nil {
 			return fmt.Errorf("set gain: %w", err)
 		}
 	}
-	if step.Offset > 0 {
-		if err := r.client.SetControl(ctx, device.ControlOffset, step.Offset); err != nil {
+	if step.Offset >= 0 {
+		if err := r.applyControl(ctx, device.ControlOffset, step.Offset); err != nil {
 			return fmt.Errorf("set offset: %w", err)
 		}
 	}
+	// Binning was validated and then never applied to the camera at all: the readout kept whatever
+	// the live view had left it at, while the FILENAME was built from the step's bin. A bin-2 step
+	// therefore produced bin-1 frames labelled bin 2 — worse than not supporting binning, because a
+	// stacker believes the label. Zero width and height mean the whole sensor at this binning.
+	if step.Bin > 0 && step.Bin != state.currentBin {
+		if _, err := r.client.SetROI(ctx, device.ROI{Bin: step.Bin}); err != nil {
+			return fmt.Errorf("set binning to %d: %w", step.Bin, err)
+		}
+		state.currentBin = step.Bin
+	}
 	return nil
+}
+
+// applyControl sets one camera control, tolerating a camera that simply does not have it.
+//
+// The device server answers `unsupported` for a control absent from ASIGetControlCaps, and a mono
+// CMOS without an offset must not fail a night over a field the plan filled in by default.
+func (r *Runner) applyControl(ctx context.Context, name string, value int64) error {
+	err := r.client.SetControl(ctx, name, value)
+	var apiErr *Error
+	if errors.As(err, &apiErr) && apiErr.Code == "unsupported" {
+		r.note(fmt.Sprintf("this camera has no %s control, so the step's value was not applied", name))
+		return nil
+	}
+	return err
 }
 
 // maybeDither nudges the mount every N frames. The offsets come from the dither planner, which
@@ -216,17 +254,34 @@ func (r *Runner) waitForExposure(ctx context.Context, step Step) error {
 			return fmt.Errorf("the camera reported a failed exposure")
 		}
 		if time.Now().After(deadline) {
-			_ = r.client.AbortExposure(ctx)
-			return fmt.Errorf("exposure did not complete within %s", limit)
+			r.abandonExposure(ctx)
+			return fmt.Errorf("%w within %s", errExposureStalled, limit)
 		}
 		select {
 		case <-ctx.Done():
-			_ = r.client.AbortExposure(ctx)
+			r.abandonExposure(ctx)
 			return ctx.Err()
 		case <-time.After(waitStep):
 		}
 	}
 }
+
+// abandonExposure tells the camera to stop, on a context that CANNOT already be cancelled.
+//
+// This is the whole bug: the loop passed the run's own ctx, and the commonest reason to reach here
+// is that very ctx being cancelled by Abort — so the request was refused before it left the process
+// and the camera went on integrating. The next session then died on its first frame with "an
+// exposure is already running", which made stopping and restarting a sequence impossible and looked
+// like a hardware fault. Cleaning up after a cancellation must never itself be cancellable.
+func (r *Runner) abandonExposure(ctx context.Context) {
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), abandonTimeout)
+	defer cancel()
+	_ = r.client.AbortExposure(stopCtx)
+}
+
+// abandonTimeout bounds that cleanup. Short: a camera that will not abort in five seconds is a
+// camera the next session is going to have to deal with anyway.
+const abandonTimeout = 5 * time.Second
 
 // frameFolder is the sub-folder of <root>/[panel/] a step's frames land in, so the filter and the
 // frame type are recorded in the PATH as well as in the filename and the FITS header. Three

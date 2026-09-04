@@ -33,3 +33,28 @@ func TestFitFilterNames(t *testing.T) {
 	assert.Nil(t, device.FitFilterNames([]string{"L", "R"}, -1))
 	assert.Equal(t, []string{"", ""}, device.FitFilterNames(nil, 2))
 }
+
+// The exposure token must survive a microsecond exposure.
+//
+// It did not: three decimals named every frame shorter than half a millisecond "0sec", so a 32 µs
+// bias — the ASI's own minimum — carried a name contradicting the EXPTIME card beside it. The
+// filename exists to be an independent copy of the header; one that disagrees is worse than none.
+func TestFrameMeta_FileName_ExposureToken(t *testing.T) {
+	tests := []struct {
+		name       string
+		exposureUs int64
+		want       string
+	}{
+		{"a normal sub", 30_000_000, "30sec"},
+		{"a flat", 200_000, "0.2sec"},
+		{"a millisecond", 1_000, "0.001sec"},
+		{"the ASI minimum", 32, "0.000032sec"},
+		{"one microsecond", 1, "0.000001sec"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := device.FrameMeta{Type: "light", ExposureUs: tt.exposureUs, Bin: 1}.FileName(1)
+			assert.Contains(t, got, "_"+tt.want+"_")
+		})
+	}
+}

@@ -53,6 +53,50 @@ func measureAPField(refBlur, tgtBlur *fits.Image, cx, cy []float64, onDisk []boo
 // (flat texture, repeating pattern) that would bend the whole neighbourhood through the smoothing.
 const apOutlierPx = 3.0
 
+// measureAPFieldSeeded is measureAPField with a PER-POINT baseline: each AP searches ±apMaxShift
+// around its own entry in the seed field rather than around one global shift. That is what lets the
+// alignment points refine a rotated (or otherwise non-uniform) baseline — seeded with a single global
+// shift, every off-centre AP under a rotation starts its ±6 px search from a point the true match is
+// nowhere near. The seed grids are overwritten in place with the measured absolute shifts.
+func measureAPFieldSeeded(refBlur, tgtBlur *fits.Image, cx, cy []float64, onDisk []bool, radius int,
+	dxGrid, dyGrid []float64) {
+	for k := range cx {
+		if !onDisk[k] {
+			continue
+		}
+		dxGrid[k], dyGrid[k] = comet.AlignSeeded(refBlur, tgtBlur,
+			comet.Point{X: cx[k], Y: cy[k]}, radius, apMaxShift, 0, dxGrid[k], dyGrid[k])
+	}
+}
+
+// rejectAPOutliersField resets mislocked on-disk APs onto the SMOOTH part of the field they were
+// seeded from. It judges each point by its RESIDUAL against the local median residual rather than by
+// its absolute shift against a global median: under a rotation the absolute shifts legitimately
+// differ across the frame, so an absolute comparison would condemn most of the grid as outliers.
+func rejectAPOutliersField(dxGrid, dyGrid []float64, onDisk []bool) {
+	seedDx := append([]float64(nil), dxGrid...)
+	seedDy := append([]float64(nil), dyGrid...)
+	var rx, ry []float64
+	for k, on := range onDisk {
+		if on {
+			rx = append(rx, dxGrid[k]-seedDx[k])
+			ry = append(ry, dyGrid[k]-seedDy[k])
+		}
+	}
+	if len(rx) < 3 {
+		return
+	}
+	mx, my := medianOf(rx), medianOf(ry)
+	for k, on := range onDisk {
+		if !on {
+			continue
+		}
+		if math.Abs((dxGrid[k]-seedDx[k])-mx) > apOutlierPx || math.Abs((dyGrid[k]-seedDy[k])-my) > apOutlierPx {
+			dxGrid[k], dyGrid[k] = seedDx[k], seedDy[k]
+		}
+	}
+}
+
 // rejectAPOutliers resets mislocked on-disk AP shifts back to the global baseline.
 func rejectAPOutliers(dxGrid, dyGrid []float64, onDisk []bool, gdx, gdy float64) {
 	var xs, ys []float64

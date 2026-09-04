@@ -40,6 +40,8 @@ func (s *Server) liveStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) liveStop(w http.ResponseWriter, _ *http.Request) {
+	// A recording is of the live view; there is nothing to record once it stops.
+	s.liveRec.Stop()
 	s.live.stop()
 	writeJSON(w, http.StatusOK, map[string]any{"running": false})
 }
@@ -114,9 +116,7 @@ func (s *Server) liveSave(w http.ResponseWriter, r *http.Request) {
 			map[string]string{"error": "no live frame yet", "code": "no_frame"})
 		return
 	}
-	s.mu.Lock()
-	cam := s.camera
-	s.mu.Unlock()
+	cam := s.currentCamera()
 	var caps device.CameraCaps
 	if cam != nil {
 		caps = cam.Caps()

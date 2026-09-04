@@ -1995,6 +1995,24 @@ export interface DeviceInfo {
   kind: string;
 }
 
+// LiveRecordStatus is GET /api/device/live/record: whether the preview's frames are being kept.
+//
+// skipped were dropped by the rate cap; missed went past while a frame was being written, which is
+// the disk being the limit rather than the cap.
+export interface LiveRecordStatus {
+  running: boolean;
+  dir?: string;
+  saved: number;
+  skipped: number;
+  missed: number;
+  max_frames?: number;
+  max_fps?: number;
+  elapsed_sec: number;
+  last_path?: string;
+  last_error?: string;
+  finished: boolean;
+}
+
 // DeviceStatus is GET /api/device/status: whether the separate device-server process is up.
 export interface DeviceStatus {
   running: boolean;

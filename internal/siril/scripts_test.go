@@ -616,3 +616,39 @@ func TestFlattenRegister2PassScript_ClampsDegree(t *testing.T) {
 	assert.Contains(t, FlattenRegister2PassScript("light", "", 0), "seqsubsky light 1 ")
 	assert.Contains(t, FlattenRegister2PassScript("light", "", 9), "seqsubsky light 4 ")
 }
+
+// The two-pass form exists because Siril's one-pass registration leaves the reference at frame 1 —
+// wrong for any session that crosses the meridian. It must change the register line and NOTHING
+// else: the ingest, the calibrate line and the resulting sequence names are what every downstream
+// stage addresses, and finishStackedChannel reads the same <seq>_.seq either way.
+func TestCalibrateRegister2PassScriptWith_ChangesOnlyTheRegisterLine(t *testing.T) {
+	tests := []struct {
+		name    string
+		masters CalibMasters
+		onePass string
+		twoPass string
+	}{
+		{"calibrated sequence", CalibMasters{Dark: "master_dark.fits"}, "register pp_light\n", "register pp_light -2pass\n"},
+		{"uncalibrated sequence", CalibMasters{}, "register light\n", "register light -2pass\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			one := CalibrateRegisterScriptWith("light", tt.masters, IngestLink)
+			two := CalibrateRegister2PassScriptWith("light", tt.masters, IngestLink)
+
+			require.True(t, strings.HasSuffix(one, tt.onePass), "one-pass script:\n%s", one)
+			require.True(t, strings.HasSuffix(two, tt.twoPass), "two-pass script:\n%s", two)
+			assert.Equal(t, strings.TrimSuffix(one, tt.onePass), strings.TrimSuffix(two, tt.twoPass),
+				"only the register line may differ between the one- and two-pass forms")
+		})
+	}
+}
+
+// The two-pass path applies the registration with refIndex 0, which must leave the reference Siril
+// elected in the metric pass alone — a setref here would put frame 1 back and undo the whole point.
+func TestApplyRegistrationScript_ZeroRefIndexEmitsNoSetref(t *testing.T) {
+	s := ApplyRegistrationScript("pp_light", 0, "current")
+
+	assert.NotContains(t, s, "setref")
+	assert.True(t, strings.HasSuffix(s, "seqapplyreg pp_light -framing=current\n"), "script:\n%s", s)
+}

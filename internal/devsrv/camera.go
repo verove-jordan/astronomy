@@ -18,61 +18,68 @@ import (
 func (s *Server) connectCamera(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Driver string `json:"driver"`
+		// Device is the id of the discovered camera to open, as its driver understands it: an
+		// AVFoundation device name for a phone. Empty lets the driver choose.
+		Device string `json:"device"`
 	}
 	if !decodeBody(w, r, &body) {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.camera != nil {
-		_ = s.camera.Close()
-		s.camera = nil
-	}
-	cam, err := s.openCamera(body.Driver)
+	// The gate serialises camera connects; s.mu is taken only to swap the pointer. Holding s.mu
+	// across Connect is what used to freeze the whole server, because an iPhone's warm-up is twenty
+	// seconds and /health sat behind the same lock.
+	s.camGate.Lock()
+	defer s.camGate.Unlock()
+
+	// The live loop holds the camera it started with, so a swap must stop it first — otherwise it
+	// spends the rest of the session exposing a closed device. Anything recording that loop goes
+	// with it: the frames after a camera swap are a different camera's.
+	s.liveRec.Stop()
+	s.live.stop()
+	s.detachCamera()
+
+	cam, err := s.openCamera(body.Driver, body.Device)
 	if err != nil {
 		deviceError(w, err)
 		return
 	}
 	if err := cam.Connect(r.Context()); err != nil {
+		_ = cam.Close()
 		deviceError(w, err)
 		return
 	}
-	s.camera = cam
-	writeJSON(w, http.StatusOK, s.cameraSnapshotLocked())
+	s.attachCamera(cam)
+	writeJSON(w, http.StatusOK, cameraSnapshot(cam))
 }
 
 func (s *Server) disconnectCamera(w http.ResponseWriter, _ *http.Request) {
+	s.camGate.Lock()
+	defer s.camGate.Unlock()
+	s.liveRec.Stop()
 	s.live.stop()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.camera != nil {
-		_ = s.camera.Close()
-		s.camera = nil
-	}
+	s.detachCamera()
 	writeJSON(w, http.StatusOK, map[string]any{"connected": false})
 }
 
 func (s *Server) cameraStatus(w http.ResponseWriter, _ *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	writeJSON(w, http.StatusOK, s.cameraSnapshotLocked())
+	writeJSON(w, http.StatusOK, cameraSnapshot(s.currentCamera()))
 }
 
-// cameraSnapshotLocked is the full camera state the UI renders from — capabilities, every control
-// with its real range, the ROI and the exposure state. Caller holds s.mu.
-func (s *Server) cameraSnapshotLocked() map[string]any {
-	if s.camera == nil {
+// cameraSnapshot is the full camera state the UI renders from — capabilities, every control with its
+// real range, the ROI and the exposure state.
+func cameraSnapshot(cam device.Camera) map[string]any {
+	if cam == nil {
 		return map[string]any{"connected": false}
 	}
-	state, _ := s.camera.ExposureState()
+	state, _ := cam.ExposureState()
 	return map[string]any{
-		"connected": s.camera.Connected(),
-		"caps":      s.camera.Caps(),
-		"controls":  s.camera.Controls(),
-		"roi":       s.camera.ROI(),
+		"connected": cam.Connected(),
+		"caps":      cam.Caps(),
+		"controls":  cam.Controls(),
+		"roi":       cam.ROI(),
 		"exposure":  state,
-		"streaming": s.camera.Streaming(),
-		"dropped":   s.camera.DroppedFrames(),
+		"streaming": cam.Streaming(),
+		"dropped":   cam.DroppedFrames(),
 	}
 }
 
@@ -85,17 +92,16 @@ func (s *Server) setCameraControl(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &body) {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.camera == nil {
+	cam := s.currentCamera()
+	if cam == nil {
 		deviceError(w, device.ErrNotConnected)
 		return
 	}
-	if err := s.camera.SetControl(body.Name, body.Value, body.Auto); err != nil {
+	if err := cam.SetControl(body.Name, body.Value, body.Auto); err != nil {
 		deviceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.cameraSnapshotLocked())
+	writeJSON(w, http.StatusOK, cameraSnapshot(cam))
 }
 
 func (s *Server) setCameraROI(w http.ResponseWriter, r *http.Request) {
@@ -103,13 +109,12 @@ func (s *Server) setCameraROI(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &roi) {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.camera == nil {
+	cam := s.currentCamera()
+	if cam == nil {
 		deviceError(w, device.ErrNotConnected)
 		return
 	}
-	applied, err := s.camera.SetROI(roi)
+	applied, err := cam.SetROI(roi)
 	if err != nil {
 		deviceError(w, err)
 		return
@@ -122,13 +127,12 @@ func (s *Server) startExposure(w http.ResponseWriter, r *http.Request) {
 		Dark bool `json:"dark"`
 	}
 	_ = decodeBody(w, r, &body) // an empty body means "a normal light frame"
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.camera == nil {
+	cam := s.currentCamera()
+	if cam == nil {
 		deviceError(w, device.ErrNotConnected)
 		return
 	}
-	if err := s.camera.StartExposure(r.Context(), body.Dark); err != nil {
+	if err := cam.StartExposure(r.Context(), body.Dark); err != nil {
 		deviceError(w, err)
 		return
 	}
@@ -136,13 +140,12 @@ func (s *Server) startExposure(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) abortExposure(w http.ResponseWriter, _ *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.camera == nil {
+	cam := s.currentCamera()
+	if cam == nil {
 		deviceError(w, device.ErrNotConnected)
 		return
 	}
-	if err := s.camera.AbortExposure(); err != nil {
+	if err := cam.AbortExposure(); err != nil {
 		deviceError(w, err)
 		return
 	}
@@ -181,9 +184,7 @@ func (s *Server) saveExposure(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "path is required")
 		return
 	}
-	s.mu.Lock()
-	cam := s.camera
-	s.mu.Unlock()
+	cam := s.currentCamera()
 	if cam == nil {
 		deviceError(w, device.ErrNotConnected)
 		return

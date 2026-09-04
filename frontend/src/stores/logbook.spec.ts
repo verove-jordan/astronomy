@@ -2,14 +2,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 
 const apiGet = vi.fn(async (_url: string): Promise<unknown> => ({}));
+const apiPost = vi.fn(
+  async (_url: string, _body?: unknown): Promise<unknown> => ({}),
+);
 vi.mock("@/services/api", () => ({
   ApiError: class extends Error {},
   apiGet: (url: string) => apiGet(url),
-  apiPost: vi.fn(async () => ({})),
+  apiPost: (url: string, body?: unknown) => apiPost(url, body),
   withS3: (u: string) => u,
 }));
 
-import { useLogbookStore } from "./logbook";
+import { canResumeSession, useLogbookStore } from "./logbook";
 
 describe("logbook store", () => {
   beforeEach(() => {
@@ -140,5 +143,45 @@ describe("logbook store", () => {
     store.clearDetail();
     expect(store.detail).toBeNull();
     expect(store.conditions).toBeNull();
+  });
+
+  it("resumes a night and reports what is left to shoot", async () => {
+    apiPost.mockResolvedValue({
+      progress: { session_id: 77 },
+      remaining_frames: 23,
+      warning: "optics came from the current configuration",
+    });
+
+    const got = await useLogbookStore().resumeSession(12);
+
+    expect(apiPost).toHaveBeenCalledWith("/api/capture/sessions/12/resume", {});
+    expect(got).toEqual({
+      sessionId: 77,
+      remaining: 23,
+      warning: "optics came from the current configuration",
+    });
+  });
+});
+
+// Where the button is offered. Getting this wrong is user-visible in both directions: a missing
+// button strands a night that could be finished, and one on a completed night only ever errors.
+describe("canResumeSession", () => {
+  const row = (status: string, done: number, total: number) =>
+    ({ status, frames_done: done, total_frames: total }) as never;
+
+  it.each([
+    ["a night stopped early", "aborted", 40, 60, true],
+    ["one that failed", "failed", 5, 80, true],
+    ["one orphaned by a restart", "interrupted", 0, 20, true],
+    ["a paused session the engine no longer holds", "paused", 3, 20, true],
+    ["a completed night", "completed", 60, 60, false],
+    ["a night still running", "running", 10, 60, false],
+    ["one that took every frame despite stopping", "aborted", 60, 60, false],
+  ])("%s", (_name, status, done, total, want) => {
+    expect(canResumeSession(row(status, done, total))).toBe(want);
+  });
+
+  it("has nothing to offer without a session", () => {
+    expect(canResumeSession(null)).toBe(false);
   });
 });

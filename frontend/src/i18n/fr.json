@@ -1555,7 +1555,10 @@
       "realPixels": "pixels réels du capteur",
       "fullscreen": "Plein écran",
       "exitFullscreen": "Quitter le plein écran (Échap)",
-      "fewLevels": "Seulement {levels} valeurs de pixel distinctes ici — ce capteur est en 12 bits, donc un champ bouché ou vide n'en contient réellement que quelques-unes. Posez plus longtemps, montez le gain, ou visez une étoile."
+      "fewLevels": "Seulement {levels} valeurs de pixel distinctes ici — ce capteur est en 12 bits, donc un champ bouché ou vide n'en contient réellement que quelques-unes. Posez plus longtemps, montez le gain, ou visez une étoile.",
+      "record": "Enregistrer",
+      "recording": "Enregistrement",
+      "recordHint": "Conserve les images que la visée prend déjà, à partir de celle affichée. Cliquez à nouveau pour arrêter."
     },
     "hist": {
       "title": "Histogramme",
@@ -1607,7 +1610,7 @@
       "tile": "tuile {panel}",
       "filter": "Filtre",
       "count": "Poses",
-      "exposure": "Pose s",
+      "exposure": "Pose",
       "gain": "Gain",
       "dither": "Dither /",
       "remove": "Retirer",
@@ -1925,7 +1928,8 @@
         "near_pole": "Le télescope pointe près de l'axe de la monture, ce qui ne laisse qu'un petit cercle à ajuster. Pointez plus loin du pôle pour une réponse plus ferme.",
         "no_residual": "Trois images passent toujours exactement par un cercle : rien n'a pu être recoupé. Une quatrième image détecterait un trépied heurté.",
         "low_altitude": "Une image a été prise bas sur l'horizon, là où le modèle de réfraction est le moins fiable.",
-        "assumed_on_axis": "Ceci suppose que le télescope regarde exactement dans l'axe d'ascension droite. Toute erreur de cône, ou une déclinaison hors de son index, s'ajoute au résultat sans être mesurée."
+        "assumed_on_axis": "Ceci suppose que le télescope regarde exactement dans l'axe d'ascension droite. Toute erreur de cône, ou une déclinaison hors de son index, s'ajoute au résultat sans être mesurée.",
+        "drive_stopped": "L'entraînement de la monture est à l'arrêt : le ciel défile dans le champ jusqu'à 15 secondes d'arc par seconde. Sur une pose de quelques secondes, les étoiles s'allongent assez pour empêcher toute résolution astrométrique près de l'équateur céleste. Lancez le suivi, ou raccourcissez la pose."
       },
       "rough": {
         "caveat": "Mesuré sur une seule image, en supposant que le tube regarde dans l'axe d'ascension droite. C'est aussi ce que suppose un viseur polaire : attendez-vous à la même précision, environ un demi-degré, fixée par votre erreur de cône. Lancez la mesure en quatre images pour descendre à la minute d'arc.",
@@ -2029,7 +2033,9 @@
       "axisPercent": "% / °",
       "axisValue": "°C / ″",
       "tooShort": "Trop peu de relevés pour un graphique — une session de moins d'une heure n'enregistre que son début et sa fin."
-    }
+    },
+    "resume": "Reprendre cette nuit",
+    "resumeStarted": "Lancé — {frames} poses restantes. Suivez-la sur la page Capture."
   },
   "mapping": {
     "title": "Affectation des couches",

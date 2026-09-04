@@ -2,6 +2,7 @@ package capture
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -395,4 +396,74 @@ func TestSequence_ValidateRejectsNonsense(t *testing.T) {
 	require.NoError(t, Sequence{Steps: []Step{
 		{Count: 1, ExposureUs: 1000, Type: "dark"},
 	}}.Validate())
+}
+
+// recordingRunner is a Runner wired to a recorder that remembers the last status it was told to
+// store, so a test can ask what actually reached the database rather than what the runner believes.
+type sessionRecorder struct {
+	memRecorder
+	mu       sync.Mutex
+	statuses []Status
+	fail     error
+}
+
+func (s *sessionRecorder) CreateSession(context.Context, Request, int) (int64, error) {
+	return 7, nil
+}
+
+func (s *sessionRecorder) UpdateSession(_ context.Context, _ int64, status Status, _ Progress) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fail != nil {
+		return s.fail
+	}
+	s.statuses = append(s.statuses, status)
+	return nil
+}
+
+func (s *sessionRecorder) stored() []Status {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Status(nil), s.statuses...)
+}
+
+// Stop must close a session that has already failed.
+//
+// It did not: Abort only ever acted when the status was running or paused, and by the time a run has
+// failed the loop has exited and r.cancel is nil — so nothing wrote the row, the logbook kept a
+// phantom "running" night, and the only cure was restarting the engine. MEASURED twice in one
+// evening on real sessions (10 and 12).
+func TestRunner_AbortClosesASessionThatAlreadyFailed(t *testing.T) {
+	rec := &sessionRecorder{}
+	r := NewRunner(nil, rec)
+	r.progress = Progress{SessionID: 42, Status: StatusFailed, Error: "the camera stopped answering"}
+
+	got := r.Abort()
+
+	assert.Equal(t, StatusFailed, got.Status, "a failed run did not become an aborted one")
+	assert.Equal(t, []Status{StatusFailed}, rec.stored(),
+		"the terminal state must reach the database, or the row stays live forever")
+}
+
+// A runner that never started anything has no row to close.
+func TestRunner_AbortWritesNothingWithoutASession(t *testing.T) {
+	rec := &sessionRecorder{}
+	r := NewRunner(nil, rec)
+
+	r.Abort()
+
+	assert.Empty(t, rec.stored())
+}
+
+// When the write fails there must be something to read. It used to be discarded outright, which is
+// why a session that never closed left no trace of why.
+func TestRunner_ASessionThatCannotBeClosedSaysSo(t *testing.T) {
+	rec := &sessionRecorder{fail: errors.New("connection reset by peer")}
+	r := NewRunner(nil, rec)
+	r.progress = Progress{SessionID: 42, Status: StatusFailed}
+
+	r.Abort()
+
+	assert.Contains(t, r.Progress().Message, "could not be closed")
+	assert.Contains(t, r.Progress().Message, "connection reset by peer")
 }

@@ -83,6 +83,7 @@ type alignResult struct {
 	dxFields  [][]float64
 	dyFields  [][]float64
 	srcIdx    []int
+	dropped   int    // frames refused by the alignment-correlation gate (rejectMislocked)
 	note      string // run-report note (canonical geometry applied / skipped), "" when silent
 	gridNote  string // dense AP-grid provenance ("N×N grid, M usable"), "" when apAlign is off
 }
@@ -100,7 +101,7 @@ type alignResult struct {
 // scale× output raster when drizzling (fields stay in native units; see drizzle.go). onFrame
 // (nil-safe, may be called concurrently) ticks per aligned frame for live progress.
 func warpToSharpest(ctx context.Context, paths []string, scores []float64, outDir, prefix string, apAlign bool,
-	scale float64, alignPoints int, onFrame func(done, total int)) (alignResult, error) {
+	scale float64, alignPoints int, seeds []frameSeed, onFrame func(done, total int)) (alignResult, error) {
 	if len(paths) == 0 {
 		return alignResult{}, nil
 	}
@@ -116,13 +117,19 @@ func warpToSharpest(ctx context.Context, paths []string, scores []float64, outDi
 	}
 	scoreCx, scoreCy := scaleCoords(rcD.cx, scale), scaleCoords(rcD.cy, scale)
 
+	dropped := 0
 	canonical := apAlign && len(paths) >= canonicalMin
 	dxSlots := make([][]float64, len(paths))
 	dySlots := make([][]float64, len(paths))
 	if canonical {
-		if dxSlots, dySlots, err = measureAllFields(ctx, paths, refIdx, &rc, &rcD); err != nil {
+		var corr []float64
+		if dxSlots, dySlots, corr, err = measureAllFields(ctx, paths, refIdx, &rc, &rcD, seeds); err != nil {
 			return alignResult{}, err
 		}
+		// A frame that would not correlate onto the reference is DROPPED, not warped by whatever the
+		// search happened to return. Stacking a mislocked frame is what puts a second Moon in the
+		// master, and no amount of downstream weighting removes it — the ghost is already in the sum.
+		dropped = rejectMislocked(dxSlots, dySlots, corr, refIdx)
 		canonicalizeFields(dxSlots, dySlots, refIdx, rcD.onDisk)
 	}
 
@@ -145,10 +152,14 @@ func warpToSharpest(ctx context.Context, paths []string, scores []float64, outDi
 			aligned = warpByGridScaled(im, dxSlots[i], dySlots[i], scale)
 		case i != refIdx:
 			var dxG, dyG []float64
+			var c float64
 			if apAlign {
-				dxG, dyG = measureTwoLevelField(im, &rc, &rcD)
+				dxG, dyG, c = measureTwoLevelField(im, &rc, &rcD, seedAt(seeds, i))
 			} else {
-				dxG, dyG = measureFrameField(im, &rc, false)
+				dxG, dyG, c = measureFrameField(im, &rc, false, seedAt(seeds, i))
+			}
+			if c < alignMinCorr {
+				return nil // mislocked: dropping it beats stacking a second Moon into the master
 			}
 			dxSlots[i], dySlots[i] = dxG, dyG
 			aligned = warpByGridScaled(im, dxG, dyG, scale)
@@ -173,6 +184,7 @@ func warpToSharpest(ctx context.Context, paths []string, scores []float64, outDi
 	}
 
 	var res alignResult
+	res.dropped = dropped
 	if canonical {
 		res.note = fmt.Sprintf("canonical reference geometry (median field over %d frames)", len(paths))
 	} else if apAlign && len(paths) > 1 {
@@ -208,9 +220,18 @@ func warpToSharpest(ctx context.Context, paths []string, scores []float64, outDi
 // globalShift measures im's global drift onto rc's reference: a centroid seed, checked by a coarse
 // DOWNSAMPLED ZNCC covering ±64 px (clouds or a clipped limb can bias the centroid), then refined
 // by one full-res seeded parabolic ZNCC. tgtBlur is im's warpBlur plane (measured once per frame).
-func globalShift(im, tgtBlur *fits.Image, rc *refContext) (gdx, gdy float64) {
-	icx, icy := brightCentroid(im)
-	seedX, seedY := rc.x-icx, rc.y-icy
+func globalShift(im, tgtBlur *fits.Image, rc *refContext, seed frameSeed) (gdx, gdy, corr float64) {
+	seedX, seedY := seed.X, seed.Y
+	if !seed.Known {
+		// No prior: fall back to the brightness centroid. That fallback is only valid while the whole
+		// body is inside the frame — once the Moon overflows the sensor or is clipped by it, the
+		// centroid of the visible light tracks the FRAMING rather than the surface, so the seed is
+		// wrong by however far the frame moved and the ±64 px coarse stage cannot pull it back. A
+		// caller that knows where the surface actually is (the drift trajectory, which is anchored on
+		// the limb) must pass it.
+		icx, icy := brightCentroid(im)
+		seedX, seedY = rc.x-icx, rc.y-icy
+	}
 	// Coarse stage: verify/correct the centroid seed on 4x-downsampled planes (±coarseMaxShift
 	// small-px ≈ ±64 full-res px). A correlation is only trustworthy when its window is at least as
 	// large as its search range — on smaller frames the centroid seed + fine stage cover the drift,
@@ -223,29 +244,45 @@ func globalShift(im, tgtBlur *fits.Image, rc *refContext) (gdx, gdy float64) {
 			seedX/coarseDown, seedY/coarseDown)
 		fineSeedX, fineSeedY = cdx*coarseDown, cdy*coarseDown
 	}
-	return comet.AlignSeeded(rc.blur, tgtBlur, rc.gWin, rc.gRadius, surfaceMaxShift, 0, fineSeedX, fineSeedY)
+	gdx, gdy = comet.AlignSeeded(rc.blur, tgtBlur, rc.gWin, rc.gRadius, surfaceMaxShift, 0, fineSeedX, fineSeedY)
+	return gdx, gdy, znccAt(rc.blur, tgtBlur, rc.gWin, rc.gRadius, gdx, gdy)
 }
 
 // measureFrameField measures im's full displacement field onto rc's reference WITHOUT resampling:
 // the global drift is the field's baseline EVERYWHERE, including the dark limb; when apAlign is
 // set, on-disk alignment points overwrite it with their absolute local shift before the field is
 // smoothed. The two-level estimator (densefield.go) uses this as its coarse stage.
-func measureFrameField(im *fits.Image, rc *refContext, apAlign bool) (dxGrid, dyGrid []float64) {
-	return coarseField(im, blurPlane(im, warpBlur), rc, apAlign)
+func measureFrameField(im *fits.Image, rc *refContext, apAlign bool, seed frameSeed) (dxGrid, dyGrid []float64, corr float64) {
+	return coarseField(im, blurPlane(im, warpBlur), rc, apAlign, seed)
 }
 
 // coarseField is measureFrameField over a pre-blurred target plane, so the two-level estimator
 // measures its blur once and shares it between the coarse and dense stages.
-func coarseField(im, tgtBlur *fits.Image, rc *refContext, apAlign bool) (dxGrid, dyGrid []float64) {
-	gdx, gdy := globalShift(im, tgtBlur, rc)
-	dxGrid, dyGrid = uniformGrid(gdx, gdy, rc.gridN)
+func coarseField(im, tgtBlur *fits.Image, rc *refContext, apAlign bool, seed frameSeed) (dxGrid, dyGrid []float64, corr float64) {
+	gdx, gdy, corr := globalShift(im, tgtBlur, rc, seed)
+	// Measure ROTATION before the alignment points do, and hand it to them as their baseline. An AP
+	// searches ±apMaxShift around that baseline; a rotation displaces the frame edges by far more
+	// than that, so without this every off-centre AP is measuring a shift it cannot reach (see
+	// rotate.go). Zero rotation reproduces the historical uniform grid exactly.
+	theta := 0.0
+	if rc.small != nil && rc.small.W < rc.blur.W {
+		tgtSmall := downPlane(tgtBlur, coarseDown)
+		smallWin := comet.Point{X: rc.gWin.X / coarseDown, Y: rc.gWin.Y / coarseDown}
+		theta = estimateRotation(rc.small, tgtSmall, smallWin, rc.gRadius/coarseDown,
+			gdx/coarseDown, gdy/coarseDown)
+	}
+	if theta != 0 {
+		dxGrid, dyGrid = similarityField(theta, float64(rc.blur.W)/2, float64(rc.blur.H)/2, gdx, gdy, rc.cx, rc.cy)
+	} else {
+		dxGrid, dyGrid = uniformGrid(gdx, gdy, rc.gridN)
+	}
 	if apAlign {
-		measureAPField(rc.blur, tgtBlur, rc.cx, rc.cy, rc.onDisk, rc.apRadius, gdx, gdy, dxGrid, dyGrid)
-		rejectAPOutliers(dxGrid, dyGrid, rc.onDisk, gdx, gdy) // a mislocked AP must not bend the field
+		measureAPFieldSeeded(rc.blur, tgtBlur, rc.cx, rc.cy, rc.onDisk, rc.apRadius, dxGrid, dyGrid)
+		rejectAPOutliersField(dxGrid, dyGrid, rc.onDisk) // a mislocked AP must not bend the field
 		smoothGrid(dxGrid)
 		smoothGrid(dyGrid)
 	}
-	return dxGrid, dyGrid
+	return dxGrid, dyGrid, corr
 }
 
 // downPlane box-downsamples a 1-plane image by factor f (mean of each f×f block) for the coarse

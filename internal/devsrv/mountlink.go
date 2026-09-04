@@ -205,19 +205,17 @@ func (l *mountLink) restore() {
 		return
 	}
 	go func() {
-		l.srv.mu.Lock()
-		if l.srv.mount != nil { // somebody connected first; leave them alone
-			l.srv.mu.Unlock()
+		// The same gate a manual connect takes, so the two can never both attach a mount. Held for the
+		// whole attempt — but only against other MOUNT connects: the camera, the wheel and /health are
+		// untouched by it, which is the point of a gate per kind rather than one lock for everything.
+		l.srv.mountGate.Lock()
+		defer l.srv.mountGate.Unlock()
+		if l.srv.currentMount() != nil { // somebody connected first; leave them alone
 			return
 		}
-		mountPort = saved.Port
-		mount, err := l.srv.openMount(saved.Driver)
-		l.srv.mu.Unlock()
+		mount, err := l.srv.openMount(saved.Driver, saved.Port)
 		if err != nil {
 			return
-		}
-		if porter, ok := mount.(interface{ SetPort(string) }); ok {
-			porter.SetPort(saved.Port)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -225,15 +223,8 @@ func (l *mountLink) restore() {
 			_ = mount.Close()
 			return
 		}
-		l.srv.mu.Lock()
-		if l.srv.mount == nil {
-			l.srv.mount = mount
-			l.srv.mu.Unlock()
-			l.start()
-			return
-		}
-		l.srv.mu.Unlock()
-		_ = mount.Close()
+		l.srv.attachMount(mount)
+		l.start()
 	}()
 }
 

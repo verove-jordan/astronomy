@@ -2,6 +2,7 @@
 import { ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { btnGhost, btnPrimary, input } from "@/constants/styles";
+import DurationInput from "@/components/Capture/DurationInput.vue";
 
 // Change one value across several filters at once. Setting the exposure for L, R, G, B and Ha
 // one field at a time is five chances to leave one at yesterday's value — and a single wrong row
@@ -23,7 +24,9 @@ const useGain = ref(false);
 const countValue = ref(20);
 // Seeded with the same values a new row starts with (SequenceRunner.defaultStep). If these drifted
 // apart, "apply to every row" would quietly put the old gain back across the whole sequence.
-const exposureSec = ref(60);
+// Microseconds, like every stored exposure: DurationInput is what turns that into a number and a
+// unit somebody can read.
+const exposureUs = ref(60_000_000);
 const gainValue = ref(0);
 
 const anything = () => useCount.value || useExposure.value || useGain.value;
@@ -34,9 +37,7 @@ function apply() {
     count: useCount.value
       ? Math.max(1, Math.round(countValue.value))
       : undefined,
-    exposure_us: useExposure.value
-      ? Math.max(1, Math.round(exposureSec.value * 1e6))
-      : undefined,
+    exposure_us: useExposure.value ? Math.max(1, exposureUs.value) : undefined,
     gain: useGain.value ? Math.max(0, Math.round(gainValue.value)) : undefined,
   });
 }
@@ -92,14 +93,10 @@ function apply() {
             class="w-28 text-xs text-slate-600 dark:text-slate-300"
             >{{ t("capture.bulk.exposure") }}</label
           >
-          <input
-            v-model.number="exposureSec"
-            type="number"
-            min="0"
-            step="any"
-            :class="input"
-            class="w-24"
-            :disabled="!useExposure"
+          <DurationInput
+            v-model="exposureUs"
+            :input-class="`${input} w-24`"
+            :select-class="`${input} w-16`"
           />
         </div>
 

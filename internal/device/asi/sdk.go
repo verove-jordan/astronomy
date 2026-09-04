@@ -30,6 +30,8 @@ import (
 	"sync"
 
 	"github.com/ebitengine/purego"
+
+	"github.com/verove-jordan/astronomy/internal/device"
 )
 
 // Error codes from ASICamera2.h. Only the ones worth naming in a message are listed.
@@ -71,11 +73,20 @@ func (e asiError) Error() string {
 }
 
 // check turns an SDK return code into an error.
+//
+// A camera that has gone away is reported as NOT CONNECTED, for the reason efwCheck gives: the
+// sequencer waits out a device error and carries on, but it recognises one by the code devsrv
+// derives from this sentinel. Unwrapped, an unplugged camera ends the night instead of pausing it.
 func check(code int32) error {
-	if asiError(code) == asiSuccess {
+	err := asiError(code)
+	switch err {
+	case asiSuccess:
 		return nil
+	case asiErrorCameraClosed, asiErrorCameraRemoved:
+		return fmt.Errorf("%w: %w", device.ErrNotConnected, err)
+	default:
+		return err
 	}
-	return asiError(code)
 }
 
 // ASICameraInfo, from ASICamera2.h. The offsets are computed from the C declaration, with the

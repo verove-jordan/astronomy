@@ -174,7 +174,12 @@ func (m *Mount) connectLocked() error {
 	}
 	port, err := m.opener(m.path)
 	if err != nil {
-		return fmt.Errorf("%w: %v", device.ErrDriverUnavailable, err)
+		// BOTH wrapped, not %v for the second: the open error is the only thing carrying
+		// ErrPortBusy / ErrPortUnconfigurable / ErrLinkGone, and formatting it with %v prints the
+		// sentinel's text while breaking the chain — so every errors.Is on a Connect failure
+		// silently answered false, and the sentinels serial.go went to the trouble of defining
+		// could only ever be matched by code that opened a port itself.
+		return fmt.Errorf("%w: %w", device.ErrDriverUnavailable, err)
 	}
 	m.port = port
 	m.closing = false
@@ -197,7 +202,7 @@ func (m *Mount) connectLocked() error {
 	if hsErr != nil {
 		_ = port.Close()
 		m.port = nil
-		return fmt.Errorf("%w: no NexStar mount answered on %s (%v)", device.ErrDriverUnavailable, m.path, hsErr)
+		return fmt.Errorf("%w: no NexStar mount answered on %s (%w)", device.ErrDriverUnavailable, m.path, hsErr)
 	}
 
 	if v, err := m.commandLocked("V"); err == nil {

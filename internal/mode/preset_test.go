@@ -77,3 +77,14 @@ func TestForPresetsDiffer(t *testing.T) {
 	assert.True(t, deep.PhotomNorm)
 	assert.True(t, neb.PhotomNorm)
 }
+
+// TestFor_PlanetaryEnablesPanelMosaic pins the preset against the failure mode this repo keeps
+// hitting: a new Options field defaults to the zero value in a preset's struct LITERAL, so the
+// feature is silently off for every real run while its own unit tests pass. Panel mosaicking is
+// what lets a swept or re-pointed lunar capture produce anything but mush, and its gate already
+// makes it inert on a tracked capture — so the preset must carry it.
+func TestFor_PlanetaryEnablesPanelMosaic(t *testing.T) {
+	if !For(Planetary).Planetary.Mosaic {
+		t.Fatal("planetary preset has Mosaic off: a swept/re-pointed capture will be stacked as one panel")
+	}
+}

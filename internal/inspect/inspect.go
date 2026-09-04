@@ -580,3 +580,9 @@ func rel(root, path string) string {
 	}
 	return path
 }
+
+// IsCFARaw reports whether a path names a camera raw that is still a Bayer MOSAIC on disk, so a
+// consumer that wants colour pixels must debayer it. Exported so other packages (the planetary
+// lucky-imaging path) can ask the question without re-declaring cfaRawExts — the one canonical list
+// stays here, exactly as Frame.NeedsDebayer uses it.
+func IsCFARaw(path string) bool { return cfaRawExts[strings.ToLower(filepath.Ext(path))] }

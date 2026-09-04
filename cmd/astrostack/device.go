@@ -46,6 +46,9 @@ func runDevice(_ []string) error {
 
 	log.Printf("astrostack device: serving on http://%s (drivers: %s). Ctrl-C to stop.",
 		cfg.DeviceAddr, driverNames(server))
+	for _, line := range unavailableDrivers(server) {
+		log.Printf("astrostack device: %s", line)
+	}
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("device server: %w", err)
 	}
@@ -69,4 +72,22 @@ func driverNames(s *devsrv.Server) string {
 		return "none"
 	}
 	return names
+}
+
+// unavailableDrivers reports, at startup, every driver this build cannot use and why.
+//
+// The banner used to list only what worked, which is the wrong half. On an Apple-Silicon Mac
+// `just device` starts perfectly and quietly cannot see a ZWO camera or filter wheel at all — ZWO
+// publish no arm64 library, so the process needed is `just device-x86` under Rosetta. Nothing said
+// so until the user opened the capture page, connected what looked like their camera, and got the
+// simulator. The probe already writes the sentence; it just had nowhere to appear.
+func unavailableDrivers(s *devsrv.Server) []string {
+	var out []string
+	for _, d := range s.Drivers() {
+		if d.Available || d.Detail == "" {
+			continue
+		}
+		out = append(out, d.Detail)
+	}
+	return out
 }

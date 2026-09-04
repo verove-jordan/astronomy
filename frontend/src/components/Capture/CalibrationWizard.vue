@@ -175,7 +175,7 @@ const expo = (us: number) =>
           v-model.number="exposureSec"
           type="number"
           min="0.001"
-          step="1"
+          step="any"
           :class="input"
           class="mt-0.5"
         />

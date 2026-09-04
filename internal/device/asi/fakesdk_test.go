@@ -3,6 +3,7 @@ package asi
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"math"
 	"sync"
 	"testing"
@@ -509,4 +510,30 @@ func TestCamera_CloseStopsVideo(t *testing.T) {
 	require.NoError(t, cam.Close())
 	assert.False(t, fake.streaming, "closing must stop the stream, not leave the sensor running")
 	assert.False(t, fake.opened)
+}
+
+// The camera half of the same contract: an unplugged camera must pause the session, not end it.
+func TestCheck_AVanishedCameraIsNotConnected(t *testing.T) {
+	tests := []struct {
+		name         string
+		code         int32
+		notConnected bool
+	}{
+		{"camera closed", 4, true},
+		{"camera removed", 5, true},
+		{"a timeout is a camera that is still there", 11, false},
+		{"video mode active", 15, false},
+		{"success is no error", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := check(tt.code)
+			if tt.code == 0 {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Equal(t, tt.notConnected, errors.Is(err, device.ErrNotConnected))
+		})
+	}
 }

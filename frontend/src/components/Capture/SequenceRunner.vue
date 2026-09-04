@@ -5,6 +5,7 @@ import ProgressBar from "@/components/Common/ProgressBar.vue";
 import DestinationPicker from "@/components/Capture/DestinationPicker.vue";
 import DitherHelp from "@/components/Capture/DitherHelp.vue";
 import StepBulkEdit from "@/components/Capture/StepBulkEdit.vue";
+import DurationInput from "@/components/Capture/DurationInput.vue";
 import { btnGhost, btnPrimary, input } from "@/constants/styles";
 import { useCountdown } from "@/composables/useCountdown";
 import { useCaptureStore } from "@/stores/capture";
@@ -408,18 +409,10 @@ const ditherBlocked = computed(() => {
         </label>
         <label class="text-xs text-slate-500 dark:text-slate-400"
           >{{ t("capture.run.exposure") }}
-          <input
-            :value="(step.exposure_us ?? 0) / 1e6"
-            type="number"
-            min="0"
-            step="any"
-            :class="input"
-            class="w-20"
-            @input="
-              step.exposure_us = Math.round(
-                Number(($event.target as HTMLInputElement).value) * 1e6,
-              )
-            "
+          <DurationInput
+            v-model="step.exposure_us"
+            :input-class="`${input} w-20`"
+            :select-class="`${input} w-16`"
           />
         </label>
         <label class="text-xs text-slate-500 dark:text-slate-400"

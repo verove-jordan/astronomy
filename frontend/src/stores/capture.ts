@@ -13,6 +13,7 @@ import type {
   MountDiagnosis,
   DeviceStatus,
   DeviceWheelState,
+  LiveRecordStatus,
   LiveStats,
   MountAudit,
   MountRestoreResult,
@@ -28,6 +29,14 @@ import type {
 // which owns the session.
 
 const LIVE_POLL_MS = 250;
+
+// How many consecutive status probes must say "down" before the panel believes it.
+//
+// One is not enough. The probe has a timeout, and a device server that is merely BUSY — opening a
+// camera, homing a filter wheel, shaking hands with a mount — used to trip it. Acting on a single
+// miss blanked all three panels and told the user to start a process that was already running, which
+// is the most misleading thing this page can say.
+const DOWN_AFTER_MISSES = 2;
 
 export const useCaptureStore = defineStore("capture", () => {
   // --- device state ---------------------------------------------------------------------------
@@ -51,6 +60,8 @@ export const useCaptureStore = defineStore("capture", () => {
   const liveExposureEnds = ref<string | null>(null);
   const liveExposureUs = ref<number>(0);
   const liveError = ref("");
+  // Keeping the frames the preview is already taking. Polled while running so the count moves.
+  const liveRecord = ref<LiveRecordStatus | null>(null);
   let liveTimer: number | undefined;
   let liveAbort: AbortController | null = null;
   let statsSource: EventSource | null = null;
@@ -75,26 +86,44 @@ export const useCaptureStore = defineStore("capture", () => {
       progress.value?.status === "paused",
   );
 
+  // Consecutive probes that came back down (or failed outright).
+  let downMisses = 0;
+
   async function refreshDevices(): Promise<void> {
+    let status: DeviceStatus;
     try {
-      deviceStatus.value = await apiGet<DeviceStatus>("/api/device/status");
-      error.value = "";
-      if (!deviceStatus.value.running) {
-        camera.value = null;
-        wheel.value = null;
-        mount.value = null;
-        deviceList.value = [];
-        return;
-      }
-      await Promise.all([
-        refreshCamera(),
-        refreshWheel(),
-        refreshMount(),
-        refreshDeviceList(),
-      ]);
+      status = await apiGet<DeviceStatus>("/api/device/status");
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e);
+      noteDeviceMiss();
+      return;
     }
+    error.value = "";
+    if (!status.running) {
+      noteDeviceMiss(status);
+      return;
+    }
+    downMisses = 0;
+    deviceStatus.value = status;
+    await Promise.all([
+      refreshCamera(),
+      refreshWheel(),
+      refreshMount(),
+      refreshDeviceList(),
+    ]);
+  }
+
+  // noteDeviceMiss records one probe that did not answer. The panels are only blanked once the
+  // server has missed enough of them to mean something, so a slow connect leaves the last known
+  // state on screen instead of flashing "not running" at the user mid-operation.
+  function noteDeviceMiss(status?: DeviceStatus): void {
+    downMisses += 1;
+    if (downMisses < DOWN_AFTER_MISSES && deviceStatus.value?.running) return;
+    if (status) deviceStatus.value = status;
+    camera.value = null;
+    wheel.value = null;
+    mount.value = null;
+    deviceList.value = [];
   }
 
   // Discovery is best-effort: it only enriches the connect defaults, so a failure must not blank the
@@ -120,16 +149,49 @@ export const useCaptureStore = defineStore("capture", () => {
     mount.value = await apiGet<DeviceMountState>("/api/device/mount");
   }
 
-  async function connectCamera(driver = "sim"): Promise<void> {
-    camera.value = await apiPost<DeviceCameraState>(
-      "/api/device/camera/connect",
-      { driver },
+  // device is the id of the discovered device to open, as its driver understands it — an
+  // AVFoundation device name for a phone, an efw index for a wheel. Omitted, the driver chooses.
+  // --- recording the live view ------------------------------------------------------------------
+  //
+  // A toggle: the first click keeps the frame on screen and everything after it, the second stops.
+  // An empty body takes the server's defaults, which is what makes it one button and not a form.
+  async function startLiveRecord(opts: Record<string, unknown> = {}) {
+    liveRecord.value = await apiPost<LiveRecordStatus>(
+      "/api/device/live/record/start",
+      opts,
     );
   }
-  async function connectWheel(driver = "sim", names?: string[]): Promise<void> {
+  async function stopLiveRecord() {
+    liveRecord.value = await apiPost<LiveRecordStatus>(
+      "/api/device/live/record/stop",
+      {},
+    );
+  }
+  async function refreshLiveRecord() {
+    try {
+      liveRecord.value = await apiGet<LiveRecordStatus>(
+        "/api/device/live/record",
+      );
+    } catch {
+      liveRecord.value = null;
+    }
+  }
+
+  async function connectCamera(driver = "sim", device?: string): Promise<void> {
+    camera.value = await apiPost<DeviceCameraState>(
+      "/api/device/camera/connect",
+      { driver, device },
+    );
+  }
+  async function connectWheel(
+    driver = "sim",
+    names?: string[],
+    device?: string,
+  ): Promise<void> {
     wheel.value = await apiPost<DeviceWheelState>("/api/device/wheel/connect", {
       driver,
       names,
+      device,
     });
   }
   async function connectMount(driver = "sim", port?: string): Promise<void> {
@@ -508,6 +570,10 @@ export const useCaptureStore = defineStore("capture", () => {
 
   return {
     deviceStatus,
+    liveRecord,
+    startLiveRecord,
+    stopLiveRecord,
+    refreshLiveRecord,
     deviceList,
     camera,
     wheel,
