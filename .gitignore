@@ -61,7 +61,7 @@ data/
 *.swp
 
 # --- Claude Code ---
-.claude/settings.local.json
+#.claude/settings.local.json
 .gitnexus
 # Machine-local calibration-library sidecars (pool signatures, flat-QC artifacts)
 /library/*.sig
