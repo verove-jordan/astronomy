@@ -69,3 +69,6 @@ data/
 /library/*_defects.png
 /library/*master*
 /library/catalogues/
+
+# --- local task context (not versioned) ---
+/tasks-context/
