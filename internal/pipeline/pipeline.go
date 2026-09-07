@@ -481,10 +481,17 @@ func Process(ctx context.Context, opts Options) (*Result, error) {
 	// On resume, reuse the paused run's id + output dir so the per-channel masters it already stacked
 	// (output/<object>/<run_id>/master_<tag>.fits) are found and skipped; a fresh run stamps a new id.
 	runID := time.Now().Format("20060102_150405")
+	workRun := filepath.Join(workAbs, "run_"+runID)
 	if opts.Resume != nil && opts.Resume.RunID != "" {
 		runID = opts.Resume.RunID
+		workRun = filepath.Join(workAbs, "run_"+runID)
+	} else if id, dir, err := reserveRunDir(workAbs, runID); err != nil {
+		return nil, err
+	} else {
+		// A fresh run claims its scratch dir atomically, so two runs starting in the same second cannot
+		// share it. The output dir below is named after the id we actually got.
+		runID, workRun = id, dir
 	}
-	workRun := filepath.Join(workAbs, "run_"+runID)
 	object := sanitize(dominantObject(inv))
 	if object == "session" { // no OBJECT header — name the run after the target folder (e.g. M101)
 		if base := smartObject(opts.InputDir); base != "session" {
@@ -1609,6 +1616,14 @@ func compMode(channels map[string]string, p *mode.Preset) string {
 		return strings.ToUpper(pal.Name)
 	}
 	has := func(f string) bool { _, ok := channels[f]; return ok }
+	// One-shot colour carries a SINGLE channel named "RGB" (inspect.nameColorChannel stamps it), never
+	// three separate primaries — so the R/G/B test below is always false for it and every colour run
+	// was reported as "mono" in run.json and the UI. postprocess.buildCombine already special-cases the
+	// same channel for the same reason ("a perfectly good colour stack came out flat and grey"); this
+	// keeps the GIMP path's label in step with it.
+	if has(filters.Color) {
+		return "RGB"
+	}
 	rgb := has("R") && has("G") && has("B")
 	if !rgb {
 		return "mono"
