@@ -128,9 +128,8 @@ func TestFinalizeInventory_ExcludeBeforeMapping(t *testing.T) {
 	assert.True(t, found, "finalize warning missing: %v", inv.Warnings)
 }
 
-// Excluding must RECORD what it dropped, not just remove it. A dropped frame is absent from Frames,
-// so a later "is this already in the current scan?" test cannot tell it from one that was never
-// there — and the cross-session reuse pass then folds the excluded frames straight back in.
+// Excluding must record what it dropped, not just remove it: later stages need to tell a dropped
+// frame from one that was never scanned.
 func TestInventory_ExcludeSets_RecordsDroppedPaths(t *testing.T) {
 	inv := &Inventory{}
 	inv.Frames = append(inv.Frames, lightFrames("R", 3)...)
@@ -155,7 +154,7 @@ func TestInventory_ExcludeSets_RecordsDroppedPaths(t *testing.T) {
 	assert.ElementsMatch(t, rPaths, inv.ExcludedPaths, "every dropped frame is recorded for later stages")
 }
 
-// The mono/colour split of a mixed folder drops frames the same way and needs the same record.
+// The mono/colour split of a mixed folder drops frames the same way.
 func TestInventory_ExcludeColor_RecordsDroppedPaths(t *testing.T) {
 	inv := &Inventory{}
 	inv.Frames = append(inv.Frames, lightFrames("L", 2)...)

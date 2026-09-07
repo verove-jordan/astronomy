@@ -125,10 +125,8 @@ func TestBuildReusePlan_NoProvider(t *testing.T) {
 	assert.Equal(t, 0, plan.Summary.PriorFrames)
 }
 
-// An excluded light set must stay excluded. The frames live in the same folder the run is scanning,
-// so they are also catalogued from earlier runs over it: dropping them from the scan removes them
-// from currentScanPaths, and the prior-session pass then folded the very same files back in as PRIOR
-// groups. Measured on a real capture — 240 kept + 26 excluded were stacked as 266, silently.
+// An excluded light set must stay excluded. Earlier runs over the same folder catalogued those
+// frames, so dropping them from the scan used to make the prior-session pass fold them back in.
 func TestBuildReusePlan_DoesNotResurrectExcludedFrames(t *testing.T) {
 	dir := t.TempDir()
 	excluded := priorFile(t, dir, "cur/L_excluded.fits")
@@ -137,8 +135,8 @@ func TestBuildReusePlan_DoesNotResurrectExcludedFrames(t *testing.T) {
 	inv.ExcludedPaths = []string{excluded} // what inspect records when the user excludes that set
 
 	prov := &fakeProvider{lights: []store.FrameRow{
-		priorRow(2, excluded, "L"),                           // the SAME file, catalogued by an earlier run
-		priorRow(2, priorFile(t, dir, "s2/L_001.fits"), "L"), // a genuine prior frame, must still fold in
+		priorRow(2, excluded, "L"),                           // the same file, catalogued earlier
+		priorRow(2, priorFile(t, dir, "s2/L_001.fits"), "L"), // a genuine prior frame, still folds in
 	}}
 	cfg := ReuseConfig{Provider: prov, ConeDeg: 0.5}
 

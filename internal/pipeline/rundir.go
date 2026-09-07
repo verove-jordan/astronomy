@@ -11,20 +11,17 @@ import (
 	"github.com/verove-jordan/astronomy/internal/fsutil"
 )
 
-// maxRunDirAttempts bounds the suffix search. A run id has one-second resolution, so this is far more
-// concurrent runs than the worker pool can ever start in the same second; hitting it means something
-// is wrong (an unwritable work dir that keeps reporting "exists"), and failing loudly beats spinning.
+// maxRunDirAttempts bounds the suffix search — far more runs than can start in the same second, so
+// reaching it means the work dir is broken and failing beats spinning.
 const maxRunDirAttempts = 1000
 
-// reserveRunDir claims <workAbs>/run_<id> for this run and returns the id it actually got together
-// with the directory it created.
+// reserveRunDir claims <workAbs>/run_<id> and returns the id it actually got with the directory it
+// created.
 //
-// The id is a one-second timestamp and this scratch path deliberately does NOT include the object, so
-// two runs started within the same second — even on different capture folders, which take no shared
-// target lock — used to land on the same <work>/run_<id> and overwrite each other's per-channel
-// sequences mid-stack. os.Mkdir is atomic, so the first caller wins the plain id and every other one
-// takes the next free suffix; the returned id is what the output directory must be named after, so
-// the two stay in step.
+// The id is a one-second timestamp and this path omits the object, so two runs started in the same
+// second — even on different capture folders, which share no target lock — landed on the same
+// directory and overwrote each other's per-channel sequences. os.Mkdir is atomic: the first caller
+// wins the plain id, the rest take the next free suffix.
 func reserveRunDir(workAbs, runID string) (id, dir string, err error) {
 	if err := fsutil.EnsureDir(workAbs); err != nil {
 		return "", "", fmt.Errorf("work dir %s: %w", workAbs, err)

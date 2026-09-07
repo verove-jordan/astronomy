@@ -378,10 +378,8 @@ func currentScanPaths(inv *inspect.Inventory) map[string]bool {
 	for _, fr := range inv.Frames {
 		paths[fr.Path] = true
 	}
-	// Frames the scan deliberately dropped count as "already accounted for" here. They are catalogued
-	// from earlier runs over the same folder, so without this the prior-session pass re-adds the exact
-	// files the user excluded — as PRIOR groups, under the same paths — and the exclusion silently does
-	// nothing. Measured on a real capture: 240 kept + 26 excluded came back as 266 stacked.
+	// Deliberately dropped frames count as accounted for: earlier runs over the same folder catalogued
+	// them, so otherwise the prior-session pass re-adds the exact files the user excluded.
 	for _, p := range inv.ExcludedPaths {
 		paths[p] = true
 	}

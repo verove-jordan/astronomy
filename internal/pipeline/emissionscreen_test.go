@@ -184,8 +184,6 @@ func TestCompMode_NamesEveryEmissionLine(t *testing.T) {
 		{"SII alone is no longer invisible", ch("L", "R", "G", "B", "SII"), "SIILRGB"},
 		{"every line, canonical order", ch("L", "R", "G", "B", "Ha", "OIII", "SII"), "HaOIIISIILRGB"},
 		{"no RGB is mono", ch("L", "Ha"), "mono"},
-		// One-shot colour is ONE channel named "RGB", not three primaries: it used to fall through the
-		// R/G/B test and report "mono" for a perfectly good colour stack.
 		{"one-shot colour is RGB, not mono", ch("RGB"), "RGB"},
 	}
 	for _, tt := range tests {
@@ -195,11 +193,9 @@ func TestCompMode_NamesEveryEmissionLine(t *testing.T) {
 	}
 }
 
-// A duo-band one-shot-colour run splits into pseudo-Ha/[OIII] and asks for a narrowband palette; the
-// palette must still name the composite, not the colour passthrough case added above.
+// A duo-band colour run splits into pseudo-Ha/[OIII]: the palette must still name the composite.
 func TestCompMode_OneShotColorNarrowbandPaletteStillWins(t *testing.T) {
 	channels := map[string]string{"RGB": "rgb", "Ha": "syn_Ha", "OIII": "syn_OIII"}
 	assert.Equal(t, "HOO", compMode(channels, &mode.Preset{Color: mode.OSC, Palette: "hoo"}))
-	// …and with no narrowband palette asked for, the same colour run reports RGB.
 	assert.Equal(t, "RGB", compMode(map[string]string{"RGB": "rgb"}, &mode.Preset{Color: mode.OSC, Palette: "natural"}))
 }

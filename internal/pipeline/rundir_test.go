@@ -20,12 +20,11 @@ func TestReserveRunDir_FirstCallerKeepsThePlainID(t *testing.T) {
 	assert.Equal(t, filepath.Join(work, "run_20260907_101003"), dir)
 	st, err := os.Stat(dir)
 	require.NoError(t, err)
-	assert.True(t, st.IsDir(), "the directory is created, which is what makes the claim atomic")
+	assert.True(t, st.IsDir(), "creating the directory is what makes the claim atomic")
 }
 
-// The run id has one-second resolution and the scratch path deliberately omits the object, so two
-// runs started in the same second — even on different capture folders, which share no target lock —
-// used to land on the same directory and overwrite each other's per-channel sequences mid-stack.
+// Two runs started in the same second used to land on the same directory and overwrite each other's
+// per-channel sequences.
 func TestReserveRunDir_SameSecondRunsGetSeparateDirs(t *testing.T) {
 	work := t.TempDir()
 	const stamp = "20260907_101003"
