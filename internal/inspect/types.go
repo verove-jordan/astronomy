@@ -190,6 +190,12 @@ type Inventory struct {
 	// Sessions summarizes the capture nights found in the scan (per-night counts, time window and
 	// light configs), sorted by night. nil when no frame carries a DATE-OBS. See session.go.
 	Sessions []SessionInfo `json:"sessions,omitempty"`
+	// ExcludedPaths are frames this scan deliberately DROPPED — a user set exclusion, or the mono/colour
+	// split of a mixed folder. "Dropped" is not the same as "never seen": a later stage that folds in
+	// catalogued frames from other sessions must be able to tell the difference, or it silently
+	// resurrects the very frames the user excluded (they are absent from Frames, so a
+	// "is it in the current scan?" test says no). Not serialized — it is run-local intent.
+	ExcludedPaths []string `json:"-"`
 }
 
 // SessionInfo summarizes one capture night of the scan (Key "" = the undated bucket).
@@ -289,6 +295,7 @@ func (inv *Inventory) excludeFrames(drop func(*Frame) bool) int {
 	for _, fr := range inv.Frames {
 		if drop(fr) {
 			removed++
+			inv.ExcludedPaths = append(inv.ExcludedPaths, fr.Path)
 			continue
 		}
 		kept = append(kept, fr)

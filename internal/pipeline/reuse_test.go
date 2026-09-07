@@ -124,3 +124,31 @@ func TestBuildReusePlan_NoProvider(t *testing.T) {
 	assert.Len(t, plan.byFilter["L"], 1) // current session only
 	assert.Equal(t, 0, plan.Summary.PriorFrames)
 }
+
+// An excluded light set must stay excluded. The frames live in the same folder the run is scanning,
+// so they are also catalogued from earlier runs over it: dropping them from the scan removes them
+// from currentScanPaths, and the prior-session pass then folded the very same files back in as PRIOR
+// groups. Measured on a real capture — 240 kept + 26 excluded were stacked as 266, silently.
+func TestBuildReusePlan_DoesNotResurrectExcludedFrames(t *testing.T) {
+	dir := t.TempDir()
+	excluded := priorFile(t, dir, "cur/L_excluded.fits")
+
+	inv := currentInv()
+	inv.ExcludedPaths = []string{excluded} // what inspect records when the user excludes that set
+
+	prov := &fakeProvider{lights: []store.FrameRow{
+		priorRow(2, excluded, "L"),                           // the SAME file, catalogued by an earlier run
+		priorRow(2, priorFile(t, dir, "s2/L_001.fits"), "L"), // a genuine prior frame, must still fold in
+	}}
+	cfg := ReuseConfig{Provider: prov, ConeDeg: 0.5}
+
+	plan, err := buildReusePlan(context.Background(), cfg, inv, 1, targetQuery{Object: "M51"})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, plan.Summary.PriorFrames, "the excluded frame must not come back as prior data")
+	for _, g := range plan.byFilter["L"] {
+		for _, fr := range g.Frames {
+			assert.NotEqual(t, excluded, fr.Path, "excluded frame reappeared in a light group")
+		}
+	}
+}

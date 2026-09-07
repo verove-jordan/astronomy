@@ -44,6 +44,10 @@ func (inv *Inventory) ExcludeSets(ids []string) (int, int) {
 	kept := inv.Frames[:0:0]
 	for _, fr := range inv.Frames {
 		if drop[fr] {
+			// Record the drop: an excluded frame is absent from Frames, so a later "is this already in
+			// the current scan?" test cannot distinguish it from one that was never there, and the
+			// cross-session reuse pass folds the very frames the user excluded straight back in.
+			inv.ExcludedPaths = append(inv.ExcludedPaths, fr.Path)
 			continue
 		}
 		kept = append(kept, fr)
